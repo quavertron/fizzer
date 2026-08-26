@@ -59,6 +59,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Inspect local Claude/Codex sessions and caption them through local Ollama. */
   getLocalAgents: ({ template } = {}) => ipcRenderer.invoke('orbit:getLocalAgents', { template }),
   readClipboardImage: () => ipcRenderer.invoke('clipboard:readImage'),
+  /** Create a bug or enhancement in the fixed public Fizzer repository. */
+  createFizzerIssue: (input = {}) => {
+    const { title, body, label } = input || {};
+    return ipcRenderer.invoke('github:createFizzerIssue', { title, body, label });
+  },
   // Local CLI execution (renderer hosts /runners; main spawns agents).
   startAgentRun: (opts) => ipcRenderer.invoke('agent:start', opts),
   cancelAgentRun: (runId) => ipcRenderer.invoke('agent:cancel', runId),

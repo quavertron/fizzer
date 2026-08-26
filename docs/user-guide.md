@@ -517,13 +517,35 @@ On macOS, use `Cmd`; on Windows and Linux, use `Ctrl`.
 4. Check Superkanban for blocked or in-review cards.
 5. Open Sessions if an agent is still running.
 
-## Fizzer guide and product feedback
+## Fizzer Guide conversations and reporting
 
-The floating **Ask the Fizzer guide** button opens a help assistant that answers from this manual through the local Codex runner. The guide conversation is kept in the open app session; it is not a normal vault channel or a durable project record.
+The floating help button opens the **Fizzer Guide**, which answers questions from this manual through a connected local runner. The Fizzer Guide cannot answer while the runner is offline.
 
-The assistant cannot answer while the local runner is offline. Product feedback is separate: choose **Feedback**, review the privacy notice, and explicitly send your message. Only the feedback text and your username go to the Fizzer server owner. The guide conversation, notes, chats, files, traces, and attachments are not included.
+### Keep and revisit Guide conversations
 
-This feedback action is for product bugs and usability suggestions. Use the normal **Report** action for trust-and-safety reports about a vault, note, message, or member.
+Each **Guide conversation** is saved locally in the current application or browser profile. It is separate from vault channels and is not shared as project chat.
+
+- Choose **New** to start a separate, empty Guide conversation.
+- Choose **History** to see locally saved conversations with their automatic titles and message counts. Select one to reopen it.
+- Use the trash action in **History** to delete a conversation. Deleting the last saved conversation leaves a fresh, empty one.
+
+### Draft a public Fizzer tracker issue
+
+While a Guide conversation is active, ask in natural language to create, open, file, or draft an issue. The Fizzer Guide drafts the issue from only that active Guide conversation; it does not pull in other Guide conversations, vault notes, chats, files, traces, attachments, or repository contents.
+
+Before anything is published, Fizzer shows an editable public preview of the title, body, and `bug` or `enhancement` label. Review and change the preview to remove private information or correct details. Then choose **Create issue** once to publish it. Issue creation always targets the public **Fizzer tracker** at `grm4871/fizzer`; it never targets the current vault, workspace, or project repository.
+
+Creating the issue is desktop-only. The desktop app uses the locally installed and authenticated `gh` CLI, so authenticate `gh` on that computer before choosing **Create issue**. Fizzer does not create the issue through the server or ask for a GitHub token in the Guide.
+
+Choose **Discard** to close the preview without publishing. After a successful creation, the Fizzer Guide adds a link to the new public issue to the active Guide conversation. In the web app, **Create issue** is disabled and the preview directs you to Fizzer Desktop and a signed-in `gh` CLI.
+
+### Choose the correct reporting path
+
+- **Fizzer tracker issue** — public. Use the issue preview and **Create issue** for a Fizzer bug or enhancement that you want to publish at `grm4871/fizzer`.
+- **Product feedback** — private. Choose **Feedback**, review the privacy notice, and explicitly send the message to the Fizzer server owner. Only the feedback text and your username are sent; the Guide conversation, notes, chats, files, traces, and attachments are not included.
+- **Trust-and-safety report** — moderation. Use the normal **Report** action for a vault, note, message, or member that may violate community rules.
+
+These paths are separate. **Product feedback** does not create a public issue, a **Fizzer tracker** issue is not a private feedback message, and neither replaces a **Trust-and-safety report**.
 
 ## Boundaries and troubleshooting
 
@@ -548,3 +570,6 @@ This feedback action is for product bugs and usability suggestions. Use the norm
 - **Superkanban:** vault-wide board overview.
 - **Private block:** `:::private` content hidden from agents and public/search/model-derived surfaces.
 - **Public snapshot:** published copy of a note that can be opened without vault membership.
+- **Fizzer Guide:** in-app help that answers from this maintained manual.
+- **Guide conversation:** locally saved thread with the Fizzer Guide, separate from vault channels.
+- **Fizzer tracker:** public GitHub Issues tracker for Fizzer at `grm4871/fizzer`.

@@ -47,6 +47,7 @@ const { collectPlanUsage } = require('./plan-usage.cjs');
 const { AgentRunState, settleCancelAcknowledgement } = require('./agent-run-state.cjs');
 const { collectLocalAgents } = require('./local-agents.cjs');
 const worktrees = require('./worktrees.cjs');
+const { createFizzerIssue } = require('./github-issues.cjs');
 const APP_NAME = 'Fizzer';
 const USE_EMBEDDED_BACKEND = shouldUseEmbeddedBackend({ packaged: app.isPackaged });
 let INSTANCE_ORIGIN = USE_EMBEDDED_BACKEND ? null : resolveInstanceOrigin({ packaged: app.isPackaged });
@@ -623,6 +624,9 @@ ipcMain.handle('clipboard:readImage', async () => {
     name: 'clipboard-image.png',
   };
 });
+
+// ── Fizzer Guide issue creation ──────────────────────────────
+ipcMain.handle('github:createFizzerIssue', async (_event, input = {}) => createFizzerIssue(input));
 
 // ── Task workspaces (git worktrees) and pull requests ────────
 // Git and `gh` only ever run in the main process; the renderer sends the

@@ -9,6 +9,8 @@ reviewed with the code they describe.
 - [Getting started](getting-started.md) — install dependencies and run Fizzer
   locally.
 - [User guide](user-guide.md) — understand what Fizzer can do and how to use it.
+- [Fizzer Guide conversations and reporting](user-guide.md#fizzer-guide-conversations-and-reporting) — start, reopen, or delete local Guide conversations; draft and publish public Fizzer tracker issues.
+- [Product language](CONTEXT.md) — canonical terms for guide, feedback, reports, and the public Fizzer tracker.
 - [Architecture](architecture.md) — understand the client, server, desktop
   shell, persistence, and realtime boundaries.
 - [Agent runtime](agent-runtime.md) — understand local agent execution,
