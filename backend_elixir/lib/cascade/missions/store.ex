@@ -398,7 +398,7 @@ defmodule Cascade.Missions.Store do
               coordinatorRegistrationId: mission.coordinator_registration_id,
               assigneeRegistrationId: task.assignee_registration_id,
               title: task.title,
-              prompt: retry_prompt(task),
+              prompt: nonblank(task.prompt, task.title),
               reasoningEffort: task.reasoning_effort || "",
               anonymous: anonymous,
               attempt: task.attempt || 0
@@ -410,27 +410,6 @@ defmodule Cascade.Missions.Store do
       end)
 
     %{candidates: candidates, updates: []}
-  end
-
-  defp retry_prompt(task) do
-    prompt = nonblank(task.prompt, task.title)
-
-    if task.attempt > 0 do
-      case SQL.one(
-             "SELECT summary FROM chat_mission_events WHERE task_id=? AND kind='task_retried' AND attempt=? ORDER BY id DESC LIMIT 1",
-             [task.id, task.attempt]
-           ) do
-        [summary] when is_binary(summary) and summary != "" ->
-          prompt <>
-            "\n\nCoordinator retry instructions for this attempt (subject to saved user authority):\n" <>
-            summary
-
-        _ ->
-          prompt
-      end
-    else
-      prompt
-    end
   end
 
   def link_dispatch(task_id, dispatch_id) do
@@ -598,13 +577,23 @@ defmodule Cascade.Missions.Store do
                   [row.dispatch_id]
                 )
 
+                prompt = nonblank(row.prompt, row.title)
+
+                prompt =
+                  if summary == "",
+                    do: prompt,
+                    else:
+                      prompt <>
+                        "\n\nCoordinator retry instructions (subject to saved user authority):\n" <>
+                        summary
+
                 SQL.exec(
                   """
                   UPDATE chat_mission_tasks
-                  SET status='pending',summary=?,dispatch_id=NULL,run_id=NULL,child_result_delivered=0,joining_children=0,
+                  SET status='pending',summary=?,prompt=?,dispatch_id=NULL,run_id=NULL,child_result_delivered=0,joining_children=0,
                     attempt=attempt+1,updated_at=datetime('now') WHERE id=?
                   """,
-                  [summary, task_id]
+                  [summary, prompt, task_id]
                 )
 
                 SQL.exec(

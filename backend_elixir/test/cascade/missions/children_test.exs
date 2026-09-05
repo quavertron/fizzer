@@ -83,6 +83,17 @@ defmodule Cascade.Missions.ChildrenTest do
   test "parallel children join once, resume their parent with artifacts, and gate completion",
        ctx do
     {mission, parent, run} = parent(ctx)
+    :ok = RunStore.finish(run.id, "failed", "Original deadline expired")
+    {:ok, _} = Store.settle_run(run.id, "failed", "Original deadline expired")
+
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, parent.id, %{
+        status: "pending",
+        summary: "Renewed deadline applies through child integration."
+      })
+
+    [%{dispatch: retry_dispatch}] = Scheduler.schedule(mission.id).dispatches
+    run = start(ctx, retry_dispatch)
 
     {:ok, child} =
       Children.add(
@@ -121,6 +132,7 @@ defmodule Cascade.Missions.ChildrenTest do
     assert [%{dispatch: continuation, message: message}] = joined.scheduled.dispatches
     assert message.missionTaskId == parent.id
     assert message.body =~ "Commit abc"
+    assert message.body =~ "Renewed deadline applies through child integration."
     assert message.body =~ child.task.branch
     assert message.body =~ "Integrate and verify"
     assert joined.scheduled.wakeDispatches == []
