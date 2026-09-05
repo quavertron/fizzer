@@ -206,6 +206,46 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert message.status == "running"
   end
 
+  test "a deferred next-step checkpoint does not block later human turns", ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1,next_step_suggestions=1 WHERE id=?", [
+      ctx.registration.id
+    ])
+
+    {:ok, _} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: ctx.dispatch.messageId,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Existing work keeps the checkpoint deferred"
+      })
+
+    source = "sys-next-enable-#{ctx.registration.id}"
+
+    assert nil ==
+             Cascade.Chat.NextSteps.enqueue(
+               ctx.owner_channel.id,
+               ctx.registration.id,
+               source,
+               "enable",
+               "Consider next work"
+             )
+
+    [checkpoint] = SQL.one("SELECT id FROM chat_agent_dispatches WHERE message_id=?", [source])
+    human = admit(ctx, "Please answer this instead of waiting for proactive work")
+    register_runner!(ctx.sid)
+    delegated = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(human.id).id == delegated["runId"]
+    refute Store.find_by_chat_dispatch(checkpoint)
+
+    assert [nil, nil] ==
+             SQL.one("SELECT run_id,failed_at FROM chat_agent_dispatches WHERE id=?", [checkpoint])
+
+    Store.finish(delegated["runId"], "completed", "Answered")
+  end
+
   test "peer input queues and terminal events wake it without browser ownership", ctx do
     first = event!(ctx.sid, "run:delegate")
     peer = admit(ctx, "peer turn", registrationId: ctx.registration.id)

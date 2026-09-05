@@ -295,7 +295,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
       })
 
     assert response.status == 202
-    assert {:retry, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+    assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
     assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch_id]) == [nil]
     assert Store.find_by_chat_dispatch(dispatch_id) == nil
 

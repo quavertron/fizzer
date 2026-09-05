@@ -144,12 +144,12 @@ defmodule CascadeWeb.OrchestrationController do
 
           start_dispatch(dispatch, execution, %{built | prompt: prompt}, resume, inline_svgs)
         else
-          {:deferred, message} -> {:retry, message}
+          {:deferred, message} -> {:busy, message}
           error -> error
         end
       else
         {:deferred, message} ->
-          {:retry, message}
+          {:busy, message}
 
         false ->
           {:retry, "Waiting for the agent owner's desktop runner."}
@@ -167,7 +167,7 @@ defmodule CascadeWeb.OrchestrationController do
           {:error, reason}
       end
     else
-      {:deferred, message} -> {:retry, message}
+      {:deferred, message} -> {:busy, message}
       :discarded -> :discarded
       {:error, _status, message} -> {:error, message}
       {:error, message} -> {:error, message}
@@ -255,7 +255,7 @@ defmodule CascadeWeb.OrchestrationController do
         end
 
       {:deferred, message} ->
-        {:retry, message}
+        {:busy, message}
 
       {:retry, _} = retry ->
         retry
