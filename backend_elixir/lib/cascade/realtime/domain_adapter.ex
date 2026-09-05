@@ -103,10 +103,18 @@ defmodule Cascade.Realtime.DomainAdapter do
          true <-
            RunnerLifecycle.accept_event?(run_id, identity.id) or
              (terminal_event?(type, payload) and Store.owned?(run_id, identity.id)) do
+      Store.acknowledge_delivery(run_id)
+
       cond do
-        terminal_event?(type, payload) -> settle_runner_event(run_id, payload, identity.id)
-        type == "heartbeat" -> RunnerLifecycle.heartbeat(run_id, identity.id)
-        true -> persist_runner_event(run_id, type, payload, identity.id)
+        terminal_event?(type, payload) ->
+          settle_runner_event(run_id, payload, identity.id)
+
+        type == "heartbeat" ->
+          Store.mark_running(run_id)
+          RunnerLifecycle.heartbeat(run_id, identity.id)
+
+        true ->
+          persist_runner_event(run_id, type, payload, identity.id)
       end
 
       {:ok, if(field(data, :receipt) == true, do: [{:ack, [%{success: true}]}], else: [])}
@@ -134,6 +142,12 @@ defmodule Cascade.Realtime.DomainAdapter do
     Store.persist_session(run_id, field(payload, :sessionId))
     Store.publish(run_id, "session", payload)
   end
+
+  defp persist_runner_event(run_id, "status", %{"status" => "running"}, _owner_id),
+    do: Store.mark_running(run_id)
+
+  defp persist_runner_event(run_id, "status", %{status: "running"}, _owner_id),
+    do: Store.mark_running(run_id)
 
   defp persist_runner_event(run_id, "status", payload, owner_id) when is_map(payload) do
     status = field(payload, :status)

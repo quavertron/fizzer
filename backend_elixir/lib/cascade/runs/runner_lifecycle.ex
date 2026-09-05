@@ -45,14 +45,36 @@ defmodule Cascade.Runs.RunnerLifecycle do
     with {:ok, %{sid: sid}} <- Hub.runner(owner_id),
          {:ok, _pid} <- Cascade.Realtime.lookup(sid),
          run_id when is_integer(run_id) <- field(payload, :runId) do
-      Store.record_delegated(run_id, owner_id)
-      Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
-      true
+      if Store.record_delegated(run_id, owner_id, payload) == :ok do
+        Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
+        true
+      else
+        false
+      end
     else
       _ -> false
     end
   rescue
     _ -> false
+  end
+
+  def replay_delivery(run_id, owner_id) do
+    if online?(owner_id) do
+      case Store.pending_delivery(run_id, owner_id) do
+        [_payload, attempts] when attempts >= 5 ->
+          summary =
+            "Desktop did not confirm run delivery after five attempts; no worker startup was observed."
+
+          Store.finish(run_id, "failed", summary)
+          Store.publish(run_id, "status", %{status: "failed", summary: summary})
+
+        [payload, _] ->
+          delegate(owner_id, Jason.decode!(payload))
+
+        nil ->
+          :ok
+      end
+    end
   end
 
   def cancel(owner_id, run_id, timeout \\ 15_000) do
@@ -345,6 +367,9 @@ defmodule Cascade.Runs.RunnerLifecycle do
         |> List.wrap()
         |> Enum.member?(row.run_id)
     end)
+    |> Enum.reject(fn row ->
+      not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))
+    end)
     |> Enum.each(fn row ->
       Store.finish(row.run_id, "failed", summary)
       Store.publish(row.run_id, "status", %{status: "failed", summary: summary})
@@ -371,8 +396,10 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   defp fail_runs(run_ids, reason) do
     Enum.each(run_ids, fn run_id ->
-      Store.finish(run_id, "failed", reason)
-      Store.publish(run_id, "status", %{status: "failed", summary: reason})
+      if is_nil(Store.pending_delivery(run_id, Store.delegated_owner(run_id))) do
+        Store.finish(run_id, "failed", reason)
+        Store.publish(run_id, "status", %{status: "failed", summary: reason})
+      end
     end)
   end
 

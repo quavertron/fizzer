@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createRequire } from 'node:module';
+import { isDeepStrictEqual } from 'node:util';
 
 const require = createRequire(import.meta.url);
 const { Manager } = require('../../../node_modules/socket.io-client');
@@ -39,7 +40,19 @@ runner.on('runner:registered', (response) => {
   console.log(JSON.stringify({ ready: true, response }));
 });
 
+const dropped = new Map();
 runner.on('run:delegate', (payload) => {
+  if (payload.probeMode === 'drop-first') {
+    if (!dropped.has(payload.runId)) {
+      dropped.set(payload.runId, payload);
+      console.log(JSON.stringify({ dropped: payload.runId }));
+      return;
+    }
+    if (!isDeepStrictEqual(payload, dropped.get(payload.runId))) {
+      fail(new Error('Retry changed the delegated payload'));
+      return;
+    }
+  }
   if (payload.probeMode === 'cancel') return;
 
   runner.emit('runner:runEvent', {

@@ -60,7 +60,12 @@ defmodule Cascade.Missions.DispatchReannouncer do
       |> Enum.filter(&RunnerLifecycle.online?(&1.owner))
       |> Enum.group_by(&{:dispatch, &1.group}, & &1.id)
 
-    entries = Map.merge(pending, maintenance) |> Enum.sort()
+    deliveries =
+      Cascade.Runs.Store.pending_deliveries()
+      |> Enum.filter(fn {_id, owner} -> RunnerLifecycle.online?(owner) end)
+      |> Map.new(fn {id, owner} -> {{:delivery, id}, owner} end)
+
+    entries = pending |> Map.merge(maintenance) |> Map.merge(deliveries) |> Enum.sort()
     offset = if entries == [], do: 0, else: rem(state.cursor, length(entries))
     {before, after_offset} = Enum.split(entries, offset)
 
@@ -115,6 +120,8 @@ defmodule Cascade.Missions.DispatchReannouncer do
     """)
     |> Map.new(fn [id, owner] -> {{:mission, id}, owner} end)
   end
+
+  defp perform({:delivery, id}, owner), do: RunnerLifecycle.replay_delivery(id, owner)
 
   defp perform({:mission, id}, owner) do
     Recovery.replay_cancellations(&RunnerLifecycle.cancel(&1, &2, 2_000), id)

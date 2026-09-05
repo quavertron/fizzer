@@ -30,6 +30,53 @@ defmodule Cascade.Realtime.RunReceiptsTest do
     )
   end
 
+  test "native running status and heartbeats acknowledge delivery and update stored state once",
+       ctx do
+    Store.record_delegated(ctx.run.id, ctx.user_id, %{runId: ctx.run.id, prompt: "same payload"})
+    data = %{runId: ctx.run.id, type: "heartbeat", payload: %{}}
+
+    assert {:error, _} =
+             DomainAdapter.handle_event(
+               "/runners",
+               "runner:runEvent",
+               [data],
+               %{id: ctx.user_id + 1},
+               %{}
+             )
+
+    assert is_list(Store.pending_delivery(ctx.run.id, ctx.user_id))
+
+    assert {:ok, []} =
+             DomainAdapter.handle_event(
+               "/runners",
+               "runner:runEvent",
+               [data],
+               %{id: ctx.user_id},
+               %{}
+             )
+
+    assert Store.get(ctx.run.id).status == "running"
+    assert is_nil(Store.pending_delivery(ctx.run.id, ctx.user_id))
+    events = Store.events(ctx.run.id)
+
+    assert {:ok, []} =
+             DomainAdapter.handle_event(
+               "/runners",
+               "runner:runEvent",
+               [%{data | type: "status", payload: %{status: "running"}}],
+               %{id: ctx.user_id},
+               %{}
+             )
+
+    assert Store.events(ctx.run.id) == events
+    Store.finish(ctx.run.id, "canceled", "Explicit Stop")
+
+    assert {:error, :run_not_active} =
+             Store.record_delegated(ctx.run.id, ctx.user_id, %{runId: ctx.run.id})
+
+    assert is_nil(Store.delegated_owner(ctx.run.id))
+  end
+
   test "a lost receipt replays idempotently after delegation ownership is cleared", ctx do
     assert {:ok, [{:ack, [%{success: true}]}]} = terminal(ctx)
     assert Store.get(ctx.run.id).status == "completed"

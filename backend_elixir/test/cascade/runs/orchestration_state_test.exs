@@ -235,7 +235,9 @@ defmodule Cascade.Runs.OrchestrationStateTest do
         fn _event, _measurements, metadata, _config ->
           query = metadata[:query] |> to_string() |> String.replace(~r/\s+/u, " ")
 
-          if String.contains?(query, "SELECT d.run_id,d.owner_user_id FROM delegated_runs") do
+          # Pending-delivery polling is separate from a full active-run snapshot.
+          if String.contains?(query, "SELECT d.run_id,d.owner_user_id FROM delegated_runs") and
+               String.contains?(query, "WHERE r.status IN ('queued','running')") do
             send(test_pid, :delegated_snapshot_query)
           end
         end,
@@ -251,6 +253,35 @@ defmodule Cascade.Runs.OrchestrationStateTest do
     state = :sys.get_state(RunnerLifecycle)
     assert map_size(state.runners) == length(owners)
     refute Map.has_key?(state.last_error, context.user_id)
+  end
+
+  test "undelivered payload survives restart recovery and stays unchanged while its owner is offline",
+       context do
+    {:ok, run} = Store.start(context.vault_id, nil, "durable delivery", "codex")
+
+    :ok =
+      Store.record_delegated(run.id, context.user_id, %{
+        runId: run.id,
+        prompt: "original",
+        cwd: "/scratch"
+      })
+
+    SQL.exec(
+      "UPDATE delegated_runs SET delivery_sent_at=datetime('now','-20 seconds') WHERE run_id=?",
+      [run.id]
+    )
+
+    before = SQL.one("SELECT * FROM delegated_runs WHERE run_id=?", [run.id])
+    RunnerLifecycle.replay_delivery(run.id, context.user_id)
+    assert SQL.one("SELECT * FROM delegated_runs WHERE run_id=?", [run.id]) == before
+    send(RunnerLifecycle, :orphan_reclaim)
+    :sys.get_state(RunnerLifecycle)
+    assert Store.get(run.id).status == "queued"
+
+    assert Store.pending_delivery(run.id, context.user_id) == [
+             Jason.encode!(%{runId: run.id, prompt: "original", cwd: "/scratch"}),
+             1
+           ]
   end
 
   test "startup orphan recovery fails delegated runs that no desktop reclaims", context do

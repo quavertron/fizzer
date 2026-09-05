@@ -143,6 +143,13 @@ cutover checks. Interrupted startups with no delegation lease settle as failed
 once they are at least 30 seconds old and the owner reconnects, so their tasks can
 be retried.
 
+Desktop delegation retains its original payload in `delegated_runs` until an
+owned native event confirms receipt. Unconfirmed deliveries replay the same run
+ID and payload at 15-second intervals while the owner is online, with at most five
+attempts before an explicit failure. They survive server restarts and wait without
+mutating offline work. Native running events and heartbeats update the stored run
+status; a recorded delegation alone is not proof that a worker started.
+
 Electron main retains terminal events separately from its bounded event history
 until the server acknowledges persisted settlement. Renderer reloads and unrelated
 worker output cannot evict an unacknowledged completion. Duplicate receipts preserve
