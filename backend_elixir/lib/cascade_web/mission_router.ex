@@ -62,7 +62,17 @@ defmodule CascadeWeb.MissionRouter do
 
   get "/api/vaults/:vault_id/channels/:channel_id/missions" do
     authenticated(conn, nil, fn conn, user ->
-      case Store.list(user.id, channel_id, query(conn, "coordinator")) do
+      result =
+        case current_run_mission(conn, user, channel_id) do
+          nil ->
+            Store.list(user.id, channel_id, query(conn, "coordinator"))
+
+          id ->
+            with {:ok, update} <- Store.get(user.id, channel_id, id),
+                 do: {:ok, [update.mission]}
+        end
+
+      case result do
         {:ok, missions} -> JSON.send(conn, 200, %{missions: missions})
         error -> route_error(conn, 404, error, "Missions not found")
       end
@@ -80,7 +90,12 @@ defmodule CascadeWeb.MissionRouter do
 
   get "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id" do
     authenticated(conn, nil, fn conn, user ->
-      case Store.get(user.id, channel_id, mission_id, query(conn, "coordinator")) do
+      mission_ref =
+        if mission_id == "current",
+          do: current_run_mission(conn, user, channel_id) || mission_id,
+          else: mission_id
+
+      case Store.get(user.id, channel_id, mission_ref, query(conn, "coordinator")) do
         {:ok, update} -> JSON.send(conn, 200, %{mission: update.mission})
         error -> route_error(conn, 404, error, "Mission not found")
       end
@@ -361,6 +376,25 @@ defmodule CascadeWeb.MissionRouter do
   defp query(conn, key) do
     conn = fetch_query_params(conn)
     Map.get(conn.query_params, key)
+  end
+
+  defp current_run_mission(conn, user, channel_id) do
+    with {:ok, route} <- Cascade.Chat.Channel.assert_channel(channel_id, user.id),
+         [id] <-
+           Cascade.Accounts.SQL.one(
+             """
+             SELECT m.id FROM chat_mission_tasks t
+             JOIN chat_missions m ON m.id=t.mission_id
+             JOIN runs r ON r.id=t.run_id
+             WHERE t.run_id=? AND r.owner_user_id=? AND m.created_by=? AND m.channel_id=?
+             LIMIT 1
+             """,
+             [run_id(conn), user.id, user.id, route.sourceChannelId]
+           ) do
+      id
+    else
+      _ -> nil
+    end
   end
 
   defp run_id(conn) do

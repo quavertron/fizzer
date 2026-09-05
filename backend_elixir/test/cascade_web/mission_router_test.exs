@@ -82,6 +82,36 @@ defmodule CascadeWeb.MissionRouterTest do
     }
   end
 
+  test "a worker reads its current mission instead of filtering itself as coordinator", ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Worker context"
+      })
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Worker",
+        assignee: ctx.worker.id
+      })
+
+    {:ok, run} = RunStore.start(ctx.vault.id, nil, "Worker", "codex", owner_user_id: ctx.user.id)
+    SQL.exec("UPDATE chat_mission_tasks SET run_id=? WHERE id=?", [run.id, added.task.id])
+    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/missions"
+    query = "?coordinator=#{ctx.worker.id}"
+    status = request(ctx, :get, base <> "/current" <> query, nil, run.id)
+    assert status.status == 200
+    assert json(status)["mission"]["id"] == created.mission.id
+    listed = request(ctx, :get, base <> query, nil, run.id)
+    assert Enum.map(json(listed)["missions"], & &1["id"]) == [created.mission.id]
+    SQL.exec("UPDATE runs SET owner_user_id=NULL WHERE id=?", [run.id])
+    assert request(ctx, :get, base <> "/current" <> query, nil, run.id).status == 404
+    assert json(request(ctx, :get, base <> query, nil, run.id))["missions"] == []
+  end
+
   test "route catalog exposes the complete Node contract" do
     assert CascadeWeb.MissionRoutes.catalog() == [
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/agent-dispatches/pending"},
