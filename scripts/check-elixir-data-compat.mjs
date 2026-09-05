@@ -323,6 +323,14 @@ function databaseSnapshotFromCopy(filename) {
       `).all();
     }
     if (tables.delegated_runs) {
+      if (['delivery_payload_json', 'delivery_sent_at', 'delivery_attempts'].every(name => (
+        tables.delegated_runs.columns.some(column => column.name === name)
+      ))) {
+        compatibility.deliveryNonDefaults = db.prepare(`
+          SELECT COUNT(*) AS count FROM delegated_runs WHERE delivery_payload_json IS NOT NULL
+            OR delivery_sent_at IS NOT NULL OR delivery_attempts IS NOT 0
+        `).get().count;
+      }
       compatibility.delegatedRunOwners = db.prepare(`
         SELECT run_id AS runId,owner_user_id AS ownerUserId
         FROM delegated_runs ORDER BY run_id
@@ -502,58 +510,50 @@ function exactRowsOrMissionTaskBackfill(table, before, after) {
   return true;
 }
 
+function exactDefaultColumnMigration(before, after, table, additions, nonDefaults) {
+  const oldTable = before.tables[table];
+  const newTable = after.tables[table];
+  if (oldTable.columns.some(column => additions.some(({ name }) => column.name === name))) return false;
+  if (!same(newTable.columns.slice(oldTable.columns.length).map(({ name, type, notnull, dflt_value, pk }) => (
+    { name, type, notnull, dflt_value, pk }
+  )), additions)) return false;
+  const suffix = additions.map(({ name, type, notnull, dflt_value }) => (
+    `, ${name} ${type}${notnull ? ' NOT NULL' : ''}${dflt_value == null ? '' : ` DEFAULT ${dflt_value}`}`
+  )).join('');
+  // SQLite inserts added columns before trailing table constraints.
+  return newTable.schema.sql.replace(suffix, '') === oldTable.schema.sql
+    && same(oldTable.columns, newTable.columns.slice(0, oldTable.columns.length))
+    && same(oldTable.normalizedForeignKeys, newTable.normalizedForeignKeys)
+    && oldTable.rows.count === newTable.rows.count
+    && oldTable.rows.includesRowid === newTable.rows.includesRowid
+    && oldTable.rows.columns.every(column => oldTable.rows.columnSha256[column] === newTable.rows.columnSha256[column])
+    && after.compatibility[nonDefaults] === 0;
+}
+
 function exactMissionRecoveryMigration(before, after, fingerprintOnly = false) {
-  const oldTable = before.tables.chat_missions;
-  const newTable = after.tables.chat_missions;
-  const additions = fingerprintOnly ? [
+  return exactDefaultColumnMigration(before, after, 'chat_missions', fingerprintOnly ? [
     { name: 'review_fingerprint', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
   ] : [
     { name: 'authority_json', type: 'TEXT', notnull: 1, dflt_value: "'[]'", pk: 0 },
     { name: 'verification', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
     { name: 'review_attempt', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
-  ];
-  if (oldTable.columns.some((column) => additions.some(({ name }) => column.name === name))) return false;
-  const newColumns = newTable.columns.slice(oldTable.columns.length);
-  if (!same(newColumns.map(({ name, type, notnull, dflt_value, pk }) => (
-    { name, type, notnull, dflt_value, pk }
-  )), additions)) return false;
-  const suffix = additions.map(({ name, type, dflt_value }) => (
-    `, ${name} ${type} NOT NULL DEFAULT ${dflt_value}`
-  )).join('');
-  // SQLite inserts columns before table constraints, not necessarily before the closing parenthesis.
-  return newTable.schema.sql.replace(suffix, '') === oldTable.schema.sql
-    && same(oldTable.columns, newTable.columns.slice(0, oldTable.columns.length))
-    && same(oldTable.normalizedForeignKeys, newTable.normalizedForeignKeys)
-    && oldTable.rows.count === newTable.rows.count
-    && oldTable.rows.includesRowid === newTable.rows.includesRowid
-    && oldTable.rows.columns.every((column) => (
-      oldTable.rows.columnSha256[column] === newTable.rows.columnSha256[column]
-    ))
-    && (fingerprintOnly
-      ? after.compatibility.missionFingerprintNonDefaults
-      : after.compatibility.missionRecoveryNonDefaults) === 0;
+  ], fingerprintOnly ? 'missionFingerprintNonDefaults' : 'missionRecoveryNonDefaults');
 }
 
 function exactMissionChildMigration(before, after) {
-  const oldTable = before.tables.chat_mission_tasks;
-  const newTable = after.tables.chat_mission_tasks;
-  const additions = [
+  return exactDefaultColumnMigration(before, after, 'chat_mission_tasks', [
     { name: 'parent_task_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
     { name: 'child_result_delivered', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
     { name: 'joining_children', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
-  ];
-  if (oldTable.columns.some((column) => additions.some(({ name }) => column.name === name))) return false;
-  if (!same(newTable.columns.slice(oldTable.columns.length).map(({ name, type, notnull, dflt_value, pk }) => (
-    { name, type, notnull, dflt_value, pk }
-  )), additions)) return false;
-  const suffix = ', parent_task_id TEXT, child_result_delivered INTEGER NOT NULL DEFAULT 0, joining_children INTEGER NOT NULL DEFAULT 0';
-  return newTable.schema.sql.replace(suffix, '') === oldTable.schema.sql
-    && same(oldTable.columns, newTable.columns.slice(0, oldTable.columns.length))
-    && same(oldTable.normalizedForeignKeys, newTable.normalizedForeignKeys)
-    && oldTable.rows.count === newTable.rows.count
-    && oldTable.rows.includesRowid === newTable.rows.includesRowid
-    && oldTable.rows.columns.every((column) => oldTable.rows.columnSha256[column] === newTable.rows.columnSha256[column])
-    && after.compatibility.missionChildNonDefaults === 0;
+  ], 'missionChildNonDefaults');
+}
+
+function exactDeliveryMigration(before, after) {
+  return exactDefaultColumnMigration(before, after, 'delegated_runs', [
+    { name: 'delivery_payload_json', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    { name: 'delivery_sent_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    { name: 'delivery_attempts', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+  ], 'deliveryNonDefaults');
 }
 
 function exactMissionWorkspaceModeMigration(before, after) {
@@ -882,6 +882,8 @@ export function compareDatabaseSnapshots(before, after, allowedAdditions = DEFAU
     } else if (table === 'chat_mission_tasks'
         && exactMissionWorkspaceModeMigration(before, after)) {
       // workspace_mode is an additive, default-shared mission task migration.
+    } else if (table === 'delegated_runs' && exactDeliveryMigration(before, after)) {
+      // Only empty delivery state may be added to historical leases.
     } else if (table === 'chat_agent_dispatches'
         && exactDispatchAdmissionMigration(before, after)) {
       // Admission columns remain NULL for historical dispatches.

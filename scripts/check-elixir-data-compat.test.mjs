@@ -354,6 +354,60 @@ test('dispatch admission migration rejects schema, default, backfill, and histor
   }
 });
 
+function deliveryFixture() {
+  const files = fixture();
+  const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/runs/schema.ex', import.meta.url), 'utf8');
+  const ddl = schema.match(/CREATE TABLE IF NOT EXISTS delegated_runs \([\s\S]*?\n    \)/u)?.[0];
+  const additions = [...schema.matchAll(/SQL.ensure_column\("delegated_runs", "([^"]+)", "([^"]+)"\)/gu)]
+    .map(([, name, definition]) => `ALTER TABLE delegated_runs ADD COLUMN ${name} ${definition};`).join('\n');
+  assert.ok(ddl && additions);
+  const db = new Database(files.before);
+  db.exec(`CREATE TABLE runs (id INTEGER PRIMARY KEY,owner_user_id INTEGER); INSERT INTO runs VALUES (10,1),(12,2); ${ddl};
+    INSERT INTO delegated_runs(run_id,owner_user_id,started_at) VALUES (10,1,'2026-09-05 10:00:00'),(12,2,'2026-09-05 11:00:00');`);
+  db.close();
+  fs.copyFileSync(files.before, files.after);
+  return { ...files, additions };
+}
+
+test('delivery migration preserves historical leases and permits only empty default state', async t => {
+  const cases = {
+    historical: sql => sql,
+    materialized: sql => sql,
+    'wrong type': sql => sql.replace('delivery_sent_at TEXT', 'delivery_sent_at INTEGER'),
+    'wrong default': sql => sql.replace('DEFAULT 0', 'DEFAULT 1'),
+    'missing column': sql => sql.replace(/ALTER TABLE delegated_runs ADD COLUMN delivery_sent_at TEXT;/u, ''),
+    'extra column': sql => `${sql} ALTER TABLE delegated_runs ADD COLUMN unrelated TEXT;`,
+    'owner changed': sql => `${sql} UPDATE delegated_runs SET owner_user_id=7 WHERE run_id=10;`,
+    'timestamp changed': sql => `${sql} UPDATE delegated_runs SET started_at='changed' WHERE run_id=10;`,
+    'row removed': sql => `${sql} DELETE FROM delegated_runs WHERE run_id=10;`,
+    'payload backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_payload_json='{}' WHERE run_id=10;`,
+    'sent timestamp backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_sent_at='now' WHERE run_id=10;`,
+    'attempts backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_attempts=1 WHERE run_id=10;`,
+  };
+  for (const [name, change] of Object.entries(cases)) await t.test(name, () => {
+    const files = deliveryFixture();
+    try {
+      if (name === 'materialized') {
+        materializeSchemaFingerprint(readSchemaFingerprint(files.before), files.before);
+        fs.copyFileSync(files.before, files.after);
+      }
+      const db = new Database(files.after);
+      db.exec(change(files.additions));
+      db.close();
+      const result = runComparison(files);
+      const valid = name === 'historical' || name === 'materialized';
+      assert.equal(result.ok, valid, result.failures.join('\n'));
+      if (valid) {
+        assert.equal(runComparison({ ...files, requireIdentical: true }).ok, false);
+        assert.deepEqual(runComparison({ ...files, schemaOnly: true }).failures, ['database schema changed']);
+        assert.equal(runComparison({ ...files, before: files.after }).ok, true);
+      }
+    } finally {
+      fs.rmSync(files.directory, { recursive: true, force: true });
+    }
+  });
+});
+
 test('rolling eligibility requires exact data and corpus identity', () => {
   const files = fixture();
   try {
