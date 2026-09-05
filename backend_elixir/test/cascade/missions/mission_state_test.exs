@@ -70,6 +70,181 @@ defmodule Cascade.Missions.MissionStateTest do
     }
   end
 
+  for action <- [:finish, :human_followup] do
+    test "#{action} retracts an admitted review reply before deleting its dispatch", ctx do
+      {:ok, created} = mission(ctx, "Queued review cleanup")
+      {:ok, added} = task(ctx, created.mission.id, "Worker")
+
+      {:ok, _} =
+        Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+          status: "blocked",
+          summary: "Needs review"
+        })
+
+      [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
+      CascadeWeb.OrchestrationController.prepare_dispatch(wake.dispatch.id)
+      reply_id = "agent-dispatch-#{wake.dispatch.id}"
+
+      assert {:ok, %{status: "queued"}} =
+               Messages.get(ctx.channel.id, ctx.user.id, reply_id)
+
+      case unquote(action) do
+        :finish ->
+          assert {:ok, _} =
+                   Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+                     coordinatorRegistrationId: ctx.coordinator.id,
+                     status: "canceled"
+                   })
+
+        :human_followup ->
+          {:ok, message} =
+            Messages.create(ctx.user, ctx.vault.id, ctx.channel.id, %{
+              body: "@#{ctx.coordinator.mention} Continue with my follow-up"
+            })
+
+          assert {:ok, [_]} = Dispatches.create_for_message(ctx.user.id, ctx.channel.id, message)
+      end
+
+      assert is_nil(
+               SQL.one("SELECT id FROM chat_agent_dispatches WHERE id=?", [wake.dispatch.id])
+             )
+
+      assert {:error, _} = Messages.get(ctx.channel.id, ctx.user.id, reply_id)
+    end
+  end
+
+  test "reply retraction preserves an admitted run even before its message is bound", ctx do
+    {:ok, dispatch} = Dispatches.create(ctx.user.id, ctx.channel.id, ctx.root, ctx.coordinator.id)
+    CascadeWeb.OrchestrationController.prepare_dispatch(dispatch.id)
+
+    {:ok, _run} =
+      RunStore.start(ctx.vault.id, nil, "Starting", "codex", chat_dispatch_id: dispatch.id)
+
+    Dispatches.retract_pending_reply(dispatch.id)
+    assert {:ok, _} = Messages.get(ctx.channel.id, ctx.user.id, "agent-dispatch-#{dispatch.id}")
+  end
+
+  test "an interrupted control-plane startup gets one continuation after the coordinator is idle",
+       ctx do
+    {:ok, dispatch} = Dispatches.create(ctx.user.id, ctx.channel.id, ctx.root, ctx.coordinator.id)
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Begin mission", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: dispatch.id
+      )
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+
+    {:ok, created} =
+      Store.create(
+        ctx.user.id,
+        ctx.vault.id,
+        ctx.channel.id,
+        %{
+          rootMessageId: ctx.root.id,
+          coordinatorRegistrationId: ctx.coordinator.id,
+          title: "Interrupted before delegation"
+        },
+        agent: true,
+        control_plane: true,
+        current_run_id: run.id
+      )
+
+    assert created.mission.tasks == []
+    assert {:ok, nil} = Store.claim_wake(created.mission.id)
+
+    assert [run.id] ==
+             SQL.one(
+               "SELECT run_id FROM chat_mission_events WHERE mission_id=? AND kind='mission_created'",
+               [created.mission.id]
+             )
+
+    RunStore.finish(run.id, "canceled", "Steered into the continuation below.")
+    RunStore.publish(run.id, "status", %{status: "canceled", steering: true})
+
+    {:ok, followup} =
+      Messages.create(ctx.user, ctx.vault.id, ctx.channel.id, %{
+        body: "A follow-up while preserving the original task"
+      })
+
+    {:ok, next} = Dispatches.create(ctx.user.id, ctx.channel.id, followup, ctx.coordinator.id)
+
+    {:ok, continued} =
+      RunStore.start(ctx.vault.id, nil, "Follow-up", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: next.id
+      )
+
+    :ok = Dispatches.attach_run(next.id, continued.id)
+    assert {:ok, nil} = Store.claim_wake(created.mission.id)
+    RunStore.finish(continued.id, "completed", "Answered follow-up")
+    [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
+    assert wake.message.body =~ "no tasks were delegated"
+    assert wake.message.body =~ "Continue this existing mission"
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+
+    {:ok, recovery} =
+      RunStore.start(ctx.vault.id, nil, "Recover", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: wake.dispatch.id
+      )
+
+    :ok = Dispatches.attach_run(wake.dispatch.id, recovery.id)
+    RunStore.finish(recovery.id, "failed", "Cannot continue")
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+
+    assert {:ok, %{mission: %{status: "attention"}}} =
+             Store.get(ctx.user.id, ctx.channel.id, created.mission.id)
+  end
+
+  test "explicit Stop leaves an empty mission needing attention without restarting it", ctx do
+    {:ok, dispatch} = Dispatches.create(ctx.user.id, ctx.channel.id, ctx.root, ctx.coordinator.id)
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Begin mission", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: dispatch.id
+      )
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+
+    {:ok, created} =
+      Store.create(
+        ctx.user.id,
+        ctx.vault.id,
+        ctx.channel.id,
+        %{
+          rootMessageId: ctx.root.id,
+          coordinatorRegistrationId: ctx.coordinator.id,
+          title: "Stopped before delegation"
+        },
+        agent: true,
+        control_plane: true,
+        current_run_id: run.id
+      )
+
+    assert RunStore.cancel(run.id)
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+
+    assert {:ok, %{mission: %{status: "attention"}}} =
+             Store.get(ctx.user.id, ctx.channel.id, created.mission.id)
+  end
+
+  test "legacy empty missions become attention without inventing permission to replay old work",
+       ctx do
+    {:ok, created} = mission(ctx, "Legacy stranded mission")
+
+    SQL.exec("UPDATE chat_missions SET created_at=datetime('now','-5 minutes') WHERE id=?", [
+      created.mission.id
+    ])
+
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+
+    assert {:ok, %{mission: %{status: "attention"}}} =
+             Store.get(ctx.user.id, ctx.channel.id, created.mission.id)
+  end
+
   test "dependency DAG, priority, occupancy, retries, history, and review wake are durable",
        ctx do
     {:ok, created} =

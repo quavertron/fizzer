@@ -208,6 +208,8 @@ defmodule Cascade.Missions.Scheduler do
         if task.summary == "", do: line, else: line <> " — " <> String.slice(task.summary, 0, 600)
       end)
 
+    interrupted_start = wake.mission.tasks == []
+
     review_state =
       if wake.mission.status == "attention",
         do: "one or more tasks need attention; the mission remains open",
@@ -215,14 +217,24 @@ defmodule Cascade.Missions.Scheduler do
 
     body =
       [
-        "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) is ready for your review (#{review_state})."
+        if(interrupted_start,
+          do:
+            "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.",
+          else:
+            "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) is ready for your review (#{review_state})."
+        )
         | task_lines
       ]
       |> Kernel.++([
         "",
         Cascade.Missions.Authority.context(wake.mission.id),
         "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Finish with --verification containing independently observed checks and artifact or live revision evidence. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
-        "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Use the recovery-evidence relationship for authorized evidence from another task. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
+        if(interrupted_start,
+          do:
+            "Continue this existing mission; do not create a replacement. Read the captured user authority and latest conversation first. If the work is still authorized, delegate its missing implementation tasks and continue through review. If the user stopped or replaced the task, or you cannot proceed, report that clearly and leave the mission needing attention. This is one recovery attempt, not permission to keep retrying.",
+          else:
+            "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Use the recovery-evidence relationship for authorized evidence from another task. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
+        )
       ])
       |> Enum.join("\n")
 

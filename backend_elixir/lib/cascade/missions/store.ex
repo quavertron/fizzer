@@ -98,7 +98,14 @@ defmodule Cascade.Missions.Store do
                 kind: "mission_created",
                 title: title,
                 to_status: "active",
-                summary: objective
+                summary: objective,
+                run_id:
+                  creation_run_id(
+                    Keyword.get(opts, :current_run_id),
+                    coordinator.id,
+                    route.sourceChannelId,
+                    user_id
+                  )
               })
 
               refresh!(mission_id)
@@ -792,11 +799,12 @@ defmodule Cascade.Missions.Store do
                Enum.all?(dependencies(task), &(by_id[&1] && by_id[&1].status == "completed")))
         end)
 
-      stalled = update.mission.status in ~w(attention blocked) and not moving
+      stalled = tasks != [] and update.mission.status in ~w(attention blocked) and not moving
 
       mission = mission_row(mission_id)
+      interrupted_start = tasks == [] and recoverable_creation?(mission)
 
-      if mission.wake_sent == 0 and (all_settled or stalled) and
+      if mission.wake_sent == 0 and (all_settled or stalled or interrupted_start) and
            update.mission.status in ~w(reviewing attention blocked) do
         generation = review_fingerprint(mission_id)
 
@@ -987,9 +995,62 @@ defmodule Cascade.Missions.Store do
 
   defp mission_projection_equal?(_, _), do: false
 
+  defp creation_run_id(run_id, registration_id, channel_id, user_id) do
+    case SQL.one(
+           """
+           SELECT r.id FROM runs r JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
+           WHERE r.id=? AND r.owner_user_id=? AND r.status IN ('queued','running')
+             AND d.registration_id=? AND d.channel_id=?
+           """,
+           [run_id, user_id, registration_id, channel_id]
+         ) do
+      [id] -> id
+      nil -> nil
+    end
+  end
+
+  defp creation_run(mission) do
+    SQL.one(
+      """
+      SELECT r.id,r.status FROM chat_mission_events e JOIN runs r ON r.id=e.run_id
+      WHERE e.mission_id=? AND e.kind='mission_created' ORDER BY e.id LIMIT 1
+      """,
+      [mission.id]
+    )
+  end
+
+  defp recoverable_creation?(mission) do
+    case creation_run(mission) do
+      [_, status] when status in ~w(completed failed) ->
+        true
+
+      [run_id, "canceled"] ->
+        SQL.one(
+          "SELECT 1 FROM run_events WHERE run_id=? AND type='status' AND json_extract(payload_json,'$.steering')=1 LIMIT 1",
+          [run_id]
+        ) == [1]
+
+      _ ->
+        false
+    end
+  end
+
   defp derive_status(%{status: "canceled"}, _tasks), do: "canceled"
   defp derive_status(%{status: "completed"}, _tasks), do: "completed"
-  defp derive_status(_mission, []), do: "active"
+
+  defp derive_status(mission, []) do
+    fresh_unbound =
+      is_nil(creation_run(mission)) and
+        SQL.one(
+          "SELECT 1 FROM chat_missions WHERE id=? AND created_at>datetime('now','-30 seconds')",
+          [mission.id]
+        ) == [1]
+
+    if fresh_unbound or
+         not is_nil(
+           Cascade.Runs.Store.find_open_for_chat_registration(mission.coordinator_registration_id)
+         ), do: "active", else: "attention"
+  end
 
   defp derive_status(mission, tasks) do
     by_id = Map.new(tasks, &{&1.id, &1})
@@ -1606,16 +1667,27 @@ defmodule Cascade.Missions.Store do
     stale =
       SQL.all(
         """
-        SELECT m.id,d.run_id FROM chat_messages m
+        SELECT m.id,d.run_id,d.id FROM chat_messages m
         JOIN chat_agent_dispatches d ON d.message_id=m.id
         WHERE m.channel_id=? AND m.id LIKE ? AND d.registration_id=?
         """,
         [mission.channel_id, "sys-mission-#{mission.id}-%", mission.coordinator_registration_id]
       )
-      |> Enum.reject(fn [_id, run_id] -> not is_nil(run_id) and run_id == current_run_id end)
+      |> Enum.reject(fn [_id, run_id, _dispatch_id] ->
+        not is_nil(run_id) and run_id == current_run_id
+      end)
 
     {removed, canceled} =
-      Enum.reduce(stale, {[], []}, fn [message_id, run_id], {removed, canceled} ->
+      Enum.reduce(stale, {[], []}, fn [message_id, run_id, dispatch_id], {removed, canceled} ->
+        Cascade.Missions.Dispatches.retract_pending_reply(dispatch_id)
+
+        if is_nil(run_id) do
+          SQL.exec(
+            "DELETE FROM chat_agent_dispatches WHERE id=? AND run_id IS NULL AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)",
+            [dispatch_id]
+          )
+        end
+
         carrier = String.replace_prefix(message_id, "sys-mission-", "agent-trace-")
 
         shell_ids =

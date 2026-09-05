@@ -36,22 +36,8 @@ defmodule CascadeWeb.OrchestrationController do
     OrderedPublisher.mutate(fn ->
       SQL.transaction(fn ->
         with nil <- Store.find_by_chat_dispatch(dispatch_id),
-             {:deferred, _} <- Dispatches.for_execution(dispatch_id),
-             [vault_id, channel_id] <-
-               SQL.one(
-                 "SELECT vault_id,channel_id FROM chat_messages WHERE id=? AND run_id IS NULL",
-                 ["agent-dispatch-#{dispatch_id}"]
-               ) do
-          SQL.exec("DELETE FROM chat_messages WHERE id=? AND run_id IS NULL", [
-            "agent-dispatch-#{dispatch_id}"
-          ])
-
-          Events.emit(%{
-            event: "vault:chatMessageDeleted",
-            vaultId: vault_id,
-            channelId: channel_id,
-            messageId: "agent-dispatch-#{dispatch_id}"
-          })
+             {:deferred, _} <- Dispatches.for_execution(dispatch_id) do
+          Dispatches.retract_pending_reply(dispatch_id)
         else
           _ -> :ok
         end
@@ -597,6 +583,8 @@ defmodule CascadeWeb.OrchestrationController do
          [status] when status in ["completed", "canceled"] <-
            SQL.one("SELECT status FROM chat_missions WHERE id=?", [mission_id]),
          {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
+      Dispatches.retract_pending_reply(dispatch_value(dispatch, :id, ""))
+
       SQL.exec("DELETE FROM chat_messages WHERE id=? AND channel_id=?", [
         message_id,
         route.sourceChannelId

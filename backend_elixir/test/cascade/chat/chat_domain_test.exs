@@ -883,7 +883,9 @@ defmodule Cascade.ChatDomainTest do
             registrationId: registration.id,
             body: "Queued...",
             status: "queued"
-          }, access: :agent)
+          },
+          access: :agent
+        )
 
       if started do
         assert {:ok, _} =

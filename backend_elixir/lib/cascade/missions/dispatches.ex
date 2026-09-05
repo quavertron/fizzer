@@ -31,6 +31,30 @@ defmodule Cascade.Missions.Dispatches do
     end
   end
 
+  def retract_pending_reply(dispatch_id) do
+    SQL.transaction(fn ->
+      reply_id = "agent-dispatch-#{dispatch_id}"
+
+      with nil <- Cascade.Runs.Store.find_by_chat_dispatch(dispatch_id),
+           [vault_id, channel_id] <-
+             SQL.one(
+               "SELECT vault_id,channel_id FROM chat_messages WHERE id=? AND run_id IS NULL",
+               [reply_id]
+             ) do
+        SQL.exec("DELETE FROM chat_messages WHERE id=?", [reply_id])
+
+        Events.emit(%{
+          event: "vault:chatMessageDeleted",
+          vaultId: vault_id,
+          channelId: channel_id,
+          messageId: reply_id
+        })
+      else
+        _ -> :ok
+      end
+    end)
+  end
+
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
          {:ok, members} <- Agents.list_members(channel_id, user_id),
@@ -585,14 +609,21 @@ defmodule Cascade.Missions.Dispatches do
       targets
       |> Enum.filter(& &1.orchestrator)
       |> Enum.each(fn registration ->
-        SQL.exec(
-          """
-          DELETE FROM chat_agent_dispatches
-          WHERE channel_id=? AND registration_id=? AND run_id IS NULL
-            AND message_id LIKE 'sys-mission-%'
-          """,
-          [source_channel_id, registration.id]
-        )
+        SQL.transaction(fn ->
+          SQL.all(
+            """
+            SELECT id FROM chat_agent_dispatches
+            WHERE channel_id=? AND registration_id=? AND run_id IS NULL
+              AND message_id LIKE 'sys-mission-%'
+              AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)
+            """,
+            [source_channel_id, registration.id]
+          )
+          |> Enum.each(fn [id] ->
+            retract_pending_reply(id)
+            SQL.exec("DELETE FROM chat_agent_dispatches WHERE id=?", [id])
+          end)
+        end)
       end)
     end
   end
