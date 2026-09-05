@@ -862,6 +862,48 @@ defmodule Cascade.ChatDomainTest do
     assert {:ok, _} = Messages.get(channel.id, user.id, running.id)
   end
 
+  test "superseded queued replies can be deleted only when no run was ever started" do
+    {vault, channel} = chat_vault(1, "Superseded replies", "Room")
+    user = %{id: 1, username: "alice"}
+
+    {:ok, registration} =
+      Agents.upsert_member(1, vault.id, channel.id, %{agentId: "codex", mention: "sol"})
+
+    for started <- [false, true] do
+      {:ok, trigger} = Messages.create(user, vault.id, channel.id, %{body: "@sol work"})
+      {:ok, dispatch} = Dispatches.create(1, channel.id, trigger, registration.id)
+
+      {:ok, shell} =
+        Messages.create(
+          user,
+          vault.id,
+          channel.id,
+          %{
+            id: "agent-dispatch-#{dispatch.id}",
+            registrationId: registration.id,
+            body: "Queued...",
+            status: "queued"
+          }, access: :agent)
+
+      if started do
+        assert {:ok, _} =
+                 RunStore.start(vault.id, nil, "started before attachment", "codex",
+                   chat_dispatch_id: dispatch.id
+                 )
+      end
+
+      SQL.exec("DELETE FROM chat_agent_dispatches WHERE id=? AND run_id IS NULL", [dispatch.id])
+
+      if started do
+        assert {:error, "Run already started; use Stop run."} =
+                 Messages.delete(user, vault.id, channel.id, shell.id, queued_only: true)
+      else
+        assert {:ok, _} = Messages.delete(user, vault.id, channel.id, shell.id, queued_only: true)
+        assert {:error, "Message not found"} = Messages.get(channel.id, user.id, shell.id)
+      end
+    end
+  end
+
   test "message list follows commit order when client timestamps disagree" do
     {vault, channel} = chat_vault(1, "Ordered messages", "Room")
     user = %{id: 1, username: "alice"}

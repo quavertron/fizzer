@@ -656,11 +656,14 @@ defmodule Cascade.Chat.Messages do
         else: {:error, "You can only edit your own messages"}
       )
 
-  defp cancel_pending_reply(%{id: "agent-dispatch-" <> id, status: "queued"}) do
+  defp cancel_pending_reply(%{id: "agent-dispatch-" <> id, status: "queued"} = message) do
     if SQL.changes(
          "UPDATE chat_agent_dispatches SET failed_at=datetime('now'),error='Canceled before startup.' WHERE id=? AND run_id IS NULL AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)",
          [id]
-       ) > 0,
+       ) > 0 or
+         (is_nil(message[:runId]) and
+            is_nil(SQL.one("SELECT 1 FROM chat_agent_dispatches WHERE id=?", [id])) and
+            is_nil(SQL.one("SELECT 1 FROM runs WHERE chat_dispatch_id=?", [id]))),
        do: :ok,
        else: {:error, "Run already started; use Stop run."}
   end
