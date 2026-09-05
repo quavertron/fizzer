@@ -805,6 +805,7 @@ defmodule Cascade.Missions.Store do
       interrupted_start = tasks == [] and recoverable_creation?(mission)
 
       if mission.wake_sent == 0 and (all_settled or stalled or interrupted_start) and
+           not Enum.any?(tasks, &active_run?(&1.run_id)) and
            update.mission.status in ~w(reviewing attention blocked) do
         generation = review_fingerprint(mission_id)
 

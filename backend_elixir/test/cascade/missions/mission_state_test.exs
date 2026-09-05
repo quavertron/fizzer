@@ -70,6 +70,30 @@ defmodule Cascade.Missions.MissionStateTest do
     }
   end
 
+  test "a worker reporting a blocker is reviewed only after its run settles", ctx do
+    {:ok, created} = mission(ctx, "Settle before review")
+    {:ok, added} = task(ctx, created.mission.id, "Worker")
+    [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Working", "codex", chat_dispatch_id: dispatch.id)
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(dispatch.id, run.id)
+
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+        status: "blocked",
+        summary: "Missing workspace"
+      })
+
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    :ok = RunStore.finish(run.id, "completed", "Reported missing workspace")
+    {:ok, result} = Scheduler.settle_run(run.id, "completed", "Reported missing workspace")
+    assert length(result.scheduled.wakeDispatches) == 1
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+  end
+
   for action <- [:finish, :human_followup] do
     test "#{action} retracts an admitted review reply before deleting its dispatch", ctx do
       {:ok, created} = mission(ctx, "Queued review cleanup")
