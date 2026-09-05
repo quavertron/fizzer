@@ -332,7 +332,7 @@ defmodule Cascade.Missions.MissionStateTest do
     {:ok, retried} =
       Store.update_task(ctx.user.id, ctx.channel.id, first.task.id, %{
         status: "pending",
-        summary: "Retry after transient failure."
+        summary: "Original deadline superseded: retry before 23:37 UTC; scratch work only."
       })
 
     retried_first = Enum.find(retried.mission.tasks, &(&1.id == first.task.id))
@@ -341,6 +341,13 @@ defmodule Cascade.Missions.MissionStateTest do
     assert [retry] = Store.schedulable(created.mission.id).candidates
     assert retry.taskId == first.task.id
     assert retry.attempt == 1
+    assert [%{message: retry_message}] = Scheduler.schedule(created.mission.id).dispatches
+
+    assert retry_message.body =~
+             "Original deadline superseded: retry before 23:37 UTC; scratch work only."
+
+    assert retry_message.body =~ candidate.prompt
+    refute message.body =~ "Coordinator retry instructions"
 
     {:ok, events} = Store.events(ctx.user.id, ctx.channel.id, created.mission.id)
     assert Enum.any?(events, &(&1.kind == "task_retried" and &1.taskId == first.task.id))

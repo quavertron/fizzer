@@ -398,7 +398,7 @@ defmodule Cascade.Missions.Store do
               coordinatorRegistrationId: mission.coordinator_registration_id,
               assigneeRegistrationId: task.assignee_registration_id,
               title: task.title,
-              prompt: nonblank(task.prompt, task.title),
+              prompt: retry_prompt(task),
               reasoningEffort: task.reasoning_effort || "",
               anonymous: anonymous,
               attempt: task.attempt || 0
@@ -410,6 +410,27 @@ defmodule Cascade.Missions.Store do
       end)
 
     %{candidates: candidates, updates: []}
+  end
+
+  defp retry_prompt(task) do
+    prompt = nonblank(task.prompt, task.title)
+
+    if task.attempt > 0 do
+      case SQL.one(
+             "SELECT summary FROM chat_mission_events WHERE task_id=? AND kind='task_retried' AND attempt=? ORDER BY id DESC LIMIT 1",
+             [task.id, task.attempt]
+           ) do
+        [summary] when is_binary(summary) and summary != "" ->
+          prompt <>
+            "\n\nCoordinator retry instructions for this attempt (subject to saved user authority):\n" <>
+            summary
+
+        _ ->
+          prompt
+      end
+    else
+      prompt
+    end
   end
 
   def link_dispatch(task_id, dispatch_id) do
