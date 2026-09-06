@@ -364,3 +364,34 @@ it.each(['completed', 'canceled'] as const)('stops mission activity on %s even w
   expect(markup).not.toContain('Working…');
   expect(markup).toContain('Useful outcome');
 });
+
+
+it.each(['pending', 'running', 'blocked', 'failed', 'completed'] as const)('renders delegated %s state accurately', (status) => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'm', rootMessageId: 'root', title: 'Fix it', objective: 'Fix it',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'task', title: 'Verify it', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status, summary: 'Choose which account to use', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 1, updatedAt: '' }],
+    },
+  }));
+  expect(markup.includes('thinking-spinner')).toBe(status === 'running');
+  if (status === 'pending') expect(markup).toContain('queued');
+  if (status === 'blocked' || status === 'failed') {
+    expect(markup).toContain('needs attention');
+    expect(markup).toContain('Choose which account to use');
+  }
+});
+
+
+it('keeps running work ahead of queued work and exposes settled failures', () => {
+  const base = { channelId: 'room', author: 'Astra', body: '', createdAt: '', agentId: 'codex' };
+  const running = { ...base, id: 'running', status: 'running' as const, missionTaskId: 'task' };
+  const queued = { ...base, id: 'queued', status: 'queued' as const };
+  expect(workTracePeek([running, queued])).toMatchObject({ label: 'Working…', phase: 'working' });
+  expect(workTracePeek([queued])).toMatchObject({ label: 'Queued…', phase: 'routing' });
+  expect(workTracePeek([{ ...base, id: 'failed', status: 'failed' }, { ...base, id: 'done' }]))
+    .toMatchObject({ label: 'Failed', live: false, phase: 'blocked' });
+});

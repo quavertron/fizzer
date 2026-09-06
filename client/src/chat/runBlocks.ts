@@ -158,7 +158,8 @@ export function applyRemoteChatMessage(existing: ChatMessage[], remote: ChatMess
   const emptyAgentShell = Boolean(
     remote.agentId
     && !isLiveAgentStatus(remote.status)
-    && isLiveAgentPlaceholder(remote.body),
+    && isLiveAgentPlaceholder(remote.body)
+    && !hasVisibleChatMessageContent({ ...remote, body: '' }),
   );
   if (emptyAgentShell) {
     const localIsHuman = Boolean(local && !local.agentId && !local.registrationId);

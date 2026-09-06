@@ -1,3 +1,4 @@
+import { applyRemoteChatMessage, captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
 import { ChatGroupRow } from "../components/ChatGroupRow";
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -304,6 +305,30 @@ describe('quiet conversation activity', () => {
     onCancelRun() {}, onToggleSelect() {}, onContextMenu() {}, onReply() {},
     onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
   }));
+
+  it('keeps startup visible and publishes one outcome through mission replacement, cleanup and reconnect', () => {
+    const shell = message('shell', { agentId: 'codex', status: 'queued', body: '', seq: 1 });
+    expect(renderRow(shell)).toContain('Queued');
+    let rows = applyRemoteChatMessage([], shell);
+    const mission = { id: 'mission', rootMessageId: 'root', title: 'Fix legibility', objective: '',
+      status: 'active' as const, coordinator: 'astra', coordinatorMention: 'astra',
+      tasks: [], summary: '', createdAt: '', updatedAt: '' };
+    rows = applyRemoteChatMessage(rows, { ...shell, status: undefined, mission });
+    expect(rows).toHaveLength(1);
+    expect(renderRow(rows[0])).toContain('Fix legibility');
+    const baseline = captureChatMessageSnapshotBaseline(rows);
+    const outcome = message('outcome', { agentId: 'codex', seq: 2, body: 'Fixed legibility. Lifecycle checks passed.' });
+    rows = applyRemoteChatMessage(rows, outcome);
+    rows = applyRemoteChatMessage(rows, outcome); // duplicate realtime delivery
+    rows = applyRemoteChatMessage(rows, message('transient', { agentId: 'codex', status: 'running', body: '' }));
+    rows = applyRemoteChatMessage(rows, message('transient', { agentId: 'codex', body: '' }));
+    rows = reconcileChatMessageSnapshot(rows, [{ ...shell, status: undefined, mission }], baseline);
+    rows = reconcileChatMessageSnapshot(rows, rows, captureChatMessageSnapshotBaseline(rows));
+    const html = rows.map((row) => renderRow(row)).join('');
+    expect(html.split(outcome.body)).toHaveLength(2);
+    expect(html).not.toContain('thinking-spinner');
+    expect(rows.map((row) => row.id)).toEqual(['shell', 'outcome']);
+  });
 
   it('replaces queued/running process output and removes activity on every terminal state', () => {
     const base = message('activity', {

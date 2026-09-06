@@ -1128,10 +1128,15 @@ defmodule Cascade.Chat.Messages do
            (message[:status] not in ["sending", "running"] and
               String.trim(message.body || "") not in ["", "Thinking..."]))
 
-  defp terminal_shell?(message),
+  @doc false
+  def terminal_shell?(message),
     do:
-      message[:agentId] && message[:status] not in ["queued", "sending", "running"] &&
-        String.trim(message.body || "") in ["", "Thinking..."]
+      not is_nil(message[:agentId]) and message[:status] not in ["queued", "sending", "running"] and
+        String.trim(message.body || "") in ["", "Thinking...", "Thinking…", "Queued..."] and
+        not Enum.any?(
+          [:mission, :clarification, :changeRequest, :images, :attachments, :hasImages],
+          &(message[&1] not in [nil, false, []])
+        )
 
   defp forwardable?(message),
     do:

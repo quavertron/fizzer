@@ -789,6 +789,66 @@ defmodule Cascade.ChatDomainTest do
            ) == [1]
   end
 
+  test "terminal projection preserves mission artifacts and publishes one durable outcome" do
+    {vault, channel} = chat_vault(1, "Projection", "Room")
+    user = %{id: 1, username: "alice"}
+    {:ok, run} = RunStore.start(vault.id, nil, "verify publication", "codex")
+
+    {:ok, shell} =
+      Messages.create(
+        user,
+        vault.id,
+        channel.id,
+        %{
+          id: "publication-shell",
+          author: "Astra",
+          agentId: "codex",
+          runId: run.id,
+          status: "running",
+          body: "",
+          mission: %{id: "mission", title: "Fix legibility", status: "active"}
+        },
+        access: :agent
+      )
+
+    RunStore.publish(run.id, "status", %{status: "completed", suppressChatBody: true})
+    Cascade.Runs.ChatProjection.sync(run.id)
+    assert {:ok, rows} = Messages.list(channel.id, 1)
+    assert Enum.any?(rows, &(&1.id == shell.id and &1.mission["id"] == "mission"))
+
+    {:ok, final_run} = RunStore.start(vault.id, nil, "publish outcome", "codex")
+
+    {:ok, final_shell} =
+      Messages.create(
+        user,
+        vault.id,
+        channel.id,
+        %{
+          id: "publication-outcome",
+          author: "Astra",
+          agentId: "codex",
+          runId: final_run.id,
+          status: "running",
+          body: ""
+        },
+        access: :agent
+      )
+
+    RunStore.publish(final_run.id, "status", %{
+      status: "completed",
+      summary: "Fixed legibility. Checks passed."
+    })
+
+    Cascade.Runs.ChatProjection.sync(final_run.id)
+    Cascade.Runs.ChatProjection.sync(final_run.id)
+    assert {:ok, rows} = Messages.list(channel.id, 1)
+
+    assert [%{body: "Fixed legibility. Checks passed."} = outcome] =
+             Enum.filter(rows, &(&1.id == final_shell.id))
+
+    assert is_nil(outcome[:status])
+  end
+
   test "message list strips heavy images while detail hydrates and embeds stay frozen and redact for agents" do
     {vault, channel} = chat_vault(1, "Notes", "Room")
     Store.create_note(vault.id, 1, %{title: "Plan", content: "public\n:::private\nsecret\n:::"})

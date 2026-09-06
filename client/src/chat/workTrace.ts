@@ -191,7 +191,7 @@ export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body
     if (live && !/^Thinking(?:\.{3}|…)$/i.test(live)) return live;
     return 'working…';
   }
-  if (message.status === 'sending') return 'queued…';
+  if (message.status === 'sending' || message.status === 'queued') return 'queued…';
   if (message.status === 'failed') return 'failed';
   if (isSteeringContinuationMessage(message)) return 'steered';
   if (message.status === 'canceled') return 'canceled';
@@ -247,6 +247,7 @@ export function workTracePhase(
   // Steering cancel is intentional flow, not a hard block.
   if (isSteeringContinuationMessage(message)) return 'steering';
   if (message.status === 'failed') return 'blocked';
+  if (message.status === 'queued' || message.status === 'sending') return 'routing';
   if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
   if (message.status === 'canceled') return 'blocked';
   if (isSystemCascadeMessage(message) || /\b(review|reconcil|ready for review)/.test(text)) return 'reviewing';
@@ -254,7 +255,6 @@ export function workTracePhase(
     if (/\b(deploy|ship|release|production|prod\b)/.test(text)) return 'deploying';
     if (/\b(test|verify|verification|lint|runtime|regression|check)/.test(text)) return 'testing';
     if (/\b(wait|waiting|blocked on|dependency|agent busy)/.test(text)) return 'waiting';
-    if (message.status === 'sending' || message.missionTaskId) return 'routing';
     return 'working';
   }
   if (message.missionTaskId) return 'complete';
@@ -475,10 +475,11 @@ export interface WorkTracePeek {
  */
 export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
   if (trace.length === 0) return null;
-  const liveMessage = [...trace].reverse().find((message) => (
-    isLiveAgentStatus(message.status)
-  ));
-  const message = liveMessage || trace[trace.length - 1];
+  const liveMessage = [...trace].reverse().find((message) => message.status === 'running')
+    || [...trace].reverse().find((message) => isLiveAgentStatus(message.status));
+  const attention = [...trace].reverse().find((message) => message.status === 'failed'
+    || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
+  const message = liveMessage || attention || trace[trace.length - 1];
   const live = Boolean(liveMessage);
   // Runtime prose belongs in the expanded trace, never the conversation preview.
   const label = live
@@ -486,7 +487,7 @@ export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
     : message.status === 'failed' ? 'Failed'
       : message.status === 'canceled' ? 'Canceled' : 'Work details';
   const decals = workTraceDecals(trace);
-  const phase = decals[decals.length - 1]?.phase || workTracePhase(message);
+  const phase = workTracePhase(message);
   return {
     live,
     summary: workTraceSummary(trace),
