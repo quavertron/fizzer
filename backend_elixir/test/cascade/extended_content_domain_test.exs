@@ -251,6 +251,34 @@ defmodule Cascade.ExtendedContentDomainTest do
            )
   end
 
+  test "chat excerpts retain a match after multibyte text without returning the full body",
+       context do
+    vault = Store.create_vault(context.user_id, %{name: "Unicode excerpts"})
+
+    channel =
+      Store.create_note(vault.id, context.user_id, %{
+        title: "Chat",
+        content: "cascade://chat-channel"
+      })
+
+    body = String.duplicate("🌊é ", 200) <> "NEEDLE matched" <> String.duplicate(" trailing", 100)
+
+    Query.execute(
+      "INSERT INTO chat_messages (id, channel_id, vault_id, author, body, status) VALUES ('unicode-hit', ?, ?, 'Astra', ?, NULL)",
+      [channel.id, vault.id, body]
+    )
+
+    [hit] = QMD.search(vault.id, "needle", scope: "chat")
+    assert hit.id == "unicode-hit"
+    assert hit.channelId == channel.id
+    assert String.contains?(hit.snippet, "NEEDLE matched")
+    assert String.length(hit.snippet) <= 242
+    refute Map.has_key?(hit, :body)
+
+    assert [%{body: ^body}] =
+             Query.maps("SELECT body FROM chat_messages WHERE id = 'unicode-hit'", [], [:body])
+  end
+
   test "QMD search ranks the matching live note first", context do
     vault = Store.create_vault(context.user_id, %{name: "QMD search"})
 

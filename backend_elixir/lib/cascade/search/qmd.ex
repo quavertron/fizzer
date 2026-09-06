@@ -183,15 +183,14 @@ defmodule Cascade.Search.QMD do
 
   defp snippet(text, query, max \\ 240) do
     clean = text |> String.replace(~r/\s+/u, " ") |> String.trim()
-    lower = String.downcase(clean)
 
     at =
       query
       |> tokens()
       |> Enum.map(fn term ->
-        case :binary.match(lower, term) do
-          :nomatch -> nil
-          {index, _length} -> index
+        case Regex.run(Regex.compile!(Regex.escape(term), "iu"), clean, return: :index) do
+          nil -> nil
+          [{index, _length}] -> String.length(binary_part(clean, 0, index))
         end
       end)
       |> Enum.reject(&is_nil/1)

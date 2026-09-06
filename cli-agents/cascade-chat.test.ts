@@ -740,3 +740,35 @@ test('routine mission reads compact repeated data, retain fresh state and offer 
   await assert.rejects(read('interpret'), /409: Evidence changed; read again/);
   assert.equal(reads, 7);
 });
+
+test('search keeps ranked excerpts and identifies full messages beyond history pages', async (t) => {
+  const hits = [
+    { type: 'chat', id: 'old-message', title: 'Astra', channelId: 'other-channel', timestamp: '2026-01-01', snippet: '…matching excerpt…', score: 2 },
+    { type: 'note', id: 'note-1', title: 'Guide', snippet: 'matching note', score: 1 },
+  ];
+  const body = 'Full original message\n' + 'retained content '.repeat(100);
+  const requests: string[] = [];
+  const server = http.createServer((req, res) => {
+    requests.push(req.url || '');
+    res.setHeader('content-type', 'application/json');
+    if (req.url?.startsWith('/api/vaults/vault-1/search?')) res.end(JSON.stringify({ results: hits }));
+    else if (req.url === '/api/vaults/vault-1/channels/other-channel/messages/old-message') {
+      res.end(JSON.stringify({ message: { id: 'old-message', author: 'Astra', body, createdAt: '2026-01-01' } }));
+    } else { res.statusCode = 404; res.end('{}'); }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const common = ['--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'other-channel'];
+  const run = (...args: string[]) => execFileAsync(process.execPath, [cli, ...args, ...common]);
+  assert.deepEqual(JSON.parse((await run('search', 'matching', '--scope', 'all', '--limit', '2', '--json')).stdout), hits);
+  assert.match(requests[0], /q=matching&scope=all&limit=2&channel=other-channel$/);
+  const human = (await run('search', 'matching')).stdout;
+  assert.match(human, /old-message  Astra  channel=other-channel  2026-01-01\n  …matching excerpt…/);
+  assert(human.indexOf('old-message') < human.indexOf('note-1'));
+  const full = JSON.parse((await run('history', '--message-id', 'old-message', '--json')).stdout);
+  assert.equal(full[0].body, body);
+  assert.equal(requests.length, 3);
+  assert.match((await run('search', '--help')).stdout, /history --channel <channelId> --message-id <id>/);
+});

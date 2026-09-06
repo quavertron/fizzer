@@ -48,7 +48,7 @@ Usage:
   cascade-chat avatar --url <https-url> use an existing uploaded note image
                         (also --avatar-url; --url here is the image, not API base)
   cascade-chat distill                 condense chat into a vault note
-  cascade-chat search <query>          search chat (or all) via unified search
+  cascade-chat search <query>          short matching excerpts; full messages via history
 
 Options:
   --vault <id>              vault id (default $CASCADE_NOTE_VAULT)
@@ -83,7 +83,7 @@ Options:
   --file <path>            avatar PNG, JPEG, GIF or WebP (max 2MB)
   --clear                   remove this agent's profile picture
   --author <name>           author for send (default current agent/user)
-  --message-id <id>         message to open attachments from
+  --message-id <id>         full history message or attachment source
   --out <dir>               directory for written attachments (default temp dir)
   --before-message-id <id>  only messages before this message
   --around-message-id <id>  window centered around this message
@@ -108,6 +108,12 @@ Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_VAULT,
 
 // Keep detailed contracts beside the command parser; other commands reuse their usage lines.
 const COMMAND_HELP = {
+  search: `cascade-chat search <query> [--scope chat|all] [--limit N] [--json]
+
+Returns short matching excerpts in search rank order, with message identity.
+Read a full chat hit (including older messages) with:
+  cascade-chat history --channel <channelId> --message-id <id>
+Use --around-message-id <id> --include-reply-context for a recent context window.`,
   'mission interpret': `cascade-chat mission interpret --mission <id|current> [--detail] [--file <path|->]
 
 Read current revision, fingerprint, understanding and evidence without --file.
@@ -1034,7 +1040,7 @@ async function main() {
     if (args.json) process.stdout.write(JSON.stringify(results) + '\n');
     else {
       process.stdout.write(
-        (results.map((r) => `[${r.type || '?'}] ${r.id}  ${r.title || ''}\n  ${r.snippet || ''}`).join('\n\n')
+        (results.map((r) => `[${r.type || '?'}] ${r.id}  ${r.title || ''}${r.channelId ? `  channel=${r.channelId}` : ''}${r.timestamp ? `  ${r.timestamp}` : ''}\n  ${r.snippet || ''}`).join('\n\n')
           || '(no matches)') + '\n',
       );
     }
@@ -1201,6 +1207,13 @@ async function main() {
     return;
   }
   const listPath = `/api/vaults/${vaultId}/channels/${channelId}/messages`;
+  const messageId = optionString(args, 'message-id');
+  if (messageId) {
+    const { message } = await api(url, token, 'GET', `${listPath}/${encodeURIComponent(messageId)}`);
+    const output = decorateMessages([message], [message], args);
+    process.stdout.write((args.json ? JSON.stringify(output) : formatHuman(output)) + '\n');
+    return;
+  }
   const requested = fetchLimit(args);
   let { messages = [] } = await api(url, token, 'GET', `${listPath}?limit=${requested}`);
   // Only pay for the full channel when the anchor really wasn't in the page.
