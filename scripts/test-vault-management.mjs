@@ -67,11 +67,14 @@ try {
   await page.goto(`${base}/app.html`);
   await page.getByRole('button', { name: 'Open vault Alpha', exact: true }).waitFor();
   const openManager = async () => page.getByRole('button', { name: 'Create vault', exact: true }).click();
-  const options = async (name) => page.getByRole('button', { name: `Options for ${name}`, exact: true }).click();
+  const options = async (name) => page.getByRole('button', { name: `Open vault ${name}`, exact: true }).click({ button: 'right' });
   const active = () => page.locator('.vault-rail-button[aria-current="page"]').getAttribute('data-vault-id');
   assert.equal(await active(), 'v0');
   assert.equal(await page.locator('.sidebar-vault-actions').count(), 0);
-  assert.equal(await page.getByRole('button', { name: 'Manage vaults', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: /^Options for / }).count(), 0);
+  const manage = page.getByRole('button', { name: 'Manage vaults', exact: true });
+  assert.equal(await manage.count(), 1);
+  assert.equal(await page.locator('.vault-rail button').first().getAttribute('aria-label'), 'Manage vaults');
   assert.equal(await page.locator('.vault-rail').getByRole('button', { name: 'Create vault', exact: true }).count(), 1);
   for (const width of [1280, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -79,8 +82,17 @@ try {
       const toggle = page.getByRole('button', { name: 'Toggle sidebar', exact: true });
       if (await toggle.isVisible()) await toggle.click();
     }
-    if (width === 390) await page.getByRole('button', { name: 'Options for Beta', exact: true }).tap();
-    else await options('Beta');
+    if (width === 390) await manage.tap();
+    else { await manage.focus(); await page.keyboard.press('Enter'); }
+    await page.getByRole('dialog', { name: 'Vault workspace' }).waitFor();
+    await page.getByRole('button', { name: 'Manage Beta', exact: true }).click();
+    await page.getByRole('button', { name: 'Rename vault', exact: true }).waitFor();
+    assert.equal(await active(), 'v0');
+    await page.getByRole('button', { name: 'Close account settings' }).click();
+    const manageBox = await manage.boundingBox();
+    const firstVaultBox = await page.locator('.vault-rail-button').first().boundingBox();
+    assert.ok(manageBox.y + manageBox.height <= firstVaultBox.y, 'Manage must be above vault indicators');
+    await options('Beta');
     const box = await page.getByRole('menu', { name: 'Vault options' }).boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= width);
     assert.equal(await active(), 'v0');
