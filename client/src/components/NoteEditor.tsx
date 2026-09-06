@@ -1114,7 +1114,9 @@ export function buildDecorations(
           const longEnough = strict ? end > idx + open.length : end >= idx + open.length;
           if (end !== -1 && longEnough && (!okEnd || okEnd(end))) {
             collectDeco(line.from + idx, line.from + idx + open.length, hidden);
-            collectDeco(line.from + idx + open.length, line.from + end, deco);
+            collectDeco(line.from + idx + open.length, line.from + end, open === '[['
+              ? Decoration.mark({ class: 'cm-wikilink', attributes: { 'data-note-target': text.slice(idx + open.length, end) } })
+              : deco);
             collectDeco(line.from + end, line.from + end + close.length, hidden);
             idx = text.indexOf(open, end + close.length);
             continue;
@@ -1603,7 +1605,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
           }
           const wikilink = target.closest('.cm-wikilink');
           if (wikilink) {
-            const title = wikilink.textContent?.trim();
+            const title = wikilink.getAttribute('data-note-target') || wikilink.textContent?.trim();
             if (title) {
               event.preventDefault();
               onOpenWikilinkRef.current?.(title);

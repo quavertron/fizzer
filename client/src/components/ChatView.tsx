@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ClipboardList, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
+import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
 import { normalizeMention } from '../chat/mentions';
 import { createChannelWorkItem } from '../chat/workItems';
@@ -33,6 +33,7 @@ import { chatMessageStore, useChannelMessages } from '../chat/messageStore';
 import { applyRemoteChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
 import {
   CHAT_NOTE_MARKER,
+  stripChatControlMarkers,
 } from '../chat/shared';
 
 export {
@@ -235,6 +236,7 @@ export const ChatView = memo(function ChatView({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [jumpHighlightMessageId, setJumpHighlightMessageId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; message: ChatMessage } | null>(null);
+  const [copyError, setCopyError] = useState('');
   const [participantMenu, setParticipantMenu] = useState<{ x: number; y: number; username: string; action: 'remove' | 'leave' } | null>(null);
   const [reportMessage, setReportMessage] = useState<ChatMessage | null>(null);
   const contextMenuRef = usePopupMenu<HTMLDivElement>(contextMenu);
@@ -813,6 +815,7 @@ export const ChatView = memo(function ChatView({
     event.preventDefault();
     event.stopPropagation();
     setDeleteArmed(false);
+    setCopyError('');
     setContextMenu({ x: event.clientX, y: event.clientY, message });
   }, []);
 
@@ -1154,6 +1157,18 @@ export const ChatView = memo(function ChatView({
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(event) => event.stopPropagation()}
         >
+          <button type="button" role="menuitem" onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(stripChatControlMarkers(contextMenu.message.body));
+              setContextMenu(null);
+            } catch {
+              setCopyError('Could not copy. Select the message text and copy it.');
+            }
+          }}>
+            <Copy size={14} />
+            Copy text
+          </button>
+          {copyError && <p role="alert">{copyError}</p>}
           <button type="button" role="menuitem" onClick={() => startReply(contextMenu.message)}>
             <Reply size={14} />
             Reply

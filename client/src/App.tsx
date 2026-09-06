@@ -1,4 +1,5 @@
 import { WorkspaceStore } from './workspace';
+import { findEmbeddedNote } from './docEmbeds';
 import { useEffect, useSyncExternalStore, useState, useCallback, useRef, useMemo, lazy, Suspense, type CSSProperties, type ReactNode } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { type Tab } from './components/TabBar';
@@ -1723,7 +1724,7 @@ export default function App() {
   }, [renameNoteTab]);
 
   const handleOpenWikilink = useCallback((title: string) => {
-    const target = notesRef.current.find((n) => n.title.toLowerCase() === title.toLowerCase());
+    const target = findEmbeddedNote(notesRef.current, title);
     if (target) openNote(target.id);
   }, [openNote]);
 

@@ -426,6 +426,9 @@ export const ChatMessageText = memo(function ChatMessageText({
       <ChatMediaEmbed href={href} label={children} />
     ),
     p: ({ children }: { children?: ReactNode }) => <p>{withInlineMarkup(children)}</p>,
+    strong: ({ children }: { children?: ReactNode }) => <strong>{withInlineMarkup(children)}</strong>,
+    em: ({ children }: { children?: ReactNode }) => <em>{withInlineMarkup(children)}</em>,
+    del: ({ children }: { children?: ReactNode }) => <del>{withInlineMarkup(children)}</del>,
     li: ({ children }: { children?: ReactNode }) => <li>{withInlineMarkup(children)}</li>,
     td: ({ children }: { children?: ReactNode }) => <td>{withInlineMarkup(children)}</td>,
     th: ({ children }: { children?: ReactNode }) => <th>{withInlineMarkup(children)}</th>,
