@@ -74,14 +74,26 @@ defmodule Cascade.Chat.DispatchPromptTest do
     end
 
     trigger = message(c, "@builder Implement the release")
-    coordinator = build(c, trigger, %{orchestrator: true}, "session-id")
-    assert coordinator.prompt =~ "mission start --control-plane"
-    assert coordinator.prompt =~ "mission delegate --anonymous"
-    assert coordinator.prompt =~ "handle bookkeeping directly"
-    assert coordinator.prompt =~ "Successful background work completes the mission automatically"
-    assert coordinator.prompt =~ "Reuse an existing mission for follow-ups and recovery"
-    assert coordinator.prompt =~ "honor explicit Stop"
-    refute coordinator.prompt =~ "for actionable work immediately use"
+
+    for resume <- [nil, "session-id"] do
+      coordinator = build(c, trigger, %{orchestrator: true}, resume)
+      assert coordinator.prompt =~ "mission start --control-plane"
+      assert coordinator.prompt =~ "mission delegate --anonymous"
+      assert coordinator.prompt =~ "handle bookkeeping directly"
+
+      assert coordinator.prompt =~
+               "Successful background work completes the mission automatically"
+
+      assert coordinator.prompt =~ "Reuse an existing mission for follow-ups and recovery"
+      assert coordinator.prompt =~ "mission delegate --after <task-id>"
+      assert coordinator.prompt =~ "corrections that must change active work now"
+
+      assert coordinator.prompt =~
+               "queued or dispatched acknowledgment does not confirm execution"
+
+      assert coordinator.prompt =~ "honor explicit Stop"
+      refute coordinator.prompt =~ "for actionable work immediately use"
+    end
 
     ambient = build(c, trigger, %{ambientGroupChat: true, finalReplyOnly: true})
     assert ambient.prompt =~ "persistent participant"
