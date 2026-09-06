@@ -9,7 +9,8 @@ import { isLiveAgentStatus } from './runBlocks';
 
 import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
-import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, recentLiveSnippet, stripTerminalNoise } from './harnessActivity';
+import { missionMessageIdentities, type MissionMessageIdentity } from './missionIdentity';
+import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
 
 export interface ChatMessageGroup {
@@ -56,9 +57,9 @@ export function isWorkTraceMessage(
 
 /** Always a compact line — never the user-facing final answer. */
 export function isForcedWorkTraceLine(
-  message: Pick<ChatMessage, 'id' | 'author' | 'missionTaskId'>,
+  message: Pick<ChatMessage, 'id' | 'author' | 'missionTaskId' | 'runId'>,
 ): boolean {
-  if (message.missionTaskId) return true;
+  if (message.missionTaskId && message.runId == null) return true;
   return isSystemCascadeMessage(message);
 }
 
@@ -187,7 +188,8 @@ export function workTracePreview(body: string, max = 110): string {
 export function workTraceOutput(message: Pick<ChatMessage, 'status' | 'blocks'>): string {
   if (message.status !== 'running') return '';
   const block = message.blocks?.slice().reverse().find((block) => block.type === 'text' && !block.redacted && block.text?.trim());
-  return recentLiveSnippet(stripChatControlMarkers(block?.text || ''));
+  const paragraphs = stripChatControlMarkers(block?.text || '').trim().split(/\n\s*\n/);
+  return truncateActivity(paragraphs.at(-1) || '', 320);
 }
 
 export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body' | 'harnessLog'>): string {
@@ -352,16 +354,33 @@ export function segmentTranscript(
   messages: ChatMessage[],
   options?: {
     agentAuthors?: ReadonlySet<string>;
+    missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   },
 ): TranscriptSegment[] {
   const agentAuthors = options?.agentAuthors;
+  const identities = options?.missionIdentities || missionMessageIdentities(messages);
+  const missionTraces = new Map<string, ChatMessage[]>();
+  messages = messages.filter((message) => {
+    const identity = identities.get(message.id);
+    const assignment = Boolean(message.missionTaskId) && message.id.startsWith('mission-task-');
+    if (identity?.role !== 'Worker' || isDurableWorkArtifact(message)
+      || (!isLiveAgentStatus(message.status) && !assignment && !isSteeringContinuationMessage(message))) return true;
+    const trace = missionTraces.get(identity.id) || [];
+    trace.push(message);
+    missionTraces.set(identity.id, trace);
+    return false;
+  });
   const segments: TranscriptSegment[] = [];
   let index = 0;
 
   while (index < messages.length) {
     const head = messages[index];
     if (isDurableWorkArtifact(head)) {
-      segments.push({ kind: 'group', group: { messages: [head] } });
+      const trace = head.mission && missionTraces.get(head.mission.id);
+      if (trace?.length) {
+        segments.push({ kind: 'work', id: head.id, trace,
+          carrier: { ...head, body: '', status: undefined }, fullGroups: [], updateGroups: [] });
+      } else segments.push({ kind: 'group', group: { messages: [head] } });
       index += 1;
       continue;
     }
@@ -404,6 +423,7 @@ export function segmentTranscript(
       // for what was only one dispatch. Unowned/cross-agent artifacts still
       // retain their own chronological row.
       const sameAgentMission = Boolean(message.mission)
+        && !missionTraces.has(message.mission!.id)
         && messageIsAgent
         && messageKey === identityKey;
       if ((isDurableWorkArtifact(message) && !sameAgentMission)
@@ -493,7 +513,7 @@ export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
     || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
   const message = liveMessage || attention || trace[trace.length - 1];
   const live = Boolean(liveMessage);
-  // Public output stays inside the transient decal; settled prose stays in the trace.
+  // Keep the newest public update readable; detailed activity remains expandable.
   const label = live
     ? (message.status === 'running' ? workTraceOutput(message) || 'Working…' : 'Queued…')
     : message.status === 'failed' ? 'Failed'

@@ -1,4 +1,5 @@
-import { ChatMissionCard } from '../components/ChatMissionCard';
+import { missionAccent, missionMessageIdentities } from '../chat/missionIdentity';
+import { ChatMissionCard, MissionMessageLabel } from '../components/ChatMissionCard';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatWorkTrace } from '../components/ChatWorkTrace';
@@ -410,7 +411,7 @@ it('keeps running work ahead of queued work and exposes settled failures', () =>
     .toMatchObject({ label: 'Failed', live: false, phase: 'blocked' });
 });
 
-it('updates the transient mission peek only from public text blocks', () => {
+it('shows a readable current paragraph only from public text blocks', () => {
   const running = msg({ id: 'stream', author: 'Sol', status: 'running', body: 'Thinking...', blocks: [
     { type: 'thinking', text: 'Private reasoning' },
     { type: 'text', text: 'Checking the public output' },
@@ -418,7 +419,7 @@ it('updates the transient mission peek only from public text blocks', () => {
   ] });
   expect(workTracePeek([running])?.label).toBe('Checking the public output');
   expect(workTracePeek([{ ...running, blocks: [{ type: 'text', text: 'x'.repeat(200) + 'newest output' }] }])?.label)
-    .toBe('…' + 'x'.repeat(74) + 'newest output');
+    .toBe('x'.repeat(200) + 'newest output');
   expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
 });
 
@@ -456,4 +457,54 @@ it('shows the resumed task instead of the canceled prior attempt in the mission 
   expect(markup).toContain('working');
   expect(markup).toContain('Repair and verify the UI');
   expect(markup).not.toContain('Canceled');
+});
+
+
+it('gives a mission and its bound worker one activity surface, preserving later answers and unrelated work', () => {
+  const mission = msg({ id: 'root', author: 'Astra', agentId: 'codex', registrationId: 'astra', body: '', mission: {
+    id: 'bf3a6199-8132-4e75-8e58-ec37c097e5a2', rootMessageId: 'root', title: 'Simplify worker guidance', objective: '',
+    coordinator: 'Astra', coordinatorMention: 'astra', status: 'active', summary: '', createdAt: '', updatedAt: '',
+    tasks: [{ id: 'worker-task', title: 'Consolidate worker context', assignee: 'Astra', assigneeMention: 'astra', assigneeModel: '', status: 'running', runId: 3477,
+      summary: '', dependsOn: [], waitingFor: [], priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '' }],
+  } });
+  const assignment = msg({ id: 'mission-task-worker-task', author: 'Astra', agentId: 'codex', body: 'Instructions', missionTaskId: 'worker-task' });
+  const worker = msg({ id: 'worker', author: 'Astra', agentId: 'codex', registrationId: 'astra', body: 'Packaging is still running.',
+    status: 'running', missionTaskId: 'worker-task', runId: 3477, blocks: [{ type: 'text', text: 'Desktop packaging is still running for the helper prompt changes; I’m watching it through completion.' }] });
+  const unrelated = msg({ id: 'other', author: 'Astra', agentId: 'codex', body: 'A separate answer', runId: 3480 });
+  const identities = missionMessageIdentities([mission, assignment, worker, unrelated]);
+  expect(identities.get(worker.id)).toMatchObject({ title: 'Simplify worker guidance', role: 'Worker' });
+  expect(identities.has(unrelated.id)).toBe(false);
+  const segments = segmentTranscript([mission, assignment, worker, unrelated]);
+  expect(segments).toHaveLength(2);
+  expect(segments[0]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [assignment, worker] });
+  expect(segments[1]).toMatchObject({ kind: 'group', group: { messages: [unrelated] } });
+  const card = renderToStaticMarkup(createElement(ChatMissionCard, { mission: mission.mission!, tracePeek: workTracePeek([worker]) }));
+  expect(card).toContain(missionAccent(mission.mission!.id));
+  expect(card.match(/class="[^"]*thinking-spinner/g)).toHaveLength(1);
+  expect(card).toContain('Consolidate worker context');
+  expect(card).toContain('Desktop packaging is still running');
+  expect(card).not.toContain('chat-working-output');
+  const answer = { ...worker, status: undefined, body: 'Delivered the helper changes.' };
+  const settled = segmentTranscript([mission, assignment, answer, unrelated]);
+  expect(settled.some((segment) => segment.kind === 'group' && segment.group.messages.includes(answer))).toBe(true);
+  const label = renderToStaticMarkup(createElement(MissionMessageLabel, { identity: identities.get(worker.id)! }));
+  expect(label).toContain('Simplify worker guidance');
+  expect(label).toContain('Worker');
+  expect(label).toContain(missionAccent(mission.mission!.id));
+});
+
+it('keeps coordinator explanations linked to the same identity without borrowing nearby mission work', () => {
+  const id = 'bf3a6199-8132-4e75-8e58-ec37c097e5a2';
+  const root = msg({ id: 'root', author: 'Astra', body: '', mission: {
+    id, rootMessageId: 'root', title: 'Coordinator ownership', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [],
+  } });
+  const wake = msg({ id: `sys-mission-${id}-interpret-1`, author: 'Astra', agentId: 'codex', body: 'Interpret results' });
+  const response = msg({ id: 'reply', author: 'Astra', agentId: 'codex', body: 'Comparing the delivered result', status: 'running',
+    replyTo: { messageId: wake.id, author: 'Astra', mention: 'astra', preview: '' } });
+  const explanation = msg({ id: `mission-explanation-${id}-1`, author: 'Astra', agentId: 'codex', body: 'Delivered; here is what changed.' });
+  const identities = missionMessageIdentities([root, wake, response, explanation]);
+  expect(identities.get(response.id)).toMatchObject({ id, role: 'Coordinator' });
+  expect(identities.get(explanation.id)).toMatchObject({ id, role: 'Coordinator' });
+  expect(missionAccent(id)).toBe(missionAccent(id));
 });

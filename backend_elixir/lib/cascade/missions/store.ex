@@ -113,6 +113,7 @@ defmodule Cascade.Missions.Store do
                   )
               })
 
+              Cascade.Missions.Interpretation.initialize(mission_id)
               refresh!(mission_id)
           end
         end)
@@ -527,24 +528,35 @@ defmodule Cascade.Missions.Store do
         unless mission.status not in ~w(completed canceled) and task.status in ~w(pending running),
           do: raise("Task is already finished; steering was not delivered")
 
-        unless task.attempt == field(input, :attempt) and task.run_id == field(input, :runId),
-          do: raise("Task changed; refresh its status before steering")
+        action_key =
+          Cascade.Missions.Interpretation.action_key(caller_run, ["steer", task_id, instruction])
 
-        if instruction == "", do: raise("Steering needs a message")
+        case action_key &&
+               SQL.one("SELECT id FROM chat_mission_events WHERE source_key=?", [action_key]) do
+          [id] ->
+            {:ok, id}
 
-        if Cascade.Missions.Steering.pending_for_task?(task_id),
-          do: raise("Task already has queued steering; inspect mission history")
+          _ ->
+            unless task.attempt == field(input, :attempt) and task.run_id == field(input, :runId),
+              do: raise("Task changed; refresh its status before steering")
 
-        record_event(mission.id, %{
-          task_id: task.id,
-          kind: "steering_requested",
-          title: task.title,
-          summary: instruction,
-          run_id: task.run_id,
-          attempt: task.attempt
-        })
+            if instruction == "", do: raise("Steering needs a message")
 
-        {:ok, SQL.last_insert_id()}
+            if Cascade.Missions.Steering.pending_for_task?(task_id),
+              do: raise("Task already has queued steering; inspect mission history")
+
+            record_event(mission.id, %{
+              task_id: task.id,
+              kind: "steering_requested",
+              title: task.title,
+              summary: instruction,
+              run_id: task.run_id,
+              attempt: task.attempt,
+              source_key: action_key
+            })
+
+            {:ok, SQL.last_insert_id()}
+        end
       end)
     else
       nil -> {:error, "Mission task not found"}
@@ -759,7 +771,11 @@ defmodule Cascade.Missions.Store do
             })
 
             if final_status == "canceled", do: cancel_open_tasks(mission, tasks)
-            cleanup = cleanup_stale_wakes(mission, current_run_id)
+
+            cleanup =
+              if final_status == "canceled",
+                do: cleanup_stale_wakes(mission, current_run_id),
+                else: %{}
 
             Enum.each(task_rows(mission.id), fn task ->
               sync_work_item(user_id, mission, task, release: true)
@@ -780,40 +796,26 @@ defmodule Cascade.Missions.Store do
     error -> {:error, Exception.message(error)}
   end
 
-  @doc "Returns a ready review wake without consuming it; the scheduler marks it with its outbox writes."
+  @doc "Claims a coalesced interpretation without waiting for independent workers."
   def claim_wake(mission_id) do
     with {:ok, update} <- refresh(mission_id) do
-      tasks = task_rows(mission_id)
-      by_id = Map.new(tasks, &{&1.id, &1})
+      case Cascade.Missions.Interpretation.claim(update) do
+        nil ->
+          mission = mission_row(mission_id)
 
-      all_settled =
-        tasks != [] and Enum.all?(tasks, &(&1.status in @terminal_task_statuses))
+          if mission.wake_sent == 0 and update.mission.tasks == [] and
+               update.mission.status == "attention" and recoverable_creation?(mission) do
+            {:ok,
+             Map.merge(update, %{
+               coordinatorRegistrationId: mission.coordinator_registration_id,
+               generation: review_fingerprint(mission_id)
+             })}
+          else
+            {:ok, nil}
+          end
 
-      moving =
-        Enum.any?(tasks, fn task ->
-          task.status == "running" or
-            (task.status == "pending" and not is_nil(task.dispatch_id)) or
-            (task.status == "pending" and is_nil(task.dispatch_id) and
-               Enum.all?(dependencies(task), &(by_id[&1] && by_id[&1].status == "completed")))
-        end)
-
-      stalled = tasks != [] and update.mission.status in ~w(attention blocked) and not moving
-
-      mission = mission_row(mission_id)
-      interrupted_start = tasks == [] and recoverable_creation?(mission)
-
-      if mission.wake_sent == 0 and (all_settled or stalled or interrupted_start) and
-           not Enum.any?(tasks, &active_run?(&1.run_id)) and
-           update.mission.status in ~w(reviewing attention blocked) do
-        generation = review_fingerprint(mission_id)
-
-        {:ok,
-         Map.merge(update, %{
-           coordinatorRegistrationId: mission.coordinator_registration_id,
-           generation: generation
-         })}
-      else
-        {:ok, nil}
+        wake ->
+          {:ok, wake}
       end
     end
   end
@@ -1922,8 +1924,8 @@ defmodule Cascade.Missions.Store do
     SQL.exec(
       """
       INSERT INTO chat_mission_events
-        (mission_id,task_id,kind,title,from_status,to_status,summary,run_id,attempt)
-      VALUES (?,?,?,?,?,?,?,?,?)
+        (mission_id,task_id,kind,title,from_status,to_status,summary,run_id,attempt,source_key)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
       """,
       [
         mission_id,
@@ -1934,7 +1936,8 @@ defmodule Cascade.Missions.Store do
         input[:to_status] || "",
         input[:summary] || "",
         input[:run_id],
-        input[:attempt] || 0
+        input[:attempt] || 0,
+        input[:source_key]
       ]
     )
   end

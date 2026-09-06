@@ -173,6 +173,26 @@ defmodule Cascade.Missions.Schema do
       "CREATE INDEX IF NOT EXISTS chat_mission_tasks_parent_idx ON chat_mission_tasks(parent_task_id)"
     )
 
+    SQL.exec("""
+    CREATE TABLE IF NOT EXISTS chat_mission_interpretations (
+      mission_id TEXT PRIMARY KEY REFERENCES chat_missions(id) ON DELETE CASCADE,
+      state_json TEXT NOT NULL DEFAULT '{}',
+      revision INTEGER NOT NULL DEFAULT 0,
+      handled_fingerprint TEXT NOT NULL DEFAULT '',
+      pending_fingerprint TEXT NOT NULL DEFAULT '',
+      pending_context_json TEXT NOT NULL DEFAULT '{}',
+      dispatch_id TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      retry_after TEXT,
+      stopped INTEGER NOT NULL DEFAULT 0,
+      publication_pending TEXT
+    )
+    """)
+
+    SQL.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS chat_mission_interpretations_dispatch_idx ON chat_mission_interpretations(dispatch_id) WHERE dispatch_id IS NOT NULL"
+    )
+
     repair_legacy_dependencies!()
     backfill_history!()
     repair_worker_evidence!()

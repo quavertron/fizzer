@@ -35,6 +35,13 @@ defmodule Cascade.Chat.DispatchPrompt do
     message = field(dispatch, :message) |> Privacy.sanitize_json()
     {:ok, registrations} = Agents.list_members(channel_id, user_id)
     registrations = [registration | registrations]
+    interpretation = Cascade.Missions.Interpretation.dispatch_prompt(text(dispatch, :id))
+
+    message =
+      if interpretation,
+        do: Map.put(message, :body, Cascade.Content.Privacy.redact_blocks(interpretation)),
+        else: message
+
     source = message_text(message)
     direct = strip_mentions(source, registrations)
     reply = field(message, :replyTo)
@@ -94,6 +101,17 @@ defmodule Cascade.Chat.DispatchPrompt do
           join([
             header(channel_name, registration, execution.agent, message, resume),
             interrupted_requests(dispatch, execution, message),
+            if(
+              text(message, :missionTaskId) == "" and field(registration, :orchestrator) == true and
+                field(registration, :ambientGroupChat) != true and is_nil(interpretation),
+              do:
+                Cascade.Missions.Interpretation.context(
+                  user_id,
+                  channel_id,
+                  text(registration, :id)
+                ),
+              else: ""
+            ),
             request,
             media_notice
           ]),
@@ -132,7 +150,7 @@ defmodule Cascade.Chat.DispatchPrompt do
     role =
       cond do
         task != "" ->
-          "You are a mission worker, not the channel control plane. Fizzer mission task id: #{task}. Execute only this assigned task; do not start a mission or spawn provider subagents. #{Cascade.Missions.Children.guidance(task)} The mission card updates when this run ends. If blocked, run `cascade-chat mission update --task #{task} --status blocked --summary \"<what is needed>\"` and stop."
+          "You are a mission worker, not the channel control plane. Fizzer mission task id: #{task}. Execute only this assigned task; do not start a mission or spawn provider subagents. #{Cascade.Missions.Children.guidance(task)} The mission card updates when this run ends. Report meaningful findings or changed delivery evidence while continuing with `cascade-chat mission update --task #{task} --status running --summary \"<finding and evidence reference>\"`; skip routine tool activity. If blocked, run `cascade-chat mission update --task #{task} --status blocked --summary \"<what is needed>\"` and stop."
 
         String.starts_with?(text(message, :id), ["sys-mission-", "sys-next-"]) ->
           ""

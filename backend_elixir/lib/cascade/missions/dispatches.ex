@@ -221,7 +221,10 @@ defmodule Cascade.Missions.Dispatches do
         ) == [1]
 
       _ ->
-        true
+        if String.contains?(dispatch.messageId, "-interpret-") and
+             String.starts_with?(dispatch.messageId, "sys-mission-"),
+           do: Cascade.Missions.Interpretation.keep_wake?(dispatch.id),
+           else: true
     end
   end
 

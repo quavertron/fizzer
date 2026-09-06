@@ -7,6 +7,7 @@ import { formatChatTime } from '../chat/time';
 import type { ChatAgentRegistration, ChatMessage, PlanUsage, SharedChatNote } from '../chat/types';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { isSteeringContinuationMessage } from '../chat/workTrace';
+import type { MissionMessageIdentity } from '../chat/missionIdentity';
 import type { ChatMessageGroup } from '../chat/workTrace';
 import { escapeRegExp, normalizeMention } from '../chat/mentions';
 import { CascadeRunPanel } from './CascadeRunPanel';
@@ -14,7 +15,7 @@ import { ChatAvatar } from './ChatAvatar';
 import { ChatClarificationCard } from './ChatClarificationCard';
 import { isMp4Attachment } from './ChatComposer';
 import { ChatMessageText } from './ChatMarkdown';
-import { ChatMissionCard } from './ChatMissionCard';
+import { ChatMissionCard, MissionMessageLabel } from './ChatMissionCard';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
 import { PlanUsageMeters } from './ChatAgentPanel';
 import { SwipeToReply, swipeGestureActive } from './SwipeToReply';
@@ -127,8 +128,10 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   traceContent,
   traceAfterFirstMessage = false,
   contextMenuMessage,
+  missionIdentities,
 }: {
   group: ChatMessageGroup;
+  missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   /** Pre-filtered by the parent: non-null only when the selection is inside this group. */
   selectedMessageId: string | null;
   /** Pre-filtered by the parent: briefly pulses the exact row reached by a jump. */
@@ -270,6 +273,9 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   }}
                   onContextMenu={(event) => onContextMenu(event, message)}
                 >
+                  {!message.mission && missionIdentities?.has(message.id) && (
+                    <MissionMessageLabel identity={missionIdentities.get(message.id)!} />
+                  )}
                   <ChatQuoteRefs
                     message={message}
                     onJumpToMessage={onJumpToMessage}

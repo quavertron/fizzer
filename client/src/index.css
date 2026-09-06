@@ -8019,11 +8019,6 @@ button.chat-avatar.is-clickable:focus-visible {
   padding: 2px 0;
   background: transparent;
 }
-@keyframes chat-activity-flicker {
-  0%, 100% { opacity: 1; }
-  48% { opacity: 0.46; }
-  58% { opacity: 0.78; }
-}
 .chat-work-trace-toggle {
   width: 100%;
   min-height: 30px;
@@ -9967,17 +9962,38 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   .documentation-assistant.is-expanded { inset: 0; width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
 }
 
-/* Token updates advance the original trailing text window; clip older text at the left. */
-.chat-working-output {
-  display: flex;
-  justify-content: flex-end;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: clip;
-  animation: chat-activity-flicker 1.45s ease-in-out infinite;
+/* Mission identity is stable; status remains in its own badge and single spinner. */
+.chat-mission-card[data-mission-id] {
+  border-left: 3px solid var(--mission-accent);
 }
-@media (prefers-reduced-motion: reduce) {
-  .chat-working-output { animation: none; }
+.chat-mission-card[data-mission-id] .chat-mission-kicker {
+  color: var(--mission-accent);
+  border-color: color-mix(in srgb, var(--mission-accent) 42%, transparent);
+  background: color-mix(in srgb, var(--mission-accent) 9%, transparent);
+}
+.chat-mission-identity {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  border-left: 3px solid var(--mission-accent);
+  padding-left: 9px;
+  margin: 0 0 7px;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.chat-mission-identity-name { color: var(--mission-accent); font-weight: 600; }
+.chat-mission-identity-role { color: var(--text-secondary); font-size: 0.6875rem; }
+.chat-mission-peek-copy { display: grid; gap: 3px; min-width: 0; }
+.chat-mission-peek-task { color: var(--text-secondary); font-weight: 600; font-size: 0.75rem; }
+.chat-mission-peek .chat-mission-peek-label,
+.chat-work-trace .chat-work-trace-summary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: initial;
+  line-height: 1.5;
+  color: var(--text-primary);
 }
 
 .chat-note-preview {
@@ -9990,3 +10006,6 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .chat-note-preview > header strong { flex: 1; overflow-wrap: anywhere; }
 .chat-note-preview > header button { color: var(--text-muted); font: inherit; cursor: pointer; background: none; border: 0; }
 .chat-note-preview-body { max-height: 360px; overflow: auto; overflow-wrap: anywhere; margin-top: 8px; }
+.chat-mission-peek { align-items: start; }
+.chat-work-trace:not(.is-open) { max-width: min(100%, 44rem); }
+.chat-work-trace:not(.is-open) .chat-work-trace-toggle { align-items: start; }

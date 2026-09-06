@@ -30,6 +30,7 @@ Usage:
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list
   cascade-chat mission status [--mission <id|current>]
+  cascade-chat mission interpret --mission <id> [--file <json>]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
   cascade-chat mission delegate --mission <id> --to @agent --task T --message P [--after <task-id,...>] [--priority N] [--effort E] [--anonymous] [--isolated]
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
@@ -589,6 +590,20 @@ async function main() {
       }
       return;
     }
+    if (sub === 'interpret') {
+      if (!registrationId) fail('mission interpret requires a registered coordinator.');
+      const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}/interpretation`;
+      if (!args.file) {
+        const result = await api(url, token, 'GET', `${endpoint}?coordinator=${encodeURIComponent(registrationId)}`);
+        process.stdout.write(JSON.stringify(result) + '\n');
+      } else {
+        const input = JSON.parse(fs.readFileSync(String(args.file), 'utf8'));
+        const result = await api(url, token, 'POST', endpoint, { ...input, coordinatorRegistrationId: registrationId });
+        if (result.messageId || result.noMaterialChange) markChatSendUsed(config);
+        process.stdout.write(JSON.stringify(result) + '\n');
+      }
+      return;
+    }
     if (sub === 'history') {
       if (!missionRef || missionRef === 'current') {
         fail('mission history needs --mission <id>.');
@@ -736,7 +751,7 @@ async function main() {
       else process.stdout.write(`mission ${result.mission.id} → ${result.mission.status}\n`);
       return;
     }
-    fail(`unknown mission command "${sub}". Use start|list|status|history|delegate|child|join|steer|update|retry|link-recovery|finish|cancel.`);
+    fail(`unknown mission command "${sub}". Use start|list|status|history|interpret|delegate|child|join|steer|update|retry|link-recovery|finish|cancel.`);
   }
 
   if (cmd === 'avatar') {

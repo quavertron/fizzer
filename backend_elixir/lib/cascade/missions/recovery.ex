@@ -1,9 +1,8 @@
 defmodule Cascade.Missions.Recovery do
-  @moduledoc "Reconciles missed settlement and wakes reviews only for changed evidence or a missing outbox entry."
+  @moduledoc "Reconciles missed worker settlement and cancellation through the existing scheduler."
   alias Cascade.Accounts.SQL
 
-  # The scheduler holds the publisher lock and database transaction. A new
-  # generation is allocated only after the previous review has terminated.
+  # The scheduler holds the publisher lock and database transaction.
   def reconcile(mission_id) do
     filter = if mission_id, do: " AND m.id=?", else: ""
 
@@ -21,42 +20,6 @@ defmodule Cascade.Missions.Recovery do
     |> Enum.each(fn [dispatch_id, run_id, status, summary] ->
       {:ok, _} = Cascade.Missions.Store.attach_run(dispatch_id, run_id)
       {:ok, _} = Cascade.Missions.Store.settle_run(run_id, status, summary)
-    end)
-
-    SQL.all(
-      """
-      SELECT m.id,m.review_fingerprint,d.run_id,r.status,msg.id,d.id
-      FROM chat_missions m
-      JOIN chat_messages msg ON msg.id=(
-        SELECT msg2.id FROM chat_messages msg2
-        WHERE msg2.id LIKE 'sys-mission-' || m.id || '-%'
-        ORDER BY msg2.rowid DESC LIMIT 1)
-      LEFT JOIN chat_agent_dispatches d ON d.message_id=msg.id
-      LEFT JOIN runs r ON r.id=d.run_id
-      WHERE m.status NOT IN ('completed','canceled') AND m.wake_sent=1
-        AND (r.status IN ('failed','completed') OR d.id IS NULL)
-        AND NOT EXISTS (
-          SELECT 1 FROM runs active JOIN chat_agent_dispatches ad ON ad.id=active.chat_dispatch_id
-          WHERE ad.registration_id=m.coordinator_registration_id AND active.status IN ('queued','running'))
-        #{filter}
-      """,
-      if(mission_id, do: [mission_id], else: [])
-    )
-    |> Enum.each(fn [id, previous, _run_id, _status, _message_id, dispatch_id] ->
-      current = Cascade.Missions.Store.review_fingerprint(id)
-      # Adopt the current state for legacy wakes. Deployment itself is not a
-      # reason to repeat an already consumed review. Missing outbox entries
-      # replay the same deterministic message, not a new recovery generation.
-      cond do
-        previous == "" and not is_nil(dispatch_id) ->
-          SQL.exec("UPDATE chat_missions SET review_fingerprint=? WHERE id=?", [current, id])
-
-        is_nil(dispatch_id) or previous != current ->
-          SQL.exec("UPDATE chat_missions SET wake_sent=0 WHERE id=?", [id])
-
-        true ->
-          :ok
-      end
     end)
   end
 

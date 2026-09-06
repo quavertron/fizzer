@@ -370,6 +370,7 @@ defmodule Cascade.Runs.Store do
           value -> value
         end
 
+      if not steering?, do: Cascade.Missions.Interpretation.stop_run(run_id)
       result = finish(run_id, "canceled", summary)
 
       if result == :ok or match?(%{status: "canceled"}, get(run_id)) do

@@ -24,7 +24,14 @@ defmodule CascadeWeb.OrchestrationController do
         "agent-dispatch-#{dispatch.id}",
         dispatch_message_value(dispatch, :missionTaskId, ""),
         %{id: nil, status: "queued"},
-        nil
+        if(String.starts_with?(dispatch.messageId, "sys-mission-"),
+          do: %{
+            messageId: dispatch.messageId,
+            author: "",
+            preview: "Mission interpretation",
+            relationship: "builds_on"
+          }
+        )
       )
     else
       {:deferred, _} -> retract_deferred_reply(dispatch_id)
@@ -582,6 +589,7 @@ defmodule CascadeWeb.OrchestrationController do
     with [_, mission_id] <- Regex.run(~r/^sys-mission-([0-9a-f-]{36})-/i, message_id),
          [status] when status in ["completed", "canceled"] <-
            SQL.one("SELECT status FROM chat_missions WHERE id=?", [mission_id]),
+         false <- Cascade.Missions.Interpretation.keep_wake?(dispatch_value(dispatch, :id, "")),
          {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
       Dispatches.retract_pending_reply(dispatch_value(dispatch, :id, ""))
 

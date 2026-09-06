@@ -19,7 +19,7 @@ defmodule Cascade.Missions.Authority do
 
         Enum.join(
           [
-            "Mission objective: #{objective}",
+            "Mission objective: #{Cascade.Content.Privacy.redact_blocks(objective)}",
             "Continue work authorized by the user's saved instructions without asking for permission again. Stay within that scope, honor later corrections and Stop, and check current state before repeating an operation.",
             if(sources == [],
               do:
@@ -37,7 +37,7 @@ defmodule Cascade.Missions.Authority do
   end
 
   defp current_source(%{"body" => original} = source) do
-    saved = Jason.encode!(source)
+    saved = Jason.encode!(Cascade.Content.Privacy.sanitize_json(source))
 
     saved =
       if source["bounded_proposal_context"],
@@ -53,7 +53,7 @@ defmodule Cascade.Missions.Authority do
       [body] ->
         saved <>
           "\nThis source was edited; the current user text takes precedence: " <>
-          Jason.encode!(body)
+          Jason.encode!(Cascade.Content.Privacy.redact_blocks(body))
 
       _ ->
         saved <> "\nThis source was removed; revalidate its authority before acting."

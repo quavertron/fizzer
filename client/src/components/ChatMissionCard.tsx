@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode, type CSSProperties } from 'react';
 import { ChevronRight, History, Loader2, Square } from 'lucide-react';
 import { api } from '../api';
 import { reportWorkItemGitState, workspaceBridge } from '../chat/workspaces';
@@ -7,6 +7,15 @@ import type { ChatMessage, ChatMission, ChatMissionEvent, ChatMissionTask } from
 import { ChatTaskReview } from './ChatTaskReview';
 import { SwipeToReply } from './SwipeToReply';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { missionAccent, missionShortName, type MissionMessageIdentity } from '../chat/missionIdentity';
+
+export function MissionMessageLabel({ identity }: { identity: MissionMessageIdentity }) {
+  return <div className="chat-mission-identity" data-mission-id={identity.id}
+    style={{ '--mission-accent': missionAccent(identity.id) } as CSSProperties} title={identity.title}>
+    <span className="chat-mission-identity-name">{missionShortName(identity.title)}</span>
+    <span className="chat-mission-identity-role">{identity.role}</span>
+  </div>;
+}
 
 function missionTaskChangeChips(task: ChatMissionTask, fileCount?: number): Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> {
   const chips: Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> = [];
@@ -125,7 +134,6 @@ export function ChatMissionCard({
         : pendingTask ? 'queued'
           : mission.status === 'reviewing' ? 'awaiting review' : 'starting';
   const lead = mission.coordinatorMention || mission.coordinator;
-  const peekLive = !terminal && live;
   const peekAuthor = tracePeek?.author
     || (runningTask ? (runningTask.assigneeMention || runningTask.assignee) : '')
     || '';
@@ -138,7 +146,7 @@ export function ChatMissionCard({
     || (!terminal ? 'Waiting for an agent update' : '');
   // Peek is collapsed-only activity exposure. When open, the stream/tasks are the UI.
   // Settled missions without useful activity text skip the second rail entirely.
-  const showPeek = !open && Boolean(peekLabel) && (terminal || peekLive || Boolean(tracePeek || runningTask || pendingTask || attentionTask));
+  const showPeek = !open && Boolean(peekLabel) && (terminal || live || Boolean(tracePeek || runningTask || pendingTask || attentionTask));
   async function toggleTimeline() {
     const next = !timelineOpen;
     setTimelineOpen(next);
@@ -181,6 +189,8 @@ export function ChatMissionCard({
   const card = (
     <div
       className={`chat-mission-card is-${mission.status}${live ? ' is-live' : ''}${open ? ' is-open' : ''}`}
+      data-mission-id={mission.id}
+      style={{ '--mission-accent': missionAccent(mission.id) } as CSSProperties}
       data-open={open ? 'true' : 'false'}
       data-message-id={replyMessage?.id}
       role="button"
@@ -230,7 +240,7 @@ export function ChatMissionCard({
         {showPeek && (
           <button
             type="button"
-            className={`chat-mission-peek${peekLive ? ' is-live' : ''}`}
+            className={`chat-mission-peek${live ? ' is-live' : ''}`}
             tabIndex={-1}
             onClick={() => setOpen((value) => !value)}
             onContextMenu={openMissionContextMenu}
@@ -239,7 +249,10 @@ export function ChatMissionCard({
             {/* Empty gutter matches the status-dot column; header owns the spinner. */}
             <span className="chat-mission-peek-gutter" aria-hidden="true" />
             {peekAuthor && <span className="chat-mission-peek-author">{peekAuthor}</span>}
-            <span className={`chat-mission-peek-label${peekLive ? ' chat-working-output' : ''}`}>{peekLabel}</span>
+            <span className="chat-mission-peek-copy">
+              {runningTask && tracePeek?.live && <span className="chat-mission-peek-task">{runningTask.title}</span>}
+              <span className="chat-mission-peek-label">{peekLabel}</span>
+            </span>
           </button>
         )}
       </div>

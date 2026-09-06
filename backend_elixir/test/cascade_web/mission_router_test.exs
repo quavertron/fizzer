@@ -119,6 +119,10 @@ defmodule CascadeWeb.MissionRouterTest do
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions"},
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/history"},
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id"},
+             {"GET",
+              "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation"},
+             {"POST",
+              "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation"},
              {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/tasks"},
              {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/children"},
              {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/children/join"},
@@ -548,6 +552,69 @@ defmodule CascadeWeb.MissionRouterTest do
     assert json(response)["steering"]["status"] == "queued"
     assert [prompt] = SQL.one("SELECT prompt FROM chat_mission_tasks WHERE id=?", [added.task.id])
     assert prompt =~ "Narrow the work."
+  end
+
+  test "interpretation is available to its live coordinator, atomically publishes, and rejects workers and foreign scope",
+       ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Interpret HTTP"
+      })
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Worker",
+        assignee: ctx.worker.id
+      })
+
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+        status: "blocked",
+        summary: "Changed blocker"
+      })
+
+    [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Interpret", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: wake.dispatch.id
+      )
+
+    :ok = Dispatches.attach_run(wake.dispatch.id, run.id)
+    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+
+    path =
+      "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/missions/#{created.mission.id}/interpretation"
+
+    response = request(ctx, :get, path <> "?coordinator=#{ctx.coordinator.id}", nil, run.id)
+    assert response.status == 200
+    state = json(response)
+
+    input = %{
+      coordinatorRegistrationId: ctx.coordinator.id,
+      revision: state["revision"],
+      fingerprint: state["fingerprint"],
+      assessment: "Blocked; delivery remains open",
+      body: "The blocker changed; the worker is still independent."
+    }
+
+    assert request(ctx, :post, path, input).status == 409
+
+    assert request(ctx, :post, path, %{input | coordinatorRegistrationId: ctx.worker.id}, run.id).status ==
+             409
+
+    posted = request(ctx, :post, path, input, run.id)
+    assert posted.status == 200
+    assert request(ctx, :post, path, input, run.id).resp_body == posted.resp_body
+    {:ok, message} = Messages.get(ctx.channel.id, ctx.user.id, json(posted)["messageId"])
+    assert message.body == input.body
+    assert message.registrationId == ctx.coordinator.id
+    SQL.exec("UPDATE chat_mission_tasks SET run_id=? WHERE id=?", [run.id, added.task.id])
+    assert request(ctx, :post, path, input, run.id).status == 409
   end
 
   defp request(ctx, method, path, body \\ nil, run_id \\ nil) do

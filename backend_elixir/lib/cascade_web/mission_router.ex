@@ -103,6 +103,41 @@ defmodule CascadeWeb.MissionRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation" do
+    authenticated(conn, nil, fn conn, user ->
+      case Cascade.Missions.Interpretation.get(
+             user.id,
+             channel_id,
+             mission_id,
+             query(conn, "coordinator")
+           ) do
+        {:ok, result} -> JSON.send(conn, 200, result)
+        error -> route_error(conn, 404, error, "Interpretation not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation" do
+    authenticated(conn, :vault, fn conn, user ->
+      case Cascade.Missions.Interpretation.record(
+             user,
+             channel_id,
+             mission_id,
+             string_body(conn, "coordinatorRegistrationId"),
+             conn.body_params,
+             run_id(conn),
+             callback(conn, :events)
+           ) do
+        {:ok, result} ->
+          Cascade.Missions.DispatchReannouncer.wake()
+          JSON.send(conn, 200, result)
+
+        error ->
+          route_error(conn, 409, error, "Could not record interpretation")
+      end
+    end)
+  end
+
   post "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/tasks" do
     authenticated(conn, :vault, fn conn, user ->
       input = %{

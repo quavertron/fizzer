@@ -23,6 +23,8 @@ import { shouldRenderRunPanel } from './ChatGroupRow';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
 import { SafeMarkdownImage } from './ChatMarkdown';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { MissionMessageLabel } from './ChatMissionCard';
+import type { MissionMessageIdentity } from '../chat/missionIdentity';
 import { SwipeToReply } from './SwipeToReply';
 import type { ChatMessage } from '../chat/types';
 
@@ -153,6 +155,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   runningMessageState,
   /** Nested in a mission card: no outer chrome; stream is the mission body. */
   embedded = false,
+  missionIdentity,
   /** When true, skip the local collapse toggle and always show the stream. */
   forceOpen = false,
 }: {
@@ -165,6 +168,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   onHydrateMessage?: (message: ChatMessage) => void;
   runningMessageState: ReadonlyMap<string, { latestId: string; count: number }>;
   embedded?: boolean;
+  missionIdentity?: MissionMessageIdentity;
   forceOpen?: boolean;
 }) {
   const live = trace.some((m) => isLiveAgentStatus(m.status));
@@ -232,6 +236,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
           forceOpen ? 'is-forced-open' : '',
         ].filter(Boolean).join(' ')}
       >
+        {!embedded && missionIdentity && <MissionMessageLabel identity={missionIdentity} />}
         {!forceOpen && (
           <button
             type="button"
@@ -240,7 +245,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
             aria-expanded={streamOpen}
           >
             {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
-            <span className={`chat-work-trace-summary${live ? ' chat-working-output' : ''}`} title={label}>
+            <span className="chat-work-trace-summary" title={label}>
               {label}
             </span>
             <ChevronRight size={13} className={`chat-work-trace-chevron${streamOpen ? ' open' : ''}`} />

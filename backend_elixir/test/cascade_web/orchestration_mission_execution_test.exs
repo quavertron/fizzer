@@ -347,7 +347,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
 
     [run_id] = SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch.id])
     assert is_integer(run_id)
-    assert Store.get(run_id).prompt =~ "You must evaluate the next useful step"
+    assert Store.get(run_id).prompt =~ "offer exactly one new bounded work suggestion"
     refute Store.get(run_id).prompt =~ "Do not offer a new proactive suggestion"
     refute Store.get(run_id).prompt =~ "start a durable mission"
     assert {:ok, transcript} = Messages.list(ctx.owner_channel.id, ctx.owner.id)
@@ -419,7 +419,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
         SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id=?", [source])
 
       assert is_integer(run)
-      assert Store.get(run).prompt =~ "must evaluate"
+      assert Store.get(run).prompt =~ "offer exactly one new bounded work suggestion"
       assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
       assert length(Regex.scan(~r/run:delegate/, packet)) == 1
       :ok = stop_supervised(DispatchReannouncer)
@@ -635,7 +635,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
              CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
 
     assert duplicate.id == run.id
-    assert Store.get(run.id).prompt =~ "include --verification when useful"
+    assert Store.get(run.id).prompt =~ "cascade-chat mission interpret"
     refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
     refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
 

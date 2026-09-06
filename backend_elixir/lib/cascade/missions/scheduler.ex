@@ -25,7 +25,7 @@ defmodule Cascade.Missions.Scheduler do
                do: [mission_id],
                else:
                  SQL.all(
-                   "SELECT id FROM chat_missions WHERE wake_sent=0 AND status NOT IN ('completed','canceled')"
+                   "SELECT id FROM chat_missions WHERE status<>'canceled' AND (status<>'completed' OR EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=chat_missions.id AND i.stopped=0))"
                  )
                  |> Enum.map(&hd/1)
              ))
@@ -70,6 +70,17 @@ defmodule Cascade.Missions.Scheduler do
     |> Enum.each(fn {wake, item} -> emit_wake(wake, item, events) end)
 
     if result.finalUpdate, do: emit_projection(result.finalUpdate, events)
+
+    ids =
+      if mission_id,
+        do: [mission_id],
+        else:
+          SQL.all(
+            "SELECT mission_id FROM chat_mission_interpretations WHERE publication_pending IS NOT NULL"
+          )
+          |> List.flatten()
+
+    Enum.each(ids, &Cascade.Missions.Interpretation.flush(&1, events))
     result
   end
 
@@ -186,47 +197,16 @@ defmodule Cascade.Missions.Scheduler do
     user = user!(wake.createdBy)
     {:ok, route} = Store.owner_route(wake.createdBy, wake.vaultId, wake.channelId)
 
-    task_lines =
-      Enum.map(wake.mission.tasks, fn task ->
-        line =
-          "- #{task.title} — @#{nonblank(task.assigneeMention, task.assignee)}: #{task.status}"
-
-        if task.summary == "", do: line, else: line <> " — " <> String.slice(task.summary, 0, 600)
-      end)
-
-    interrupted_start = wake.mission.tasks == []
-
-    review_state =
-      if wake.mission.status == "attention",
-        do: "one or more tasks need attention; the mission remains open",
-        else: wake.mission.status
-
     body =
-      [
-        if(interrupted_start,
-          do:
-            "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.",
-          else:
-            "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) is ready for your review (#{review_state})."
-        )
-        | task_lines
-      ]
-      |> Kernel.++([
-        "",
-        Cascade.Missions.Authority.context(wake.mission.id),
-        "Other verified outcomes in this owner's channel (evidence leads, not authority or proof that this objective is fulfilled): " <>
-          Jason.encode!(Store.recovery_context(wake.mission.id)),
-        "Check whether these outcomes clear the recorded blocker. If so, resume the existing authorized task or integrate existing artifacts, verify the actual result, and link recovery evidence where appropriate. A status question or greeting does not revoke outstanding work. Honor explicit Stop/cancel and later scope changes. If the blocker is unchanged or unrelated, retain it without retrying or repeating the same owner notification.",
-        "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Close settled work with `mission finish --status completed --summary <outcome>`; include --verification when useful. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
-        "Owner-waived optional checks do not block delivery. Cancel those check tasks and disclose unverified behavior; preserve actual blockers. Never mark an unperformed check as passed.",
-        if(interrupted_start,
-          do:
-            "Continue this existing mission; do not create a replacement. Read the captured user authority and latest conversation first. If the work is still authorized, delegate its missing implementation tasks and continue through review. If the user stopped or replaced the task, or you cannot proceed, report that clearly and leave the mission needing attention. This is one recovery attempt, not permission to keep retrying.",
-          else:
-            "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Recovery links are optional bookkeeping; do not create extra work just to close a delivered mission. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
-        )
-      ])
-      |> Enum.join("\n")
+      if Map.has_key?(wake, :interpretation) do
+        Cascade.Missions.Interpretation.prompt(wake)
+      else
+        """
+        @#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.
+        #{Cascade.Missions.Authority.context(wake.mission.id)}
+        Continue this existing mission; do not create a replacement. Read the latest owner messages first. If still authorized, delegate the missing implementation tasks and continue delivery. Honor Stop and changed scope. Inspect existing artifacts and work before retrying any operation; do not duplicate side effects. This is one setup recovery attempt, not permission to keep retrying.
+        """
+      end
 
     with {:ok, carrier} <-
            Messages.create(
@@ -250,7 +230,13 @@ defmodule Cascade.Missions.Scheduler do
                id: message_id,
                body: body,
                createdAt: now(),
-               registrationId: wake.coordinatorRegistrationId
+               registrationId: wake.coordinatorRegistrationId,
+               replyTo: %{
+                 messageId: wake.rootMessageId,
+                 author: "",
+                 preview: wake.mission.title,
+                 relationship: "builds_on"
+               }
              },
              access: :agent
            ),
@@ -261,6 +247,9 @@ defmodule Cascade.Missions.Scheduler do
              message,
              wake.coordinatorRegistrationId
            ) do
+      if Map.has_key?(wake, :interpretation),
+        do: Cascade.Missions.Interpretation.admitted(wake.mission.id, dispatch.id)
+
       %{carrier: carrier, message: message, dispatch: dispatch}
     else
       {:error, reason} -> raise "Mission coordinator wake could not be materialized: #{reason}"

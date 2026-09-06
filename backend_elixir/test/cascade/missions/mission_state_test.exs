@@ -70,7 +70,7 @@ defmodule Cascade.Missions.MissionStateTest do
     }
   end
 
-  test "a worker reporting a blocker is reviewed only after its run settles", ctx do
+  test "a worker reporting a blocker can be interpreted before its run settles", ctx do
     {:ok, created} = mission(ctx, "Settle before review")
     {:ok, added} = task(ctx, created.mission.id, "Worker")
     [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
@@ -87,10 +87,10 @@ defmodule Cascade.Missions.MissionStateTest do
         summary: "Missing workspace"
       })
 
-    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    assert [_] = Scheduler.schedule(created.mission.id).wakeDispatches
     :ok = RunStore.finish(run.id, "completed", "Reported missing workspace")
     {:ok, result} = Scheduler.settle_run(run.id, "completed", "Reported missing workspace")
-    assert length(result.scheduled.wakeDispatches) == 1
+    assert result.scheduled.wakeDispatches == []
     assert Scheduler.schedule(created.mission.id).wakeDispatches == []
   end
 
@@ -436,6 +436,15 @@ defmodule Cascade.Missions.MissionStateTest do
       assert replay.wakeDispatch == nil
       assert length(wake_rows(created.mission.id)) == 2
 
+      {:ok, interpreted} =
+        RunStore.start(ctx.vault.id, nil, "Interpret", "codex",
+          chat_dispatch_id: wake.dispatch.id
+        )
+
+      :ok = Dispatches.attach_run(wake.dispatch.id, interpreted.id)
+      acknowledge(ctx, created.mission.id, interpreted)
+      :ok = RunStore.finish(interpreted.id, "completed", "Handled current findings")
+
       {:ok, _} =
         Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{status: "pending"})
 
@@ -756,6 +765,7 @@ defmodule Cascade.Missions.MissionStateTest do
 
     :ok = Dispatches.attach_run(wake.dispatch.id, review.id)
     assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    acknowledge(ctx, created.mission.id, review)
     :ok = RunStore.finish(review.id, "completed", "Cannot close without authority")
     SQL.exec("UPDATE runs SET finished_at=datetime('now','-2 minutes') WHERE id=?", [review.id])
 
@@ -927,6 +937,7 @@ defmodule Cascade.Missions.MissionStateTest do
       RunStore.start(ctx.vault.id, nil, "review", "codex", chat_dispatch_id: dispatch_id)
 
     :ok = Dispatches.attach_run(dispatch_id, review.id)
+    acknowledge(ctx, original.id, review)
     :ok = RunStore.finish(review.id, "completed", "Waiting for disk recovery")
 
     # A worker's completed summary alone must not trigger cross-mission recovery.
@@ -971,6 +982,7 @@ defmodule Cascade.Missions.MissionStateTest do
       RunStore.start(ctx.vault.id, nil, "recheck", "codex", chat_dispatch_id: wake.dispatch.id)
 
     :ok = Dispatches.attach_run(wake.dispatch.id, recheck.id)
+    acknowledge(ctx, original.id, recheck)
     :ok = RunStore.finish(recheck.id, "completed", "Unrelated evidence; blocker unchanged")
     assert Scheduler.schedule(original.id).wakeDispatches == []
   end
@@ -1567,73 +1579,77 @@ defmodule Cascade.Missions.MissionStateTest do
 
   test "schema creates every table and index with one-statement execution and upgrades legacy rows",
        ctx do
-    for table <-
-          ~w(chat_mission_recovery_evidence chat_mission_events chat_mission_tasks chat_missions chat_agent_dispatches) do
-      SQL.exec("DROP TABLE IF EXISTS #{table}")
-    end
+    SQL.transaction(fn ->
+      for table <-
+            ~w(chat_mission_interpretations chat_mission_recovery_evidence chat_mission_events chat_mission_tasks chat_missions chat_agent_dispatches) do
+        SQL.exec("DROP TABLE IF EXISTS #{table}")
+      end
 
-    SQL.exec("""
-    CREATE TABLE chat_agent_dispatches (
-      id TEXT PRIMARY KEY,message_id TEXT NOT NULL,channel_id TEXT NOT NULL,
-      registration_id TEXT NOT NULL,run_id INTEGER,created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(message_id,registration_id)
-    )
-    """)
+      SQL.exec("""
+      CREATE TABLE chat_agent_dispatches (
+        id TEXT PRIMARY KEY,message_id TEXT NOT NULL,channel_id TEXT NOT NULL,
+        registration_id TEXT NOT NULL,run_id INTEGER,created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(message_id,registration_id)
+      )
+      """)
 
-    SQL.exec("""
-    CREATE TABLE chat_missions (
-      id TEXT PRIMARY KEY,vault_id TEXT NOT NULL,channel_id TEXT NOT NULL,root_message_id TEXT NOT NULL,
-      coordinator_registration_id TEXT NOT NULL,title TEXT NOT NULL,objective TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'active',summary TEXT NOT NULL DEFAULT '',wake_sent INTEGER NOT NULL DEFAULT 0,
-      created_by INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel_id,root_message_id)
-    )
-    """)
+      SQL.exec("""
+      CREATE TABLE chat_missions (
+        id TEXT PRIMARY KEY,vault_id TEXT NOT NULL,channel_id TEXT NOT NULL,root_message_id TEXT NOT NULL,
+        coordinator_registration_id TEXT NOT NULL,title TEXT NOT NULL,objective TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',summary TEXT NOT NULL DEFAULT '',wake_sent INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel_id,root_message_id)
+      )
+      """)
 
-    SQL.exec("""
-    CREATE TABLE chat_mission_tasks (
-      id TEXT PRIMARY KEY,mission_id TEXT NOT NULL,title TEXT NOT NULL,
-      assignee_registration_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',
-      summary TEXT NOT NULL DEFAULT '',dispatch_id TEXT,run_id INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-    """)
+      SQL.exec("""
+      CREATE TABLE chat_mission_tasks (
+        id TEXT PRIMARY KEY,mission_id TEXT NOT NULL,title TEXT NOT NULL,
+        assignee_registration_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',
+        summary TEXT NOT NULL DEFAULT '',dispatch_id TEXT,run_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+      """)
 
-    SQL.exec(
-      "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,status,created_by) VALUES('legacy-mission',?,?,?,?,?,'blocked',?)",
-      [ctx.vault.id, ctx.channel.id, ctx.root.id, ctx.coordinator.id, "Legacy", ctx.user.id]
-    )
+      SQL.exec(
+        "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,status,created_by) VALUES('legacy-mission',?,?,?,?,?,'blocked',?)",
+        [ctx.vault.id, ctx.channel.id, ctx.root.id, ctx.coordinator.id, "Legacy", ctx.user.id]
+      )
 
-    SQL.exec(
-      "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,summary) VALUES('legacy-task','legacy-mission','Child',?,'blocked','Dependency “Parent” ended failed.')",
-      [ctx.worker.id]
-    )
+      SQL.exec(
+        "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,summary) VALUES('legacy-task','legacy-mission','Child',?,'blocked','Dependency “Parent” ended failed.')",
+        [ctx.worker.id]
+      )
 
-    assert :ok == MissionSchema.ensure!()
+      assert :ok == MissionSchema.ensure!()
 
-    assert Enum.sort(SQL.columns("chat_mission_tasks")) |> Enum.member?("depends_on_json")
-    assert "reasoning_effort" in SQL.columns("chat_agent_dispatches")
+      assert Enum.sort(SQL.columns("chat_mission_tasks")) |> Enum.member?("depends_on_json")
+      assert "reasoning_effort" in SQL.columns("chat_agent_dispatches")
 
-    for object <-
-          ~w(chat_agent_dispatches_pending_idx chat_missions_channel_idx chat_mission_tasks_mission_idx chat_mission_tasks_dispatch_idx chat_mission_tasks_run_idx chat_mission_events_mission_idx) do
-      assert SQL.one("SELECT 1 FROM sqlite_master WHERE name=?", [object]) == [1]
-    end
+      for object <-
+            ~w(chat_agent_dispatches_pending_idx chat_missions_channel_idx chat_mission_tasks_mission_idx chat_mission_tasks_dispatch_idx chat_mission_tasks_run_idx chat_mission_events_mission_idx) do
+        assert SQL.one("SELECT 1 FROM sqlite_master WHERE name=?", [object]) == [1]
+      end
 
-    assert SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id='legacy-task'") == [
-             "pending",
-             ""
-           ]
+      assert SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id='legacy-task'") == [
+               "pending",
+               ""
+             ]
 
-    assert SQL.one("SELECT status FROM chat_missions WHERE id='legacy-mission'") == ["active"]
+      assert SQL.one("SELECT status FROM chat_missions WHERE id='legacy-mission'") == ["active"]
 
-    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'")
-           |> hd() >= 2
+      assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'")
+             |> hd() >= 2
 
-    before = SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'")
-    assert :ok == MissionSchema.ensure!()
+      before =
+        SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'")
 
-    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'") ==
-             before
+      assert :ok == MissionSchema.ensure!()
+
+      assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'") ==
+               before
+    end)
   end
 
   defp recovery_fixture(ctx) do
@@ -1907,6 +1923,34 @@ defmodule Cascade.Missions.MissionStateTest do
     }
 
     {created.mission, added.task, run, input}
+  end
+
+  defp acknowledge(ctx, mission_id, run) do
+    SQL.exec("UPDATE runs SET owner_user_id=? WHERE id=?", [ctx.user.id, run.id])
+
+    {:ok, state} =
+      Cascade.Missions.Interpretation.get(
+        ctx.user.id,
+        ctx.channel.id,
+        mission_id,
+        ctx.coordinator.id
+      )
+
+    assert {:ok, _} =
+             Cascade.Missions.Interpretation.record(
+               ctx.user,
+               ctx.channel.id,
+               mission_id,
+               ctx.coordinator.id,
+               %{
+                 "revision" => state.revision,
+                 "fingerprint" => state.fingerprint,
+                 "assessment" => "Existing evidence leaves the objective unchanged",
+                 "noMaterialChange" => true
+               },
+               run.id,
+               Cascade.Chat.Events.Noop
+             )
   end
 
   defp mission(ctx, title) do

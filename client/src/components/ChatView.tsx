@@ -27,6 +27,7 @@ import { ChatSidebarButtons } from './ChatSidebarButtons';
 import { ChatWorkTrace } from './ChatWorkTrace';
 import { ReportDialog } from './ReportDialog';
 import { hasRunActivity } from '../chat/harnessActivity';
+import { missionMessageIdentities } from '../chat/missionIdentity';
 import { segmentTranscript, workTracePeek, type ChatMessageGroup } from '../chat/workTrace';
 import { chatMessageStore, useChannelMessages } from '../chat/messageStore';
 import { applyRemoteChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
@@ -405,10 +406,11 @@ export const ChatView = memo(function ChatView({
   const agentAuthors = useMemo(() => new Set(
     registeredAgentRows.flatMap((agent) => [agent.label, agent.registration.displayName].filter(Boolean)),
   ), [registeredAgentRows]);
+  const missionIdentities = useMemo(() => missionMessageIdentities(sortedMessages), [sortedMessages]);
   // Collapse multi-agent chatter into TUI-style work traces between human turns.
   const transcriptSegments = useMemo(
-    () => segmentTranscript(sortedMessages, { agentAuthors }),
-    [agentAuthors, sortedMessages],
+    () => segmentTranscript(sortedMessages, { agentAuthors, missionIdentities }),
+    [agentAuthors, sortedMessages, missionIdentities],
   );
   const registrationById = useMemo(() => {
     const byId = new Map<string, ChatAgentRegistration>();
@@ -980,6 +982,7 @@ export const ChatView = memo(function ChatView({
                     planUsage={getMessagePlanUsage(head)}
                     latestRunningMessageId={runState?.latestId}
                     runningSiblingCount={runState?.count || 0}
+                    missionIdentities={missionIdentities}
                     steeringPromptLabels={steeringPromptLabels}
                     mentionableAliases={mentionableAliases}
                     notes={notes}
@@ -1061,6 +1064,7 @@ export const ChatView = memo(function ChatView({
                     onHydrateMessage={onHydrateMessage}
                     runningMessageState={runningMessageState}
                     embedded={missionHasTrace}
+                    missionIdentity={segment.trace.map((message) => missionIdentities.get(message.id)).find(Boolean)}
                   />
                 );
                 const peek = workTracePeek(segment.trace);
@@ -1092,6 +1096,7 @@ export const ChatView = memo(function ChatView({
                     planUsage={getMessagePlanUsage(displayCarrier)}
                     latestRunningMessageId={undefined}
                     runningSiblingCount={0}
+                    missionIdentities={missionIdentities}
                     steeringPromptLabels={steeringPromptLabels}
                     mentionableAliases={mentionableAliases}
                     notes={notes}

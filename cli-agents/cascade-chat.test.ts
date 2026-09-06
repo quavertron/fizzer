@@ -430,3 +430,34 @@ test('app context helper reads and conditionally saves without requiring a vault
   await assert.rejects(execFileAsync(process.execPath, [cli, 'context', 'set', '--file', file, ...common], { env }), /requires --file and --revision/);
   assert.equal(requests.length, 2);
 });
+
+test('mission interpretation uses the scoped API and suppresses only acknowledged public or quiet replies', async (t) => {
+  const requests: Array<{ method?: string; path?: string; body: Record<string, unknown>; run?: string }> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : {}, run: req.headers['x-cascade-run-id'] as string });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { revision: 0, fingerprint: 'evidence' } : { revision: 1, messageId: 'explanation-1' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-interpret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, 'helper.json');
+  fs.writeFileSync(configPath, JSON.stringify({ registrationId: 'coordinator', chatChannelId: 'channel' }));
+  const input = { revision: 0, fingerprint: 'evidence', assessment: 'Delivered', body: 'Delivered.\nThe earlier answer still applies.' };
+  const file = path.join(dir, 'interpretation.json');
+  fs.writeFileSync(file, JSON.stringify(input));
+  const args = [cli, 'mission', 'interpret', '--mission', 'mission', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault', '--channel', 'channel'];
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: configPath, CASCADE_RUN_ID: '42' };
+  await execFileAsync(process.execPath, args, { env });
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, undefined);
+  await execFileAsync(process.execPath, [...args, '--file', file], { env });
+  assert.equal(requests[0].path, '/api/vaults/vault/channels/channel/missions/mission/interpretation?coordinator=coordinator');
+  assert.equal(requests[1].path, '/api/vaults/vault/channels/channel/missions/mission/interpretation');
+  assert.equal(requests[1].run, '42');
+  assert.deepEqual(requests[1].body, { ...input, coordinatorRegistrationId: 'coordinator' });
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, true);
+});
