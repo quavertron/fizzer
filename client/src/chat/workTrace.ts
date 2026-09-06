@@ -359,12 +359,17 @@ export function segmentTranscript(
 ): TranscriptSegment[] {
   const agentAuthors = options?.agentAuthors;
   const identities = options?.missionIdentities || missionMessageIdentities(messages);
+  // Relocate only when the destination card is present. A paginated transcript
+  // (or a stale identity cache) must never swallow work whose mission is absent.
+  const missionHosts = new Set(messages.flatMap((message) => message.mission ? [message.mission.id] : []));
   const missionTraces = new Map<string, ChatMessage[]>();
   messages = messages.filter((message) => {
     const identity = identities.get(message.id);
-    const assignment = Boolean(message.missionTaskId) && message.id.startsWith('mission-task-');
-    if (identity?.role !== 'Worker' || isDurableWorkArtifact(message)
-      || (!isLiveAgentStatus(message.status) && !assignment && !isSteeringContinuationMessage(message))) return true;
+    const detailsOnly = isLiveAgentStatus(message.status)
+      || isForcedWorkTraceLine(message)
+      || isSteeringContinuationMessage(message)
+      || !stripChatControlMarkers(message.body || '').trim();
+    if (!identity || !missionHosts.has(identity.id) || isDurableWorkArtifact(message) || !detailsOnly) return true;
     const trace = missionTraces.get(identity.id) || [];
     trace.push(message);
     missionTraces.set(identity.id, trace);
@@ -392,7 +397,7 @@ export function segmentTranscript(
         const message = messages[index];
         const messageIsAgent = Boolean(message.agentId || message.registrationId)
           || Boolean(agentAuthors && message.author && agentAuthors.has(message.author));
-        if (messageIsAgent || isWorkTraceCarrier(message)) break;
+        if (messageIsAgent || isWorkTraceCarrier(message) || isDurableWorkArtifact(message)) break;
         human.push(messages[index]);
         index += 1;
       }

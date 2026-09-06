@@ -1059,6 +1059,7 @@ export const ChatView = memo(function ChatView({
                     onHydrateMessage={onHydrateMessage}
                     runningMessageState={runningMessageState}
                     embedded={missionHasTrace}
+                    forceOpen={missionHasTrace}
                     missionIdentity={segment.trace.map((message) => missionIdentities.get(message.id)).find(Boolean)}
                   />
                 );

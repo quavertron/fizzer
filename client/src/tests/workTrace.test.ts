@@ -505,3 +505,54 @@ it('keeps coordinator explanations linked to the same identity without borrowing
   expect(identities.get(explanation.id)).toMatchObject({ id, role: 'Coordinator' });
   expect(missionAccent(id)).toBe(missionAccent(id));
 });
+
+it('moves separated coordinator and worker details into their durable mission while retaining answers and media', () => {
+  const id = 'bf3a6199-8132-4e75-8e58-ec37c097e5a2';
+  const root = msg({ id: 'root', author: 'Cascade', body: '', mission: {
+    id, rootMessageId: 'root', title: 'Consolidate details', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [],
+  } });
+  const human = msg({ id: 'human', author: 'Owner', body: 'How is it going?' });
+  const carrier = msg({ id: `agent-trace-${id}-1`, author: 'Astra', agentId: 'codex', body: '' });
+  const wake = msg({ id: `sys-mission-${id}-1`, author: 'Cascade', body: 'Review worker results' });
+  const run = msg({ id: 'run', author: 'Astra', agentId: 'codex', body: '<!-- fizzer-next:source -->', runId: 12, hasHarness: true,
+    replyTo: { messageId: wake.id, author: 'Astra', mention: 'astra', preview: '' } });
+  const answer = { ...run, id: 'answer', body: 'Deployed the fix.' };
+  const media = { ...run, id: 'media', body: '', attachments: [{ name: 'proof.txt', media_type: 'text/plain', url: '/proof.txt' }] };
+  const unrelated = msg({ id: 'unrelated', author: 'Astra', agentId: 'codex', body: '', runId: 13, hasHarness: true });
+  const segments = segmentTranscript([human, root, carrier, wake, run, answer, media, unrelated]);
+  expect(segments[1]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [carrier, wake, run] });
+  const chat = segments.flatMap((segment) => segment.kind === 'group' ? segment.group.messages : segment.updateGroups.flatMap((group) => group.messages));
+  expect(chat).toEqual([human, answer, media, unrelated]);
+  const trace = segments[1];
+  if (trace.kind !== 'work') throw new Error('Missing mission trace');
+  const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+    trace: trace.trace, embedded: true, forceOpen: true, selectedMessageId: null,
+    onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {}, runningMessageState: new Map(),
+  }));
+  expect(markup).toContain('Agent work trace');
+  expect(markup).toContain('data-message-id="run"');
+  expect(markup).not.toContain('chat-work-trace-toggle');
+});
+
+it('retains details when the destination mission is outside loaded history', () => {
+  const worker = msg({ id: 'worker', author: 'Astra', agentId: 'codex', body: '', runId: 12, missionTaskId: 'task', hasHarness: true });
+  const identities = new Map([[worker.id, { id: 'unloaded', title: 'Older mission', role: 'Worker' as const }]]);
+  const segments = segmentTranscript([worker], { missionIdentities: identities });
+  expect(segments).toEqual([{ kind: 'group', group: { messages: [worker] } }]);
+});
+
+it('resolves historic run and out-of-order reply links without associating nearby missions', () => {
+  const root = msg({ id: 'root', author: 'Astra', body: '', mission: {
+    id: 'mission', rootMessageId: 'root', title: 'Retry', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [{ id: 'task', title: 'Fix', runId: 22 } as never],
+  } });
+  const earlier = msg({ id: 'earlier', author: 'Astra', agentId: 'codex', runId: 21, body: '' });
+  const retry = { ...earlier, id: 'retry', missionTaskId: 'task' };
+  const reply = { ...earlier, id: 'reply', runId: 23, replyTo: { messageId: earlier.id, author: 'Astra', mention: 'astra', preview: '' } };
+  const unrelated = { ...earlier, id: 'unrelated', runId: 24 };
+  const identities = missionMessageIdentities([root, reply, earlier, retry, unrelated]);
+  expect(identities.get(reply.id)?.id).toBe('mission');
+  expect(identities.get(earlier.id)?.id).toBe('mission');
+  expect(identities.has(unrelated.id)).toBe(false);
+});

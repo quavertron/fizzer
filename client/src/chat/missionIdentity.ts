@@ -34,14 +34,24 @@ export function missionMessageIdentities(messages: ChatMessage[]): Map<string, M
       if (task.runId != null) runs.set(task.runId, worker);
     }
   }
-  for (const message of messages) {
-    if (!message.agentId && !message.registrationId) continue;
-    const missionId = message.id.match(/^(?:sys-mission-|mission-explanation-)([0-9a-f-]{36})-/i)?.[1];
-    const identity = (message.missionTaskId ? tasks.get(message.missionTaskId) : undefined)
-      || (message.runId != null ? runs.get(message.runId) : undefined)
-      || (missionId ? missions.get(missionId) : undefined)
-      || (message.replyTo?.messageId ? identities.get(message.replyTo.messageId) : undefined);
-    if (identity) identities.set(message.id, identity);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const message of messages) {
+      if (identities.has(message.id)) continue;
+      if (!message.agentId && !message.registrationId && !message.missionTaskId
+        && message.author !== 'Cascade') continue;
+      const missionId = message.id.match(/^(?:sys-mission-|agent-trace-|mission-explanation-)([0-9a-f-]{36})-/i)?.[1];
+      const identity = (message.missionTaskId ? tasks.get(message.missionTaskId) : undefined)
+        || (message.runId != null ? runs.get(message.runId) : undefined)
+        || (missionId ? missions.get(missionId) : undefined)
+        || (message.replyTo?.messageId ? identities.get(message.replyTo.messageId) : undefined);
+      if (identity) {
+        identities.set(message.id, identity);
+        if (message.runId != null) runs.set(message.runId, identity);
+        changed = true;
+      }
+    }
   }
   return identities;
 }
