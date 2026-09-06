@@ -31,6 +31,8 @@
     "build:vps": "npm run build && npm run build:client",
     "build:desktop-runtime": "node scripts/build-desktop-runtime.mjs",
     "start:vps": "dotenv -- sh -c 'export API_PORT=${API_PORT:-3000}; cd backend_elixir && mix run --no-halt'",
+    "tui": "cargo run --manifest-path tui/Cargo.toml",
+    "runner": "node scripts/desktop-runner-daemon.cjs",
     "test": "npm --workspace=client run test",
     "test:chat-scroll": "node scripts/test-chat-scroll-browser.mjs",
     "test:native": "node --test scripts/rebuild-natives.test.cjs",
