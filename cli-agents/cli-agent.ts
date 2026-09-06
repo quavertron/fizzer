@@ -1668,8 +1668,6 @@ const AGY_POLL_MS = 400;
  * response (no tools). Mid-tool gaps used to kill runs at ~10s.
  */
 const AGY_IDLE_AFTER_FINAL_POLLS = 8; // ~3.2s settle after final text
-/** Surface a terminal tool denial promptly instead of showing Thinking for 3 minutes. */
-const AGY_IDLE_AFTER_FAILED_TOOL_POLLS = 20; // ~8s for a recovery planner response
 /** Surface an interactive permission block promptly instead of freezing for 3 minutes. */
 const AGY_APPROVAL_STALL_POLLS = 15; // ~6s wait for approval
 /** Hard ceiling if the agent stalls mid-tool forever (still far above old 10s). */
@@ -1793,14 +1791,19 @@ function patchAntigravityProjectConfig(filePath: string, cwd?: string, yolo?: bo
   grants.add('command(*)');
 
   const home = os.homedir();
+  const fizzerDir = path.resolve(__dirname, '..');
   const allowedDirs = [
     home,
+    path.join(home, 'mystuff'),
+    path.join(home, 'mystuff', 'Coding'),
     path.join(home, '.cascade'),
     path.join(home, '.local'),
     path.join(home, '.local', 'bin'),
     path.join(home, '.config'),
     path.join(home, '.gitconfig'),
+    fizzerDir,
     cwd ? path.resolve(cwd) : '',
+    cwd ? path.dirname(path.resolve(cwd)) : '',
   ].filter(Boolean);
 
   const resources = (data.projectResources as { resources?: Array<{ gitFolder?: { folderUri?: string } }> })?.resources || [];
@@ -1811,6 +1814,8 @@ function patchAntigravityProjectConfig(filePath: string, cwd?: string, yolo?: bo
     }
   }
 
+  grants.add('read_file(/)');
+  grants.add('write_file(/)');
   for (const dir of allowedDirs) {
     for (const prefix of ['read_file', 'write_file']) {
       grants.add(`${prefix}(${dir})`);
@@ -1837,16 +1842,50 @@ function patchAntigravityProjectConfig(filePath: string, cwd?: string, yolo?: bo
  * plans/commands instead of blocking on Seatbelt restrictions or IDE prompts.
  */
 function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
-  const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
+  const home = os.homedir();
+  const fizzerDir = path.resolve(__dirname, '..');
+  const projectsDir = path.join(home, '.gemini', 'config', 'projects');
   if (fs.existsSync(projectsDir)) {
     for (const file of fs.readdirSync(projectsDir)) {
-      if (!file.endsWith('.json') || file === 'outside-of-project.json') continue;
+      if (!file.endsWith('.json')) continue;
       patchAntigravityProjectConfig(path.join(projectsDir, file), cwd, yolo);
     }
   }
   const configPath = resolveAntigravityProjectConfigPath(cwd, true);
   if (configPath) {
     patchAntigravityProjectConfig(configPath, cwd, yolo);
+  }
+
+  // Also patch global user settings in ~/.gemini/config/config.json
+  const globalConfigPath = path.join(home, '.gemini', 'config', 'config.json');
+  if (fs.existsSync(globalConfigPath)) {
+    try {
+      const gdata = JSON.parse(fs.readFileSync(globalConfigPath, 'utf-8')) as Record<string, unknown>;
+      const uSettings = (gdata.userSettings as Record<string, unknown>) || {};
+      const gGrants = new Set<string>();
+      const existing = (uSettings.globalPermissionGrants as { allow?: string[] })?.allow || [];
+      for (const g of existing) gGrants.add(g);
+      gGrants.add('read_file(*)');
+      gGrants.add('write_file(*)');
+      gGrants.add('command(*)');
+      gGrants.add('read_file(/)');
+      gGrants.add('write_file(/)');
+      for (const d of [
+        home,
+        path.join(home, 'mystuff'),
+        path.join(home, 'mystuff', 'Coding'),
+        fizzerDir,
+        cwd ? path.resolve(cwd) : '',
+        cwd ? path.dirname(path.resolve(cwd)) : '',
+      ]) {
+        if (!d) continue;
+        gGrants.add(`read_file(${d})`);
+        gGrants.add(`write_file(${d})`);
+      }
+      uSettings.globalPermissionGrants = { allow: [...gGrants] };
+      gdata.userSettings = uSettings;
+      fs.writeFileSync(globalConfigPath, `${JSON.stringify(gdata, null, 2)}\n`);
+    } catch { /* ignore */ }
   }
 }
 
@@ -2286,14 +2325,12 @@ async function runAntigravity(
   let done = false;
   let sawFinalPlanner = false;
   let idleAfterFinal = 0;
-  let idleAfterFailedTool = 0;
   let stallPolls = 0;
   let approvePolls = 0;
   const pendingToolIds: string[] = [];
   const pendingSandboxBypassToolIds = new Set<string>();
   const emittedTools = new Set<string>();
   let emittedText = false;
-  let failedToolError = '';
 
   const checkTranscript = (): void => {
     let content: string;
@@ -2311,9 +2348,6 @@ async function runAntigravity(
       if (sawFinalPlanner) {
         idleAfterFinal += 1;
         if (idleAfterFinal >= AGY_IDLE_AFTER_FINAL_POLLS) done = true;
-      } else if (failedToolError && pendingToolIds.length === 0) {
-        idleAfterFailedTool += 1;
-        if (idleAfterFailedTool >= AGY_IDLE_AFTER_FAILED_TOOL_POLLS) done = true;
       } else if (pendingSandboxBypassToolIds.size > 0 && stallPolls >= AGY_APPROVAL_STALL_POLLS) {
         const toolId = pendingToolIds.shift() || [...pendingSandboxBypassToolIds][0];
         pendingSandboxBypassToolIds.delete(toolId);
@@ -2329,7 +2363,6 @@ async function runAntigravity(
           },
         });
         emitHarness(emit, `\x1b[31m✖ ${errMsg}\x1b[0m\r\n`);
-        failedToolError = errMsg;
         done = true;
       } else if (stallPolls >= AGY_STALL_POLLS) {
         emitHarness(emit, `\x1b[33m# stall timeout after ${Math.round((AGY_STALL_POLLS * AGY_POLL_MS) / 1000)}s with no transcript progress\x1b[0m\r\n`);
@@ -2340,7 +2373,6 @@ async function runAntigravity(
 
     stallPolls = 0;
     idleAfterFinal = 0;
-    idleAfterFailedTool = 0;
 
     for (let i = processedLines; i < lines.length; i++) {
       let step: AgyTranscriptStep;
@@ -2360,9 +2392,6 @@ async function runAntigravity(
       }
 
       if (source === 'MODEL' && type === 'PLANNER_RESPONSE') {
-        // A new planner response means the model recovered from any prior
-        // failed command and is continuing the turn.
-        failedToolError = '';
         const text = (step.content || '').trim();
         const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
         const isThinking = toolCalls.length > 0 || agyIsPlannerMonologue(text);
@@ -2448,9 +2477,6 @@ async function runAntigravity(
           const isError = status === 'ERROR' || commandFailed || isPermissionDenied;
           if (isPermissionDenied) {
             agyTryAutoApprove(conversationId);
-            failedToolError = outText.trim().slice(-2000) || `${type} permission denied`;
-          } else {
-            failedToolError = '';
           }
           emit('user', {
             message: {
@@ -2493,10 +2519,6 @@ async function runAntigravity(
     approvePolls += 1;
     if (approvePolls % 15 === 0) agyTryAutoApprove(conversationId);
     if (!done) await sleep(AGY_POLL_MS);
-  }
-
-  if (failedToolError && !sawFinalPlanner) {
-    throw new Error(`Antigravity stopped after a failed tool call:\n${failedToolError}`);
   }
 
   if (!emittedText || !summary.trim() || agyIsPlannerMonologue(summary)) {
