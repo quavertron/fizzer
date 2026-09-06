@@ -600,6 +600,58 @@ defmodule Cascade.Missions.InterpretationTest do
     assert original.body == "Implemented locally; deployment is still pending."
   end
 
+  for acknowledge <- [true, false] do
+    @acknowledge acknowledge
+    test "steered retry yields to queued owner input; acknowledgment #{@acknowledge}", c do
+      finding(c, "Result awaiting interpretation")
+      [wake] = Scheduler.schedule(c.mission).wakeDispatches
+      review = run(c, wake.dispatch)
+      :ok = Runs.finish(review.id, "canceled", "Steered")
+      Runs.publish(review.id, "status", %{status: "canceled", steering: true})
+      assert Scheduler.schedule(c.mission).wakeDispatches == []
+
+      SQL.exec(
+        "UPDATE chat_mission_interpretations SET retry_after=datetime('now','-1 second') WHERE mission_id=?",
+        [c.mission]
+      )
+
+      [retry] = Scheduler.schedule(c.mission).wakeDispatches
+      batch = state(c).fingerprint
+
+      {:ok, message} =
+        Messages.create(c.user, c.vault, c.channel, %{body: "Please check the result"})
+
+      {:ok, owner} = Dispatches.create(c.user.id, c.channel, message, c.coordinator.id)
+
+      # The retry is older, but starting it now only invites immediate steering
+      # by the already queued owner turn. Keep its unacknowledged batch instead.
+      assert {:deferred, _} = Dispatches.for_execution(retry.dispatch.id)
+      assert {:ok, _} = Dispatches.for_execution(owner.id)
+      assert state(c).fingerprint == batch
+      assert is_nil(Runs.find_by_chat_dispatch(retry.dispatch.id))
+      owner_run = run(c, owner)
+      assert {:deferred, _} = Dispatches.for_execution(retry.dispatch.id)
+
+      if @acknowledge do
+        {{:ok, receipt}, _} = record(c, owner_run, %{"noMaterialChange" => true})
+        assert receipt.messageId == nil
+        :ok = Runs.finish(owner_run.id, "completed", "Acknowledged")
+        assert {:error, _} = Dispatches.for_execution(retry.dispatch.id)
+        assert Scheduler.schedule(c.mission).wakeDispatches == []
+        finding(c, "New result still needs interpretation")
+        [fresh] = Scheduler.schedule(c.mission).wakeDispatches
+        assert {:ok, _} = Dispatches.for_execution(fresh.dispatch.id)
+        refute state(c).fingerprint == batch
+      else
+        :ok = Runs.finish(owner_run.id, "completed", "Answered owner only")
+        assert {:ok, _} = Dispatches.for_execution(retry.dispatch.id)
+        assert state(c).fingerprint == batch
+        rerun = run(c, retry.dispatch)
+        {{:ok, _}, _} = record(c, rerun, %{"noMaterialChange" => true})
+      end
+    end
+  end
+
   test "unacknowledged completed or failed interpretation retries with bounded backoff; Stop prevents retry and publication",
        c do
     finding(c, "Meaningful result")

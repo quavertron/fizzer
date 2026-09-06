@@ -124,6 +124,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
        ctx do
     first = event!(ctx.sid, "run:delegate")
     Store.finish(first["runId"], "completed", "done")
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
     SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
 
     {:ok, root} =
@@ -167,11 +168,21 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         body: "@#{ctx.registration.mention} is it running?"
       })
 
-    assert {:ok, [_]} =
+    assert {:ok, [human]} =
              Dispatches.create_for_message(ctx.owner.id, ctx.owner_channel.id, followup)
 
-    assert {:ok, started} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
-    run = Store.get(started.id)
+    assert {:deferred, _} = Dispatches.for_execution(dispatch_id)
+    register_runner!(ctx.sid)
+    owner_turn = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(human.id).id == owner_turn["runId"]
+    refute Store.find_by_chat_dispatch(dispatch_id)
+    assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+
+    # Answering the human without acknowledging the batch must retain review.
+    Store.finish(owner_turn["runId"], "completed", "Answered only the human")
+    review_turn = event!(ctx.sid, "run:delegate")
+    run = Store.get(review_turn["runId"])
+    assert run.chat_dispatch_id == dispatch_id
 
     assert {:ok, duplicate} =
              CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)

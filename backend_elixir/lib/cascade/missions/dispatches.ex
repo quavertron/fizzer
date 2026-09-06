@@ -194,12 +194,39 @@ defmodule Cascade.Missions.Dispatches do
          true <- present?(dispatch.conversationId),
          true <- mission_pending?(dispatch),
          true <- Cascade.Chat.Continuations.ready?(dispatch) do
-      if Cascade.Chat.NextSteps.dispatch_ready?(dispatch),
-        do: {:ok, dispatch},
-        else: {:deferred, "Next-step checkpoint is waiting for idle work state or was disabled"}
+      cond do
+        interpretation_waiting_for_human?(dispatch) ->
+          {:deferred, "Mission interpretation is waiting for queued human input to settle"}
+
+        Cascade.Chat.NextSteps.dispatch_ready?(dispatch) ->
+          {:ok, dispatch}
+
+        true ->
+          {:deferred, "Next-step checkpoint is waiting for idle work state or was disabled"}
+      end
     else
       _ -> {:error, "Dispatch requester no longer has access to this agent or channel."}
     end
+  end
+
+  # A queued human turn would immediately steer this review. Let that turn
+  # reconcile the same durable batch first; only acknowledgment retires the wake.
+  # Check every execution refresh, including the transaction that starts the run.
+  defp interpretation_waiting_for_human?(dispatch) do
+    SQL.one(
+      """
+      SELECT 1 FROM chat_mission_interpretations i
+      JOIN chat_agent_dispatches d ON d.registration_id=?
+      JOIN chat_messages m ON m.id=d.message_id
+      LEFT JOIN runs r ON r.chat_dispatch_id=d.id
+      WHERE i.dispatch_id=? AND d.failed_at IS NULL
+        AND COALESCE(m.registration_id,'')='' AND COALESCE(m.agent_id,'')=''
+        AND COALESCE(m.mission_task_id,'')='' AND m.id NOT LIKE 'sys-%'
+        AND ((d.run_id IS NULL AND r.id IS NULL) OR r.status IN ('queued','running'))
+      LIMIT 1
+      """,
+      [dispatch.registration.id, dispatch.id]
+    ) == [1]
   end
 
   defp target_unchanged?(dispatch) do
