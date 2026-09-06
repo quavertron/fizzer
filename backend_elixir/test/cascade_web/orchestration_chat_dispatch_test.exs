@@ -177,7 +177,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
              CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
 
     assert duplicate.id == run.id
-    assert Store.get(run.id).prompt =~ "include --verification when useful"
+    assert Store.get(run.id).prompt =~ "cascade-chat mission interpret"
 
     assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch_id]) == [
              1
