@@ -79,6 +79,16 @@ defmodule Cascade.Chat.DispatchPromptTest do
     assert coordinator.prompt =~ "mission start --control-plane"
     assert coordinator.prompt =~ "mission delegate --anonymous"
     assert coordinator.prompt =~ "do not plan, verify, poll, or wait"
+    assert coordinator.prompt =~ "inspect `cascade-chat mission list` for existing ownership"
+
+    assert coordinator.prompt =~
+             "use `cascade-chat mission steer` for corrections to a running task"
+
+    assert coordinator.prompt =~
+             "Keep implementation, recovery, verification, and delivery under that same owner"
+
+    assert coordinator.prompt =~ "Honor explicit Stop; do not retry or restart canceled work"
+    refute coordinator.prompt =~ "for actionable work immediately use"
 
     ambient = build(c, trigger, %{ambientGroupChat: true, finalReplyOnly: true})
     assert ambient.prompt =~ "persistent participant"
