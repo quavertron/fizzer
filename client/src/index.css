@@ -9996,13 +9996,18 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   .documentation-assistant.is-expanded { inset: 0; width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
 }
 
-/* Restore the compact live-detail flicker from the original working decal. */
+/* Token updates advance the original trailing text window; clip older text at the left. */
 .chat-working-decal {
   min-width: 0;
   max-width: min(52vw, 38rem);
 }
 .chat-working-decal .thinking-spinner { flex-shrink: 0; }
 .chat-working-output {
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
   animation: chat-activity-flicker 1.45s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {

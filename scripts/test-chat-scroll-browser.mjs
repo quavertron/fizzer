@@ -83,6 +83,34 @@ try {
         assert.ok(!(await activity.innerText()).includes('Private reasoning'));
         assert.ok(await bottomDistance() <= 1, 'stream updates preserve the live edge');
       }
+      // Test motion from growing tokens, not just a class or a short replacement string.
+      let streamingText = 'Earlier context '.repeat(20) + 'MOVING words at the live edge';
+      const wordBounds = word => decal.evaluate((el, word) => {
+        const node = el.firstChild;
+        const start = node.textContent.indexOf(word);
+        if (start < 0) throw new Error(`Missing live word: ${word}`);
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + word.length);
+        const rect = range.getBoundingClientRect();
+        const viewport = el.getBoundingClientRect();
+        return { x: rect.x, right: rect.right, leftEdge: viewport.x, rightEdge: viewport.right };
+      }, word);
+      await page.evaluate(text => window.streamOutput(text), streamingText);
+      await page.waitForTimeout(100);
+      let previousWord = await wordBounds('MOVING');
+      assert.ok(previousWord.x >= previousWord.leftEdge && previousWord.right <= previousWord.rightEdge,
+        'the moving words must actually be visible, not clipped off the right edge');
+      for (const token of [' one', ' two', ' three']) {
+        streamingText += token;
+        await page.evaluate(text => window.streamOutput(text), streamingText);
+        await page.waitForTimeout(100);
+        const word = await wordBounds('MOVING');
+        const newest = await wordBounds(token.trim());
+        assert.ok(word.x < previousWord.x - 1, 'each arriving token moves existing words right-to-left');
+        assert.ok(newest.right <= newest.rightEdge + 1, 'the newest token stays visible at the right edge');
+        previousWord = word;
+      }
       assert.equal(await decal.evaluate(el => getComputedStyle(el).animationName), 'chat-activity-flicker');
       await page.emulateMedia({ reducedMotion: 'reduce' });
       assert.equal(await decal.evaluate(el => getComputedStyle(el).animationName), 'none');

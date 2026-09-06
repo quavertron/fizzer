@@ -9,7 +9,7 @@ import { isLiveAgentStatus } from './runBlocks';
 
 import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
-import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
+import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, recentLiveSnippet, stripTerminalNoise } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
 
 export interface ChatMessageGroup {
@@ -187,9 +187,7 @@ export function workTracePreview(body: string, max = 110): string {
 export function workTraceOutput(message: Pick<ChatMessage, 'status' | 'blocks'>): string {
   if (message.status !== 'running') return '';
   const block = message.blocks?.slice().reverse().find((block) => block.type === 'text' && !block.redacted && block.text?.trim());
-  const text = stripChatControlMarkers(stripTerminalNoise(block?.text || '')).replace(/\s+/g, ' ').trim();
-  // Follow the newest output, including when one text block grows in place.
-  return text.length > 180 ? `…${text.slice(-179)}` : text;
+  return recentLiveSnippet(stripChatControlMarkers(block?.text || ''));
 }
 
 export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body' | 'harnessLog'>): string {

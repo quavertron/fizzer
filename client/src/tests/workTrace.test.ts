@@ -404,7 +404,7 @@ it('updates the transient mission peek only from public text blocks', () => {
   ] });
   expect(workTracePeek([running])?.label).toBe('Checking the public output');
   expect(workTracePeek([{ ...running, blocks: [{ type: 'text', text: 'x'.repeat(200) + 'newest output' }] }])?.label)
-    .toBe('…' + 'x'.repeat(166) + 'newest output');
+    .toBe('…' + 'x'.repeat(74) + 'newest output');
   expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
 });
 
