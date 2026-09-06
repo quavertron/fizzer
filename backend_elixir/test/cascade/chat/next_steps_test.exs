@@ -85,13 +85,17 @@ defmodule Cascade.Chat.NextStepsTest do
              "cbad10329484a7a611ef7c9c5789bc88987431279e0fdd44d51817579d693676"
   end
 
-  test "enabled opportunity has grounded evidence and bounded acceptance", c do
+  test "enabled checkpoints require creative suggestions after active answers", c do
     enable(c)
     prompt = context(c)
     assert prompt =~ "fizzer-next:#{c.source.id}"
-    assert prompt =~ "Do not suggest for weak evidence"
-    assert prompt =~ "Actively discover worthwhile new opportunities"
-    assert prompt =~ "do not require a supplied unresolved issue"
+    assert prompt =~ "must offer exactly one new bounded work suggestion"
+    assert prompt =~ "after answering every active user request"
+    assert prompt =~ "label speculative benefits honestly"
+    assert prompt =~ "explicit Stop overrides"
+    refute prompt =~ "If there is no grounded suggestion"
+    assert prompt =~ "proportionate read-only discovery"
+    assert prompt =~ "An observed defect or proven need is not required"
     assert prompt =~ "features, experiments and simplifications"
     assert prompt =~ "no tools that implement proposed work until owner acceptance"
     assert prompt =~ "Do not fabricate defects or optimize for spending tokens"
@@ -114,7 +118,7 @@ defmodule Cascade.Chat.NextStepsTest do
   test "default off and disablement suppress a generated suggestion at publication", c do
     assert proposal(c).body == ""
     enable(c)
-    assert context(c) =~ "You may offer"
+    assert context(c) =~ "must offer exactly one"
     enable(c, false)
     assert proposal(c).body == ""
     assert context(c) =~ "overrides earlier suggestion settings"
@@ -199,11 +203,79 @@ defmodule Cascade.Chat.NextStepsTest do
 
     age(first)
     prompt = NextSteps.context(c.channel.id, c.member.id, decline.id)
-    assert prompt =~ "Do not offer a new"
+    assert prompt =~ "must offer exactly one"
     assert prompt =~ "Should fixing it be next?"
     assert prompt =~ "I need the editor stable for a demo"
     assert proposal(c).body == ""
     assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [c.channel.id]) == [0]
+  end
+
+  test "ignored proposals allow fresh owner checkpoints without acceptance or self-trigger loops",
+       c do
+    enable(c)
+    first = proposal(c)
+
+    {:ok, fresh} =
+      Messages.create(c.user, c.vault_id, c.channel.id, %{body: "What does a checkpoint mean?"})
+
+    prompt = NextSteps.context(c.channel.id, c.member.id, fresh.id)
+    assert prompt =~ "must offer exactly one"
+    assert prompt =~ "An ignored proposal is not acceptance"
+
+    input = %{
+      proposal_input(%{c | source: fresh})
+      | body:
+          "<!-- fizzer-next:#{fresh.id} -->\n\nA checkpoint is a chance to respond. A small glossary might make this clearer; should we add one?"
+    }
+
+    {:ok, saved} = Messages.create(c.user, c.vault_id, c.channel.id, input, access: :agent)
+    assert saved.body == input.body
+    assert proposal(%{c | source: fresh}).body == ""
+
+    assert SQL.one("SELECT feedback FROM chat_next_step_checks WHERE message_id=?", [first.id]) ==
+             [nil]
+
+    NextSteps.user_return(c.channel.id, c.member.id, saved.id)
+    assert NextSteps.context(c.channel.id, c.member.id, saved.id) =~ "Do not offer a new"
+
+    assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [saved.id]) ==
+             [0]
+
+    assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [c.channel.id]) == [0]
+  end
+
+  test "decline feedback and a different suggestion share one checkpoint and replay safely", c do
+    enable(c)
+    first = proposal(c)
+
+    {:ok, owner} =
+      Messages.create(c.user, c.vault_id, c.channel.id, %{body: "No, leave the updater alone."})
+
+    body =
+      "<!-- fizzer-next:#{owner.id} -->\n\nUnderstood. A keyboard shortcut guide might help navigation; should we add one?"
+
+    input = %{
+      proposal_input(c)
+      | body: "<!-- fizzer-next-feedback:#{first.id}:#{owner.id}:declined --> " <> body
+    }
+
+    {:ok, saved} = Messages.create(c.user, c.vault_id, c.channel.id, input, access: :agent)
+    assert saved.body == body
+
+    assert SQL.one("SELECT feedback FROM chat_next_step_checks WHERE message_id=?", [first.id]) ==
+             ["declined"]
+
+    assert SQL.one("SELECT outcome FROM chat_next_step_checks WHERE source_id=?", [owner.id]) == [
+             "proposed"
+           ]
+
+    {:ok, replay} =
+      Messages.update(c.user, c.vault_id, c.channel.id, saved.id, %{body: input.body},
+        access: :agent
+      )
+
+    assert replay.body == body
+    assert feedback(c, first, owner, "accepted").body == ""
   end
 
   test "acceptance uses the existing coordinator dispatch and owner authority record", c do
@@ -346,7 +418,7 @@ defmodule Cascade.Chat.NextStepsTest do
         body: "A new build error is now blocking the release."
       })
 
-    assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "You may offer"
+    assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "must offer exactly one"
     assert proposal(c).body == ""
     assert proposal(%{c | source: fresh}).body != ""
   end
@@ -361,7 +433,7 @@ defmodule Cascade.Chat.NextStepsTest do
     enable(c)
     Schema.ensure!()
     assert checks(c) == [[source, "enable", "pending"]]
-    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "must evaluate"
+    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "must offer exactly one"
     assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [c.channel.id]) == [0]
     enable(c, false)
     assert {:ok, []} = Dispatches.list_pending(c.user.id, c.channel.id)
@@ -391,17 +463,16 @@ defmodule Cascade.Chat.NextStepsTest do
     assert replay.body == body
   end
 
-  test "no-suggestion reasons settle the checkpoint durably and survive projection retries", c do
+  test "explicit Stop reasons settle the checkpoint durably and survive projection retries", c do
     enable(c)
 
     input = %{
       proposal_input(c)
-      | body:
-          "<!-- fizzer-next-none:#{c.source.id} --> No unresolved need is supported by the available evidence."
+      | body: "<!-- fizzer-next-none:#{c.source.id} --> Respecting your explicit Stop."
     }
 
     {:ok, saved} = Messages.create(c.user, c.vault_id, c.channel.id, input, access: :agent)
-    assert saved.body == "No unresolved need is supported by the available evidence."
+    assert saved.body == "Respecting your explicit Stop."
 
     assert SQL.one("SELECT outcome,reason FROM chat_next_step_checks WHERE source_id=?", [
              c.source.id

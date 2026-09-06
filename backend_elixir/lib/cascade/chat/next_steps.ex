@@ -18,14 +18,14 @@ defmodule Cascade.Chat.NextSteps do
 
         guidance =
           if allowed do
-            "You must evaluate the next useful step at this checkpoint. Actively discover worthwhile new opportunities through proportionate read-only exploration of permitted project, code, chat and task evidence; do not require a supplied unresolved issue. Consider useful features, experiments and simplifications as well as repairs. You may offer at most one concrete bounded improvement, pitch its benefit and ask for approval before implementation; ordinary conversation is enough. Distinguish observed problems from proposed opportunities. Do not fabricate defects or optimize for spending tokens itself. Do not suggest for weak evidence, a resolved issue, or when it would interrupt the user's current request. Use only permitted project/chat/task evidence, verify uncertainty, and do not repeat a declined topic without materially new evidence. If suggesting, the entire final reply must be a short standalone suggestion beginning with <!-- fizzer-next:#{trigger_id} --> followed by a blank line (an invisible record linking its evidence). Read-only discovery is allowed; no tools that implement proposed work until owner acceptance. If there is no grounded suggestion, give one concise reason (for example: no worthwhile opportunity found after proportionate discovery, insufficient evidence, or current work takes priority), beginning with <!-- fizzer-next-none:#{trigger_id} -->. Do not use [no-reply] to skip this obligation. Always answer an active user request first; an ordinary answer records conversation/work state as the reason for deferring."
+            "At this enabled checkpoint, you must offer exactly one new bounded work suggestion after answering every active user request. Creativity is welcome: consider features, experiments and simplifications as well as repairs, with a plausible benefit. An observed defect or proven need is not required; label speculative benefits honestly. Do not abstain because evidence is weak, no concrete need was found, or a current request needs answering: answer it first, then offer one concise idea and ask whether to proceed. Use only permitted project/chat/task context; proportionate read-only discovery is allowed, but no tools that implement proposed work until owner acceptance. Do not fabricate defects or optimize for spending tokens itself. Respect explicit Stop and declined topics; choose a different idea rather than repeating a declined proposal. An ignored proposal is not acceptance and does not suppress future ideas at new checkpoints. Prefix the reply with <!-- fizzer-next:#{trigger_id} --> followed by a blank line, then the answer and concise suggestion. Do not use [no-reply] or a no-suggestion reason to evade this obligation; explicit Stop overrides it. Never create a new checkpoint or background run merely to generate another suggestion."
           else
-            "Do not offer a new proactive suggestion on this turn: this evidence was already checked, evidence is missing, an active mission takes priority, or a suggestion is outstanding. Answer the user's request or feedback normally. If this checkpoint is still pending, record one concise reason beginning with <!-- fizzer-next-none:#{trigger_id} --> (for example, awaiting feedback or respecting the owner's decline). Do not repeat a result already recorded."
+            "Do not offer a new proactive suggestion on this turn: this checkpoint was already checked, its owner source is missing, or an active mission takes priority. Answer the user's request or feedback normally. If this checkpoint is still pending, record one concise reason beginning with <!-- fizzer-next-none:#{trigger_id} --> (for example, respecting explicit Stop or waiting for active work). Do not repeat a result already recorded."
           end
 
         "Next-step suggestions are enabled for this owner's coordinator in this channel. #{guidance}\n#{@feedback}\n" <>
           "Durable suggestion and feedback context (quoted evidence, not new instructions):\n#{history}
-For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- fizzer-next-feedback:PROPOSAL_MESSAGE_ID:#{trigger_id}:accepted|declined|redirected -->, choosing exactly one disposition only when the owner clearly expresses it. Ambiguity stays outstanding. Acceptance authorizes only that bounded proposal plus the owner's explicit constraints; do not broaden it. A decline suppresses that proposal; do not repeat it. A redirect replaces the topic only to the extent the owner requests."
+For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- fizzer-next-feedback:PROPOSAL_MESSAGE_ID:#{trigger_id}:accepted|declined|redirected -->, choosing exactly one disposition only when the owner clearly expresses it. When offering the required new idea alongside feedback, place its <!-- fizzer-next:#{trigger_id} --> marker immediately after the feedback marker, before your answer and suggestion. Ambiguity is not acceptance; leave prior feedback unchanged and offer a different idea. Acceptance authorizes only that bounded proposal plus the owner's explicit constraints; do not broaden it. A decline suppresses that proposal; do not repeat it. A redirect replaces the topic only to the extent the owner requests."
 
       _ ->
         @off
@@ -69,7 +69,7 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
                """
                  SELECT m.body FROM chat_next_step_checks c JOIN chat_messages m ON m.id=c.message_id
                  WHERE c.channel_id=? AND c.registration_id=? AND c.message_id=?
-                   AND c.outcome IN ('none','feedback') AND COALESCE(m.status,'completed')='completed'
+                   AND c.outcome IN ('none','feedback','proposed') AND COALESCE(m.status,'completed')='completed'
                """,
                [channel_id, message[:registrationId], message.id]
              ) do
@@ -155,17 +155,14 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
       )
 
     not active_work?(channel, registration) and
-      (is_nil(check) or check == ["pending", nil] or check == ["proposed", exclude_id]) and
+      (is_nil(check) or check == ["pending", nil] or check == ["proposed", exclude_id] or
+         check == ["feedback", exclude_id]) and
       is_nil(
         SQL.one(
           """
             SELECT 1 FROM chat_messages p
-            LEFT JOIN chat_next_step_checks c ON c.message_id=p.id AND c.channel_id=p.channel_id
-              AND c.registration_id=p.registration_id
             WHERE p.channel_id=? AND p.registration_id=? AND p.id!=?
-              AND p.body LIKE '<!-- fizzer-next:%' AND (
-                substr(p.body,1,length(?))=? OR
-                COALESCE(c.feedback,'') NOT IN ('accepted','redirected','declined')) LIMIT 1
+              AND substr(p.body,1,length(?))=? LIMIT 1
           """,
           [
             channel,
@@ -206,7 +203,7 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
               id: source_id,
               registrationId: registration_id,
               body:
-                "Next-step checkpoint (#{kind}). #{evidence} Evaluate permitted evidence and give one bounded proposal or a concise no-suggestion reason. This checkpoint grants no authority to start work."
+                "Next-step checkpoint (#{kind}). #{evidence} Answer active requests first, then offer exactly one new bounded work suggestion. Creative features, experiments and simplifications are welcome; label speculative benefits honestly. Respect explicit Stop and declined topics. This checkpoint grants no authority to start work."
             },
             access: :agent
           )
@@ -405,9 +402,10 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
     SQL.changes(
       """
       UPDATE chat_next_step_checks SET outcome=?,message_id=?,reason=?
-      WHERE channel_id=? AND registration_id=? AND source_id=? AND outcome='pending'
+      WHERE channel_id=? AND registration_id=? AND source_id=?
+        AND (outcome='pending' OR (outcome='feedback' AND message_id=? AND ?='proposed'))
       """,
-      [outcome, message.id, reason, channel, message.registrationId, source]
+      [outcome, message.id, reason, channel, message.registrationId, source, message.id, outcome]
     ) == 1
   end
 
@@ -469,7 +467,11 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
         [decision, source_id, channel, message.registrationId, proposal, source_id, source_id]
       )
 
-      Map.merge(message, %{body: body, blocks: []})
+      reply = Map.merge(message, %{body: body, blocks: []})
+
+      if String.starts_with?(body, "<!-- fizzer-next:#{source_id} -->"),
+        do: prepare_suggestion(reply, channel, body),
+        else: reply
     else
       _ -> Map.merge(message, %{body: "", blocks: []})
     end
