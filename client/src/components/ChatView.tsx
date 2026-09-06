@@ -645,7 +645,9 @@ export const ChatView = memo(function ChatView({
   const updateBottomStickiness = useCallback(() => {
     const element = messagesRef.current;
     if (!element) return;
-    const atBottom = isAtScrollBottom(element);
+    // Once the reader leaves the live edge, the pin tolerance must not
+    // reattach them during the first few pixels of a wheel/touch gesture.
+    const atBottom = isAtScrollBottom(element, wasAtBottomRef.current ? 48 : 1);
     // Programmatic pins set scrollTop then fire scroll events. Content can also
     // grow mid-pin (agent stream / harness), leaving !atBottom without any user
     // gesture — that must NOT clear wasAtBottom or sticky follow dies for the
@@ -846,6 +848,8 @@ export const ChatView = memo(function ChatView({
             // at the bottom or an upward swipe must not disarm sticky-follow
             // just before a new agent row changes the layout.
             if (shouldDetachStickyForTouch(startY, currentY)) {
+              wasAtBottomRef.current = false;
+              userScrollQuietUntilRef.current = performance.now() + 220;
               pendingSendFollowRef.current = false;
               programmaticScrollRef.current = false;
               userScrollIntentUntilRef.current = performance.now() + 500;
@@ -857,6 +861,8 @@ export const ChatView = memo(function ChatView({
             // detaches from the live edge. Downward wheel noise at the bottom
             // previously caused intermittent missed agent auto-scrolls.
             if (shouldDetachStickyForWheel(event.deltaY)) {
+              wasAtBottomRef.current = false;
+              userScrollQuietUntilRef.current = performance.now() + 220;
               pendingSendFollowRef.current = false;
               programmaticScrollRef.current = false;
               userScrollIntentUntilRef.current = performance.now() + 180;
