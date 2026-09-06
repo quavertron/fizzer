@@ -48,7 +48,10 @@ defmodule Cascade.Realtime.Events do
   def emit(intent) when is_map(intent) do
     case field(intent, :event) do
       event when event in [@chat_created, @chat_updated] ->
-        if String.starts_with?(to_string(field(field(intent, :message) || %{}, :id)), "sys-next-") do
+        message = field(intent, :message) || %{}
+
+        if String.starts_with?(to_string(field(message, :id)), "sys-next-") or
+             Cascade.Chat.Messages.terminal_shell?(message) do
           # Background dispatch consumes these durable envelopes. Retract the old
           # visible projection too, including on clients that predate this fix.
           emit_chat_deleted(%{

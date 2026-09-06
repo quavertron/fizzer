@@ -3,6 +3,7 @@
  */
 
 import type { ChatBlock, ChatMessage } from './types';
+import { stripChatControlMarkers } from './shared';
 
 export function newId(prefix: string) {
   const uuid = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -111,9 +112,9 @@ export function captureChatMessageSnapshotBaseline(
   };
 }
 
-function hasVisibleChatMessageContent(message: ChatMessage): boolean {
+export function hasVisibleChatMessageContent(message: ChatMessage): boolean {
   return Boolean(
-    message.body?.trim()
+    stripChatControlMarkers(message.body || '')
     || message.images?.length
     || message.hasImages
     || message.attachments?.length
@@ -121,6 +122,17 @@ function hasVisibleChatMessageContent(message: ChatMessage): boolean {
     || message.changeRequest
     || message.clarification,
   );
+}
+
+/** Keep useful trace data while excluding settled, content-free history rows. */
+export function isEmptyChatMessage(message: ChatMessage): boolean {
+  if (isLiveAgentStatus(message.status) || message.status === 'failed') return false;
+  const body = stripChatControlMarkers(message.body || '');
+  const agent = message.agentId || message.registrationId || message.runId != null;
+  return !hasVisibleChatMessageContent({ ...message, body: agent && isLiveAgentPlaceholder(body) ? '' : body })
+    && !message.harnessLog?.trim() && !message.hasHarness
+    && !message.blocks?.some((block) => block.text?.trim() || block.redacted
+      || block.type === 'tool_use' || block.type === 'tool_result');
 }
 
 /** Server projections replace content; retain only detail omitted by slim list rows. */
@@ -155,13 +167,7 @@ export function mergeRemoteChatMessage(local: ChatMessage, remote: ChatMessage, 
 export function applyRemoteChatMessage(existing: ChatMessage[], remote: ChatMessage, slim = false): ChatMessage[] {
   const index = existing.findIndex((message) => message.id === remote.id);
   const local = index === -1 ? undefined : existing[index];
-  const emptyAgentShell = Boolean(
-    remote.agentId
-    && !isLiveAgentStatus(remote.status)
-    && isLiveAgentPlaceholder(remote.body)
-    && !hasVisibleChatMessageContent({ ...remote, body: '' }),
-  );
-  if (emptyAgentShell) {
+  if (isEmptyChatMessage(remote)) {
     const localIsHuman = Boolean(local && !local.agentId && !local.registrationId);
     // Never drop a human prompt. Dual-post suppress only applies to agent shells.
     if (localIsHuman) return existing;

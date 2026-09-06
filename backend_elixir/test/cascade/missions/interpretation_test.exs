@@ -150,6 +150,60 @@ defmodule Cascade.Missions.InterpretationTest do
     refute [c.mission, c.user.id] in Scheduler.maintenance_missions()
   end
 
+  test "prompt evidence references are lossless and full retrieval remains unchanged", c do
+    evidence =
+      String.duplicate(
+        "Verified build and focused regression; production is pending, not verified. ",
+        5
+      )
+
+    finding(c, evidence, "blocked")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "assessment" => evidence,
+        "questions" => [%{"id" => "question", "question" => "Is production verified?"}],
+        "commitments" => [
+          %{
+            "id" => "deliver",
+            "summary" => evidence,
+            "status" => "open",
+            "taskId" => c.task,
+            "accepted" => false,
+            "blocker" => %{"reason" => nil, "resumeWhen" => nil}
+          }
+        ],
+        "evidenceReferences" => ["run:123", "message:source"]
+      })
+
+    full = state(c)
+    before = Jason.encode!(full)
+    compact = Interpretation.encode_context(full) |> Jason.decode!()
+    assert byte_size(Jason.encode!(compact)) < byte_size(before)
+    assert expand_context_refs(compact, compact) == Jason.decode!(before)
+    assert state(c) == full
+    assert Interpretation.context(c.user.id, c.channel, c.coordinator.id) =~ "contextRef"
+    assert full.understanding["assessment"] == evidence
+    assert full.understanding["commitments"] |> hd() |> Map.fetch!("accepted") == false
+  end
+
+  defp expand_context_refs(%{"contextRef" => path}, root) do
+    Enum.reduce(path, root, fn key, value ->
+      if is_integer(key), do: Enum.at(value, key), else: Map.fetch!(value, key)
+    end)
+  end
+
+  defp expand_context_refs(map, root) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {key, expand_context_refs(value, root)} end)
+
+  defp expand_context_refs(list, root) when is_list(list),
+    do: Enum.map(list, &expand_context_refs(&1, root))
+
+  defp expand_context_refs(value, _root), do: value
+
   test "routine prompts retire fulfilled commitments while full retrieval and correction evidence survive",
        c do
     finding(c, "Mixed responsibilities")

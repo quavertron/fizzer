@@ -30,6 +30,27 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
+  it('omits empty history but gives useful trace-only rows a visible details control', () => {
+    const rows = [
+      msg({ id: 'human-empty', author: 'owner', body: ' \n' }),
+      msg({ id: 'agent-empty', author: 'Astra', agentId: 'codex', body: '' }),
+      msg({ id: 'marker', author: 'Astra', agentId: 'codex', body: '<!-- fizzer-next-none:done -->' }),
+      msg({ id: 'trace', author: 'Astra', agentId: 'codex', body: '', hasHarness: true }),
+    ];
+    const segments = segmentTranscript(rows);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].kind).toBe('work');
+    if (segments[0].kind !== 'work') throw new Error('Expected visible work details');
+    expect(segments[0].trace.map((message) => message.id)).toEqual(['trace']);
+    expect(segments[0].updateGroups).toEqual([]);
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace: segments[0].trace, selectedMessageId: null,
+      onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
+      runningMessageState: new Map(),
+    }));
+    expect(markup).toContain('Work details');
+  });
+
   it('keeps completed process details behind the trace toggle', () => {
     const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
       trace: [msg({ id: 'done', author: 'Sol', missionTaskId: 'task', body: 'Child verified and joined.\n\nTask: internal-task-id' })],
@@ -178,6 +199,7 @@ describe('workTrace', () => {
     const segments = segmentTranscript([carrier, wake]);
     expect(segments).toHaveLength(1);
     expect(segments[0]).toMatchObject({ kind: 'work', carrier, trace: [wake] });
+    expect(segmentTranscript([carrier])).toEqual([]);
   });
 
   it('keeps different agents and artifacts in chronological rows', () => {
@@ -523,7 +545,8 @@ it('moves separated coordinator and worker details into their durable mission wh
   const segments = segmentTranscript([human, root, carrier, wake, run, answer, media, unrelated]);
   expect(segments[1]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [carrier, wake, run] });
   const chat = segments.flatMap((segment) => segment.kind === 'group' ? segment.group.messages : segment.updateGroups.flatMap((group) => group.messages));
-  expect(chat).toEqual([human, answer, media, unrelated]);
+  expect(chat).toEqual([human, answer, media]);
+  expect(segments.at(-1)).toMatchObject({ kind: 'work', trace: [unrelated] });
   const trace = segments[1];
   if (trace.kind !== 'work') throw new Error('Missing mission trace');
   const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
@@ -539,7 +562,7 @@ it('retains details when the destination mission is outside loaded history', () 
   const worker = msg({ id: 'worker', author: 'Astra', agentId: 'codex', body: '', runId: 12, missionTaskId: 'task', hasHarness: true });
   const identities = new Map([[worker.id, { id: 'unloaded', title: 'Older mission', role: 'Worker' as const }]]);
   const segments = segmentTranscript([worker], { missionIdentities: identities });
-  expect(segments).toEqual([{ kind: 'group', group: { messages: [worker] } }]);
+  expect(segments).toEqual([{ kind: 'work', id: worker.id, trace: [worker], fullGroups: [], updateGroups: [] }]);
 });
 
 it('resolves historic run and out-of-order reply links without associating nearby missions', () => {

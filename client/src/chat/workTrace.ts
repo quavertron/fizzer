@@ -1,4 +1,4 @@
-import { isLiveAgentStatus } from './runBlocks';
+import { hasVisibleChatMessageContent, isEmptyChatMessage, isLiveAgentPlaceholder, isLiveAgentStatus } from './runBlocks';
 /**
  * Collapse multi-agent / mission channel chatter into a work-trace partition.
  *
@@ -292,7 +292,8 @@ export function partitionWorkRun(
   if (messages.length === 0) return { trace: [], full: [] };
 
   // Lone ordinary reply → normal chat bubble (no work chrome).
-  if (messages.length === 1 && !isForcedWorkTraceLine(messages[0])) {
+  if (messages.length === 1 && !isForcedWorkTraceLine(messages[0])
+    && (isLiveAgentStatus(messages[0].status) || shouldRenderFullInWorkRun(messages[0], true))) {
     return { trace: [], full: messages };
   }
 
@@ -318,6 +319,8 @@ function shouldRenderFullInWorkRun(
 ): boolean {
   if (message.mission || message.changeRequest || message.clarification) return true;
   if (message.hasImages || message.images?.length || message.attachments?.length) return true;
+  if (!isLiveAgentStatus(message.status) && isLiveAgentPlaceholder(stripChatControlMarkers(message.body || ''))
+    && !hasVisibleChatMessageContent({ ...message, body: '' })) return false;
   // Final user-facing answer of a multi-message run.
   if (
     isLast
@@ -357,6 +360,9 @@ export function segmentTranscript(
     missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   },
 ): TranscriptSegment[] {
+  messages = messages.filter((message, index) => !isEmptyChatMessage(message)
+    || (isWorkTraceCarrier(message) && messages[index + 1]
+      && isSystemCascadeMessage(messages[index + 1]) && !isEmptyChatMessage(messages[index + 1])));
   const agentAuthors = options?.agentAuthors;
   const identities = options?.missionIdentities || missionMessageIdentities(messages);
   // Relocate only when the destination card is present. A paginated transcript

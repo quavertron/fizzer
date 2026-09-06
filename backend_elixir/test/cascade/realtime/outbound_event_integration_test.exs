@@ -376,15 +376,19 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     assert get_in(bob_event, ["args", Access.at(0), "dispatches", Access.at(0), "id"]) ==
              "bob-dispatch"
 
-    for event <- ["vault:chatMessageCreated", "vault:chatMessageUpdated"] do
+    for event <- ["vault:chatMessageCreated", "vault:chatMessageUpdated"],
+        {id, body} <- [
+          {"sys-next-completed-hidden", "Internal checkpoint instructions"},
+          {"empty-completed-hidden", " \n"}
+        ] do
       Events.emit(%{
         event: event,
         vaultId: source.id,
         channelId: source_channel.id,
         message: %{
           message
-          | id: "sys-next-completed-hidden",
-            body: "Internal checkpoint instructions"
+          | id: id,
+            body: body
         },
         dispatches: [%{id: "internal-dispatch", registration: %{ownerUserId: 1}}]
       })
@@ -401,7 +405,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
           )
 
         payload = get_in(retraction, ["args", Access.at(0)])
-        assert payload["messageId"] == "sys-next-completed-hidden"
+        assert payload["messageId"] == id
         refute Map.has_key?(payload, "message")
         refute Map.has_key?(payload, "dispatches")
       end

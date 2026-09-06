@@ -76,7 +76,8 @@ defmodule Cascade.Chat.Messages do
       message = normalized_message(input, route.sourceChannelId, attribution, user.id)
 
       SQL.transaction(fn ->
-        with :ok <- authorize_repost(user, route, message, access) do
+        with :ok <- authorize_repost(user, route, message, access),
+             :ok <- validate_content(message) do
           insert_message(route, message)
           refresh_note_grants(user.id, vault_id, route.sourceChannelId, message)
           index_backlinks(route, message)
@@ -1129,14 +1130,37 @@ defmodule Cascade.Chat.Messages do
               String.trim(message.body || "") not in ["", "Thinking..."]))
 
   @doc false
-  def terminal_shell?(message),
-    do:
-      not is_nil(message[:agentId]) and message[:status] not in ["queued", "sending", "running"] and
-        String.trim(message.body || "") in ["", "Thinking...", "Thinking…", "Queued..."] and
-        not Enum.any?(
-          [:mission, :clarification, :changeRequest, :images, :attachments, :hasImages],
-          &(message[&1] not in [nil, false, []])
-        )
+  def terminal_shell?(message) do
+    body =
+      message
+      |> map_value("body", "")
+      |> to_string()
+      |> String.replace(~r/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?(?:-->|$)/, "")
+      |> String.trim()
+
+    agent? =
+      Enum.any?(~w(agentId registrationId runId), &(map_value(message, &1) not in [nil, ""]))
+
+    map_value(message, "status") not in ~w(queued sending running failed) and
+      (body == "" or (agent? and body in ["Thinking...", "Thinking…", "Queued..."])) and
+      not Enum.any?(
+        ~w(mission clarification changeRequest images attachments hasImages hasHarness),
+        &(map_value(message, &1) not in [nil, false, [], %{}])
+      ) and
+      String.trim(to_string(map_value(message, "harnessLog", ""))) == "" and
+      not Enum.any?(List.wrap(map_value(message, "blocks")), fn block ->
+        map_value(block, "type") in ~w(tool_use tool_result) or
+          map_value(block, "redacted") == true or
+          String.trim(to_string(map_value(block, "text", ""))) != ""
+      end)
+  end
+
+  defp validate_content(message) do
+    # Internal carriers retain identity for linked system work; they are not prose.
+    if terminal_shell?(message) and not String.starts_with?(message.id, ["sys-", "agent-trace-"]),
+      do: {:error, "Message must contain text, media or a card"},
+      else: :ok
+  end
 
   defp forwardable?(message),
     do:

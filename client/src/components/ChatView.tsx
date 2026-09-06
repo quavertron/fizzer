@@ -26,11 +26,10 @@ import { usePopupMenu } from '../ui/popupMenu';
 import { ChatSidebarButtons } from './ChatSidebarButtons';
 import { ChatWorkTrace } from './ChatWorkTrace';
 import { ReportDialog } from './ReportDialog';
-import { hasRunActivity } from '../chat/harnessActivity';
 import { missionMessageIdentities } from '../chat/missionIdentity';
-import { segmentTranscript, workTracePeek, type ChatMessageGroup } from '../chat/workTrace';
+import { isWorkTraceCarrier, segmentTranscript, workTracePeek, type ChatMessageGroup } from '../chat/workTrace';
 import { chatMessageStore, useChannelMessages } from '../chat/messageStore';
-import { applyRemoteChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
+import { applyRemoteChatMessage, isEmptyChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
 import {
   CHAT_NOTE_MARKER,
   canGroupChatMessages,
@@ -291,15 +290,7 @@ export const ChatView = memo(function ChatView({
   const sortedMessages = useMemo(() => {
     // Persisted rows follow server commit order. Optimistic rows still use their
     // timestamps so a persisted agent shell cannot jump above its local prompt.
-    const visible = messages.filter((message) => {
-      if (isLiveAgentStatus(message.status)) return true;
-      if (message.status === 'failed' || message.status === 'canceled') return true;
-      if (message.body?.trim()) return true;
-      if (message.images?.length || message.attachments?.length) return true;
-      if (hasRunActivity(message)) return true;
-      if (message.agentId || message.registrationId || message.runId != null) return false;
-      return true;
-    });
+    const visible = messages.filter((message) => !isEmptyChatMessage(message) || isWorkTraceCarrier(message));
     return sortChatMessages(visible);
   }, [messages]);
   const historySentinelRef = useRef<HTMLDivElement | null>(null);
