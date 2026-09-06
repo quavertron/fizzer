@@ -182,6 +182,35 @@ The Actions run is green only after the host and public checks pass. A pushed
 commit or a healthy endpoint without matching revision evidence is not a
 successful release.
 
+## Deployment storage
+
+Schema-identical rolling releases use a schema-only disposable database, not
+full production copies. They require the 1 GiB free-space floor, and preserve
+live writes on rollback. Full-copy capacity is checked only when startup changes
+schema, before cloning data and again before closing the maintenance gate.
+
+Migration capacity conservatively budgets `4 * (database + WAL) + 3 * corpus +
+1 GiB` on the data filesystem; the snapshot filesystem must also have room for
+`database + WAL + corpus + 1 GiB`. Corpus includes both vault files and QMD.
+Reflink savings are never assumed. Disposable preflight clones are deleted after
+the protocol check, before snapshot creation. The allowance includes checker
+scratch, SQLite journals, the rollback copy, and post-start verification; rapid
+concurrent growth or a larger migration can still exhaust the reserve and fail
+closed. Deployment is not a substitute for provisioning space for growing data.
+
+Unused Docker build cache is pruned toward 1 GB before the capacity checks and
+after successful deployment, without an age delay. Active cache can exceed that
+target. Images, active volumes, and recovery snapshots are not part of this prune.
+
+Cutover snapshots contain a checkpointed, SHA-256-checked `docs.db` plus the
+vault/QMD corpus. Automatic rollback restores the database only, while traffic is
+gated and the candidate stopped; the corpus is used by compatibility verification.
+These local snapshots are not a complete off-host disaster-recovery backup.
+Historical snapshots currently have no automatic expiry. Selecting a retention
+policy requires deciding which older recovery dates may be discarded; this
+change preserves them all. Consequently their historical and future growth is
+not bounded by the build-cache policy.
+
 ## Infrastructure security boundary
 
 The checked-in nginx policy applies bounded per-address authentication, API,

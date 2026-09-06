@@ -464,3 +464,42 @@ ${body}`], {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('full-copy capacity is required only for migrations and rechecked before gating traffic', () => {
+  assert.doesNotMatch(source, /verify_compose_runtime_shape\nensure_cutover_disk_capacity/);
+  assertOrderedWithin(functionBody('verify_migration_clone'),
+    '  ensure_cutover_disk_capacity',
+    '  mkdir -p "$PREFLIGHT_DIR/before-data" "$PREFLIGHT_DIR/after-data" "$PREFLIGHT_DIR/sqlite-scratch"');
+  assertOrderedWithin(functionBody('maintenance_cutover'),
+    '  ensure_cutover_disk_capacity', '  CUTOVER_STARTED=1', '  close_maintenance_gate');
+  assertOrderedWithin(functionBody('preflight_candidate'),
+    '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
+    '  cleanup_preflight', '  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"');
+  assert.match(source, /docker builder prune -af --keep-storage 1GB/);
+});
+
+test('capacity includes WAL, corpus, reserve, and a separate snapshot filesystem', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-capacity-'));
+  try {
+    fs.writeFileSync(path.join(directory, 'docs.db'), 'db');
+    fs.writeFileSync(path.join(directory, 'docs.db-wal'), 'wal');
+    const check = (dataFree, snapshotFree) => spawnSync('bash', ['-c', `
+      set -euo pipefail
+      DATA_DIR="$1"
+      LIVE_DB="$DATA_DIR/docs.db"
+      stat() { if [[ "$3" == *-wal ]]; then echo 104857600; else echo 1073741824; fi; }
+      du() { echo '204800 corpus'; }
+      install() { :; }
+      df() { echo 'Filesystem 1024-blocks Used Available Capacity Mounted';
+        if [[ "$2" == /var/backups/cascade ]]; then echo 'snapshot 99999999 0 ${snapshotFree} 0% /snapshot';
+        else echo 'data 99999999 0 ${dataFree} 0% /data'; fi; }
+      ${functionBody('ensure_cutover_disk_capacity')}
+      ensure_cutover_disk_capacity
+    `, 'test', directory], { encoding: 'utf8' });
+    // 4 * (1 GiB DB + 100 MiB WAL) + 3 * 200 MiB corpus + 1 GiB.
+    const required = 4 * (1048576 + 102400) + 3 * 204800 + 1048576;
+    assert.equal(check(required, 99999999).status, 0);
+    assert.match(check(required - 1, 99999999).stderr, /cutover needs/);
+    assert.match(check(required, 1048576).stderr, /snapshot filesystem lacks/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

@@ -579,6 +579,7 @@ boot_preflight_database() {
 
 verify_migration_clone() {
   echo "==> Candidate boot mutates schema; verifying maintenance-cutover compatibility"
+  ensure_cutover_disk_capacity
   mkdir -p "$PREFLIGHT_DIR/before-data" "$PREFLIGHT_DIR/after-data" "$PREFLIGHT_DIR/sqlite-scratch"
   if container_running "$CONTAINER_NAME"; then
     backup_running_database "$PREFLIGHT_DIR/before.db"
@@ -649,6 +650,11 @@ preflight_candidate() {
   docker run --rm --network host --entrypoint node \
     "$CANDIDATE_IMAGE" /app/deploy/preflight-client.mjs "http://127.0.0.1:$PREFLIGHT_PORT"
   docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null
+  # Compatibility and protocol checks are complete. Do not carry disposable
+  # database/corpus clones into the rollback snapshot and live verification.
+  cleanup_preflight
+  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"
+  chown -R 1000:1000 "$PREFLIGHT_DIR"
 }
 
 checkpoint_and_snapshot() {
@@ -796,14 +802,25 @@ ensure_cutover_disk_capacity() {
     return 1
   fi
 
-  local database_kb available_kb required_kb
+  local database_kb corpus_kb wal_kb available_kb required_kb snapshot_available_kb
   database_kb="$(( ($(stat -c '%s' "$LIVE_DB") + 1023) / 1024 ))"
   available_kb="$(df -Pk "$DATA_DIR" | awk 'NR==2 {print $4}')"
-  # Peak cutover storage includes isolated before/after copies, the immutable
-  # rollback snapshot, and the post-start verification backup. Keep 1 GiB free
-  # beyond those four logical database copies so a reflink-capable filesystem
-  # is an optimization, never an assumption.
-  required_kb="$(( database_kb * 4 + 1048576 ))"
+  wal_kb=0
+  if [[ -f "$LIVE_DB-wal" ]]; then
+    wal_kb="$(( ($(stat -c '%s' "$LIVE_DB-wal") + 1023) / 1024 ))"
+  fi
+  corpus_kb="$(du -sk --apparent-size "$DATA_DIR/.cascade/vaults" "$DATA_DIR/.cascade/qmd" | awk '{sum += $1} END {print sum+0}')"
+  # Before/after DBs plus checker copy and SQLite journal; corpus before/after
+  # plus checker scratch. WAL is a conservative allowance for uncheckpointed
+  # growth. No reflink/compression savings are assumed. Clones are removed
+  # before cutover; the same budget covers snapshot, live check and restore.
+  required_kb="$(( (database_kb + wal_kb) * 4 + corpus_kb * 3 + 1048576 ))"
+  install -d -m 0700 /var/backups/cascade
+  snapshot_available_kb="$(df -Pk /var/backups/cascade | awk 'NR==2 {print $4}')"
+  if (( snapshot_available_kb < database_kb + wal_kb + corpus_kb + 1048576 )); then
+    echo "Error: rollback snapshot filesystem lacks database/corpus headroom plus 1 GiB reserve." >&2
+    return 1
+  fi
   if (( available_kb < required_kb )); then
     echo "Error: cutover needs ${required_kb} KiB free for verified snapshots; only ${available_kb} KiB is available." >&2
     return 1
@@ -958,6 +975,7 @@ rolling_cutover() {
 
 maintenance_cutover() {
   echo "==> Persistent-state migration requires the snapshot-backed maintenance cutover"
+  ensure_cutover_disk_capacity
   CUTOVER_STARTED=1
   close_maintenance_gate
   verify_maintenance_gate
@@ -1013,16 +1031,13 @@ if already_running_release; then
   exit 0
 fi
 
-AVAIL_KB="$(df -k / | awk 'NR==2 {print $4}')"
-if [[ "$AVAIL_KB" -lt 2097152 ]]; then
-  echo "==> Low disk space — pruning unused Docker build cache"
-  docker builder prune -af --filter "until=24h" >/dev/null || true
-  AVAIL_KB="$(df -k / | awk 'NR==2 {print $4}')"
-  if [[ "$AVAIL_KB" -lt 1048576 ]]; then
-    echo "Error: less than 1 GiB free on disk; refusing a snapshot-backed deploy." >&2
-    df -h /
-    exit 1
-  fi
+# Builds can refill several GiB in minutes. Bound disposable build cache before
+# capacity checks, including failed attempts; never prune images or volumes.
+docker builder prune -af --keep-storage 1GB >/dev/null || true
+AVAIL_KB="$(df -Pk "$DATA_DIR" | awk 'NR==2 {print $4}')"
+if (( AVAIL_KB < 1048576 )); then
+  echo "Error: less than 1 GiB free; refusing deployment." >&2
+  exit 1
 fi
 
 # Remove only stopped Compose leftovers. Never stop the live app as cleanup.
@@ -1037,7 +1052,6 @@ fi
 
 load_release_candidate
 verify_compose_runtime_shape
-ensure_cutover_disk_capacity
 secure_production_environment
 preflight_candidate
 sync_nginx_security 3000 "$ROLLING_PORT"
@@ -1074,5 +1088,5 @@ bash "$ROOT/deploy/sync-desktop-installers.sh"
 
 echo "==> Pruning dangling images and old build cache"
 docker image prune -f >/dev/null || true
-docker builder prune -af --filter "until=72h" >/dev/null || true
+docker builder prune -af --keep-storage 1GB >/dev/null || true
 df -h / | awk 'NR==2 {printf "    Disk: %s used, %s free (%s)\n", $3, $4, $5}'
