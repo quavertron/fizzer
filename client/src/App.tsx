@@ -12,6 +12,8 @@ import {
 // CodeMirror (editor core plus every language mode via @codemirror/language-data)
 // is the heaviest dependency in the app and is only needed once a note tab is
 // actually open — keep it out of the initial chunk.
+// Keep run controls available when a deploy replaces unloaded menu chunks.
+import { SessionManager } from './components/SessionManager';
 const NoteEditor = lazy(() =>
   import('./components/NoteEditor').then((m) => ({ default: m.NoteEditor })),
 );
@@ -26,9 +28,6 @@ const CommandPalette = lazy(() =>
 );
 const AdminPanel = lazy(() =>
   import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })),
-);
-const SessionManager = lazy(() =>
-  import('./components/SessionManager').then((m) => ({ default: m.SessionManager })),
 );
 const SuperkanbanView = lazy(() =>
   import('./components/SuperkanbanView').then((m) => ({ default: m.SuperkanbanView })),
@@ -2828,31 +2827,29 @@ export default function App() {
         </div>
       </div>
       {sessionManagerOpen && (
-        <Suspense fallback={null}>
-          <SessionManager
-            open
-            runnerOnline={Boolean(runnerHealth?.online)}
-            focusSessionId={focusSessionId}
-            onFocusHandled={() => setFocusSessionId(null)}
-            onClose={() => { setFocusSessionId(null); setSessionManagerOpen(false); }}
-            onOpenChat={async (vaultId, channelId, channelTitle) => {
-              if (activeVaultIdRef.current !== vaultId) {
-                switchVaultWorkspace(vaultId);
-                await loadVaultData(vaultId);
-              }
-              openChatChannel(channelId, channelTitle);
-              setSessionManagerOpen(false);
-            }}
-            onCancel={handleCancelChatRun}
-            onInterrogate={async (vaultId, channelId, message) => {
-              if (activeVaultIdRef.current !== vaultId) {
-                switchVaultWorkspace(vaultId);
-                await loadVaultData(vaultId);
-              }
-              await handleSendChatMessage(channelId, message);
-            }}
-          />
-        </Suspense>
+        <SessionManager
+          open
+          runnerOnline={Boolean(runnerHealth?.online)}
+          focusSessionId={focusSessionId}
+          onFocusHandled={() => setFocusSessionId(null)}
+          onClose={() => { setFocusSessionId(null); setSessionManagerOpen(false); }}
+          onOpenChat={async (vaultId, channelId, channelTitle) => {
+            if (activeVaultIdRef.current !== vaultId) {
+              switchVaultWorkspace(vaultId);
+              await loadVaultData(vaultId);
+            }
+            openChatChannel(channelId, channelTitle);
+            setSessionManagerOpen(false);
+          }}
+          onCancel={handleCancelChatRun}
+          onInterrogate={async (vaultId, channelId, message) => {
+            if (activeVaultIdRef.current !== vaultId) {
+              switchVaultWorkspace(vaultId);
+              await loadVaultData(vaultId);
+            }
+            await handleSendChatMessage(channelId, message);
+          }}
+        />
       )}
 
       {searchOpen && (
