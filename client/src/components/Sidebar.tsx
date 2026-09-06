@@ -31,7 +31,7 @@ import { CHAT_NOTE_MARKER } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
 import {
   Folder as FolderIcon, FolderOpen, FileText, Pin, Edit2, FolderPlus,
-  Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
+  Search, ChevronRight, MoreHorizontal, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
   Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
 } from 'lucide-react';
 
@@ -86,6 +86,7 @@ interface SidebarProps {
 type ContextMenu =
   | { x: number; y: number; kind: 'note'; id: string }
   | { x: number; y: number; kind: 'folder'; id: string }
+  | { x: number; y: number; kind: 'vault'; id: string }
   | { x: number; y: number; kind: 'root' };
 
 type ElectronUpdateAPI = {
@@ -403,7 +404,13 @@ export const Sidebar = memo(function Sidebar({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => { setContextMenu(null); setMoveMenu(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (contextMenu.kind === 'vault') {
+        sidebarRef.current?.querySelector<HTMLElement>(`[data-vault-id="${contextMenu.id}"]`)?.focus();
+      }
+      close();
+    };
     window.addEventListener('click', close);
     window.addEventListener('keydown', onKey);
     return () => {
@@ -899,19 +906,37 @@ export const Sidebar = memo(function Sidebar({
               .join('')
               .toUpperCase() || 'V';
             return (
-              <button
-                key={vault.id}
-                type="button"
-                className={`vault-rail-button${vault.id === activeVaultId ? ' is-active' : ''}`}
-                data-vault-id={vault.id}
-                onClick={() => onSelectVault(vault.id)}
-                aria-label={`Open vault ${vault.name}`}
-                aria-current={vault.id === activeVaultId ? 'page' : undefined}
-                title={vaultOptionLabel(vault)}
-              >
-                <span className="vault-rail-initials" aria-hidden="true">{initials}</span>
-                {activityDot(vaultActivity)}
-              </button>
+              <div className="vault-rail-item" key={vault.id}>
+                <button
+                  type="button"
+                  className={`vault-rail-button${vault.id === activeVaultId ? ' is-active' : ''}`}
+                  data-vault-id={vault.id}
+                  onClick={() => onSelectVault(vault.id)}
+                  onContextMenu={(event) => openMenu(event, { x: 0, y: 0, kind: 'vault', id: vault.id })}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+                    event.preventDefault();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setContextMenu({ x: rect.right, y: rect.top, kind: 'vault', id: vault.id });
+                  }}
+                  aria-label={`Open vault ${vault.name}`}
+                  aria-current={vault.id === activeVaultId ? 'page' : undefined}
+                  title={vaultOptionLabel(vault)}
+                >
+                  <span className="vault-rail-initials" aria-hidden="true">{initials}</span>
+                  {activityDot(vaultActivity)}
+                </button>
+                <button type="button" className="vault-rail-action vault-rail-options"
+                  aria-label={`Options for ${vault.name}`} title={`Options for ${vault.name}`}
+                  aria-haspopup="menu" aria-expanded={contextMenu?.kind === 'vault' && contextMenu.id === vault.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setContextMenu({ x: rect.right, y: rect.top, kind: 'vault', id: vault.id });
+                  }}>
+                  <MoreHorizontal size={14} aria-hidden="true" />
+                </button>
+              </div>
             );
           })}
         </div>
@@ -919,8 +944,8 @@ export const Sidebar = memo(function Sidebar({
           <button type="button" className="vault-rail-action" onClick={onOpenPublicVaults} aria-label="Browse public vaults" title="Browse public vaults">
             <Compass size={18} aria-hidden="true" />
           </button>
-          <button type="button" className="vault-rail-action" onClick={() => setVaultMenuOpen(true)} aria-label="Manage vaults" title="Manage vaults">
-            <Settings size={19} aria-hidden="true" />
+          <button type="button" className="vault-rail-action" onClick={() => { setCreatingVault(true); setJoiningVault(false); setVaultMenuOpen(true); }} aria-label="Create vault" title="Create vault">
+            <Plus size={19} aria-hidden="true" />
           </button>
         </div>
       </nav>
@@ -946,46 +971,24 @@ export const Sidebar = memo(function Sidebar({
         <button className="btn-icon sidebar-mobile-collapse" onClick={onCollapse} title="Collapse sidebar"><PanelLeftClose size={16} /></button>
       </div>
 
-      <div className="sidebar-vault-actions">
-        <button type="button" onClick={() => { setCreatingVault(true); setJoiningVault(false); setVaultMenuOpen(true); }}>Create vault</button>
-        <button type="button" onClick={() => setVaultMenuOpen(true)}>Manage vaults</button>
-      </div>
       {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry vaults</button></p>}
       {vaultMenuOpen && (
         <div ref={vaultManagerRef} className="vault-manager-menu" role="dialog" aria-modal="true" aria-label="Vault workspace">
           <div className="vault-manager-shell">
             <div className="vault-manager-heading">
-              <div><span>Manage vaults</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
+              <div><span>Add a vault</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
               <button type="button" className="vault-manager-close" onClick={() => setVaultMenuOpen(false)} aria-label="Close vault workspace"><X size={18} /></button>
             </div>
 
-            <section className="vault-manager-section" aria-labelledby="vault-manager-your-vaults">
-              <h2 className="vault-manager-section-title" id="vault-manager-your-vaults">Your vaults</h2>
+            <section className="vault-manager-section" aria-label="Vault status">
               {vaultListLoading ? <p role="status">Loading vaults…</p> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
               {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry</button></p>}
-              <div className="vault-manager-grid" aria-label="Your vaults">
-                {vaults.map((vault) => (
-                  <div className="vault-manager-row" key={vault.id}>
-                    <button type="button" aria-label={`Open ${vault.name}`} aria-current={vault.id === activeVaultId ? 'page' : undefined}
-                      className={vault.id === activeVaultId ? 'is-active' : ''}
-                      onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
-                      <span className="vault-manager-copy">
-                        <span className="vault-manager-title-line"><strong>{vault.name}</strong>{vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}</span>
-                        <small>{vaultDetailsLabel(vault)}</small>
-                      </span>
-                      <span>Open</span>
-                    </button>
-                    <button type="button" className="vault-manager-manage" aria-label={`Manage ${vault.name}`}
-                      onClick={() => { setVaultMenuOpen(false); onManageVault(vault.id); }}>Manage</button>
-                  </div>
-                ))}
-              </div>
             </section>
 
             {vaultFormError && <p role="alert">{vaultFormError}</p>}
             <section className="vault-manager-section" aria-labelledby="vault-manager-manage">
-              <h2 className="vault-manager-section-title" id="vault-manager-manage">Explore and manage vaults</h2>
-              <div className="vault-manager-action-grid" aria-label="Explore and manage vaults">
+              <h2 className="vault-manager-section-title" id="vault-manager-manage">Create or join a vault</h2>
+              <div className="vault-manager-action-grid" aria-label="Create or join a vault">
                 <button type="button" className="vault-manager-action vault-manager-discover" onClick={() => { setVaultMenuOpen(false); onOpenPublicVaults(); }}>
                   <span className="vault-manager-action-icon" aria-hidden="true"><Compass size={28} /></span>
                   <span className="vault-manager-copy"><strong>Browse public vaults</strong><small>Find open communities</small></span>
@@ -1188,17 +1191,31 @@ export const Sidebar = memo(function Sidebar({
           className="tree-context-menu"
           role="menu"
           aria-label={
-            contextMenu.kind === 'folder'
-              ? 'Folder options'
-              : contextMenu.kind === 'root'
-                ? 'Sidebar options'
-                : moveMenu
-                  ? 'Move note to folder'
-                  : 'Note options'
+            contextMenu.kind === 'vault'
+              ? 'Vault options'
+              : contextMenu.kind === 'folder'
+                ? 'Folder options'
+                : contextMenu.kind === 'root'
+                  ? 'Sidebar options'
+                  : moveMenu
+                    ? 'Move note to folder'
+                    : 'Note options'
           }
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
+          {contextMenu.kind === 'vault' && (() => {
+            const vault = vaults.find((item) => item.id === contextMenu.id);
+            if (!vault) return null;
+            return <>
+              <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onSelectVault(vault.id); }}>
+                <ChevronRight size={14} /> Open {vault.name}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onManageVault(vault.id); }}>
+                <Settings size={14} /> Manage {vault.name}
+              </button>
+            </>;
+          })()}
           {contextMenu.kind === 'note' && !moveMenu && (
             <>
               {(() => {

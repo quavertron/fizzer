@@ -15,7 +15,7 @@ try {
     await delay(100);
   }
   browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const page = await browser.newPage({ hasTouch: true });
   page.setDefaultTimeout(10000);
   const user = { id: 1, username: 'fixture', displayName: 'Fixture', avatarUrl: '' };
   let vaults = ['Alpha', 'Beta'].map((name, i) => ({ id: `v${i}`, name, role: 'owner', visibility: 'public', memberCount: 1 }));
@@ -66,18 +66,38 @@ try {
   });
   await page.goto(`${base}/app.html`);
   await page.getByRole('button', { name: 'Open vault Alpha', exact: true }).waitFor();
-  const openManager = async () => page.getByRole('button', { name: 'Manage vaults', exact: true }).last().click();
+  const openManager = async () => page.getByRole('button', { name: 'Create vault', exact: true }).click();
+  const options = async (name) => page.getByRole('button', { name: `Options for ${name}`, exact: true }).click();
   const active = () => page.locator('.vault-rail-button[aria-current="page"]').getAttribute('data-vault-id');
   assert.equal(await active(), 'v0');
-  await openManager();
-  await page.screenshot({ path: '/tmp/vault-manager-desktop.png' });
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.locator('.vault-manager-menu').evaluate(el => el.scrollWidth <= el.clientWidth), true);
-  await page.screenshot({ path: '/tmp/vault-manager-populated-mobile.png' });
+  assert.equal(await page.locator('.sidebar-vault-actions').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Manage vaults', exact: true }).count(), 0);
+  assert.equal(await page.locator('.vault-rail').getByRole('button', { name: 'Create vault', exact: true }).count(), 1);
+  for (const width of [1280, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    if (width <= 768) {
+      const toggle = page.getByRole('button', { name: 'Toggle sidebar', exact: true });
+      if (await toggle.isVisible()) await toggle.click();
+    }
+    if (width === 390) await page.getByRole('button', { name: 'Options for Beta', exact: true }).tap();
+    else await options('Beta');
+    const box = await page.getByRole('menu', { name: 'Vault options' }).boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= width);
+    assert.equal(await active(), 'v0');
+    await page.getByRole('menuitem', { name: 'Manage Beta', exact: true }).click({ trial: true });
+    await page.getByRole('menu', { name: 'Vault options' }).evaluate(async el => { await Promise.all(el.getAnimations().map(animation => animation.finished)); });
+    await page.screenshot({ path: `/tmp/vault-rail-${width}.png` });
+    await page.keyboard.press('Escape');
+  }
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.keyboard.press('Shift+Tab');
-  assert.equal(await page.locator('.vault-manager-menu').evaluate(el => el.contains(document.activeElement)), true);
-  await page.getByRole('button', { name: 'Manage Beta', exact: true }).click();
+  await page.getByRole('button', { name: 'Open vault Beta', exact: true }).focus();
+  await page.getByRole('button', { name: 'Open vault Beta', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Manage Beta', exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Shift+F10');
+  await page.keyboard.press('End');
+  assert.equal(await page.locator(':focus').textContent(), ' Manage Beta');
+  await page.keyboard.press('Enter');
   await page.getByText('Loading vault settings…').waitFor();
   assert.equal(await page.getByText('private to you').count(), 0);
   await page.getByRole('button', { name: 'Rename vault', exact: true }).waitFor();
@@ -87,6 +107,10 @@ try {
   await page.getByRole('button', { name: 'Rename vault', exact: true }).click();
   await page.getByText('Vault renamed.', { exact: true }).waitFor();
   assert.equal(writes.at(-1).path, '/api/vaults/v1');
+  page.once('dialog', dialog => dialog.dismiss());
+  const writesBeforeCancel = writes.length;
+  await page.getByRole('button', { name: 'Delete vault permanently', exact: true }).click();
+  assert.equal(writes.length, writesBeforeCancel, 'Canceling deletion must not mutate a vault');
   page.on('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Delete vault permanently', exact: true }).click();
   await page.getByRole('button', { name: 'Working…', exact: true }).waitFor();
@@ -96,8 +120,8 @@ try {
   await page.getByRole('button', { name: 'Delete vault permanently', exact: true }).click();
   await page.locator('.account-settings').waitFor({ state: 'detached' });
   assert.equal(await active(), 'v0');
-  await openManager();
-  await page.getByRole('button', { name: 'Manage Alpha', exact: true }).click();
+  await options('Alpha');
+  await page.getByRole('menuitem', { name: 'Manage Alpha', exact: true }).click();
   await page.getByRole('button', { name: 'Delete vault permanently', exact: true }).click();
   await page.locator('.account-settings').waitFor({ state: 'detached' });
   await openManager();
@@ -107,15 +131,15 @@ try {
   vaults = [{ id: 'v0', name: 'Alpha', role: 'viewer', visibility: 'private', memberCount: 2 }];
   role = 'viewer';
   await page.reload();
-  await openManager();
-  await page.getByRole('button', { name: 'Manage Alpha', exact: true }).click();
+  await options('Alpha');
+  await page.getByRole('menuitem', { name: 'Manage Alpha', exact: true }).click();
   await page.getByRole('button', { name: 'Leave vault', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Delete vault permanently', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Rename vault', exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Close account settings' }).click();
   failMembers = true;
-  await openManager();
-  await page.getByRole('button', { name: 'Manage Alpha', exact: true }).click();
+  await options('Alpha');
+  await page.getByRole('menuitem', { name: 'Manage Alpha', exact: true }).click();
   await page.getByText('Fixture settings unavailable').waitFor();
   assert.equal(await page.getByRole('button', { name: 'Leave vault', exact: true }).count(), 0);
   failMembers = false;
@@ -126,7 +150,6 @@ try {
   await page.getByText('No vaults yet. Create a vault or join with an invite link below.').waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator('.vault-manager-menu').evaluate(el => el.scrollWidth <= el.clientWidth), true, 'Manager must fit the mobile viewport');
-  await page.getByRole('button', { name: 'New vault Start a private workspace' }).click();
   await page.getByLabel('New vault name').fill('Fixture');
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await page.getByText('Could not create vault. Check the name and try again.').waitFor();
@@ -140,7 +163,7 @@ try {
   await page.getByRole('button', { name: 'Retry vaults', exact: true }).click();
   await page.getByRole('button', { name: 'Retry vaults', exact: true }).waitFor({ state: 'detached' });
   assert.deepEqual(errors, []);
-  console.log('PASS: selected-vault rename/delete, workspace preservation, loading/error/retry, owner/viewer permissions, last delete/leave, mobile overflow; mocked API only.');
+  console.log('PASS: rail placement, keyboard/right-click/touch menus at 1280/768/390px, canceled deletion, selected-vault rename/delete, workspace preservation, loading/error/retry, owner/viewer permissions, last delete/leave, mobile overflow; mocked API only.');
 } finally {
   await browser?.close();
   preview.kill();

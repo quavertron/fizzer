@@ -570,6 +570,8 @@ button:focus-visible,
   overflow-y: auto;
   scrollbar-width: none;
 }
+.vault-rail-item { display: grid; justify-items: center; flex: none; }
+.vault-rail-action.vault-rail-options { height: 24px; width: 38px; }
 .vault-rail-list::-webkit-scrollbar { display: none; }
 .vault-rail-button,
 .vault-rail-action {
@@ -775,20 +777,11 @@ button:focus-visible,
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.vault-manager-grid,
 .vault-manager-action-grid {
   display: grid;
   gap: 14px;
 }
-.vault-manager-grid { grid-template-columns: 1fr; }
 .vault-manager-action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.vault-manager-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.vault-manager-row > button:first-child,
 .vault-manager-action {
   appearance: none;
   width: 100%;
@@ -805,39 +798,21 @@ button:focus-visible,
     color var(--transition-fast),
     transform var(--transition-fast);
 }
-.vault-manager-row > button:first-child {
-  min-height: 64px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px;
-}
-.vault-manager-row > button:first-child:hover,
 .vault-manager-action:hover {
   border-color: var(--border);
   background: var(--bg-raised);
   color: var(--text-primary);
   transform: translateY(-2px);
 }
-.vault-manager-row > button:first-child:focus-visible,
 .vault-manager-action:focus-visible {
   outline: 2px solid var(--accent-hover);
   outline-offset: 3px;
-}
-.vault-manager-row > button:first-child.is-active {
-  border-color: var(--accent);
-  background: var(--bg-raised);
-  color: var(--text-primary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .vault-manager-copy {
   min-width: 0;
   display: grid;
   gap: 4px;
 }
-.vault-manager-row > button:first-child > .vault-manager-copy { padding: 12px 13px 13px; }
-.vault-manager-title-line { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .vault-manager-copy strong {
   min-width: 0;
   overflow: hidden;
@@ -847,18 +822,6 @@ button:focus-visible,
   white-space: nowrap;
 }
 .vault-manager-copy small { white-space: normal; color: var(--text-tertiary); font-size: 0.6875rem; font-weight: 500; }
-.vault-manager-check { margin-left: auto; flex: none; color: var(--accent-hover); }
-.vault-manager-menu .vault-manager-manage {
-  padding: 10px 14px;
-  min-height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.sidebar-vault-actions { display: flex; gap: 8px; padding: 4px 10px 10px; }
-.sidebar-vault-actions button { flex: 1; min-height: 36px; color: var(--text-secondary); background: transparent; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .vault-manager-action {
   min-height: 132px;
   display: flex;
@@ -918,7 +881,6 @@ button:focus-visible,
   .vault-manager-action-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 }
 @media (max-width: 460px) {
-  .vault-manager-grid,
   .vault-manager-action-grid { grid-template-columns: 1fr; }
   .vault-manager-action { min-height: 104px; }
 }
