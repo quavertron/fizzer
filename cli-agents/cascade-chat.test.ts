@@ -588,3 +588,69 @@ test('JSON file commands accept actual piped stdin and reject malformed, empty a
   await assert.rejects(piped(send, '{}'), (error: any) => /files array/.test(error.stderr));
   assert.equal(requests.length, 0, 'invalid inputs never reach the API');
 });
+
+test('mission diagnose compares projections without treating recent events as live execution', async (t) => {
+  let scenario = 'mismatch';
+  const requests: string[] = [];
+  const now = Date.now();
+  const server = http.createServer((req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.headers['x-cascade-run-id'], '777');
+    assert.equal(req.headers.authorization, 'Bearer diagnostic-token');
+    requests.push(req.url || '');
+    res.setHeader('content-type', 'application/json');
+    if (req.url?.endsWith('/missions/current')) {
+      res.end(JSON.stringify({ mission: { id: 'mission', tasks: [{ id: 'task', status: 'running', runId: 42, attempt: 2, assignee: 'Astra', parentTaskId: 'parent', updatedAt: '2026-01-01 00:00:00', summary: 'PRIVATE PROMPT' }] } }));
+    } else if (req.url === '/api/runs/42') {
+      if (scenario === 'denied') {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'PRIVATE PROMPT' }));
+      } else res.end(JSON.stringify({ run: { id: 42, vault_id: scenario === 'identity' ? 'another-vault' : 'vault', status: 'failed', session_id: 'session', conversation_id: 'conversation', agent: 'codex', finished_at: new Date(now - 10000).toISOString(), prompt: 'PRIVATE PROMPT' } }));
+    } else if (req.url === '/api/runs/42/events') {
+      if (scenario === 'unreachable') {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: 'PRIVATE PROMPT' }));
+      } else res.end(JSON.stringify({ events: [
+        { run_id: 42, type: 'harness', ts: new Date(now - (scenario === 'stale' ? 300000 : 1000)).toISOString(), payload_json: 'PRIVATE PROMPT' },
+        { run_id: 999, type: 'text', ts: new Date(now + 100000).toISOString() },
+      ] }));
+    } else if (req.url === '/api/me/desktop-runner') {
+      res.end(JSON.stringify({ online: true, lastSeenAt: now, lastError: 'PRIVATE PROMPT' }));
+    } else { res.statusCode = 404; res.end('{}'); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const invoke = async () => {
+    const { stdout } = await execFileAsync(process.execPath, [cli, 'mission', 'diagnose', '--task', 'task', '--json', '--url', `http://127.0.0.1:${address.port}`, '--token', 'diagnostic-token', '--vault', 'vault', '--channel', 'channel'], { env: { ...process.env, CASCADE_RUN_ID: '777', CASCADE_HELPER_CONFIG: '/nonexistent' } });
+    assert(!stdout.includes('PRIVATE PROMPT'));
+    const result = JSON.parse(stdout);
+    assert.equal(result.execution, 'unknown');
+    return result;
+  };
+  const mismatch = await invoke();
+  assert.deepEqual(mismatch.findings, ['task_run_status_mismatch', 'provider_event_after_run_finished']);
+  assert.equal(mismatch.run.sessionId, 'session');
+  assert.equal(mismatch.task.parentTaskId, 'parent');
+  assert.equal(mismatch.providerEvidence.lastProviderEvent.freshness, 'fresh');
+  assert.equal(mismatch.runner.connected, true);
+  scenario = 'stale';
+  const stale = await invoke();
+  assert.equal(stale.providerEvidence.lastProviderEvent.freshness, 'stale');
+  assert.deepEqual(stale.findings, ['task_run_status_mismatch']);
+  scenario = 'unreachable';
+  const unreachable = await invoke();
+  assert.equal(unreachable.providerEvidence.state, 'unreachable');
+  assert.equal(unreachable.providerEvidence.lastProviderEvent.freshness, 'unknown');
+  scenario = 'denied';
+  const denied = await invoke();
+  assert.equal(denied.run.state, 'inaccessible');
+  assert.equal(denied.run.httpStatus, 404);
+  assert.equal(denied.providerEvidence.lastProviderEvent.at, null);
+  scenario = 'identity';
+  const identity = await invoke();
+  assert.deepEqual(identity.findings, ['run_identity_mismatch']);
+  assert.equal(identity.providerEvidence.lastProviderEvent.at, null);
+  assert.equal(requests.length, 20, 'exactly four GETs per invocation; no retries or mutations');
+});

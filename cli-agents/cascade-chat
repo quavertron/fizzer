@@ -31,6 +31,7 @@ Usage:
   cascade-chat members                  list people-callable agent teammates
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list [--status open|all|<states>] [--task-status open|all|<states>] [--detail]
+  cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
   cascade-chat mission status [--mission <id|current>]
   cascade-chat mission interpret --mission <id> [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
@@ -165,6 +166,11 @@ current channel and coordinator when registered. No prompts or historical payloa
 Example: cascade-chat mission list --status open --task-status running --json
 Use mission status --mission <id> --json for one mission's full detail.
 Invalid statuses and --detail combined with filters are errors.`,
+  'mission diagnose': `cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
+Read-only comparison of task/run projection, forwarded provider events and runner presence.
+Shows ownership, timestamps and freshness (120 seconds); no prompts or event payloads.
+Execution remains unknown: recent events and a connected runner do not prove a live turn.
+Missing, inaccessible and unreachable evidence is explicit. No retry or recovery actions.`,
   'mission status': `cascade-chat mission status [--mission <id|current>] [--json]
 
 Read one mission and its tasks (default: current mission).
@@ -337,6 +343,77 @@ async function api(url, token, method, path, body) {
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
   if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${json.error || text}`);
   return json;
+}
+
+// Diagnostics never replay requests or print server error bodies (which may contain prompts).
+async function diagnosticGet(url, token, endpoint) {
+  try {
+    const res = await fetch(`${url}${endpoint}`, {
+      headers: { authorization: `Bearer ${token}`, 'x-cascade-run-id': process.env.CASCADE_RUN_ID || '' },
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+    });
+    if (!res.ok) return { state: res.status === 401 || res.status === 403 || res.status === 404 ? 'inaccessible' : 'unreachable', httpStatus: res.status };
+    return { state: 'available', data: await res.json() };
+  } catch { return { state: 'unreachable' }; }
+}
+
+function diagnosticTime(value, now) {
+  // SQLite timestamps are UTC without an explicit suffix.
+  const normalized = typeof value === 'string' && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + 'Z' : value;
+  const ms = typeof normalized === 'number' ? normalized : Date.parse(normalized);
+  if (!Number.isFinite(ms)) return { at: null, ageSeconds: null, freshness: 'unknown' };
+  const age = (now - ms) / 1000;
+  return { at: new Date(ms).toISOString(), ageSeconds: Math.round(age), freshness: age < 0 ? 'unknown' : age <= 120 ? 'fresh' : 'stale' };
+}
+
+async function diagnoseTask(url, token, base, vaultId, missionRef, taskId) {
+  const snapshot = await diagnosticGet(url, token, `${base}/${encodeURIComponent(missionRef)}`);
+  if (snapshot.state !== 'available') return { projection: snapshot, execution: 'unknown' };
+  const mission = snapshot.data.mission;
+  const task = mission?.tasks?.find(item => item.id === taskId);
+  if (!task) return { projection: { state: 'inaccessible' }, execution: 'unknown' };
+  const runId = task.runId;
+  const [runResult, eventsResult, runnerResult] = runId ? await Promise.all([
+    diagnosticGet(url, token, `/api/runs/${encodeURIComponent(runId)}`),
+    diagnosticGet(url, token, `/api/runs/${encodeURIComponent(runId)}/events`),
+    diagnosticGet(url, token, '/api/me/desktop-runner'),
+  ]) : [{ state: 'missing' }, { state: 'missing' }, { state: 'unknown' }];
+  const now = Date.now();
+  const run = runResult.data?.run;
+  // Reject inconsistent responses instead of associating evidence with a different run/vault.
+  const matched = run && String(run.id) === String(runId) && run.vault_id === vaultId;
+  const events = matched && Array.isArray(eventsResult.data?.events)
+    ? eventsResult.data.events.filter(event => String(event.run_id) === String(runId)) : [];
+  const latest = types => events.filter(event => !types || types.includes(event.type))
+    .sort((a, b) => (Date.parse(diagnosticTime(b.ts, now).at) || 0) - (Date.parse(diagnosticTime(a.ts, now).at) || 0))[0];
+  const provider = latest(['harness', 'text', 'session']);
+  const lastEvent = latest();
+  const findings = [];
+  if (matched && task.status !== run.status) findings.push('task_run_status_mismatch');
+  if (matched && ['completed', 'failed', 'canceled'].includes(run.status) && provider &&
+      Date.parse(diagnosticTime(provider.ts, now).at) > Date.parse(diagnosticTime(run.finished_at, now).at)) {
+    findings.push('provider_event_after_run_finished');
+  }
+  if (run && !matched) findings.push('run_identity_mismatch');
+  return {
+    observedAt: new Date(now).toISOString(),
+    freshnessThresholdSeconds: 120,
+    missionId: mission.id,
+    task: { id: task.id, status: task.status, assignee: task.assignee || null, assigneeMention: task.assigneeMention || null,
+      parentTaskId: task.parentTaskId || null, attempt: task.attempt, runId: runId || null,
+      updated: diagnosticTime(task.updatedAt, now) },
+    run: matched ? { state: 'available', id: run.id, status: run.status, provider: run.agent,
+      sessionId: run.session_id || null, conversationId: run.conversation_id || null,
+      ownership: 'authenticated account (run API enforced)', started: diagnosticTime(run.started_at, now),
+      finished: diagnosticTime(run.finished_at, now) } : { state: run ? 'identity_mismatch' : runResult.state, httpStatus: runResult.httpStatus },
+    providerEvidence: { state: matched ? eventsResult.state : 'unknown', source: 'forwarded run events',
+      lastEvent: diagnosticTime(lastEvent?.ts, now), lastProviderEvent: diagnosticTime(provider?.ts, now) },
+    runner: { state: runnerResult.state, scope: 'authenticated account',
+      connected: runnerResult.data?.online ?? null, lastSeen: diagnosticTime(runnerResult.data?.lastSeenAt, now) },
+    execution: 'unknown', findings,
+    limitation: 'No independent live provider probe is exposed. Forwarded events can lag or stop after settlement; runner presence is not proof of active execution.',
+  };
 }
 
 async function readStdin() {
@@ -683,6 +760,27 @@ async function main() {
       args.to ||= registrationId;
       args.anonymous = true;
     }
+    if (sub === 'diagnose') {
+      const taskId = String(args.task || '').trim();
+      if (!taskId) fail('mission diagnose needs --task <id>.');
+      const result = await diagnoseTask(url, token, `/api/vaults/${vaultId}/channels/${channelId}/missions`, vaultId, missionRef, taskId);
+      if (args.json) process.stdout.write(JSON.stringify(result) + '\n');
+      else if (!result.task) process.stdout.write(`projection: ${result.projection.state}; execution: unknown\n`);
+      else {
+        const time = value => `${value?.at || 'unknown'} (${value?.freshness || 'unknown'})`;
+        process.stdout.write([
+          `task ${result.task.id}: ${result.task.status}; owner ${result.task.assigneeMention || result.task.assignee || 'unknown'}; attempt ${result.task.attempt}`,
+          `mission ${result.missionId}; parent ${result.task.parentTaskId || 'none'}; task updated ${time(result.task.updated)}`,
+          `run ${result.task.runId || 'none'}: ${result.run.status || result.run.state}; provider ${result.run.provider || 'unknown'}; session ${result.run.sessionId || 'unknown'}`,
+          `run ownership: ${result.run.ownership || 'unknown'}; conversation ${result.run.conversationId || 'unknown'}; finished ${time(result.run.finished)}`,
+          `forwarded provider evidence: ${result.providerEvidence.state}; last provider event ${time(result.providerEvidence.lastProviderEvent)}; last event ${time(result.providerEvidence.lastEvent)}`,
+          `account runner: ${result.runner.state}; connected ${result.runner.connected ?? 'unknown'}; last seen ${time(result.runner.lastSeen)}`,
+          `execution: unknown; findings: ${result.findings.join(', ') || 'none'}; freshness threshold 120s`,
+          result.limitation,
+        ].join('\n') + '\n');
+      }
+      return;
+    }
     if (sub === 'status' || sub === 'show') {
       const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';
       const result = await api(
@@ -896,7 +994,7 @@ async function main() {
       else process.stdout.write(`mission ${result.mission.id} → ${result.mission.status}\n`);
       return;
     }
-    fail(`unknown mission command "${sub}". Use start|list|status|history|interpret|delegate|child|join|steer|update|retry|link-recovery|finish|cancel.`);
+    fail(`unknown mission command "${sub}". Use start|list|status|diagnose|history|interpret|delegate|child|join|steer|update|retry|link-recovery|finish|cancel.`);
   }
 
   if (cmd === 'avatar') {
