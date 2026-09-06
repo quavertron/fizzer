@@ -457,6 +457,14 @@ defmodule Cascade.Missions.InterpretationTest do
       assert prompt =~ "already published the outcome"
       assert prompt =~ "noMaterialChange:true even when the saved assessment or evidence changes"
       assert prompt =~ "end with [no-reply]"
+      assert length(Regex.scan(~r/end with \[no-reply\]/, prompt)) == 1
+      assert prompt =~ "correctsMessageId"
+      assert prompt =~ "verify its saved owner instruction before acting"
+      assert prompt =~ "preserve unaccepted proposals as accepted:false"
+      assert prompt =~ "Stop and withdrawn scope take precedence"
+      assert prompt =~ "original task, session, workspace and owner"
+      assert prompt =~ "contextRef path refers to the identical text"
+      assert prompt =~ "Retrieve full understanding"
       assert prompt =~ "Do not hide real failures or leave owner questions unanswered"
 
       refute prompt =~

@@ -97,6 +97,12 @@ defmodule Cascade.Chat.DispatchPromptTest do
                "queued or dispatched acknowledgment does not confirm execution"
 
       assert coordinator.prompt =~ "honor explicit Stop"
+      assert coordinator.prompt =~ "without reconfirming permission"
+      assert coordinator.prompt =~ "preserve the user's scope"
+      assert coordinator.prompt =~ "same task, saved session and workspace"
+      assert coordinator.prompt =~ "implementation, verification and authorized delivery"
+      assert coordinator.prompt =~ "`--review` at start only"
+      assert coordinator.prompt =~ "cascade-chat attachment --message-id <id>"
       refute coordinator.prompt =~ "for actionable work immediately use"
     end
 
