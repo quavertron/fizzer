@@ -66,6 +66,10 @@ defmodule Cascade.Chat.DispatchPromptTest do
 
     for resume <- [nil, "session-id"] do
       worker = build(c, trigger, settings, resume)
+      assert worker.prompt =~ "owner-waived optional verification must not make the task blocked"
+      assert worker.prompt =~ "Delivered, awaiting your feedback"
+      assert worker.prompt =~ "explicitly disclose any unverified behavior"
+      assert worker.prompt =~ "required-check, deployment, or authority blockers blocked"
       assert worker.prompt =~ "mission worker, not the channel control plane"
       assert worker.prompt =~ "--task task-1 --status blocked"
       assert worker.prompt =~ "do not start a mission or spawn provider subagents"

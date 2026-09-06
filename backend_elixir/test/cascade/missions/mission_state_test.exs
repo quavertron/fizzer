@@ -106,6 +106,10 @@ defmodule Cascade.Missions.MissionStateTest do
         })
 
       [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
+      assert wake.message.body =~ "cancel only the waived optional-check tasks"
+      assert wake.message.body =~ "Do not mark unperformed checks completed"
+      assert wake.message.body =~ "standalone waived-check mission should be canceled"
+      assert wake.message.body =~ "Keep real blockers in attention and honor explicit Stop"
       CascadeWeb.OrchestrationController.prepare_dispatch(wake.dispatch.id)
       reply_id = "agent-dispatch-#{wake.dispatch.id}"
 

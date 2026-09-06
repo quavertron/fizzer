@@ -117,7 +117,7 @@ defmodule Cascade.Chat.DispatchPrompt do
       else
         join(
           [
-            "Complete requested work and verification before replying; use judgment and do not over-research. Keep the final chat reply short: outcome first; skip process narrative and restated questions. Keep progress in the run trace; do not post separate chat messages.",
+            "Complete requested work and required verification before replying; use judgment and do not over-research. Once implementation and required checks are delivered, owner-waived optional verification must not make the task blocked. Report Delivered, awaiting your feedback and explicitly disclose any unverified behavior. Keep actual implementation, required-check, deployment, or authority blockers blocked; honor explicit Stop. Keep the final chat reply short: outcome first; skip process narrative and restated questions. Keep progress in the run trace; do not post separate chat messages.",
             if(field(registration, :finalReplyOnly) == true,
               do:
                 "Write one normal group-chat message, never a work log: no planning, status, reasoning, tool narration, or generic agreement. Respond to concrete claims in the triggering message. If you have no new evidence, correction, question, or decision, output exactly [no-reply].",
