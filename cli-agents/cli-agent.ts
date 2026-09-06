@@ -2234,6 +2234,69 @@ function runCommand(
   });
 }
 
+function writeAntigravityHelperContext(
+  conversationId: string | undefined,
+  runId: number | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+): void {
+  try {
+    const home = os.homedir();
+    let basePayload: Record<string, unknown> = {};
+    if (env?.CASCADE_HELPER_CONFIG && fs.existsSync(env.CASCADE_HELPER_CONFIG)) {
+      try {
+        basePayload = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf-8')) as Record<string, unknown>;
+      } catch { /* ignore */ }
+    } else if (runId) {
+      const runContextPath = path.join(home, '.cascade', 'run-contexts', `${runId}.json`);
+      if (fs.existsSync(runContextPath)) {
+        try {
+          basePayload = JSON.parse(fs.readFileSync(runContextPath, 'utf-8')) as Record<string, unknown>;
+        } catch { /* ignore */ }
+      }
+    }
+
+    let token = String(env?.CASCADE_NOTE_TOKEN || basePayload.token || '').trim();
+    if (!token) {
+      try {
+        const diskTokenPath = path.join(home, '.cascade', 'token');
+        if (fs.existsSync(diskTokenPath)) {
+          token = fs.readFileSync(diskTokenPath, 'utf-8').trim();
+        }
+      } catch { /* ignore */ }
+    }
+
+    const payload: Record<string, unknown> = {
+      ...basePayload,
+      url: env?.CASCADE_NOTE_URL || basePayload.url || 'https://cscd.online',
+      token,
+      vaultId: env?.CASCADE_NOTE_VAULT || basePayload.vaultId || '',
+      chatChannelId: env?.CASCADE_CHAT_CHANNEL || basePayload.chatChannelId || '',
+      chatMessageId: env?.CASCADE_CHAT_MESSAGE || basePayload.chatMessageId || '',
+      chatTriggeringMessageId: env?.CASCADE_CHAT_TRIGGERING_MESSAGE || basePayload.chatTriggeringMessageId || '',
+      chatAuthor: env?.CASCADE_CHAT_AUTHOR || basePayload.chatAuthor || '',
+      runId: runId ?? (basePayload.runId as number | undefined),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const content = JSON.stringify(payload, null, 2);
+
+    if (conversationId) {
+      const convDir = path.join(home, '.cascade', 'conversations');
+      fs.mkdirSync(convDir, { recursive: true, mode: 0o700 });
+      const convPath = path.join(convDir, `${conversationId}.json`);
+      fs.writeFileSync(convPath, content, { mode: 0o600 });
+      try { fs.chmodSync(convPath, 0o600); } catch { /* ignore */ }
+    }
+
+    const helperContextPath = path.join(home, '.cascade', 'agent-helper-context.json');
+    fs.mkdirSync(path.dirname(helperContextPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(helperContextPath, content, { mode: 0o600 });
+    try { fs.chmodSync(helperContextPath, 0o600); } catch { /* ignore */ }
+  } catch {
+    // Best effort
+  }
+}
+
 /**
  * Runs the Antigravity agent via agentapi + transcript.jsonl polling.
  * Emits structured text/thinking/tool blocks for the chat harness panel
@@ -2252,6 +2315,7 @@ async function runAntigravity(
   const bin = antigravityBin();
   assertCliAgentAvailable('antigravity');
   ensureAntigravityCascadeHookup(cwd, yolo);
+  writeAntigravityHelperContext(resumeId, runId, env);
   if (runId !== undefined) antigravityCancelFlags.delete(runId);
 
   // Snapshot line count before send-message so we only stream new turns.
@@ -2306,6 +2370,8 @@ async function runAntigravity(
   if (!conversationId) {
     throw new Error(`No conversationId returned by agentapi: ${stdoutStr.slice(0, 500)}`);
   }
+
+  writeAntigravityHelperContext(conversationId, runId, env);
 
   emit('session', { sessionId: conversationId });
 

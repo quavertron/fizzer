@@ -42,7 +42,7 @@
 
 'use strict';
 
-import { createCli, httpError } from './cli-common.mjs';
+import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,7 +57,7 @@ Usage:
                                         delete an inactive vault under an owner mission
   cascade-note list                      vaults, or notes with --vault
   cascade-note search <query>            search notes in a vault
-  cascade-note get <id|title>            print a note's content
+  cascade-note get|read <id|title>       print a note's content
   cascade-note create --title T [--listed] body via stdin (recommended) / --content-file / --content
   cascade-note edit <id|title>           replace body (stdin / --content-file / --content)
   cascade-note append <id|title>         append body  (stdin / --content-file / --content)
@@ -114,27 +114,6 @@ function readStdin() {
   });
 }
 
-function helperConfigPath() {
-  // Prefer agent-runner's explicit per-run path over CASCADE_RUN_ID alone.
-  const fromEnv = String(process.env.CASCADE_HELPER_CONFIG || '').trim();
-  if (fromEnv) return fromEnv;
-  const runId = String(process.env.CASCADE_RUN_ID || '').trim();
-  if (runId) {
-    return path.join(os.homedir(), '.cascade', 'run-contexts', `${runId}.json`);
-  }
-  return path.join(os.homedir(), '.cascade', 'agent-helper-context.json');
-}
-
-function readHelperConfig() {
-  try {
-    const raw = fs.readFileSync(helperConfigPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 function configString(config, key) {
   return String(config && config[key] || '').trim();
 }
@@ -145,7 +124,7 @@ function baseUrl(args, config) {
 }
 
 async function getToken(url, args, config) {
-  const explicit = String(args.token || configString(config, 'token') || process.env.CASCADE_NOTE_TOKEN || '').trim();
+  const explicit = resolveToken(args.token, configString(config, 'token'));
   if (explicit) return explicit;
   const user = String(process.env.CASCADE_NOTE_USER || '').trim();
   const pass = String(process.env.CASCADE_NOTE_PASS || '');
@@ -210,6 +189,31 @@ async function resolveNote(url, token, vaultId, ref) {
   const partial = partialRows.filter((n) => n.title.toLowerCase().includes(needle));
   if (partial.length === 1) return partial[0].id;
   if (partial.length > 1) fail(`"${ref}" matches ${partial.length} notes; pass the note id.`);
+  if (needle.length >= 2) {
+    try {
+      const { notes: allNotes = [] } = await api(url, token, 'GET', `/api/vaults/${vaultId}/notes`);
+      const fuzzy = allNotes.filter((n) => {
+        const words = String(n.title || '').toLowerCase().split(/[\s\-_/\\.:,;+&]+/);
+        return words.some((w) => {
+          if (w.startsWith(needle) || needle.startsWith(w)) return true;
+          if (w.length >= needle.length && needle.length >= 3) {
+            const prefix = w.slice(0, needle.length);
+            let diff = 0;
+            for (let i = 0; i < needle.length; i++) {
+              if (prefix[i] !== needle[i]) diff++;
+            }
+            if (diff <= 1) return true;
+          }
+          return false;
+        });
+      });
+      if (fuzzy.length === 1) return fuzzy[0].id;
+      if (fuzzy.length > 1) {
+        const list = fuzzy.map((n) => `  ${n.id}  ${n.title}`).join('\n');
+        fail(`"${ref}" matches multiple notes; pass the note id:\n${list}`);
+      }
+    } catch { /* fallback to default failure */ }
+  }
   fail(`no note matching "${ref}" in vault ${vaultId}.`);
 }
 
@@ -434,9 +438,13 @@ async function main() {
       }
       break;
     }
-    case 'get': {
+    case 'get':
+    case 'read':
+    case 'show':
+    case 'view':
+    case 'cat': {
       const ref = args._[1];
-      if (!ref) fail('get needs a note id or title.');
+      if (!ref) fail(`${cmd} needs a note id or title.`);
       const vaultId = await resolveVault(url, token, args, config);
       const id = await resolveNote(url, token, vaultId, ref);
       const { note } = await api(url, token, 'GET', `/api/notes/${id}`);

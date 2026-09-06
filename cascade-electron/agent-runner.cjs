@@ -196,10 +196,35 @@ function helperConfigPathForRun(runId) {
   return HELPER_CONFIG_PATH;
 }
 
+function isExpiredJwt(token) {
+  if (typeof token !== 'string' || !token) return true;
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof payload.exp === 'number') {
+      return (Date.now() / 1000) > (payload.exp - 10);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMessageId, chatAuthor, agentId, agentMemoryKey, registrationId, workItemId } = {}) {
+  let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
+  if (!token || isExpiredJwt(token)) {
+    try {
+      const diskTokenPath = path.join(os.homedir(), '.cascade', 'token');
+      if (fs.existsSync(diskTokenPath)) {
+        const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
+        if (dt && !isExpiredJwt(dt)) token = dt;
+      }
+    } catch { /* ignore */ }
+  }
   const payload = {
     url: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    token: noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || ''),
+    token,
     vaultId: vaultId || process.env.CASCADE_NOTE_VAULT || '',
     chatChannelId: channelId || process.env.CASCADE_CHAT_CHANNEL || '',
     chatMessageId: messageId || process.env.CASCADE_CHAT_MESSAGE || '',
@@ -218,6 +243,11 @@ function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMes
     fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
     fs.chmodSync(configPath, 0o600);
+    if (configPath !== HELPER_CONFIG_PATH) {
+      fs.mkdirSync(path.dirname(HELPER_CONFIG_PATH), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(HELPER_CONFIG_PATH, JSON.stringify(payload, null, 2), { mode: 0o600 });
+      fs.chmodSync(HELPER_CONFIG_PATH, 0o600);
+    }
   } catch (err) {
     console.warn('[agent-runner] failed to write helper context:', err?.message || err);
   }
@@ -249,9 +279,19 @@ function buildRunHelperEnv(opts) {
     registrationId,
     workItemId,
   });
+  let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
+  if (process.env.CASCADE_NOTE_TOKEN !== '' && (!token || isExpiredJwt(token))) {
+    try {
+      const diskTokenPath = path.join(os.homedir(), '.cascade', 'token');
+      if (fs.existsSync(diskTokenPath)) {
+        const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
+        if (dt && !isExpiredJwt(dt)) token = dt;
+      }
+    } catch { /* ignore */ }
+  }
   const env = {
     CASCADE_NOTE_URL: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    CASCADE_NOTE_TOKEN: noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || ''),
+    CASCADE_NOTE_TOKEN: token,
     ...(noteApi.configured ? { CASCADE_NOTE_USER: '', CASCADE_NOTE_PASS: '' } : {}),
     CASCADE_HELPER_CONFIG: configPath,
     CASCADE_HELPER_DIR: resolveWrapperDir(),

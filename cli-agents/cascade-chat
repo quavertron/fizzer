@@ -9,7 +9,7 @@
 
 'use strict';
 
-import { createCli, httpError } from './cli-common.mjs';
+import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -219,30 +219,6 @@ function commandHelp(args) {
 
 const { args, fail } = createCli('cascade-chat', { 'include-reply-context': ['include-reply-context', true] });
 
-function helperConfigPath() {
-  // Prefer the explicit per-run config path agent-runner wrote. CASCADE_RUN_ID
-  // alone can point at a missing/stale file when the parent env is polluted,
-  // which used to leave a ghost { usedChatSend: true } and suppress the wrong
-  // run bubble into an empty "(message)" shell.
-  const fromEnv = String(process.env.CASCADE_HELPER_CONFIG || '').trim();
-  if (fromEnv) return fromEnv;
-  const runId = String(process.env.CASCADE_RUN_ID || '').trim();
-  if (runId) {
-    return path.join(os.homedir(), '.cascade', 'run-contexts', `${runId}.json`);
-  }
-  return path.join(os.homedir(), '.cascade', 'agent-helper-context.json');
-}
-
-function readHelperConfig() {
-  try {
-    const raw = fs.readFileSync(helperConfigPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 /** Record that this run already posted via cascade-chat send (for double-post suppression). */
 function markChatSendUsed(config) {
   const configPath = helperConfigPath();
@@ -280,7 +256,7 @@ function baseUrl(args, config, { ignoreArgsUrl = false } = {}) {
 }
 
 async function getToken(url, args, config) {
-  const explicit = String(args.token || configString(config, 'token') || process.env.CASCADE_NOTE_TOKEN || '').trim();
+  const explicit = resolveToken(args.token, configString(config, 'token'));
   if (explicit) return explicit;
   const user = String(process.env.CASCADE_NOTE_USER || '').trim();
   const pass = String(process.env.CASCADE_NOTE_PASS || '');
