@@ -1203,8 +1203,11 @@ class CodexAppServerClient {
     }
     const params = message.params || {};
     const turnId = String(params.turnId || params.turn?.id || '');
-    const turn = this.turns.get(turnId)
-      || [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
+    // An explicit turn ID owns the event; a stale attempt must never fall
+    // through to another active turn in the same conversation.
+    const turn = turnId ? this.turns.get(turnId)
+      : [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
+    if (turn && params.threadId && turn.threadId !== params.threadId) return;
     if (!turn) {
       if (turnId && ['item/started', 'item/completed', 'item/agentMessage/delta', 'turn/completed', 'error'].includes(message.method)) {
         const buffered = this.earlyNotifications.get(turnId) || [];
@@ -1229,6 +1232,12 @@ class CodexAppServerClient {
       turn.timing.complete(status || 'failed', observation);
       this.finishTurn(turnId, status === 'completed' ? undefined : new Error(params.turn?.error?.message || `Codex turn ${status || 'failed'}.`));
     } else if (message.method === 'error') {
+      // Stream errors are progress while Codex retries the same turn. Keep
+      // ownership, heartbeat and cancellation alive until a terminal event.
+      if (params.willRetry === true) {
+        emitHarness(turn.emit, `${params.error?.message || params.message || 'Codex retrying.'}\r\n`);
+        return;
+      }
       turn.timing.complete('failed', observation);
       this.finishTurn(turnId, new Error(params.error?.message || params.message || 'Codex app-server error.'));
     }

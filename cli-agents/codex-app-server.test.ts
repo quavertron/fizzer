@@ -16,6 +16,7 @@ fs.appendFileSync(${JSON.stringify(launchLog)}, '1\\n');
 let thread = 0;
 let turn = 0;
 const interrupted = new Set();
+const retryTurns = new Map();
 function send(value) { process.stdout.write(JSON.stringify(value) + '\\n'); }
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
@@ -36,11 +37,35 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (message.method === 'turn/interrupt') {
     interrupted.add(message.params.turnId);
+    if (retryTurns.has(message.params.turnId)) {
+      clearTimeout(retryTurns.get(message.params.turnId));
+      send({ method: 'turn/completed', params: { turn: { id: message.params.turnId, status: 'interrupted' } } });
+    }
     return send({ id: message.id, result: {} });
   }
   if (message.method === 'thread/unsubscribe') return send({ id: message.id, result: { status: 'unsubscribed' } });
   if (message.method === 'turn/start') {
     const id = 'turn-' + (++turn);
+    const prompt = message.params.input[0].text;
+    const threadId = message.params.threadId;
+    if (['retry succeeds', 'retry fails', 'retry stop', 'retry exits', 'fatal error', 'stale events'].includes(prompt)) {
+      send({ id: message.id, result: { turn: { id } } });
+      if (prompt === 'stale events') {
+        send({ method: 'item/completed', params: { threadId, turnId: 'old-turn', item: { id: 'old-answer', type: 'agentMessage', text: 'STALE' } } });
+        send({ method: 'error', params: { threadId, turnId: 'old-turn', willRetry: false, error: { message: 'old failure' } } });
+        send({ method: 'item/completed', params: { threadId: 'other-thread', turnId: id, item: { id: 'foreign-answer', type: 'agentMessage', text: 'FOREIGN' } } });
+      } else {
+        send({ method: 'error', params: { threadId, turnId: id, willRetry: prompt !== 'fatal error', error: { message: 'Reconnecting... 1/5' } } });
+        if (prompt === 'fatal error') return;
+      }
+      retryTurns.set(id, setTimeout(() => {
+        if (prompt === 'retry exits') return process.exit(9);
+        if (prompt === 'retry fails') return send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'failed', error: { message: 'Retries exhausted' } } } });
+        send({ method: 'item/completed', params: { threadId, turnId: id, item: { id: 'answer', type: 'agentMessage', text: 'Recovered answer' } } });
+        send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'completed' } } });
+      }, 150));
+      return;
+    }
     if (message.params.input[0].text === 'stream tokens') {
       // A notification can race the turn/start response; preserve those tokens too.
       send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'progress', delta: 'Checking' } });
@@ -75,7 +100,7 @@ fs.chmodSync(fakeBin, 0o755);
 process.env.CODEX_BIN = fakeBin;
 process.env.RUNNER_CODEX_PERSISTENT = '1';
 
-const { runCliAgent, shutdownPersistentCliAgents } = await import('./cli-agent.js');
+const { runCliAgent, shutdownPersistentCliAgents, cancelCliAgentRun } = await import('./cli-agent.js');
 
 test('Codex app-server is reused across sequential turns', async () => {
   const sessions: string[] = [];
@@ -174,6 +199,44 @@ test('Codex acknowledgements and completion alone do not invent a first response
   assert.deepEqual(timings.map(event => event.phase), ['request_start', 'completion']);
   shutdownPersistentCliAgents();
 });
+
+
+for (const prompt of ['retry succeeds', 'retry fails', 'retry stop', 'retry exits', 'fatal error', 'stale events']) {
+  test(`Codex terminal ownership: ${prompt}`, async (t) => {
+    t.after(() => shutdownPersistentCliAgents());
+    const events: any[] = [];
+    const start = fs.readFileSync(protocolLog, 'utf8').length;
+    const run = runCliAgent({ agent: 'codex', context: '', userPrompt: prompt, cwd: scratch,
+      resumeSessionId: 'thread-retry', runId: 98765,
+      emit(type, payload: any) {
+        events.push({ type, ...payload });
+        if (type === 'harness' && payload.data.includes('Reconnecting')) {
+          assert.doesNotMatch(fs.readFileSync(protocolLog, 'utf8').slice(start), /thread\/unsubscribe/);
+          if (prompt === 'retry stop') assert.equal(cancelCliAgentRun(98765), true);
+        }
+      },
+    });
+    if (prompt === 'retry exits') await assert.rejects(run, /app-server exited/);
+    else if (prompt === 'retry fails') await assert.rejects(run, /Retries exhausted/);
+    else if (prompt === 'retry stop') await assert.rejects(run, /interrupted/);
+    else if (prompt === 'fatal error') await assert.rejects(run, /Reconnecting/);
+    else {
+      const result = await run;
+      assert.equal(result.summary, 'Recovered answer');
+      assert.equal(result.sessionId, 'thread-retry');
+      const text = events.filter(e => e.type === 'text').flatMap(e => e.message?.content || []).map(b => b.text || '').join('');
+      assert.equal(text, 'Recovered answer');
+    }
+    if (prompt.startsWith('retry ')) assert.ok(events.some(e => e.type === 'harness' && e.data.includes('Reconnecting')));
+    const completions = events.filter(e => e.type === 'timing' && e.phase === 'completion');
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0].outcome, ['retry succeeds', 'stale events'].includes(prompt) ? 'completed' : prompt === 'retry stop' ? 'interrupted' : 'failed');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const protocol = fs.readFileSync(protocolLog, 'utf8').slice(start);
+    assert.equal((protocol.match(/turn\/start:/g) || []).length, 1);
+    assert.equal((protocol.match(/thread\/unsubscribe:/g) || []).length, prompt === 'retry exits' ? 0 : 1);
+  });
+}
 
 test.after(() => {
   shutdownPersistentCliAgents();

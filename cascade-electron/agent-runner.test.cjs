@@ -315,7 +315,7 @@ test('non-Claude setup failure cleans helper context, SVG attachments, and heart
 });
 
 
-test('canceling a persistent Codex turn emits canceled instead of failed', {timeout: 5000}, async (t) => {
+for (const stop of [false, true]) test(`retrying a persistent Codex turn ends ${stop ? 'canceled on Stop' : 'completed'}`, {timeout: 5000}, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-codex-cancel-'));
   const bin = path.join(dir, 'codex');
   fs.writeFileSync(bin, `#!/usr/bin/env node
@@ -325,7 +325,11 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   const m = JSON.parse(line);
   if (m.method === 'initialize') send({id: m.id, result: {}});
   if (m.method === 'thread/start') send({id: m.id, result: {thread: {id: 'cancel-thread'}}});
-  if (m.method === 'turn/start') send({id: m.id, result: {turn: {id: 'cancel-turn'}}});
+  if (m.method === 'turn/start') {
+    send({id: m.id, result: {turn: {id: 'cancel-turn'}}});
+    send({method: 'error', params: {threadId: 'cancel-thread', turnId: 'cancel-turn', willRetry: true, error: {message: 'Reconnecting... 1/5'}}});
+    if (!${stop}) setTimeout(() => send({method: 'turn/completed', params: {turn: {id: 'cancel-turn', status: 'completed'}}}), 100);
+  }
   if (m.method === 'turn/interrupt') {
     send({method: 'turn/completed', params: {turn: {id: 'cancel-turn', status: 'interrupted'}}});
     send({id: m.id, result: {}});
@@ -352,13 +356,13 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   const started = new Promise(resolve => { ready = resolve; });
   const run = startLocalAgentRun({runId: 92005, agent: 'codex', prompt: 'wait', cwd: dir}, event => {
     events.push(event);
-    if (event.type === 'session') ready();
+    if (event.type === 'harness' && JSON.parse(event.payload_json).data.includes('Reconnecting')) ready();
   });
   await started;
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(await cancelLocalAgentRun(92005), true);
+  assert.deepEqual(events.filter(e => e.type === 'status').map(e => JSON.parse(e.payload_json).status), ['running']);
+  if (stop) assert.equal(await cancelLocalAgentRun(92005), true);
   await run;
   const statuses = events.filter(event => event.type === 'status').map(event => JSON.parse(event.payload_json).status);
-  assert.equal(statuses.at(-1), 'canceled');
-  assert.ok(!statuses.includes('failed'));
+  assert.deepEqual(statuses, ['running', stop ? 'canceled' : 'completed']);
 });
