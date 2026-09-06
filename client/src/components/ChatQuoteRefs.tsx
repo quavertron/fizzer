@@ -1,5 +1,6 @@
 import { Forward, Reply } from 'lucide-react';
 import { stripChatControlMarkers } from '../chat/shared';
+import { isSystemCascadeMessage } from '../chat/workTrace';
 import type { ChatMessage } from '../chat/types';
 
 /**
@@ -17,10 +18,14 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
   canJumpToReply?: boolean;
 }) {
   const replyId = message.replyTo?.messageId;
+  const replyPreview = stripChatControlMarkers(message.replyTo?.preview || '');
+  const showReply = message.replyTo && !message.mission
+    && !isSystemCascadeMessage({ id: replyId || '', author: message.replyTo.author })
+    && Boolean(message.replyTo.author.trim() || replyPreview);
   const jumpable = Boolean(replyId && canJumpToReply && onJumpToMessage);
   return (
     <>
-      {message.replyTo && !message.mission && (
+      {showReply && message.replyTo && (
         jumpable ? (
           <button
             type="button"
@@ -35,7 +40,7 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
           >
             <Reply size={12} />
             <strong>{message.replyTo.author}</strong>
-            <span>{stripChatControlMarkers(message.replyTo.preview)}</span>
+            <span>{replyPreview}</span>
           </button>
         ) : (
           <div
@@ -44,7 +49,7 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
           >
             <Reply size={12} />
             <strong>{message.replyTo.author}</strong>
-            <span>{stripChatControlMarkers(message.replyTo.preview)}</span>
+            <span>{replyPreview}</span>
           </div>
         )
       )}

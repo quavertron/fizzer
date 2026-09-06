@@ -13,6 +13,40 @@ const message: ChatMessage = {
 };
 
 describe('reply preview control metadata', () => {
+  it.each(['', 'Restore missing coordinator replies'])('omits the reported internal mission-root quote: %s', (preview) => {
+    const replyTo = { messageId: 'sys-mission-root-1788700472038-e8bfmap',
+      author: '', mention: '', preview, relationship: 'builds_on' as const };
+    const explanation = { ...message, id: 'mission-explanation-c1b676f4-4f48-400c-a8ab-d35782845175-0',
+      body: 'Yes—the recent chat history has the worker response but is missing my coordinator reply.', replyTo };
+    for (const canJumpToReply of [true, false]) {
+      expect(renderToStaticMarkup(createElement(ChatQuoteRefs, {
+        message: explanation, canJumpToReply, onJumpToMessage() {},
+      }))).toBe('');
+    }
+    expect(explanation.replyTo).toBe(replyTo);
+  });
+
+  it.each(['', '   ', marker])('omits empty saved quotes after filtering: %s', (preview) => {
+    expect(renderToStaticMarkup(createElement(ChatQuoteRefs, {
+      message: { ...message, replyTo: { messageId: 'source', author: ' ', mention: '', preview } },
+    }))).toBe('');
+  });
+
+  it('preserves user context and navigates to the original reply target', () => {
+    const replyTo = { messageId: 'msg-1788700441535-u0t3v6', author: 'Owner', mention: '',
+      preview: 'and i dont see a coordinator response to this' };
+    let jumpedTo = '';
+    const props = { message: { ...message, replyTo }, canJumpToReply: true,
+      onJumpToMessage(id: string) { jumpedTo = id; } };
+    const html = renderToStaticMarkup(createElement(ChatQuoteRefs, props));
+    expect(html).toContain('<button');
+    expect(html).toContain(replyTo.preview);
+    expect(html).toContain("Jump to Owner&#x27;s message");
+    const quote = ChatQuoteRefs(props).props.children[0];
+    quote.props.onClick({ stopPropagation() {} });
+    expect(jumpedTo).toBe(replyTo.messageId);
+  });
+
   it('filters the reported marker before truncation without mutating content or links', () => {
     const source = { ...message, body: `${marker}\n\n${'Visible '.repeat(30)}` };
     const reply = buildReplyRef(source, []);
