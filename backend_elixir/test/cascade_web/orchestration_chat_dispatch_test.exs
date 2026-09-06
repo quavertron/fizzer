@@ -351,6 +351,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
   test "human steering waits for the actual desktop stop ACK and preserves the session", ctx do
     first = event!(ctx.sid, "run:delegate")
     Store.persist_session(first["runId"], "provider-session")
+    Store.publish(first["runId"], "harness", %{data: "Investigating the deployment timing"})
+    Cascade.Runs.ChatProjection.sync(first["runId"])
     next = admit(ctx, "human steering")
     cancel = packet!(ctx.sid, "run:cancel")
     assert Store.get(first["runId"]).status == "queued"
@@ -365,6 +367,37 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     delegated = event!(ctx.sid, "run:delegate")
     assert Store.get(first["runId"]).status == "canceled"
     assert Store.get(delegated["runId"]).session_id == "provider-session"
+    assert delegated["prompt"] =~ "Earlier requests interrupted by follow-ups (still unanswered)"
+    assert delegated["prompt"] =~ "finish the owner-side work"
+    assert delegated["prompt"] =~ "human steering"
+    Cascade.Runs.ChatProjection.sync(first["runId"])
+
+    {:ok, prior} =
+      Messages.get(ctx.owner_channel.id, ctx.owner.id, "agent-dispatch-#{ctx.dispatch.id}")
+
+    assert prior.harnessLog =~ "Investigating the deployment timing"
+    assert prior.body =~ "Steered into the continuation below."
+
+    latest = admit(ctx, "And why was the build slow?")
+    cancel = packet!(ctx.sid, "run:cancel")
+    send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+    continued = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(latest.id).id == continued["runId"]
+    assert continued["prompt"] =~ "finish the owner-side work"
+    assert continued["prompt"] =~ "human steering"
+    assert continued["prompt"] =~ "And why was the build slow?"
+  end
+
+  test "explicit Stop does not carry canceled requests into a later question", ctx do
+    first = event!(ctx.sid, "run:delegate")
+    stop = Task.async(fn -> Store.cancel(first["runId"]) end)
+    cancel = packet!(ctx.sid, "run:cancel")
+    send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+    assert Task.await(stop)
+    admit(ctx, "Why did deployment take ten minutes?")
+    next = event!(ctx.sid, "run:delegate")
+    refute next["prompt"] =~ "Earlier requests interrupted by follow-ups (still unanswered)"
+    assert Store.get(first["runId"]).summary == "Run canceled by user."
   end
 
   test "offline admission retains provenance and generation across clear and reconnect", ctx do

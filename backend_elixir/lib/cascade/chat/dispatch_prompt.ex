@@ -4,6 +4,7 @@ defmodule Cascade.Chat.DispatchPrompt do
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Messages, RoomContext, Schema}
   alias Cascade.Content.Privacy
+  alias Cascade.Missions.Dispatches
 
   @without_images ~w(grok antigravity copilot hermes akron-grok)
   @labels %{
@@ -92,6 +93,7 @@ defmodule Cascade.Chat.DispatchPrompt do
         prompt:
           join([
             header(channel_name, registration, execution.agent, message, resume),
+            interrupted_requests(dispatch, execution, message),
             request,
             media_notice
           ]),
@@ -150,6 +152,54 @@ defmodule Cascade.Chat.DispatchPrompt do
       end
 
     join([identity, delivery, role, if(note == "", do: "", else: "Channel note: " <> note)], " ")
+  end
+
+  # A provider may never receive an interrupted queued turn. The room cursor
+  # alone cannot carry its unanswered request into the resumed provider session.
+  defp interrupted_requests(dispatch, execution, message) do
+    if not Dispatches.human?(%{message: message, messageId: text(message, :id)}) or
+         text(dispatch, :conversationId) == "" do
+      ""
+    else
+      SQL.all(
+        """
+        SELECT d.message_id, EXISTS (
+          SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='status'
+          AND json_extract(e.payload_json,'$.steering')=1
+        )
+        FROM runs r JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
+        JOIN chat_messages m ON m.id=d.message_id
+        WHERE d.registration_id=? AND r.conversation_id=?
+          AND m.rowid < (SELECT rowid FROM chat_messages WHERE id=?)
+        ORDER BY r.id DESC LIMIT 20
+        """,
+        [execution.registration.id, text(dispatch, :conversationId), text(message, :id)]
+      )
+      |> Enum.take_while(fn [_id, steered] -> steered == 1 end)
+      |> Enum.reverse()
+      |> Enum.flat_map(fn [id, _] ->
+        case Messages.get(execution.target_channel_id, execution.runner_user_id, id) do
+          {:ok, prior} ->
+            if Dispatches.human?(%{message: prior, messageId: id}),
+              do: [
+                "#{text(prior, :author)} (#{id}): #{message_text(Privacy.sanitize_json(prior))}"
+              ],
+              else: []
+
+          _ ->
+            []
+        end
+      end)
+      |> case do
+        [] ->
+          ""
+
+        requests ->
+          "Earlier requests interrupted by follow-ups (still unanswered):\n" <>
+            Enum.join(requests, "\n") <>
+            "\nAnswer these questions along with the latest message. Apply later corrections and honor explicit Stop; a follow-up alone does not withdraw an earlier request."
+      end
+    end
   end
 
   defp preceding_batch(route, user_id, message) do

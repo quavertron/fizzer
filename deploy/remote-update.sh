@@ -1036,6 +1036,15 @@ maintenance_cutover() {
   verify_reopened_production_edge
 }
 
+prune_build_cache() {
+  # Keep the dependency layers and compiled Elixir cache between small releases.
+  # Under disk pressure, favor recovery space over the next build's speed.
+  local available_kb keep_storage=8GB
+  available_kb="$(df -Pk "$ROOT" | awk 'NR==2 {print $4}')"
+  if (( available_kb < 5242880 )); then keep_storage=1GB; fi
+  docker builder prune -af --keep-storage "$keep_storage" >/dev/null || true
+}
+
 # A desktop release or retried workflow may target the image already serving.
 # Reuse that exact artifact's completed cutover; mutable health is checked again.
 already_running_release() {
@@ -1059,7 +1068,7 @@ fi
 
 # Builds can refill several GiB in minutes. Bound disposable build cache before
 # capacity checks, including failed attempts; never prune images or volumes.
-docker builder prune -af --keep-storage 1GB >/dev/null || true
+prune_build_cache
 AVAIL_KB="$(df -Pk "$DATA_DIR" | awk 'NR==2 {print $4}')"
 if (( AVAIL_KB < 1048576 )); then
   echo "Error: less than 1 GiB free; refusing deployment." >&2
@@ -1117,5 +1126,5 @@ prune_cutover_snapshots
 
 echo "==> Pruning dangling images and old build cache"
 docker image prune -f >/dev/null || true
-docker builder prune -af --keep-storage 1GB >/dev/null || true
+prune_build_cache
 df -h / | awk 'NR==2 {printf "    Disk: %s used, %s free (%s)\n", $3, $4, $5}'

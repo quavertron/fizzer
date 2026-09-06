@@ -381,6 +381,7 @@ docker() {
 }
 curl() { printf '%s' "$TEST_HEALTH"; return "$TEST_CURL_STATUS"; }
 prune_cutover_snapshots() { echo RETENTION; }
+prune_build_cache() { :; }
 bash() { echo INSTALLERS; return "$TEST_INSTALLER_STATUS"; }
 ${fastPath}
 echo CUTOVER
@@ -477,7 +478,22 @@ test('full-copy capacity is required only for migrations and rechecked before ga
   assertOrderedWithin(functionBody('preflight_candidate'),
     '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
     '  cleanup_preflight_clones', '  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"');
-  assert.match(source, /docker builder prune -af --keep-storage 1GB/);
+  assert.match(source, /prune_build_cache/);
+});
+
+test('retains warm build dependencies unless free disk space is under pressure', () => {
+  for (const [free, keep] of [[20 * 1024 * 1024, '8GB'], [4 * 1024 * 1024, '1GB']]) {
+    const result = spawnSync('bash', ['-c', `
+      set -euo pipefail
+      ROOT=/checkout
+      df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nroot 80000000 0 ${free} 0%% /\\n'; }
+      docker() { printf '%s\\n' "$*" >&2; }
+      ${functionBody('prune_build_cache')}
+      prune_build_cache
+    `], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, new RegExp('builder prune -af --keep-storage ' + keep));
+  }
 });
 
 test('capacity includes WAL, corpus, reserve, and a separate snapshot filesystem', () => {

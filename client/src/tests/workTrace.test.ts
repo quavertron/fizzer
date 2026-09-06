@@ -155,6 +155,20 @@ describe('workTrace', () => {
     if (segments[1].kind === 'work') expect(segments[1].updateGroups).toEqual([{ messages: [final] }]);
   });
 
+  it('keeps an answered question and its progress in place when another run appears', () => {
+    const question = msg({ id: 'question', author: 'jt', body: 'Why did that take ten minutes?' });
+    const answer = msg({ id: 'answer', author: 'Astra', agentId: 'codex', runId: 3419,
+      body: 'Most of the wait was deployment.', harnessLog: 'Checked the finished job.' });
+    const later = msg({ id: 'later', author: 'Astra', agentId: 'codex', runId: 3420,
+      body: 'Thinking...', status: 'running' });
+    const before = segmentTranscript([question, answer]);
+    const during = segmentTranscript([question, answer, later]);
+    expect(during.slice(0, 2)).toEqual(before);
+    expect(during[2]).toMatchObject({ kind: 'group', group: { messages: [later] } });
+    expect(segmentTranscript([question, answer, { ...later, status: undefined, body: 'Delivered.' }])
+      .slice(0, 2)).toEqual(before);
+  });
+
   it('nests a system wake in its persisted empty agent carrier', () => {
     const carrier = msg({
       id: 'agent-trace-mission-1-wake', author: 'Terra', body: '', agentId: 'codex', registrationId: 'terra-reg',

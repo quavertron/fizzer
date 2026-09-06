@@ -410,6 +410,11 @@ export function segmentTranscript(
         || ((!messageIsAgent || messageKey !== identityKey) && !carrierWake)) break;
       work.push(messages[index]);
       index += 1;
+      // A completed reply is a transcript boundary. Later wakes or replies
+      // must not demote an answer the user was reading into an update line.
+      if (message.runId != null && !isLiveAgentStatus(message.status)
+        && !isForcedWorkTraceLine(message) && !isSteeringContinuationMessage(message)
+        && message.body?.trim()) break;
     }
 
     const { trace: rawTrace, full } = partitionWorkRun(work);
