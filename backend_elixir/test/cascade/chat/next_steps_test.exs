@@ -740,7 +740,10 @@ defmodule Cascade.Chat.NextStepsTest do
     assert SQL.one("SELECT outcome,reason FROM chat_next_step_checks WHERE source_id=?", [source]) ==
              ["pending", "Conversation/work state: waiting for active work to finish."]
 
-    assert proposal(c).body == ""
+    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "Do not offer a new"
+    assert proposal(%{c | source: %{id: source}}).body == ""
+    assert context(c) =~ "must offer exactly one"
+    assert proposal(c).body != ""
 
     SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [mission.mission.id])
     assert {:ok, available} = Dispatches.list_pending(c.user.id, c.channel.id)

@@ -154,7 +154,11 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
         [channel, registration, source_id]
       )
 
-    not active_work?(channel, registration) and
+    (not active_work?(channel, registration) or
+       SQL.one(
+         "SELECT 1 FROM chat_messages WHERE channel_id=? AND id=? AND agent_id IS NULL AND registration_id IS NULL AND author!='Cascade'",
+         [channel, source_id]
+       ) == [1]) and
       (is_nil(check) or check == ["pending", nil] or check == ["proposed", exclude_id] or
          check == ["feedback", exclude_id]) and
       is_nil(
