@@ -12,6 +12,7 @@ on:
       - 'scripts/prepare-android-codex-runtime.mjs'
       - 'scripts/prepare-capacitor-assets.mjs'
       - '.github/workflows/android-beta.yml'
+      - '!**/*.test.*'
   workflow_dispatch:
 
 concurrency:

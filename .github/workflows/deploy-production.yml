@@ -3,6 +3,14 @@ name: Deploy Production
 on:
   push:
     branches: [master]
+    paths:
+      - '**'
+      - '!docs/**'
+      - 'docs/user-guide.md'
+      - '!**/*.test.*'
+      - '!backend_elixir/test/**'
+      - '!AGENTS.md'
+      - '!README.md'
   workflow_dispatch:
   workflow_run:
     workflows: [Desktop builds]

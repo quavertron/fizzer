@@ -17,6 +17,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/desktop-build.yml'
+      - '!**/*.test.*'
     tags: ['v*']
   workflow_dispatch:
 

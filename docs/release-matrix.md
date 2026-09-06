@@ -29,6 +29,11 @@ inspection are explicit operator checks. Run them only when that boundary
 changes or when performing that release. Self-hosters must verify their own
 revision, image identity, health, rollback, and served assets.
 
+Changes limited to tests, contributor instructions, or documentation do not
+trigger production deployment. The bundled `docs/user-guide.md` remains a runtime
+input and does deploy. Dependency installs ignore package command scripts, and
+revision labels are applied after runtime layers so each commit reuses the cache.
+
 Desktop installers build on native runtime changes, version tags, or manual
 workflow dispatch. Android builds on Android or bundled client changes, or manual
 dispatch. Backend-only pushes do not rebuild native installers. Installer refresh
