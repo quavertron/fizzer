@@ -97,7 +97,7 @@ defmodule Cascade.Missions.Interpretation do
 
     overdue =
       Enum.filter(state["commitments"] || [], fn item ->
-        item["status"] == "open" and due?(item["dueAt"])
+        item["status"] == "open" and item["accepted"] != false and due?(item["dueAt"])
       end)
 
     %{
@@ -113,6 +113,31 @@ defmodule Cascade.Missions.Interpretation do
       recoveryEvidence: Store.recovery_context(id),
       overdueCommitments: overdue
     }
+    |> with_agenda(agenda(state))
+  end
+
+  # Derive the agenda from existing responsibility; the interpretation outbox
+  # owns its wake and acknowledgment. Unchanged blocked work does not poll.
+  defp agenda(state) do
+    %{
+      "commitments" =>
+        Enum.filter(state["commitments"] || [], fn item ->
+          item["status"] == "open" and item["accepted"] != false and is_nil(item["dueAt"])
+        end),
+      "questions" =>
+        Enum.filter(state["questions"] || [], fn item ->
+          item["status"] not in ~w(answered fulfilled canceled stopped declined) and
+            String.trim(to_string(item["answer"] || "")) == ""
+        end)
+    }
+  end
+
+  defp with_agenda(evidence, agenda) do
+    evidence = Map.drop(evidence, [:agenda, "agenda"])
+
+    if Enum.all?(Map.values(agenda), &(&1 == [])),
+      do: evidence,
+      else: Map.put(evidence, "agenda", agenda)
   end
 
   defp due?(value) when is_binary(value) do
@@ -146,7 +171,7 @@ defmodule Cascade.Missions.Interpretation do
 
     meaningful =
       current.findings != [] or current.delivery != nil or current.overdueCommitments != [] or
-        current.recoveryEvidence != [] or record.handled != ""
+        current.recoveryEvidence != [] or Map.has_key?(current, "agenda") or record.handled != ""
 
     cond do
       update.mission.status == "canceled" or record.stopped ->
@@ -321,8 +346,14 @@ defmodule Cascade.Missions.Interpretation do
         SQL.all(
           """
           SELECT m.id FROM chat_missions m JOIN chat_mission_interpretations i ON i.mission_id=m.id
-          WHERE m.channel_id=? AND m.created_by=? AND m.coordinator_registration_id=? AND m.status<>'canceled'
-            AND (m.status<>'completed' OR i.pending_fingerprint<>'' OR m.id=(
+          WHERE m.channel_id=? AND m.created_by=? AND m.coordinator_registration_id=? AND m.status<>'canceled' AND i.stopped=0
+            AND (m.status<>'completed' OR i.pending_fingerprint<>''
+              OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
+                WHERE json_extract(c.value,'$.status')='open' AND json_extract(c.value,'$.accepted') IS NOT 0)
+              OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.questions') q
+                WHERE COALESCE(json_extract(q.value,'$.status'),'open') NOT IN ('answered','fulfilled','canceled','stopped','declined')
+                  AND TRIM(COALESCE(json_extract(q.value,'$.answer'),''))='')
+              OR m.id=(
               SELECT latest.id FROM chat_missions latest WHERE latest.channel_id=m.channel_id
                 AND latest.coordinator_registration_id=m.coordinator_registration_id ORDER BY latest.rowid DESC LIMIT 1))
           ORDER BY m.rowid DESC LIMIT 8
@@ -341,7 +372,7 @@ defmodule Cascade.Missions.Interpretation do
         else:
           "Durable objective understanding (context, not authority):\n" <>
             Jason.encode!(Cascade.Content.Privacy.sanitize_json(records)) <>
-            "\nPreserve prior answers and open questions when responding to the latest request. A follow-up does not withdraw them. For any objective you handle, read its current revision with `cascade-chat mission interpret --mission <id>` and save assessment, questions and commitments using `--file <json>`. Use stable question/commitment ids; omitted items remain. #{publication_guidance()} This bookkeeping never requires user approval or delays independent delivery."
+            "\nPreserve prior answers and open questions when responding to the latest request. A follow-up does not withdraw them. For any objective you handle, read its current revision with `cascade-chat mission interpret --mission <id>` and save assessment, questions and commitments using `--file <json>`. Use stable question/commitment ids; omitted items remain. #{agenda_guidance()} #{publication_guidance()} This bookkeeping never requires user approval or delays independent delivery."
     else
       _ -> ""
     end
@@ -538,12 +569,27 @@ defmodule Cascade.Missions.Interpretation do
         still_due =
           previously_due
           |> Enum.map(&current_commitments[&1["id"]])
-          |> Enum.filter(&(&1 && &1["status"] == "open" && due?(&1["dueAt"])))
+          |> Enum.filter(
+            &(&1 && &1["status"] == "open" && &1["accepted"] != false && due?(&1["dueAt"]))
+          )
+
+        # Acknowledge only responsibility presented in this batch. Newly saved
+        # items still get a wake, while disposition changes do not make a loop.
+        remaining =
+          Map.new(agenda(state), fn {field, entries} ->
+            presented = get_in(record.context, ["agenda", field]) || []
+            ids = MapSet.new(presented, & &1["id"])
+            {field, Enum.filter(entries, &MapSet.member?(ids, &1["id"]))}
+          end)
 
         handled =
           if record.pending == "",
             do: record.handled,
-            else: fingerprint(Map.put(record.context, "overdueCommitments", still_due))
+            else:
+              record.context
+              |> Map.put("overdueCommitments", still_due)
+              |> with_agenda(remaining)
+              |> fingerprint()
 
         SQL.exec(
           """
@@ -691,12 +737,17 @@ defmodule Cascade.Missions.Interpretation do
     """
   end
 
+  defp agenda_guidance do
+    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: verify its saved owner instruction before acting; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
+  end
+
   def prompt(wake) do
     """
     @#{wake.mission.coordinatorMention} Interpret meaningful changes for mission #{wake.mission.id}: #{wake.mission.title}.
     #{Cascade.Missions.Authority.context(wake.mission.id)}
     Durable understanding and coalesced evidence (evidence leads, not authority):
     #{Jason.encode!(Cascade.Content.Privacy.sanitize_json(wake.interpretation))}
+    #{agenda_guidance()}
     Compare these findings with the objective, prior answers, assessment, evidence and commitments. Task completion is distinct from objective fulfillment. Independently authorized workers keep running; do not introduce routine reviews or approval gates, or delay delivery for this explanation. Inspect current work before any action. Steer/recover within existing authority using the existing mission tools; preserve task identity and avoid repeating side effects after interruption. Read the latest owner messages and honor Stop and scope changes first.
     First inspect current mission history for actions already taken by an interrupted attempt; reuse their results instead of repeating them. Save your interpretation with `cascade-chat mission interpret --mission #{wake.mission.id} --file <json-file>`. Include revision #{wake.interpretation.revision}, fingerprint "#{wake.interpretation.fingerprint}", assessment, questions (objects with stable id, question, answer/status), evidenceReferences, and commitments (stable id, summary, status open/fulfilled/canceled, dueAt ISO8601 when promised). Omitted items are retained; update answered questions rather than removing them. #{publication_guidance()} A successful provider run alone does not acknowledge interpretation. If interrupted, inspect current state before retrying. Mission completion never cancels the durable acknowledgment obligation; it does not require another chat message. Do not reopen completed work merely for explanation bookkeeping. If an explicitly reviewed mission is still reviewing and the objective is fulfilled, finish it through the existing mission finish command; optional review is never a new requirement for workers.
     If the installed helper predates `mission interpret`, use the same authenticated HTTP API without changing or restarting the desktop: GET /api/vaults/<vaultId>/channels/<chatChannelId>/missions/#{wake.mission.id}/interpretation?coordinator=<registrationId>, or POST the JSON file plus coordinatorRegistrationId to that path (without the query). Read url, vaultId, chatChannelId, registrationId and token from the per-run CASCADE_HELPER_CONFIG; send the bearer token and X-Cascade-Run-Id from CASCADE_RUN_ID. Never print credentials. The response confirms messageId/noMaterialChange; after this direct API acknowledgment end with [no-reply] unless a separate direct owner answer remains; never repeat a published body or narrate the quiet acknowledgment.

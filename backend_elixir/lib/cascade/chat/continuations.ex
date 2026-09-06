@@ -7,10 +7,13 @@ defmodule Cascade.Chat.Continuations do
 
   # Only the owner's sticky coordinator is eligible. Worker runs, shared callers,
   # and mission interpretation wakes already owned by their own outbox are excluded.
-  defp scope(run_id, stopping \\ false) do
+  defp scope(run_id, include_system \\ false) do
     case SQL.one(
            """
-           SELECT d.registration_id,d.conversation_id,d.channel_id,r.owner_user_id,d.id,d.message_id
+           SELECT d.registration_id,
+             CASE WHEN ?=1 AND d.conversation_id LIKE 'mission-review:%'
+               THEN m.conversation_id ELSE d.conversation_id END,
+             d.channel_id,r.owner_user_id,d.id,d.message_id
            FROM runs r JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
            JOIN chat_agent_members m ON m.id=d.registration_id
            JOIN vault_agents va ON va.id=m.vault_agent_id
@@ -21,7 +24,7 @@ defmodule Cascade.Chat.Continuations do
                AND d.message_id NOT LIKE 'sys-mission-%' AND d.message_id NOT LIKE 'sys-next-%'
                AND NOT EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.dispatch_id=d.id)))
            """,
-           [run_id, if(stopping, do: 1, else: 0)]
+           [if(include_system, do: 1, else: 0), run_id, if(include_system, do: 1, else: 0)]
          ) do
       [registration, conversation, channel, owner, dispatch, message] ->
         %{
@@ -195,8 +198,10 @@ defmodule Cascade.Chat.Continuations do
     Dispatches.retract_pending_reply(dispatch)
   end
 
+  # Interpretation owns automatic retries, but may explicitly checkpoint a
+  # further useful action through this same coordinator continuation.
   def get(user, channel, run) do
-    with s when not is_nil(s) <- scope(run),
+    with s when not is_nil(s) <- scope(run, true),
          true <- s.owner == user,
          {:ok, route} <- Channel.assert_channel(channel, user),
          true <- route.sourceChannelId == s.channel do
@@ -212,7 +217,7 @@ defmodule Cascade.Chat.Continuations do
         with {:ok, _} <- get(user, channel, run),
              [status] when status in ["queued", "running"] <-
                SQL.one("SELECT status FROM runs WHERE id=?", [run]),
-             s <- scope(run),
+             s <- scope(run, true),
              old <- row(s),
              true <- input["revision"] == old.revision,
              status when status in ["pending", "waiting", "completed", "canceled"] <-

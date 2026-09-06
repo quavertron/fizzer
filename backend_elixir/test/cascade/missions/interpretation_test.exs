@@ -493,6 +493,171 @@ defmodule Cascade.Missions.InterpretationTest do
       record(c, worker_run, %{"assessment" => "Worker impersonating coordinator"})
   end
 
+  test "undated commitments and unanswered questions drive one coalesced useful action without a user nudge",
+       c do
+    finding(c, "Initial checkpoint")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "commitments" => [
+          %{"id" => "recover", "summary" => "Recover the existing authorized task"}
+        ],
+        "questions" => [%{"id" => "direct", "question" => "What remains unfinished?"}]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Checkpoint saved")
+    [next] = Scheduler.schedule(c.mission).wakeDispatches
+    assert next.message.body =~ "Recover the existing authorized task"
+    assert next.message.body =~ "What remains unfinished?"
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    next_run = run(c, next.dispatch)
+
+    {{:ok, result}, _} =
+      record(c, next_run, %{
+        "questions" => [
+          %{
+            "id" => "direct",
+            "answer" => "The original worker retains delivery.",
+            "status" => "answered"
+          }
+        ],
+        "body" => "The original worker retains delivery."
+      })
+
+    assert result.messageId != nil
+    :ok = Runs.finish(next_run.id, "completed", "Answered and inspected existing ownership")
+    for _ <- 1..3, do: assert(Scheduler.schedule(c.mission).wakeDispatches == [])
+    assert state(c).understanding["commitments"] |> Enum.any?(&(&1["id"] == "recover"))
+  end
+
+  test "an unanswered direct question alone wakes after execution completion and Stop prevents revival",
+       c do
+    finding(c, "Initial checkpoint")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "questions" => [%{"id" => "direct", "question" => "What did the checks demonstrate?"}]
+      })
+
+    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
+    :ok = Runs.finish(review.id, "completed", "Execution done; answer still owed")
+    [next] = Scheduler.schedule(c.mission).wakeDispatches
+    assert next.message.body =~ "What did the checks demonstrate?"
+    stopped = run(c, next.dispatch)
+    Interpretation.stop_run(stopped.id)
+    :ok = Runs.finish(stopped.id, "canceled", "Owner Stop")
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+
+    refute Interpretation.context(c.user.id, c.channel, c.coordinator.id) =~
+             "What did the checks demonstrate?"
+  end
+
+  test "agenda action can continue through the existing continuation without copying commitments",
+       c do
+    finding(c, "Authorized recovery needs one more short coordinator action")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+    assert {:ok, current} = Cascade.Chat.Continuations.get(c.user.id, c.channel, review.id)
+
+    assert {:ok, _} =
+             Cascade.Chat.Continuations.record(c.user.id, c.channel, review.id, %{
+               "revision" => current.revision,
+               "status" => "pending",
+               "summary" => "Inspect existing mission #{c.mission} before recovery"
+             })
+
+    {{:ok, _}, _} = record(c, review, %{"noMaterialChange" => true})
+    :ok = Runs.finish(review.id, "completed", "Short action checkpointed")
+    Cascade.Chat.Continuations.reconcile()
+    Cascade.Chat.Continuations.reconcile()
+
+    assert [[id]] =
+             SQL.all(
+               "SELECT dispatch_id FROM chat_coordinator_continuations WHERE registration_id=? AND status='pending'",
+               [c.coordinator.id]
+             )
+
+    assert {:ok, continuation} = Dispatches.for_execution(id)
+    assert Cascade.Chat.Continuations.context(continuation) =~ "Inspect existing mission"
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+  end
+
+  test "recovery keeps the original task and rejects retry while its run is actually active", c do
+    [worker] = Scheduler.schedule(c.mission).dispatches
+    worker_run = run(c, worker.dispatch)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
+    finding(c, "Projection says failed; inspect execution", "failed")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+    assert {:error, _} = Store.update_task(c.user.id, c.channel, c.task, %{status: "pending"})
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "commitments" => [
+          %{"id" => "recover", "summary" => "Recover original task after confirmed exit"}
+        ]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Original provider still owns work")
+    [agenda] = Scheduler.schedule(c.mission).wakeDispatches
+    action = run(c, agenda.dispatch)
+    assert agenda.message.body =~ "failed projection or reconnect text is not proof"
+    # Simulate a confirmed terminal provider result, then use existing recovery.
+    :ok = Runs.finish(worker_run.id, "failed", "Confirmed provider exit")
+    [work_item] = SQL.one("SELECT work_item_id FROM chat_mission_tasks WHERE id=?", [c.task])
+
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: "pending",
+        summary: "Resume saved work"
+      })
+
+    {{:ok, _}, _} = record(c, action, %{"noMaterialChange" => true})
+    :ok = Runs.finish(action.id, "completed", "Recovered existing task")
+    [replacement] = Scheduler.schedule(c.mission).dispatches
+
+    assert [work_item] ==
+             SQL.one("SELECT work_item_id FROM chat_mission_tasks WHERE id=?", [c.task])
+
+    assert [c.task] ==
+             SQL.one("SELECT id FROM chat_mission_tasks WHERE dispatch_id=?", [
+               replacement.dispatch.id
+             ])
+
+    assert Scheduler.schedule(c.mission).dispatches == []
+  end
+
+  test "fulfilled canceled unaccepted and future responsibilities do not request action", c do
+    finding(c, "Initial checkpoint")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "commitments" => [
+          %{"id" => "done", "status" => "fulfilled"},
+          %{"id" => "stop", "status" => "canceled"},
+          %{"id" => "proposal", "status" => "open", "accepted" => false},
+          %{"id" => "later", "status" => "open", "dueAt" => "2999-01-01T00:00:00Z"}
+        ],
+        "questions" => [
+          %{"id" => "answered", "answer" => "Already answered"},
+          %{"id" => "withdrawn", "status" => "canceled"}
+        ]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Saved dispositions")
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+  end
+
   test "retried interpretation reuses its persisted steering request instead of another worker side effect",
        c do
     finding(c, "Needs narrower scope")
