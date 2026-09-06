@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -159,7 +160,7 @@ test('the post-cutover installer sync verifies a release manifest before replaci
   assert.match(sync, /Fizzer-Setup\.exe/);
   assert.match(sync, /Fizzer-linux-x64\.deb/);
   assert.match(sync, /Fizzer-linux-x64\.rpm/);
-  assert.match(sync, /sha256sum --check --status SHA256SUMS/);
+  assert.match(sync, /sha256sum --check SHA256SUMS/);
   assert.match(sync, /mv -f "\$staging\/\$file" "\$DOWNLOADS_DIR\/\$file"/);
 });
 
@@ -569,4 +570,72 @@ test('retention refuses direct, ancestor and descendant recovery mounts', () => 
     assert.match(result.stderr, /mounted by a running container/);
     assert.doesNotMatch(result.stdout, /PRUNED/);
   }
+});
+
+const script = fileURLToPath(new URL('./sync-desktop-installers.sh', import.meta.url));
+const files = ['Fizzer-mac-arm64.dmg', 'Fizzer-mac-x64.dmg', 'Fizzer-Setup.exe',
+  'Fizzer-linux-x64.deb', 'Fizzer-linux-x64.rpm'];
+
+function runSync(t, permanentFailure) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-sync-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const downloads = path.join(root, 'downloads');
+  const release = path.join(root, 'release');
+  const bin = path.join(root, 'bin');
+  for (const dir of [downloads, release, bin]) fs.mkdirSync(dir);
+  for (const file of files) {
+    fs.writeFileSync(path.join(release, file), `new ${file}`);
+    fs.writeFileSync(path.join(downloads, file), `old ${file}`);
+  }
+  fs.writeFileSync(path.join(downloads, 'SHA256SUMS'), 'old manifest');
+  fs.writeFileSync(path.join(release, 'SHA256SUMS'), files.map(file =>
+    `${createHash('sha256').update(`new ${file}`).digest('hex')}  ${file}\n`).join(''));
+  fs.writeFileSync(path.join(bin, 'curl'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.env.PROBE_ROOT;
+const args = process.argv.slice(2);
+const url = new URL(args.find(arg => arg.startsWith('https://')));
+const file = path.basename(url.pathname);
+const counter = path.join(root, 'attempts');
+let attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+if (file === 'SHA256SUMS') fs.writeFileSync(counter, String(++attempt));
+fs.appendFileSync(path.join(root, 'requests'), url.href + '\\n');
+const target = args[args.indexOf('-o') + 1];
+fs.copyFileSync(path.join(root, 'release', file), target);
+if (file === 'Fizzer-Setup.exe' && (attempt === 1 || process.env.PERMANENT_FAILURE === '1')) {
+  fs.writeFileSync(target, 'stale installer');
+}
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const result = spawnSync('bash', [script], { encoding: 'utf8', env: {
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, PROBE_ROOT: root,
+    CASCADE_DOWNLOADS_DIR: downloads, FIZZER_DESKTOP_RELEASE_URL: 'https://example.test/desktop-beta',
+    PERMANENT_FAILURE: permanentFailure ? '1' : '0',
+  } });
+  return { result, root, downloads };
+}
+
+test('installer refresh retries a mixed rolling release and publishes only a verified set', t => {
+  const { result, root, downloads } = runSync(t, false);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Fizzer-Setup.exe: FAILED/);
+  assert.match(result.stdout, /Refreshed verified desktop installers/);
+  assert.equal(fs.readFileSync(path.join(root, 'attempts'), 'utf8'), '2');
+  for (const file of files) assert.equal(fs.readFileSync(path.join(downloads, file), 'utf8'), `new ${file}`);
+  const requests = fs.readFileSync(path.join(root, 'requests'), 'utf8').trim().split('\n').map(url => new URL(url));
+  assert.equal(requests.length, 12);
+  assert.ok(requests.every(url => url.searchParams.get('refresh')));
+  assert.notEqual(requests[0].search, requests[6].search);
+  assert.equal(fs.readdirSync(downloads).length, 6);
+});
+
+test('persistent checksum failure remains fatal and preserves every existing installer', t => {
+  const { result, root, downloads } = runSync(t, true);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /failed checksum verification after 3 complete downloads/);
+  assert.equal(fs.readFileSync(path.join(root, 'attempts'), 'utf8'), '3');
+  for (const file of files) assert.equal(fs.readFileSync(path.join(downloads, file), 'utf8'), `old ${file}`);
+  assert.equal(fs.readFileSync(path.join(downloads, 'SHA256SUMS'), 'utf8'), 'old manifest');
+  assert.equal(fs.readdirSync(downloads).length, 6);
 });
