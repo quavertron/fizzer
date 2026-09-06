@@ -137,6 +137,10 @@ defmodule Cascade.Missions.ChildrenTest do
     assert message.body =~ "Renewed deadline applies through child integration."
     assert message.body =~ child.task.branch
     assert message.body =~ "Integrate and verify"
+    # Results are dispatch evidence, never a second copy of the task's instructions.
+    [saved_prompt] = SQL.one("SELECT prompt FROM chat_mission_tasks WHERE id=?", [parent.id])
+    refute saved_prompt =~ "Commit abc"
+    assert saved_prompt =~ "Renewed deadline applies through child integration."
     assert joined.scheduled.wakeDispatches == []
     assert Scheduler.schedule(mission.id).dispatches == []
     assert {:ok, nil} = Store.settle_run(run.id, "completed", "duplicate")
@@ -151,6 +155,44 @@ defmodule Cascade.Missions.ChildrenTest do
     assert length(final.scheduled.wakeDispatches) == 1
     # Interpret the integrated outcome once; intermediate child work stayed with the parent.
     assert Scheduler.schedule(mission.id).wakeDispatches == []
+  end
+
+  test "a retried child owes its integrating parent a fresh result", ctx do
+    {mission, parent, run} = parent(ctx)
+
+    {:ok, child} =
+      Children.add(ctx.user.id, ctx.channel.id, mission.id, %{title: "Child"}, run.id)
+
+    [%{dispatch: dispatch}] = Scheduler.schedule(mission.id).dispatches
+    child_run = start(ctx, dispatch)
+    :ok = RunStore.finish(run.id, "completed", "Join")
+    {:ok, _} = Scheduler.settle_run(run.id, "completed", "Join")
+    :ok = RunStore.finish(child_run.id, "completed", "First artifact")
+    {:ok, joined} = Scheduler.settle_run(child_run.id, "completed", "First artifact")
+    [%{dispatch: dispatch}] = joined.scheduled.dispatches
+    integration = start(ctx, dispatch)
+
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, child.task.id, %{
+        status: "pending",
+        summary: "Correct the artifact"
+      })
+
+    [%{dispatch: dispatch}] = Scheduler.schedule(mission.id).dispatches
+    corrected = start(ctx, dispatch)
+    :ok = RunStore.finish(corrected.id, "completed", "Corrected artifact")
+    {:ok, _} = Scheduler.settle_run(corrected.id, "completed", "Corrected artifact")
+
+    :ok = RunStore.finish(integration.id, "completed", "Only verified the first artifact")
+
+    {:ok, waiting} =
+      Scheduler.settle_run(integration.id, "completed", "Only verified the first artifact")
+
+    assert [%{message: message}] = waiting.scheduled.dispatches
+    assert message.missionTaskId == parent.id
+    assert message.body =~ "Corrected artifact"
+    refute message.body =~ "First artifact"
+    assert waiting.scheduled.wakeDispatches == []
   end
 
   test "restart recovery reconciles missed parent and child settlements exactly once", ctx do

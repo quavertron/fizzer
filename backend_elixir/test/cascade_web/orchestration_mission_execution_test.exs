@@ -208,6 +208,11 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     assert initial_packet =~ "run:delegate"
     refute initial_packet =~ "run:cancel"
     refute worker.prompt =~ "start a durable mission"
+    refute worker.prompt =~ "Participants:"
+
+    assert worker.prompt =~
+             "cascade-chat history --around-message-id mission-task-#{added.task.id}"
+
     SQL.exec("UPDATE runs SET session_id='retained-provider-context' WHERE id=?", [worker.id])
 
     {:ok, request} =
@@ -257,6 +262,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     assert resumed_packet =~ "resumeSessionId"
     assert resumed_packet =~ "Use the remembered marker"
     assert resumed_packet =~ "/owner/channel"
+    refute resumed.prompt =~ "Shared room delta"
     refute resumed_packet =~ "run:cancel"
     assert Store.get(resumed_id).conversation_id == "mission:#{added.task.id}"
     assert Store.get(coordinator_run.id).status == "queued"

@@ -181,7 +181,13 @@ defmodule Cascade.Missions.Scheduler do
         %{
           id: message_id,
           body:
-            "@#{assignee_mention} #{candidate.prompt}\n\n#{Cascade.Missions.Authority.context(candidate.missionId)}",
+            [
+              "@#{assignee_mention} #{candidate.prompt}",
+              Cascade.Missions.Children.context(candidate.taskId),
+              Cascade.Missions.Authority.context(candidate.missionId)
+            ]
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.join("\n\n"),
           createdAt: now(),
           registrationId: candidate.coordinatorRegistrationId,
           missionTaskId: candidate.taskId

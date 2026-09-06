@@ -772,30 +772,6 @@ defmodule CascadeWeb.OrchestrationController do
     if execution.target_channel_id == "" do
       {[], []}
     else
-      room =
-        with {:ok, messages} <-
-               Messages.list(execution.target_channel_id, execution.runner_user_id,
-                 limit: 64,
-                 through_message_id: triggering_message_id
-               ),
-             {:ok, registrations} <-
-               Agents.list_members(execution.target_channel_id, execution.runner_user_id),
-             {:ok, missions} <-
-               MissionStore.list_active(execution.runner_user_id, execution.target_channel_id, 3) do
-          RoomContext.build_context_payload(%{
-            messages: messages,
-            registrations: registrations,
-            missions: missions,
-            targetRegistrationId: registration_id,
-            excludeMessageIds: [message_id, triggering_message_id],
-            continuation: not is_nil(resume),
-            cursorMessageId: triggering_message_id,
-            maxChars: if(resume, do: 1_200, else: 2_800)
-          })
-        else
-          _ -> %{text: "", inlineSvgs: []}
-        end
-
       worker? =
         case Messages.get(
                execution.target_channel_id,
@@ -804,6 +780,35 @@ defmodule CascadeWeb.OrchestrationController do
              ) do
           {:ok, message} -> message[:missionTaskId] not in [nil, ""]
           _ -> false
+        end
+
+      room =
+        if worker? do
+          %{
+            text:
+              "Task source: `cascade-chat history --around-message-id #{triggering_message_id} --include-reply-context`; use `cascade-chat search <query>` for older evidence.",
+            inlineSvgs: []
+          }
+        else
+          with {:ok, messages} <-
+                 Messages.list(execution.target_channel_id, execution.runner_user_id,
+                   limit: 64,
+                   through_message_id: triggering_message_id
+                 ),
+               {:ok, registrations} <-
+                 Agents.list_members(execution.target_channel_id, execution.runner_user_id) do
+            RoomContext.build_context_payload(%{
+              messages: messages,
+              registrations: registrations,
+              targetRegistrationId: registration_id,
+              excludeMessageIds: [message_id, triggering_message_id],
+              continuation: not is_nil(resume),
+              cursorMessageId: triggering_message_id,
+              maxChars: if(resume, do: 1_200, else: 2_800)
+            })
+          else
+            _ -> %{text: "", inlineSvgs: []}
+          end
         end
 
       suggestions =

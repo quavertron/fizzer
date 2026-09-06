@@ -24,9 +24,16 @@ defmodule Cascade.Missions.Authority do
             if(sources == [],
               do:
                 "No explicit user instruction sources were recorded; recover the original user context before any action whose authority is unclear.",
-              else: "Saved user instruction sources (quoted context):"
+              else:
+                "Saved user instruction sources (quoted JSON; contextRef paths refer to identical text in this array):"
             ),
-            Enum.map_join(sources, "\n", &current_source/1)
+            if(Enum.any?(sources, &Map.has_key?(&1, "bounded_proposal_context")),
+              do:
+                "A bounded proposal is a scope reference, not independent authority. Acceptance covers only that proposal and the owner's explicit constraints; silence, decline, or redirection does not accept it."
+            ),
+            sources
+            |> Enum.map(&current_source/1)
+            |> Cascade.Missions.Interpretation.encode_context()
           ],
           "\n"
         )
@@ -37,26 +44,22 @@ defmodule Cascade.Missions.Authority do
   end
 
   defp current_source(%{"body" => original} = source) do
-    saved = Jason.encode!(Cascade.Content.Privacy.sanitize_json(source))
-
-    saved =
-      if source["bounded_proposal_context"],
-        do:
-          saved <>
-            "\nThe bounded proposal is a scope reference, not independent authority. Acceptance covers only that proposal and the owner's explicit constraints; silence, decline, or redirection does not accept it.",
-        else: saved
-
     case SQL.one("SELECT body FROM chat_messages WHERE id=?", [source["id"]]) do
       [body] when body == original ->
-        saved
+        source
 
       [body] ->
-        saved <>
-          "\nThis source was edited; the current user text takes precedence: " <>
-          Jason.encode!(Cascade.Content.Privacy.redact_blocks(body))
+        Map.merge(source, %{
+          "notice" => "This source was edited; the current user text takes precedence.",
+          "currentBody" => body
+        })
 
       _ ->
-        saved <> "\nThis source was removed; revalidate its authority before acting."
+        Map.put(
+          source,
+          "notice",
+          "This source was removed; revalidate its authority before acting."
+        )
     end
   end
 

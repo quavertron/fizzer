@@ -691,6 +691,52 @@ defmodule Cascade.Missions.MissionStateTest do
     assert [_] = Scheduler.schedule(created.mission.id).wakeDispatches
   end
 
+  test "authority projection references repeated proposals without losing owner sources", ctx do
+    {:ok, created} = mission(ctx, "Compact authority")
+
+    proposal = %{
+      "id" => "accepted-proposal",
+      "body" => String.duplicate("Only the accepted repair. ", 12)
+    }
+
+    sources =
+      for n <- 1..3 do
+        {:ok, message} =
+          Messages.create(ctx.user, ctx.vault.id, ctx.channel.id, %{
+            id: "compact-authority-#{ctx.suffix}-#{n}",
+            body: "Owner constraint #{n}"
+          })
+
+        %{"id" => message.id, "body" => message.body, "bounded_proposal_context" => proposal}
+      end
+
+    encoded = Jason.encode!(sources)
+
+    SQL.exec("UPDATE chat_missions SET authority_json=? WHERE id=?", [encoded, created.mission.id])
+
+    context = Cascade.Missions.Authority.context(created.mission.id)
+    assert length(String.split(context, proposal["body"])) == 2
+    assert length(String.split(context, "not independent authority")) == 2
+    assert context =~ "contextRef"
+    projected = context |> String.split("\n") |> List.last() |> Jason.decode!()
+
+    assert Enum.map(projected, &Map.take(&1, ["id", "body"])) ==
+             Enum.map(sources, &Map.take(&1, ["id", "body"]))
+
+    for source <- projected do
+      case source["bounded_proposal_context"]["body"] do
+        %{"contextRef" => [index, "bounded_proposal_context", "body"]} ->
+          assert Enum.at(projected, index)["bounded_proposal_context"]["body"] == proposal["body"]
+
+        body ->
+          assert body == proposal["body"]
+      end
+    end
+
+    assert SQL.one("SELECT authority_json FROM chat_missions WHERE id=?", [created.mission.id]) ==
+             [encoded]
+  end
+
   test "authority sources survive editing and reject agent-authored grants", ctx do
     {:ok, created} = mission(ctx, "Persist authority")
     assert [%{"id" => id, "body" => original}] = created.mission.authority
