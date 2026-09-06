@@ -4,7 +4,7 @@
  * Renders the left sidebar panel containing:
  * - Inset vault rail beside the folder/channel tree
  * - Quick-action buttons (new note, new folder, search)
- * - Vault management dialog for create/join/rename controls
+ * - Vault management dialog for create/join and selected-vault management
  * - Recursive folder tree with expandable folders and note items
  * - User info footer with logout
  *
@@ -18,7 +18,7 @@
  */
 
 import { memo, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { canRenameVault, isSharedVault, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
+import { vaultDetailsLabel, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
 import { NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
 import {
@@ -34,12 +34,9 @@ import {
   Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
   Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
 } from 'lucide-react';
-import { FizzerMark } from './FizzerMark';
 
-/** Switcher label: "Team notes · shared · 3" so shared vaults are obvious. */
 export function vaultOptionLabel(vault: Vault): string {
-  if (!isSharedVault(vault)) return vault.name;
-  return `${vault.name} · shared · ${vault.memberCount}`;
+  return `${vault.name} · ${vaultDetailsLabel(vault)}`;
 }
 
 const FOLDER_DND_TYPE = 'application/x-cascade-folder';
@@ -58,8 +55,9 @@ interface SidebarProps {
   showAgentMemory: boolean;
   onSelectVault: (id: string) => void;
   onCreateVault: (name: string) => Promise<boolean>;
-  onRenameVault: (id: string, name: string) => Promise<boolean>;
-  onDeleteVault: (id: string) => Promise<boolean>;
+  vaultListLoading?: boolean;
+  vaultListError?: string;
+  onRetryVaults?: () => void;
   onManageVault: (id: string) => void;
   onJoinVault: (inviteLink: string) => Promise<boolean>;
   onOpenPublicVaults: () => void;
@@ -161,8 +159,9 @@ export const Sidebar = memo(function Sidebar({
   showAgentMemory,
   onSelectVault,
   onCreateVault,
-  onRenameVault,
-  onDeleteVault,
+  vaultListLoading,
+  vaultListError,
+  onRetryVaults,
   onManageVault,
   onJoinVault,
   onOpenPublicVaults,
@@ -201,9 +200,7 @@ export const Sidebar = memo(function Sidebar({
   const [creatingVault, setCreatingVault] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
   const [creatingVaultBusy, setCreatingVaultBusy] = useState(false);
-  const [renamingVaultId, setRenamingVaultId] = useState<string | null>(null);
-  const [renameVaultName, setRenameVaultName] = useState('');
-  const [renameVaultBusy, setRenameVaultBusy] = useState(false);
+  const [vaultFormError, setVaultFormError] = useState('');
   const [joiningVault, setJoiningVault] = useState(false);
   const [vaultInviteLink, setVaultInviteLink] = useState('');
   const [joiningVaultBusy, setJoiningVaultBusy] = useState(false);
@@ -212,6 +209,7 @@ export const Sidebar = memo(function Sidebar({
   const [audioPlaying, setAudioPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const vaultManagerRef = useRef<HTMLDivElement>(null);
   const [selectionConnector, setSelectionConnector] = useState('');
   const autoplayAudioRef = useRef(false);
   // Drop target highlight: a folder id, or ROOT_DROP_ID for the root area.
@@ -220,11 +218,21 @@ export const Sidebar = memo(function Sidebar({
 
   useEffect(() => {
     if (!vaultMenuOpen) return;
+    const dialog = vaultManagerRef.current;
+    const previous = document.activeElement as HTMLElement | null;
+    dialog?.querySelector<HTMLElement>('input, button')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && dialog) {
+        const items = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)'));
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
       if (event.key === 'Escape') setVaultMenuOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); if (previous?.isConnected) previous.focus(); };
   }, [vaultMenuOpen]);
 
   const activeVault = useMemo(
@@ -852,32 +860,11 @@ export const Sidebar = memo(function Sidebar({
     setCreatingVaultBusy(true);
     const created = await onCreateVault(name);
     setCreatingVaultBusy(false);
-    if (!created) return;
+    if (!created) { setVaultFormError('Could not create vault. Check the name and try again.'); return; }
+    setVaultFormError('');
     setNewVaultName('');
     setCreatingVault(false);
     setVaultMenuOpen(false);
-  };
-
-  const startRenameVault = (vault: Vault) => {
-    setCreatingVault(false);
-    setJoiningVault(false);
-    setRenamingVaultId(vault.id);
-    setRenameVaultName(vault.name);
-  };
-
-  const cancelRenameVault = () => {
-    setRenamingVaultId(null);
-    setRenameVaultName('');
-  };
-
-  const submitRenameVault = async () => {
-    const name = renameVaultName.trim();
-    if (!renamingVaultId || !name || renameVaultBusy) return;
-    setRenameVaultBusy(true);
-    const renamed = await onRenameVault(renamingVaultId, name);
-    setRenameVaultBusy(false);
-    if (!renamed) return;
-    cancelRenameVault();
   };
 
   const submitJoinVault = async () => {
@@ -886,7 +873,8 @@ export const Sidebar = memo(function Sidebar({
     setJoiningVaultBusy(true);
     const joined = await onJoinVault(inviteLink);
     setJoiningVaultBusy(false);
-    if (!joined) return;
+    if (!joined) { setVaultFormError('Could not join vault. Check the invite link and try again.'); return; }
+    setVaultFormError('');
     setVaultInviteLink('');
     setJoiningVault(false);
     setVaultMenuOpen(false);
@@ -932,7 +920,7 @@ export const Sidebar = memo(function Sidebar({
             <Compass size={18} aria-hidden="true" />
           </button>
           <button type="button" className="vault-rail-action" onClick={() => setVaultMenuOpen(true)} aria-label="Manage vaults" title="Manage vaults">
-            <Plus size={19} aria-hidden="true" />
+            <Settings size={19} aria-hidden="true" />
           </button>
         </div>
       </nav>
@@ -950,11 +938,7 @@ export const Sidebar = memo(function Sidebar({
           <span className="vault-name-copy">
             <span className="vault-name-text">{activeVault?.name || 'Fizzer'}</span>
             <span className="vault-name-meta">
-              {activeVault
-                ? isSharedVault(activeVault)
-                  ? `${activeVault.memberCount} members · ${activeVault.role || 'member'}`
-                  : 'Private · only you'
-                : 'Your workspace'}
+              {activeVault ? vaultDetailsLabel(activeVault) : 'Create or join a vault'}
               </span>
           </span>
         </div>
@@ -962,121 +946,52 @@ export const Sidebar = memo(function Sidebar({
         <button className="btn-icon sidebar-mobile-collapse" onClick={onCollapse} title="Collapse sidebar"><PanelLeftClose size={16} /></button>
       </div>
 
+      <div className="sidebar-vault-actions">
+        <button type="button" onClick={() => { setCreatingVault(true); setJoiningVault(false); setVaultMenuOpen(true); }}>Create vault</button>
+        <button type="button" onClick={() => setVaultMenuOpen(true)}>Manage vaults</button>
+      </div>
+      {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry vaults</button></p>}
       {vaultMenuOpen && (
-        <div className="vault-switcher-menu" role="dialog" aria-modal="true" aria-label="Vault workspace">
-          <div className="vault-switcher-shell">
-            <div className="vault-switcher-heading">
-              <div><span>Vault workspace</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
-              <button type="button" className="vault-switcher-close" onClick={() => setVaultMenuOpen(false)} aria-label="Close vault workspace"><X size={18} /></button>
+        <div ref={vaultManagerRef} className="vault-manager-menu" role="dialog" aria-modal="true" aria-label="Vault workspace">
+          <div className="vault-manager-shell">
+            <div className="vault-manager-heading">
+              <div><span>Manage vaults</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
+              <button type="button" className="vault-manager-close" onClick={() => setVaultMenuOpen(false)} aria-label="Close vault workspace"><X size={18} /></button>
             </div>
 
-            <section className="vault-switcher-section" aria-labelledby="vault-switcher-your-vaults">
-              <h2 className="vault-switcher-section-title" id="vault-switcher-your-vaults">Your vaults</h2>
-              <div className="vault-switcher-grid" role="menu" aria-label="Your vaults">
+            <section className="vault-manager-section" aria-labelledby="vault-manager-your-vaults">
+              <h2 className="vault-manager-section-title" id="vault-manager-your-vaults">Your vaults</h2>
+              {vaultListLoading ? <p role="status">Loading vaults…</p> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
+              {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry</button></p>}
+              <div className="vault-manager-grid" aria-label="Your vaults">
                 {vaults.map((vault) => (
-                  renamingVaultId === vault.id ? (
-                    <div className="vault-switcher-create-form vault-switcher-rename-form" key={vault.id}>
-                      <strong>Rename {vault.name}</strong>
-                      <input
-                        autoFocus
-                        value={renameVaultName}
-                        placeholder="Vault name"
-                        aria-label={`Rename ${vault.name}`}
-                        maxLength={80}
-                        disabled={renameVaultBusy}
-                        onChange={(event) => setRenameVaultName(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') void submitRenameVault();
-                          if (event.key === 'Escape') cancelRenameVault();
-                        }}
-                      />
-                      <div className="vault-switcher-form-actions">
-                        <button type="button" onClick={cancelRenameVault}>Cancel</button>
-                        <button type="button" disabled={!renameVaultName.trim() || renameVaultBusy} onClick={() => void submitRenameVault()}>
-                          {renameVaultBusy ? 'Saving' : 'Save'}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="vault-switcher-row" key={vault.id}>
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={vault.id === activeVaultId}
-                        className={vault.id === activeVaultId ? 'is-active' : ''}
-                        onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}
-                      >
-                        <span className="vault-switcher-art" aria-hidden="true">
-                          <span className="vault-switcher-icon"><FizzerMark size={38} /></span>
-                        </span>
-                        <span className="vault-switcher-copy">
-                          <span className="vault-switcher-title-line">
-                            <strong>{vault.name}</strong>
-                            {vault.id === activeVaultId && <Check className="vault-switcher-check" size={16} aria-hidden="true" />}
-                          </span>
-                          <small>
-                            {isSharedVault(vault)
-                              ? `${vault.memberCount} members · ${vault.role || 'member'}`
-                              : 'Private · only you'}
-                          </small>
-                        </span>
-                      </button>
-                      {canRenameVault(vault) && (
-                        <button
-                          type="button"
-                          className="vault-switcher-rename"
-                          title={`Rename ${vault.name}`}
-                          aria-label={`Rename ${vault.name}`}
-                          onClick={(event) => { event.stopPropagation(); startRenameVault(vault); }}
-                        >
-                          <Pencil size={14} aria-hidden="true" />
-                        </button>
-                      )}
-                      {canRenameVault(vault) && (
-                        <button
-                          type="button"
-                          className="vault-switcher-delete"
-                          title={`Delete ${vault.name}`}
-                          aria-label={`Delete ${vault.name}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (!window.confirm(`Permanently delete “${vault.name}” and all of its notes? This cannot be undone.`)) return;
-                            void onDeleteVault(vault.id).then((deleted) => {
-                              if (deleted) setVaultMenuOpen(false);
-                            });
-                          }}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="vault-switcher-manage"
-                        title={`Manage ${vault.name}`}
-                        aria-label={`Manage ${vault.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setVaultMenuOpen(false);
-                          onManageVault(vault.id);
-                        }}
-                      >
-                        <Settings size={14} aria-hidden="true" />
-                      </button>
-                    </div>
-                  )
+                  <div className="vault-manager-row" key={vault.id}>
+                    <button type="button" aria-label={`Open ${vault.name}`} aria-current={vault.id === activeVaultId ? 'page' : undefined}
+                      className={vault.id === activeVaultId ? 'is-active' : ''}
+                      onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
+                      <span className="vault-manager-copy">
+                        <span className="vault-manager-title-line"><strong>{vault.name}</strong>{vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}</span>
+                        <small>{vaultDetailsLabel(vault)}</small>
+                      </span>
+                      <span>Open</span>
+                    </button>
+                    <button type="button" className="vault-manager-manage" aria-label={`Manage ${vault.name}`}
+                      onClick={() => { setVaultMenuOpen(false); onManageVault(vault.id); }}>Manage</button>
+                  </div>
                 ))}
               </div>
             </section>
 
-            <section className="vault-switcher-section" aria-labelledby="vault-switcher-manage">
-              <h2 className="vault-switcher-section-title" id="vault-switcher-manage">Explore and manage vaults</h2>
-              <div className="vault-switcher-action-grid" role="menu" aria-label="Explore and manage vaults">
-                <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-discover" onClick={() => { setVaultMenuOpen(false); onOpenPublicVaults(); }}>
-                  <span className="vault-switcher-action-icon" aria-hidden="true"><Compass size={28} /></span>
-                  <span className="vault-switcher-copy"><strong>Browse public vaults</strong><small>Find open communities</small></span>
+            {vaultFormError && <p role="alert">{vaultFormError}</p>}
+            <section className="vault-manager-section" aria-labelledby="vault-manager-manage">
+              <h2 className="vault-manager-section-title" id="vault-manager-manage">Explore and manage vaults</h2>
+              <div className="vault-manager-action-grid" aria-label="Explore and manage vaults">
+                <button type="button" className="vault-manager-action vault-manager-discover" onClick={() => { setVaultMenuOpen(false); onOpenPublicVaults(); }}>
+                  <span className="vault-manager-action-icon" aria-hidden="true"><Compass size={28} /></span>
+                  <span className="vault-manager-copy"><strong>Browse public vaults</strong><small>Find open communities</small></span>
                 </button>
                 {creatingVault ? (
-                  <div className="vault-switcher-create-form vault-switcher-action-form">
+                  <div className="vault-manager-create-form vault-manager-action-form">
                     <strong>New vault</strong>
                     <input
                       autoFocus
@@ -1093,7 +1008,7 @@ export const Sidebar = memo(function Sidebar({
                         }
                       }}
                     />
-                    <div className="vault-switcher-form-actions">
+                    <div className="vault-manager-form-actions">
                       <button type="button" onClick={() => { setCreatingVault(false); setNewVaultName(''); }}>Cancel</button>
                       <button type="button" disabled={!newVaultName.trim() || creatingVaultBusy} onClick={() => void submitNewVault()}>
                         {creatingVaultBusy ? 'Creating' : 'Create'}
@@ -1101,13 +1016,13 @@ export const Sidebar = memo(function Sidebar({
                     </div>
                   </div>
                 ) : (
-                  <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-create" onClick={() => { setJoiningVault(false); setCreatingVault(true); }}>
-                    <span className="vault-switcher-action-icon" aria-hidden="true"><Plus size={28} /></span>
-                    <span className="vault-switcher-copy"><strong>New vault</strong><small>Start a private workspace</small></span>
+                  <button type="button" className="vault-manager-action vault-manager-create" onClick={() => { setJoiningVault(false); setCreatingVault(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><Plus size={28} /></span>
+                    <span className="vault-manager-copy"><strong>New vault</strong><small>Start a private workspace</small></span>
                   </button>
                 )}
                 {joiningVault ? (
-                  <div className="vault-switcher-create-form vault-switcher-action-form">
+                  <div className="vault-manager-create-form vault-manager-action-form">
                     <strong>Join vault</strong>
                     <input
                       autoFocus
@@ -1124,7 +1039,7 @@ export const Sidebar = memo(function Sidebar({
                         }
                       }}
                     />
-                    <div className="vault-switcher-form-actions">
+                    <div className="vault-manager-form-actions">
                       <button type="button" onClick={() => { setJoiningVault(false); setVaultInviteLink(''); }}>Cancel</button>
                       <button type="button" disabled={!vaultInviteLink.trim() || joiningVaultBusy} onClick={() => void submitJoinVault()}>
                         {joiningVaultBusy ? 'Joining' : 'Join'}
@@ -1132,9 +1047,9 @@ export const Sidebar = memo(function Sidebar({
                     </div>
                   </div>
                 ) : (
-                  <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-join" onClick={() => { setCreatingVault(false); setJoiningVault(true); }}>
-                    <span className="vault-switcher-action-icon" aria-hidden="true"><LogIn size={28} /></span>
-                    <span className="vault-switcher-copy"><strong>Join vault</strong><small>Use an invite link</small></span>
+                  <button type="button" className="vault-manager-action vault-manager-join" onClick={() => { setCreatingVault(false); setJoiningVault(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><LogIn size={28} /></span>
+                    <span className="vault-manager-copy"><strong>Join vault</strong><small>Use an invite link</small></span>
                   </button>
                 )}
               </div>

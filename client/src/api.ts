@@ -44,20 +44,16 @@ export type Vault = {
   created_at: string;
   role?: VaultRole | null;
   memberCount?: number;
+  visibility?: 'private' | 'public';
 };
 
-/** True when a vault has anyone in it besides the caller. */
-export function isSharedVault(vault: Pick<Vault, 'memberCount'>): boolean {
-  return (vault.memberCount ?? 1) > 1;
-}
-
-/**
- * True when the caller may rename a vault. Legacy private vaults predate the
- * members table and carry no role, so treat a missing role as ownership; the
- * server is the real gate either way.
- */
-export function canRenameVault(vault: Pick<Vault, 'role'>): boolean {
-  return !vault.role || vault.role === 'owner';
+/** Discovery, membership, and permission are independent facts. */
+export function vaultDetailsLabel(vault: Vault): string {
+  return [
+    vault.visibility === 'public' ? 'Public' : vault.visibility === 'private' ? 'Private' : 'Visibility unknown',
+    vault.memberCount == null ? 'Member count unknown' : `${vault.memberCount} ${vault.memberCount === 1 ? 'member' : 'members'}`,
+    vault.role || 'Role unknown',
+  ].join(' · ');
 }
 
 /** A folder within a vault; supports nesting via `parent_id`. */

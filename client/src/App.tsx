@@ -162,6 +162,9 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [documentationAssistantOpen, setDocumentationAssistantOpen] = useState(false);
+  const [managedVaultId, setManagedVaultId] = useState<string | null>(null);
+  const [vaultListLoading, setVaultListLoading] = useState(true);
+  const [vaultListError, setVaultListError] = useState('');
   const [accountInitialSection, setAccountInitialSection] = useState<'profile' | 'vault'>('profile');
   const [discoveryDmsOpen, setDiscoveryDmsOpen] = useState<DiscoveryTab | null>(null);
   const [updatesOpen, setUpdatesOpen] = useState(false);
@@ -401,24 +404,18 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   const loadVaults = useCallback(async () => {
+    setVaultListLoading(true);
+    setVaultListError('');
     const epoch = workspaceStore.epoch;
     try {
       const data = await api<{ vaults: Vault[] }>('/api/vaults');
       if (workspaceStore.epoch !== epoch) return;
-      let nextVaults = data.vaults;
-      if (nextVaults.length === 0) {
-        const created = await api<{ vault: Vault }>('/api/vaults', {
-          method: 'POST',
-          body: JSON.stringify({ name: 'My Vault' }),
-        });
-        if (workspaceStore.epoch !== epoch) return;
-        nextVaults = [created.vault];
-      }
+      const nextVaults = data.vaults;
       setVaults(nextVaults);
       const restoredVaultId = activeVaultIdRef.current;
       const restoredVaultValid = restoredVaultId && nextVaults.some((vault) => vault.id === restoredVaultId);
       if (!restoredVaultValid) {
-        switchVaultWorkspace(nextVaults[0].id);
+        switchVaultWorkspace(nextVaults[0]?.id ?? null);
       }
 
       // Drop workspaces the signed-in account can no longer access. This also
@@ -426,7 +423,9 @@ export default function App() {
       const accessibleIds = new Set(nextVaults.map((vault) => vault.id));
       workspaceStore.retain(accessibleIds);
     } catch (error) {
-      console.error('Error loading vaults:', error);
+      setVaultListError(error instanceof Error ? error.message : 'Could not load vaults');
+    } finally {
+      setVaultListLoading(false);
     }
   }, [switchVaultWorkspace]);
 
@@ -2573,12 +2572,16 @@ export default function App() {
           agentActivity={agentActivity}
           channelVaultIds={channelVaultIds}
           showAgentMemory={showAgentMemory}
-          onSelectVault={switchVaultWorkspace}
+          vaultListLoading={vaultListLoading}
+          vaultListError={vaultListError}
+          onRetryVaults={() => void loadVaults()}
+          onSelectVault={(id) => {
+            switchVaultWorkspace(id);
+            if (isMobileViewport()) setSidebarOpen(false);
+          }}
           onCreateVault={handleCreateVault}
-          onRenameVault={handleRenameVault}
-          onDeleteVault={handleDeleteVault}
           onManageVault={(vaultId) => {
-            switchVaultWorkspace(vaultId);
+            setManagedVaultId(vaultId);
             setAccountInitialSection('vault');
             setAccountOpen(true);
           }}
@@ -2610,6 +2613,7 @@ export default function App() {
           onCollapse={() => setSidebarOpen(false)}
           onLogout={handleLogout}
           onOpenAccount={() => {
+            setManagedVaultId(null);
             setAccountInitialSection('profile');
             setAccountOpen(true);
           }}
@@ -2637,8 +2641,11 @@ export default function App() {
         <Suspense fallback={null}>
           <AccountSettings
             user={user}
-            vaultId={activeVaultId}
-            vaultName={vaults.find((vault) => vault.id === activeVaultId)?.name}
+            key={managedVaultId ?? activeVaultId ?? 'account'}
+            vaultId={managedVaultId ?? activeVaultId}
+            vaultName={vaults.find((vault) => vault.id === (managedVaultId ?? activeVaultId))?.name}
+            onRenameVault={handleRenameVault}
+            onDeleteVault={handleDeleteVault}
             initialSection={accountInitialSection}
             showAgentMemory={showAgentMemory}
             onShowAgentMemoryChange={updateShowAgentMemory}
