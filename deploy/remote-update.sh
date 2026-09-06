@@ -418,6 +418,22 @@ cleanup_preflight_clones() {
     "$directory/before-data" "$directory/after-data" "$directory/sqlite-scratch"
 }
 
+prune_cutover_snapshots() {
+  [[ -d /var/backups/cascade ]] || return 0
+  # The shared deploy lock excludes cutover/restore work. Also fail closed if
+  # another container explicitly mounts a recovery snapshot for investigation.
+  local containers mounts
+  containers="$(docker ps -q)"
+  [[ -n "$containers" ]] || return 1
+  mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' $containers)"
+  if printf '%s\n' "$mounts" | grep -Eq '^(/|/var|/var/backups|/var/backups/cascade(/.*)?)$'; then
+    echo "Error: recovery snapshots are mounted by a running container; refusing retention cleanup." >&2
+    return 1
+  fi
+  python3 "$ROOT/deploy/prune-cutover-snapshots.py" /var/backups/cascade \
+    --apply --protect "$SNAPSHOT_DIR"
+}
+
 restore_database_snapshot() {
   if [[ -z "$SNAPSHOT_DB" || ! -f "$SNAPSHOT_DB" ]]; then
     echo "Error: no cutover database snapshot is available for rollback." >&2
@@ -705,6 +721,8 @@ checkpoint_and_snapshot() {
   (cd "$SNAPSHOT_DIR" && sha256sum docs.db > docs.db.sha256)
   SNAPSHOT_DB="$SNAPSHOT_DIR/docs.db"
   git rev-parse HEAD > "$SNAPSHOT_DIR/revision.txt"
+  docker inspect --format '{{.Image}}' "$CONTAINER_NAME" > "$SNAPSHOT_DIR/rollback-image.txt"
+  python3 "$ROOT/deploy/prune-cutover-snapshots.py" "$SNAPSHOT_DIR" --seal
 }
 
 verify_live_database() {
@@ -1035,6 +1053,7 @@ already_running_release() {
 if already_running_release; then
   echo "==> Exact revision $REVISION is already healthy; refreshing installers without cutover"
   bash "$ROOT/deploy/sync-desktop-installers.sh"
+  prune_cutover_snapshots
   exit 0
 fi
 
@@ -1092,6 +1111,9 @@ fi
 # A repeated exact-revision deploy refreshes these assets through the fast path
 # above once the release assets and SHA256SUMS are available.
 bash "$ROOT/deploy/sync-desktop-installers.sh"
+
+# Only expire recovery points after the new service and edge passed all checks.
+prune_cutover_snapshots
 
 echo "==> Pruning dangling images and old build cache"
 docker image prune -f >/dev/null || true

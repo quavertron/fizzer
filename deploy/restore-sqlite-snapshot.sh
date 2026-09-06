@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/deploy/deploy-lock.sh"
+acquire_cascade_deploy_lock "$ROOT"
+
 SNAPSHOT_DIR="${1:?snapshot directory is required}"
 LIVE_DB="${2:?live database path is required}"
 REVISION="${3:?revision is required}"

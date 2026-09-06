@@ -380,6 +380,7 @@ docker() {
   fi
 }
 curl() { printf '%s' "$TEST_HEALTH"; return "$TEST_CURL_STATUS"; }
+prune_cutover_snapshots() { echo RETENTION; }
 bash() { echo INSTALLERS; return "$TEST_INSTALLER_STATUS"; }
 ${fastPath}
 echo CUTOVER
@@ -396,6 +397,7 @@ echo CUTOVER
     const healthy = run();
     assert.equal(healthy.status, 0, healthy.stderr);
     assert.match(healthy.stdout, /INSTALLERS/);
+    assert.match(healthy.stdout, /RETENTION/);
     assert.doesNotMatch(healthy.stdout, /CUTOVER/);
     for (const overrides of [
       { TEST_RUNNING_IMAGE: `sha256:${'c'.repeat(64)}` },
@@ -411,7 +413,7 @@ echo CUTOVER
     }
     const failedSync = run({ TEST_INSTALLER_STATUS: '17' });
     assert.equal(failedSync.status, 17);
-    assert.doesNotMatch(failedSync.stdout, /CUTOVER/);
+    assert.doesNotMatch(failedSync.stdout, /CUTOVER|RETENTION/);
     fs.writeFileSync(path.join(dir, 'maintenance'), '');
     assert.match(run().stdout, /CUTOVER/);
     fs.unlinkSync(path.join(dir, 'maintenance'));
@@ -521,4 +523,34 @@ test('preflight disposal releases large clones but retains rolling comparison ev
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(fs.readdirSync(directory).sort(), ['after-schema.json', 'before-schema.json']);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('retention follows successful deployment and preserves active snapshot references', () => {
+  assertOrdered('  rolling_cutover', '  maintenance_cutover',
+    'bash "$ROOT/deploy/sync-desktop-installers.sh"', 'prune_cutover_snapshots');
+  assert.match(functionBody('prune_cutover_snapshots'), /docker ps -q/);
+  assert.match(functionBody('prune_cutover_snapshots'), /recovery snapshots are mounted/);
+  assert.match(functionBody('prune_cutover_snapshots'), /--apply --protect "\$SNAPSHOT_DIR"/);
+  assert.doesNotMatch(functionBody('on_exit'), /prune_cutover/);
+  assert.match(functionBody('checkpoint_and_snapshot'), /--seal/);
+});
+
+
+test('retention refuses direct, ancestor and descendant recovery mounts', () => {
+  const body = functionBody('prune_cutover_snapshots')
+    .replace('[[ -d /var/backups/cascade ]] || return 0', ':');
+  for (const mount of ['/', '/var', '/var/backups', '/var/backups/cascade', '/var/backups/cascade/cutover-active']) {
+    const result = spawnSync('bash', ['-c', `set -euo pipefail
+      ROOT=/unused
+      SNAPSHOT_DIR=""
+      docker() { if [[ "$1" == ps ]]; then echo container; else echo "$TEST_MOUNT"; fi; }
+      python3() { echo PRUNED; }
+      ${body}
+      prune_cutover_snapshots`],
+      { encoding: 'utf8', env: { ...process.env, TEST_MOUNT: mount } });
+    assert.notEqual(result.status, 0, mount);
+    assert.match(result.stderr, /mounted by a running container/);
+    assert.doesNotMatch(result.stdout, /PRUNED/);
+  }
 });
