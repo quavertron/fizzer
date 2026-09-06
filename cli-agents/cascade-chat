@@ -33,8 +33,8 @@ Usage:
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list [--status open|all|<states>] [--task-status open|all|<states>] [--detail]
   cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
-  cascade-chat mission status [--mission <id|current>]
-  cascade-chat mission interpret --mission <id> [--file <path|->]  read or atomically save understanding and explanation
+  cascade-chat mission status [--mission <id|current>] [--json | --detail]
+  cascade-chat mission interpret --mission <id> [--detail] [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
   cascade-chat mission delegate --mission <id> --to @agent --task T --message P [--after <task-id,...>] [--priority N] [--effort E] [--anonymous] [--isolated]
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
@@ -61,7 +61,7 @@ Options:
   --relation <type>         builds_on|review_request|question|contradiction|decision
   --status <status>         pending|running|completed|failed|blocked|canceled
   --task-status <states>    list task filter: comma-separated statuses (default open: pending,running,failed,blocked)
-  --detail                  list original full JSON payload; use status/history for one mission
+  --detail                  original full JSON for mission list/status/interpret
                             compact list defaults to open missions; --status accepts comma-separated
                             active,reviewing,attention,blocked,completed,canceled or open|all
   --finding                 request coordinator interpretation of a significant finding or question
@@ -108,9 +108,12 @@ Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_VAULT,
 
 // Keep detailed contracts beside the command parser; other commands reuse their usage lines.
 const COMMAND_HELP = {
-  'mission interpret': `cascade-chat mission interpret --mission <id|current> [--file <path|->]
+  'mission interpret': `cascade-chat mission interpret --mission <id|current> [--detail] [--file <path|->]
 
 Read current revision, fingerprint, understanding and evidence without --file.
+Identical objective/agenda values use {contextRef:[path,...]} pointing to the full
+value in this same response. Resolve references before editing saved input.
+Use --detail for original full JSON. Every read fetches current server state.
 Save a JSON object with --file PATH, or read JSON from stdin with --file -.
 Reads require the owning coordinator; writes also require a live coordinator run.
 Mission workers cannot record interpretation. The helper supplies coordinatorRegistrationId.
@@ -165,18 +168,18 @@ current channel and coordinator when registered. No prompts or historical payloa
   --detail  full historical JSON through the existing detail API; no filters allowed.
 
 Example: cascade-chat mission list --status open --task-status running --json
-Use mission status --mission <id> --json for one mission's full detail.
+Use mission status --mission <id> --detail for one mission's full detail.
 Invalid statuses and --detail combined with filters are errors.`,
+  'mission status': `cascade-chat mission status [--mission <id|current>] [--json | --detail]
+Read current mission and task state, including owners, attempts and blockers.
+--json replaces authority bodies with authorityMessageIds; retrieve --detail
+before acting on authority. --detail returns the original full JSON payload.
+Every invocation fetches current server state; no unchanged-state cache.`,
   'mission diagnose': `cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
 Read-only comparison of task/run projection, forwarded provider events and runner presence.
 Shows ownership, timestamps and freshness (120 seconds); no prompts or event payloads.
 Execution remains unknown: recent events and a connected runner do not prove a live turn.
 Missing, inaccessible and unreachable evidence is explicit. No retry or recovery actions.`,
-  'mission status': `cascade-chat mission status [--mission <id|current>] [--json]
-
-Read one mission and its tasks (default: current mission).
---json returns the full mission; text shows task status and summaries.
-Example: cascade-chat mission status --mission current --json`,
   'mission history': `cascade-chat mission history --mission <id> [--json]
 
 Read the mission event history. An explicit id is required; current is not accepted.
@@ -765,8 +768,14 @@ async function main() {
         'GET',
         `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}${coordinator}`,
       );
-      if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
-      else {
+      if (args.json || args.detail) {
+        const { authority, ...compact } = result.mission;
+        process.stdout.write(JSON.stringify(args.detail ? result.mission : {
+          ...compact,
+          authorityMessageIds: (authority || []).map(source => source.id),
+          detailCommand: `cascade-chat mission status --mission ${result.mission.id} --detail`,
+        }) + '\n');
+      } else {
         const mission = result.mission;
         const tasks = (mission.tasks || []).map((task) => (
           `  ${task.status === 'completed' ? '✓' : task.status === 'failed' || task.status === 'blocked' ? '!' : '·'} ${task.id}  ${task.title} — @${task.assigneeMention || task.assignee} (${task.status})${task.summary ? `\n      ${task.summary}` : ''}`
@@ -814,6 +823,20 @@ async function main() {
       const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}/interpretation`;
       if (!args.file) {
         const result = await api(url, token, 'GET', `${endpoint}?coordinator=${encodeURIComponent(registrationId)}`);
+        if (!args.detail) {
+          // Reuse the contextRef contract; compare pending evidence with current
+          // understanding rather than assuming they describe the same agenda.
+          for (const [target, key, source, sourceKey, path] of [
+            [result.evidence, 'objective', result, 'objective', ['objective']],
+            ...['questions', 'commitments'].map(key =>
+              [result.evidence?.agenda, key, result.understanding, key, ['understanding', key]]),
+          ]) {
+            const value = source?.[sourceKey];
+            const reference = { contextRef: path };
+            if (value !== undefined && target && JSON.stringify(target[key]) === JSON.stringify(value)
+                && JSON.stringify(reference).length < JSON.stringify(value).length) target[key] = reference;
+          }
+        }
         process.stdout.write(JSON.stringify(result) + '\n');
       } else {
         const input = await readJsonInput(args.file, '--file');

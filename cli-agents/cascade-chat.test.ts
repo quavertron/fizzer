@@ -528,6 +528,11 @@ test('command help is local, focused and documents the interpretation and listin
       assert.ok(example, 'copyable single-line stdin example');
       assert.deepEqual(JSON.parse(example[1]), { revision: 0, fingerprint: '', noMaterialChange: true });
     }
+    if (command[1] === 'status') {
+      assert.match(stdout, /authorityMessageIds/);
+      assert.match(stdout, /--detail/);
+      assert.doesNotMatch(stdout, /--json returns the full/);
+    }
     if (command[1] === 'list') {
       assert.match(stdout, /--task-status open\|all/);
       assert.match(stdout, /empty missions remain visible/);
@@ -679,4 +684,59 @@ test('revision conflicts preserve structured recovery details without retrying t
     return true;
   });
   assert.equal(requests, 1);
+});
+
+test('routine mission reads compact repeated data, retain fresh state and offer lossless detail', async (t) => {
+  const objective = 'Preserve authority and finish the accepted work. '.repeat(8);
+  const commitments = [{ id: 'delivery', status: 'open', summary: objective }];
+  const mission = { id: 'mission', status: 'active', objective,
+    authority: [{ id: 'owner-message', body: objective }],
+    tasks: [{ id: 'task', assigneeMention: 'astra', runId: 1, attempt: 0, status: 'running', summary: 'Checking', reviewBlockers: ['Evidence needed'] }] };
+  const interpretation = { missionId: 'mission', revision: 4, fingerprint: 'pending', objective,
+    understanding: { commitments, questions: [] },
+    evidence: { objective, agenda: { commitments, questions: [] }, eventCursor: 42 } };
+  let denied = false;
+  let reads = 0;
+  const server = http.createServer((req, res) => {
+    reads++;
+    res.setHeader('content-type', 'application/json');
+    res.statusCode = denied ? 409 : 200;
+    res.end(JSON.stringify(denied ? { error: 'Evidence changed; read again' }
+      : req.url?.includes('/interpretation') ? interpretation : { mission }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-compact-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId: 'coordinator' }));
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  const read = async (command: string, ...flags: string[]) => JSON.parse((await execFileAsync(process.execPath,
+    [cli, 'mission', command, '--mission', 'mission', '--url', `http://127.0.0.1:${address.port}`,
+      '--token', 'test', '--vault', 'vault', '--channel', 'channel', ...flags], { env })).stdout);
+  const status = await read('status', '--json');
+  assert.equal(status.authority, undefined);
+  assert.deepEqual(status.authorityMessageIds, ['owner-message']);
+  assert.match(status.detailCommand, /--detail$/);
+  assert.deepEqual(status.tasks, mission.tasks);
+  assert.deepEqual(await read('status', '--detail'), mission);
+  mission.tasks[0].assigneeMention = 'sol'; mission.tasks[0].runId = 2; mission.tasks[0].attempt = 1;
+  assert.deepEqual((await read('status', '--json')).tasks, mission.tasks);
+  const compact = await read('interpret');
+  assert.deepEqual(compact.evidence.objective, { contextRef: ['objective'] });
+  assert.deepEqual(compact.evidence.agenda.commitments, { contextRef: ['understanding', 'commitments'] });
+  assert.deepEqual(compact.evidence.agenda.questions, []);
+  assert.deepEqual(compact.understanding, interpretation.understanding);
+  assert.equal(compact.revision, 4); assert.equal(compact.fingerprint, 'pending');
+  assert.equal(compact.evidence.eventCursor, 42);
+  assert.deepEqual(await read('interpret', '--detail'), interpretation);
+  interpretation.revision = 5; interpretation.fingerprint = 'new-pending';
+  interpretation.evidence.agenda = { commitments: [{ ...commitments[0], summary: 'Older pending snapshot' }], questions: [] };
+  const changed = await read('interpret');
+  assert.equal(changed.revision, 5); assert.equal(changed.fingerprint, 'new-pending');
+  assert.deepEqual(changed.evidence.agenda, interpretation.evidence.agenda);
+  denied = true;
+  await assert.rejects(read('interpret'), /409: Evidence changed; read again/);
+  assert.equal(reads, 7);
 });
