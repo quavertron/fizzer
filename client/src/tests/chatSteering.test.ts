@@ -1,3 +1,4 @@
+import { ChatGroupRow } from "../components/ChatGroupRow";
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -152,7 +153,8 @@ describe('agent steering presentation', () => {
     expect(markup).toContain('is-live');
     expect(markup.includes('is-embedded')).toBe(embedded);
     expect(markup.includes('is-open')).toBe(false);
-    expect(markup).toContain(live.body);
+    expect(markup).not.toContain(live.body);
+    expect(markup).toContain('Working…');
     expect(markup).not.toContain('chat-work-lines');
     expect(markup).toContain('aria-expanded="false"');
   });
@@ -205,8 +207,8 @@ describe('chat run panel lifecycle', () => {
     expect(completed.blocks).toEqual([{ type: 'text', text: 'A complete final answer.' }]);
   });
 
-  it('keeps live and failed run diagnostics visible', () => {
-    expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(true);
+  it('keeps live diagnostics selectable and failures visible', () => {
+    expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(false);
     expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(false);
     expect(shouldRenderRunPanel(message('3', { status: 'failed' }), false, true)).toBe(true);
     expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(true);
@@ -290,4 +292,37 @@ it('renders a next-step question without exposing its durable evidence marker', 
   expect(html).toContain('Should fixing it be next?');
   expect(html).not.toContain('fizzer-next');
   expect(html).not.toContain('source-123');
+});
+
+describe('quiet conversation activity', () => {
+  const renderRow = (row: ChatMessage, avatarKind: 'agent' | 'human' = 'agent') => renderToStaticMarkup(createElement(ChatGroupRow, {
+    group: { messages: [row] }, avatarKind,
+    selectedMessageId: null, jumpHighlightMessageId: null,
+    latestRunningMessageId: row.id, runningSiblingCount: 1,
+    steeringPromptLabels: new Map(), mentionableAliases: [], notes: [],
+    loadedMessageIds: new Set([row.id]), scrollRootRef: { current: null },
+    onCancelRun() {}, onToggleSelect() {}, onContextMenu() {}, onReply() {},
+    onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
+  }));
+
+  it('replaces queued/running process output and removes activity on every terminal state', () => {
+    const base = message('activity', {
+      author: 'Sol', agentId: 'codex', runId: 42,
+      body: 'I will inspect the runtime instructions.',
+      harnessLog: '# thinking\nInternal runtime instructions',
+    });
+    for (const status of ['queued', 'sending', 'running'] as const) {
+      const html = renderRow({ ...base, status });
+      expect(html).toContain('thinking-spinner');
+      expect(html).toContain(status === 'running' ? 'Working' : 'Queued');
+      expect(html).not.toContain(base.body);
+      expect(html).not.toContain('Internal runtime instructions');
+    }
+    for (const status of [undefined, 'failed', 'canceled'] as const) {
+      const html = renderRow({ ...base, status, body: 'Useful result or failure explanation.' });
+      expect(html).not.toContain('thinking-spinner');
+      expect(html).toContain('Useful result or failure explanation.');
+    }
+    expect(renderRow({ ...base, agentId: undefined, status: 'sending' }, 'human')).toContain(base.body);
+  });
 });

@@ -18,6 +18,12 @@ const row = () => ({ id: 'row-' + ++count, channelId: 'scroll-test', author: 're
   body: 'Transcript message ' + count, createdAt: new Date(1700000000000 + count * 60000).toISOString() });
 chatMessageStore.set('scroll-test', Array.from({length: 60}, row));
 chatMessageStore.set('other-channel', Array.from({length: 60}, row));
+window.setAgentStatus = status => chatMessageStore.update('scroll-test', rows => [
+  ...rows.filter(row => row.id !== 'agent-activity'),
+  { id: 'agent-activity', channelId: 'scroll-test', author: 'Sol', agentId: 'codex',
+    createdAt: new Date(1800000000000).toISOString(), status,
+    body: status ? 'Internal process commentary' : 'The substantive final answer.' },
+]);
 window.appendRow = () => chatMessageStore.update('scroll-test', rows => [...rows, row()]);
 const root = ReactDOM.createRoot(document.getElementById('root'));
 window.switchChannel = (channelId = 'scroll-test') => root.render(React.createElement(ChatView, {
@@ -52,6 +58,15 @@ try {
   await page.evaluate(() => window.appendRow());
   await page.waitForTimeout(250);
   assert.ok(await bottomDistance() <= 1, 'new rows follow while pinned');
+  for (const status of ['queued', 'running', undefined]) {
+    await page.evaluate(status => window.setAgentStatus(status), status);
+    await page.waitForTimeout(250);
+    const activity = page.locator('[data-message-id="agent-activity"]');
+    assert.equal(await pane.locator('.thinking-spinner').count(), status ? 1 : 0);
+    assert.ok(!(await activity.innerText()).includes('Internal process commentary'));
+    if (!status) assert.ok((await activity.innerText()).includes('The substantive final answer.'));
+    assert.ok(await bottomDistance() <= 1, 'activity transitions preserve the live edge');
+  }
   await pane.hover();
   await page.mouse.wheel(0, 20);
   await page.waitForTimeout(100);

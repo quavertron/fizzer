@@ -1,3 +1,4 @@
+import { ChatMissionCard } from '../components/ChatMissionCard';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatWorkTrace } from '../components/ChatWorkTrace';
@@ -28,14 +29,15 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
-  it('shows the completed outcome in the collapsed row instead of activity chrome', () => {
+  it('keeps completed process details behind the trace toggle', () => {
     const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
       trace: [msg({ id: 'done', author: 'Sol', missionTaskId: 'task', body: 'Child verified and joined.\n\nTask: internal-task-id' })],
       selectedMessageId: null,
       onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
       runningMessageState: new Map(),
     }));
-    expect(markup).toContain('Child verified and joined.');
+    expect(markup).not.toContain('Child verified and joined.');
+    expect(markup).toContain('Work details');
     expect(markup).not.toContain('>Activity<');
     expect(markup).not.toContain('1 update');
     expect(markup).not.toContain('internal-task-id');
@@ -339,11 +341,26 @@ describe('workTrace', () => {
     expect(peek).toMatchObject({
       live: true,
       author: 'Terra',
-      label: 'Bash rg "mission" client/src',
+      label: 'Working…',
       phase: 'working',
     });
     expect(peek?.summary).toContain('live');
     expect(peek?.decals.at(-1)?.label).toBe('work');
   });
 
+});
+
+
+it.each(['completed', 'canceled'] as const)('stops mission activity on %s even with a stale live trace', (status) => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'settled', rootMessageId: 'root', title: 'Fix it', objective: 'Fix it',
+      status, coordinator: 'sol', coordinatorMention: 'sol', tasks: [],
+      summary: 'Useful outcome', createdAt: '', updatedAt: '',
+    },
+    tracePeek: { live: true, author: 'Sol', label: 'Working…', summary: '', decals: [], phase: 'working' },
+  }));
+  expect(markup).not.toContain('thinking-spinner');
+  expect(markup).not.toContain('Working…');
+  expect(markup).toContain('Useful outcome');
 });

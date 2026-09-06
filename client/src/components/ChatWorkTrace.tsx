@@ -1,3 +1,4 @@
+import { isLiveAgentStatus } from '../chat/runBlocks';
 /**
  * Compact TUI-style stream for multi-agent channel chatter.
  * Intermediates fold to mono lines; expand a line for full body + harness.
@@ -40,7 +41,7 @@ function statusMark(message: ChatMessage): { mark: string; className: string; li
   if (message.status === 'failed') return { mark: '✗', className: 'err' };
   if (isSteeringContinuationMessage(message)) return { mark: '↪', className: 'steer' };
   if (message.status === 'canceled') return { mark: '✗', className: 'err' };
-  if (message.status === 'running' || message.status === 'sending') return { mark: '…', className: 'run', live: true };
+  if (isLiveAgentStatus(message.status)) return { mark: '…', className: 'run', live: true };
   if (message.missionTaskId) return { mark: '›', className: 'task' };
   if (String(message.id || '').startsWith('sys-mission-') || message.author === 'Cascade') {
     return { mark: '#', className: 'sys' };
@@ -166,7 +167,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   embedded?: boolean;
   forceOpen?: boolean;
 }) {
-  const live = trace.some((m) => m.status === 'running' || m.status === 'sending');
+  const live = trace.some((m) => isLiveAgentStatus(m.status));
   // Keep the current activity visible; expand the transcript on request.
   const [open, setOpen] = useState(forceOpen);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());

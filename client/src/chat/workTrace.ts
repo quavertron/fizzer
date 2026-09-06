@@ -1,3 +1,4 @@
+import { isLiveAgentStatus } from './runBlocks';
 /**
  * Collapse multi-agent / mission channel chatter into a work-trace partition.
  *
@@ -249,7 +250,7 @@ export function workTracePhase(
   if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
   if (message.status === 'canceled') return 'blocked';
   if (isSystemCascadeMessage(message) || /\b(review|reconcil|ready for review)/.test(text)) return 'reviewing';
-  if (message.status === 'running' || message.status === 'sending') {
+  if (isLiveAgentStatus(message.status)) {
     if (/\b(deploy|ship|release|production|prod\b)/.test(text)) return 'deploying';
     if (/\b(test|verify|verification|lint|runtime|regression|check)/.test(text)) return 'testing';
     if (/\b(wait|waiting|blocked on|dependency|agent busy)/.test(text)) return 'waiting';
@@ -451,7 +452,7 @@ export function workTraceSummary(trace: ChatMessage[]): string {
   }
   const more = new Set(trace.map((m) => workTraceAuthorKey(m).toLowerCase())).size - authors.length;
   const who = more > 0 ? `${authors.join(' · ')} +${more}` : authors.join(' · ');
-  const live = trace.some((m) => m.status === 'running' || m.status === 'sending');
+  const live = trace.some((m) => isLiveAgentStatus(m.status));
   const n = trace.length;
   return live
     ? `${n} step${n === 1 ? '' : 's'} · ${who} · live`
@@ -475,16 +476,15 @@ export interface WorkTracePeek {
 export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
   if (trace.length === 0) return null;
   const liveMessage = [...trace].reverse().find((message) => (
-    message.status === 'running' || message.status === 'sending'
+    isLiveAgentStatus(message.status)
   ));
   const message = liveMessage || trace[trace.length - 1];
   const live = Boolean(liveMessage);
-  // Prefer harness tail (live tools/thinking), then body — both humanized.
-  const harnessLine = workTraceHarnessPreview(message.harnessLog || '', 90);
-  const bodyLine = workTracePreview(message.body || '', 90);
+  // Runtime prose belongs in the expanded trace, never the conversation preview.
   const label = live
-    ? (harnessLine || (bodyLine && !/^Thinking(?:\.{3}|…)$/i.test(bodyLine) ? bodyLine : '') || 'working…')
-    : (workTraceStatusLabel(message) || bodyLine || 'settled');
+    ? (message.status === 'running' ? 'Working…' : 'Queued…')
+    : message.status === 'failed' ? 'Failed'
+      : message.status === 'canceled' ? 'Canceled' : 'Work details';
   const decals = workTraceDecals(trace);
   const phase = decals[decals.length - 1]?.phase || workTracePhase(message);
   return {

@@ -126,12 +126,12 @@ export function ChatMissionCard({
     : needsAttention ? 'needs review' : mission.status;
   const lead = mission.coordinatorMention || mission.coordinator;
   const runningTask = mission.tasks.find((task) => task.status === 'running');
-  const peekLive = Boolean(tracePeek?.live || (live && mission.status === 'active'));
+  const peekLive = !terminal && live;
   const peekAuthor = tracePeek?.author
     || (runningTask ? (runningTask.assigneeMention || runningTask.assignee) : '')
     || '';
   const peekLabel = (terminal ? mission.summary : '')
-    || tracePeek?.label
+    || (!terminal ? tracePeek?.label : '')
     || (runningTask ? runningTask.title : '')
     || (mission.status === 'active' && total === 0 ? 'deciding approach…' : '')
     || (mission.status === 'active' ? `${done}/${total} tasks in flight` : '');

@@ -1,3 +1,5 @@
+import { isLiveAgentStatus } from '../chat/runBlocks';
+import { ThinkingSpinner } from './ThinkingSpinner';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Paperclip } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -76,7 +78,7 @@ function hasExpandableTrace(message: ChatMessage): boolean {
 }
 
 /**
- * Keep the live harness visible while work is happening and surface failures,
+ * Keep runtime details behind message selection and surface failures,
  * but let a successful final answer return to being a normal chat message.
  * Completed traces remain selectable, so none of the persisted run detail is
  * discarded or made inaccessible.
@@ -84,11 +86,11 @@ function hasExpandableTrace(message: ChatMessage): boolean {
 export function shouldRenderRunPanel(
   message: ChatMessage,
   selected: boolean,
-  isLatestRunningMessage: boolean,
+  _isLatestRunningMessage: boolean,
 ): boolean {
   if (selected) return true;
   if (message.status === 'failed' || message.status === 'canceled') return true;
-  return message.status === 'running' && isLatestRunningMessage;
+  return false;
 }
 
 function groupHasDocEmbed(group: ChatMessageGroup): boolean {
@@ -105,7 +107,6 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   ownerLabel,
   planUsage,
   latestRunningMessageId,
-  runningSiblingCount,
   steeringPromptLabels,
   mentionableAliases,
   notes,
@@ -244,12 +245,12 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               {avatarKind === 'agent' && planUsage && <PlanUsageMeters usage={planUsage} />}
               {avatarKind === 'agent' && ownerLabel && <span className="chat-agent-owner">{ownerLabel}'s agent</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId === tail.id && runningSiblingCount > 1 && (
-                <span className="chat-message-status is-steering">working</span>
+              {avatarKind === 'agent' && isLiveAgentStatus(tail.status) && (
+                <span className="chat-message-status">
+                  <ThinkingSpinner title={tail.status === 'running' ? 'Working' : 'Queued'} />
+                  {tail.status === 'running' ? 'working' : 'queued'}
+                </span>
               )}
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId === tail.id && runningSiblingCount <= 1 && <span className="chat-message-status">working</span>}
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId !== tail.id && <span className="chat-message-status is-steered">continued below</span>}
-              {avatarKind === 'agent' && tail.status === 'sending' && <span className="chat-message-status">queued</span>}
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
               {avatarKind === 'agent' && tail.status === 'canceled' && isSteeringContinuationMessage(tail) && (
                 <span className="chat-message-status is-steered">continued</span>
@@ -347,7 +348,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   )}
                   {message.body
                     && !isSteeringContinuationMessage(message)
-                    && !(message.status === 'running' && /^Thinking(?:\.{3}|…)$/.test(message.body.trim()))
+                    && !(avatarKind === 'agent' && isLiveAgentStatus(message.status))
                     && <ChatMessageText messageId={message.id} body={message.body} streaming={message.status === 'running'} isAgent={avatarKind === 'agent'} mentionableAliases={mentionableAliases} notes={notes} onOpenNote={onOpenNote} onOpenSharedNote={onOpenSharedNote} />}
                   {message.mission && (
                     <ChatMissionCard
