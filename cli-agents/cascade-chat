@@ -30,7 +30,7 @@ Usage:
   cascade-chat continuation --status pending|waiting|completed|canceled --revision N --summary TEXT
   cascade-chat members                  list people-callable agent teammates
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
-  cascade-chat mission list
+  cascade-chat mission list [--status open|all|<states>] [--task-status open|all|<states>] [--detail]
   cascade-chat mission status [--mission <id|current>]
   cascade-chat mission interpret --mission <id> [--file <json>]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
@@ -58,6 +58,10 @@ Options:
   --reply-to <message-id>   source message for a typed send handoff
   --relation <type>         builds_on|review_request|question|contradiction|decision
   --status <status>         pending|running|completed|failed|blocked|canceled
+  --task-status <states>    list task filter: comma-separated statuses (default open: pending,running,failed,blocked)
+  --detail                  list original full JSON payload; use status/history for one mission
+                            compact list defaults to open missions; --status accepts comma-separated
+                            active,reviewing,attention,blocked,completed,canceled or open|all
   --finding                 request coordinator interpretation of a significant finding or question
   --summary <text>          concise task/mission outcome
   --authority-messages <ids> comma-separated owner-authored instruction sources for a new mission
@@ -589,18 +593,35 @@ async function main() {
       return;
     }
     if (sub === 'list') {
-      const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';
-      const result = await api(
-        url,
-        token,
-        'GET',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions${coordinator}`,
-      );
-      if (args.json) process.stdout.write(JSON.stringify(result.missions || []) + '\n');
+      if (args.detail && (args.status || args['task-status'])) fail('--detail cannot be combined with list filters.');
+      const query = new URLSearchParams();
+      if (registrationId) query.set('coordinator', registrationId);
+      if (!args.detail) {
+        query.set('view', 'compact');
+        for (const [flag, key, allowed] of [
+          ['status', 'status', ['active', 'reviewing', 'attention', 'blocked', 'completed', 'canceled']],
+          ['task-status', 'taskStatus', ['pending', 'running', 'completed', 'failed', 'blocked', 'canceled']],
+        ]) {
+          if (!args[flag]) continue;
+          const value = String(args[flag]);
+          if (!['open', 'all'].includes(value) && !value.split(',').every((state) => allowed.includes(state.trim()))) {
+            fail(`Invalid --${flag}; use open, all, or comma-separated ${allowed.join(',')}.`);
+          }
+          query.set(key, value);
+        }
+      }
+      const result = await api(url, token, 'GET',
+        `/api/vaults/${vaultId}/channels/${channelId}/missions${query.size ? `?${query}` : ''}`);
+      if (args.json || args.detail) process.stdout.write(JSON.stringify(result.missions || []) + '\n');
       else {
-        const lines = (result.missions || []).map((mission) => (
-          `${mission.status.padEnd(10)}  ${mission.id}  ${mission.title}  · ${(mission.tasks || []).length} tasks`
-        ));
+        const lines = (result.missions || []).map((mission) => {
+          const owner = mission.coordinatorMention ? `@${mission.coordinatorMention}` : mission.coordinatorRegistrationId || 'unknown';
+          const tasks = (mission.tasks || []).map((task) => {
+            const owner = task.assigneeMention ? `@${task.assigneeMention}` : task.assigneeRegistrationId || 'unknown';
+            return `  ${task.status.padEnd(10)}  ${task.id}  ${task.title}  · ${owner}`;
+          });
+          return [`${mission.status.padEnd(10)}  ${mission.id}  ${mission.title}  · ${owner}`, ...tasks].join('\n');
+        });
         process.stdout.write((lines.join('\n') || '(no missions)') + '\n');
       }
       return;

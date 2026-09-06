@@ -183,6 +183,86 @@ defmodule Cascade.Missions.Store do
     end
   end
 
+  @doc "Read-only ownership projection; never expands prompts, authority, or historical task detail."
+  def list_compact(user_id, channel_id, opts \\ []) do
+    with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
+         {:ok, statuses} <-
+           list_statuses(opts[:status], @mission_statuses, ~w(active reviewing attention blocked)),
+         {:ok, task_statuses} <-
+           list_statuses(opts[:task_status], @task_statuses, ~w(pending running failed blocked)) do
+      coordinator = clean(opts[:coordinator], 120)
+      mission_id = clean(opts[:mission_id], 120)
+
+      missions =
+        SQL.all(
+          """
+          SELECT m.id,m.title,m.status,m.coordinator_registration_id,COALESCE(a.mention,'')
+          FROM chat_missions m
+          LEFT JOIN chat_agent_members a ON a.id=m.coordinator_registration_id
+          WHERE m.channel_id=? AND (?='' OR m.coordinator_registration_id=?)
+            AND (?='' OR m.id=?) AND m.status IN (#{Enum.map_join(statuses, ",", fn _ -> "?" end)})
+          ORDER BY m.updated_at DESC,m.rowid DESC
+          """,
+          [route.sourceChannelId, coordinator, coordinator, mission_id, mission_id] ++ statuses
+        )
+        |> Enum.map(fn [id, title, status, owner, mention] ->
+          tasks =
+            SQL.all(
+              """
+              SELECT t.id,t.title,t.status,t.assignee_registration_id,COALESCE(a.mention,''),t.anonymous
+              FROM chat_mission_tasks t
+              LEFT JOIN chat_agent_members a ON a.id=t.assignee_registration_id
+              WHERE t.mission_id=? AND t.status IN (#{Enum.map_join(task_statuses, ",", fn _ -> "?" end)})
+              ORDER BY t.created_at,t.rowid
+              """,
+              [id] ++ task_statuses
+            )
+            |> Enum.map(fn [task_id, title, status, owner, mention, anonymous] ->
+              %{
+                id: task_id,
+                title: title,
+                status: status,
+                assigneeRegistrationId: owner,
+                assigneeMention:
+                  if(anonymous != 0 and mention != "", do: mention <> "·sub", else: mention)
+              }
+            end)
+
+          %{
+            id: id,
+            title: title,
+            status: status,
+            coordinatorRegistrationId: owner,
+            coordinatorMention: mention,
+            tasks: tasks
+          }
+        end)
+
+      {:ok, missions}
+    end
+  end
+
+  defp list_statuses(value, allowed, open) do
+    case value do
+      value when value in [nil, "", "open"] ->
+        {:ok, open}
+
+      "all" ->
+        {:ok, allowed}
+
+      value when is_binary(value) ->
+        statuses =
+          value |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.uniq()
+
+        if statuses != [] and Enum.all?(statuses, &(&1 in allowed)),
+          do: {:ok, statuses},
+          else: {:error, :invalid_list_status}
+
+      _ ->
+        {:error, :invalid_list_status}
+    end
+  end
+
   def list_active(user_id, channel_id, limit \\ 3) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
       limit = limit |> integer(3) |> max(1) |> min(10)

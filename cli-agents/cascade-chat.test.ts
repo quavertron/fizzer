@@ -30,8 +30,8 @@ test('coordinator helper starts and delegates a mission with structured API call
       res.end(JSON.stringify({ message: { id: 'sys-mission-root-new', body: body.body || '' } }));
       return;
     }
-    if (req.method === 'GET' && req.url === '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol') {
-      res.end(JSON.stringify({ missions: [{ id: 'mission-1', title: 'Release', status: 'attention', tasks: [{ id: 'task-1', attempt: 2, runId: 42 }] }] }));
+    if (req.method === 'GET' && req.url?.startsWith('/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol')) {
+      res.end(JSON.stringify({ missions: [{ id: 'mission-1', title: 'Release', status: 'attention', coordinatorMention: 'sol', tasks: [{ id: 'task-1', title: 'Verify', status: 'running', assigneeMention: 'terra', attempt: 2, runId: 42 }] }] }));
       return;
     }
     if (req.method === 'GET' && req.url === '/api/vaults/vault-1/channels/channel-1/missions/mission-1/history') {
@@ -125,6 +125,15 @@ test('coordinator helper starts and delegates a mission with structured API call
     cli, 'mission', 'list', ...common,
   ], { env: withCoordinator });
   assert.match(listed.stdout, /attention\s+mission-1/);
+  assert.match(listed.stdout, /running\s+task-1\s+Verify\s+· @terra/);
+  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact');
+  await execFileAsync(process.execPath, [cli, 'mission', 'list', '--status', 'active,blocked', '--task-status', 'running', '--json', ...common], { env: withCoordinator });
+  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact&status=active%2Cblocked&taskStatus=running');
+  const detail = await execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', ...common], { env: withCoordinator });
+  assert.equal(JSON.parse(detail.stdout)[0].tasks[0].runId, 42);
+  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol');
+  await assert.rejects(execFileAsync(process.execPath, [cli, 'mission', 'list', '--status', 'typo', ...common], { env: withCoordinator }), /Invalid --status/);
+  await assert.rejects(execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', '--task-status', 'running', ...common], { env: withCoordinator }), /cannot be combined/);
   const history = await execFileAsync(process.execPath, [
     cli, 'mission', 'history', '--mission', 'mission-1', ...common,
   ], { env: withCoordinator });
@@ -153,6 +162,8 @@ test('coordinator helper starts and delegates a mission with structured API call
     'POST /api/vaults/vault-1/channels/channel-1/missions',
     'POST /api/vaults/vault-1/channels/channel-1/missions/mission-1/tasks',
     'GET /api/vaults/vault-1/channels/channel-1/missions/mission-1?coordinator=reg-sol',
+    'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact',
+    'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact&status=active%2Cblocked&taskStatus=running',
     'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol',
     'GET /api/vaults/vault-1/channels/channel-1/missions/mission-1/history',
     'PATCH /api/vaults/vault-1/channels/channel-1/missions/tasks/task-1',
@@ -184,9 +195,9 @@ test('coordinator helper starts and delegates a mission with structured API call
     anonymous: true,
     workspaceMode: 'shared',
   });
-  assert.deepEqual(requests[6]?.body, { status: 'blocked', summary: 'Needs a credential', finding: true });
-  assert.deepEqual(requests[7]?.body, { status: 'pending', summary: 'Try again' });
-  assert.deepEqual(requests[8]?.body, {
+  assert.deepEqual(requests[8]?.body, { status: 'blocked', summary: 'Needs a credential', finding: true });
+  assert.deepEqual(requests[9]?.body, { status: 'pending', summary: 'Try again' });
+  assert.deepEqual(requests[10]?.body, {
     coordinatorRegistrationId: 'reg-sol',
     status: 'completed',
     summary: 'Integrated',

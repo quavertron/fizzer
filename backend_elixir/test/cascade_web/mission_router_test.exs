@@ -107,9 +107,87 @@ defmodule CascadeWeb.MissionRouterTest do
     assert json(status)["mission"]["id"] == created.mission.id
     listed = request(ctx, :get, base <> query, nil, run.id)
     assert Enum.map(json(listed)["missions"], & &1["id"]) == [created.mission.id]
+    compact = request(ctx, :get, base <> query <> "&view=compact", nil, run.id)
+    assert [mission] = json(compact)["missions"]
+    assert mission["id"] == created.mission.id
+    refute Map.has_key?(mission, "authority")
     SQL.exec("UPDATE runs SET owner_user_id=NULL WHERE id=?", [run.id])
     assert request(ctx, :get, base <> "/current" <> query, nil, run.id).status == 404
     assert json(request(ctx, :get, base <> query, nil, run.id))["missions"] == []
+
+    assert json(request(ctx, :get, base <> query <> "&view=compact", nil, run.id))["missions"] ==
+             []
+  end
+
+  test "compact list filters in the store and keeps the legacy detail contract", ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Ownership"
+      })
+
+    {:ok, first} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Deliver",
+        assignee: ctx.worker.id
+      })
+
+    {:ok, second} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Historical",
+        assignee: ctx.worker.id
+      })
+
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary=? WHERE id=?", [
+      String.duplicate("large history", 1000),
+      second.task.id
+    ])
+
+    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/missions"
+    response = request(ctx, :get, base <> "?view=compact")
+    assert response.status == 200
+    assert [mission] = json(response)["missions"]
+
+    assert Enum.sort(Map.keys(mission)) ==
+             Enum.sort(~w(id title status coordinatorRegistrationId coordinatorMention tasks))
+
+    assert mission["coordinatorRegistrationId"] == ctx.coordinator.id
+    assert [task] = mission["tasks"]
+    assert task["id"] == first.task.id
+    assert task["assigneeRegistrationId"] == ctx.worker.id
+    assert task["assigneeMention"] == ctx.worker.mention
+
+    assert Enum.sort(Map.keys(task)) ==
+             Enum.sort(~w(id title status assigneeRegistrationId assigneeMention))
+
+    assert byte_size(response.resp_body) < 1500
+    assert json(request(ctx, :get, base <> "?view=compact&status=completed"))["missions"] == []
+
+    assert [filtered] =
+             json(request(ctx, :get, base <> "?view=compact&taskStatus=completed"))["missions"]
+
+    assert Enum.map(filtered["tasks"], & &1["id"]) == [second.task.id]
+
+    assert [all] =
+             json(request(ctx, :get, base <> "?view=compact&status=all&taskStatus=all"))[
+               "missions"
+             ]
+
+    assert length(all["tasks"]) == 2
+    assert json(request(ctx, :get, base <> "?view=compact&coordinator=other"))["missions"] == []
+
+    for query <- ["status=typo", "taskStatus=active", "status=%27", "status=%2C"] do
+      assert request(ctx, :get, base <> "?view=compact&" <> query).status == 400
+    end
+
+    assert [detail] = json(request(ctx, :get, base))["missions"]
+    assert Map.has_key?(detail, "objective")
+    assert Enum.any?(detail["tasks"], &(byte_size(&1["summary"]) > 1000))
+    stranger = %{ctx | token: Token.sign_user(%{ctx.user | id: ctx.user.id + 999_999})}
+    assert request(stranger, :get, base <> "?view=compact").status in [401, 403, 404]
   end
 
   test "worker HTTP progress stays quiet and explicit findings use the same authorized update",
@@ -123,7 +201,9 @@ defmodule CascadeWeb.MissionRouterTest do
           rootMessageId: ctx.root.id,
           coordinatorRegistrationId: ctx.coordinator.id,
           title: "Continuous worker"
-        }, control_plane: true)
+        },
+        control_plane: true
+      )
 
     {:ok, added} =
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{

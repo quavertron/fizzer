@@ -63,19 +63,36 @@ defmodule CascadeWeb.MissionRouter do
 
   get "/api/vaults/:vault_id/channels/:channel_id/missions" do
     authenticated(conn, nil, fn conn, user ->
-      result =
-        case current_run_mission(conn, user, channel_id) do
-          nil ->
-            Store.list(user.id, channel_id, query(conn, "coordinator"))
+      current = current_run_mission(conn, user, channel_id)
 
-          id ->
-            with {:ok, update} <- Store.get(user.id, channel_id, id),
-                 do: {:ok, [update.mission]}
+      result =
+        if query(conn, "view") == "compact" do
+          Store.list_compact(user.id, channel_id,
+            coordinator: if(current, do: nil, else: query(conn, "coordinator")),
+            mission_id: current,
+            status: query(conn, "status"),
+            task_status: query(conn, "taskStatus")
+          )
+        else
+          case current do
+            nil ->
+              Store.list(user.id, channel_id, query(conn, "coordinator"))
+
+            id ->
+              with {:ok, update} <- Store.get(user.id, channel_id, id),
+                   do: {:ok, [update.mission]}
+          end
         end
 
       case result do
-        {:ok, missions} -> JSON.send(conn, 200, %{missions: missions})
-        error -> route_error(conn, 404, error, "Missions not found")
+        {:ok, missions} ->
+          JSON.send(conn, 200, %{missions: missions})
+
+        {:error, :invalid_list_status} ->
+          JSON.send(conn, 400, %{error: "Invalid mission or task status filter"})
+
+        error ->
+          route_error(conn, 404, error, "Missions not found")
       end
     end)
   end
