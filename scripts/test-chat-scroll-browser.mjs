@@ -41,7 +41,8 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 700 } });
-  page.on('pageerror', error => { console.error(error); });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
   await page.goto(server.resolvedUrls.local[0] + 'scroll-test.html');
   const pane = page.locator('.chat-messages');
   await pane.waitFor();
@@ -52,6 +53,11 @@ try {
   await page.waitForTimeout(250);
   assert.ok(await bottomDistance() <= 1, 'new rows follow while pinned');
   await pane.hover();
+  await page.mouse.wheel(0, 20);
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.appendRow());
+  await page.waitForTimeout(250);
+  assert.ok(await bottomDistance() <= 1, 'downward wheel at bottom preserves follow');
   await page.mouse.wheel(0, -20);
   await page.waitForTimeout(100);
   assert.ok(await bottomDistance() >= 15, 'small upward wheel scroll moves into history');
@@ -83,6 +89,7 @@ try {
   await page.evaluate(() => window.switchChannel('other-channel'));
   await page.waitForTimeout(300);
   assert.ok(await bottomDistance() <= 1, 'channel switching resets history detachment');
+  assert.deepEqual(errors, [], 'chat fixture has no runtime errors');
   console.log('Chat scrolling browser regression passed');
 } finally {
   await browser?.close();

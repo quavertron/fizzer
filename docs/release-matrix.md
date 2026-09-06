@@ -3,6 +3,12 @@
 Use the smallest check that covers the changed behavior. A focused regression
 test is the default; boundary suites are for broad changes and releases.
 
+`npm test` includes the focused headless Chromium chat-scroll regression
+(`npm run test:chat-scroll`). It mounts the production ChatView and stylesheet
+and checks native wheel input across incoming messages, touch intent, returning
+to live follow, and channel changes. It requires Playwright Chromium
+(`npx playwright install chromium`); it does not access a desktop session.
+
 | Boundary | Broad-change or release check |
 | --- | --- |
 | Client | `npm run test:release:frontend` |
