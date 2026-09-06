@@ -360,6 +360,18 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
   end
 
   test "human steering waits for the actual desktop stop ACK and preserves the session", ctx do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+    guest = event!(ctx.sid, "run:delegate")
+    Store.finish(guest["runId"], "completed", "Guest request handled")
+
+    ctx = %{
+      ctx
+      | guest: ctx.owner,
+        guest_vault: ctx.owner_vault,
+        guest_channel: ctx.owner_channel
+    }
+
+    owned = admit(ctx, "finish the owner-side work")
     first = event!(ctx.sid, "run:delegate")
     Store.persist_session(first["runId"], "provider-session")
     Store.publish(first["runId"], "harness", %{data: "Investigating the deployment timing"})
@@ -367,6 +379,12 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     next = admit(ctx, "human steering")
     cancel = packet!(ctx.sid, "run:cancel")
     assert Store.get(first["runId"]).status == "queued"
+
+    assert SQL.one(
+             "SELECT status,after_dispatch_id FROM chat_coordinator_continuations WHERE registration_id=?",
+             [ctx.registration.id]
+           ) == ["pending", next.id]
+
     refute Store.find_by_chat_dispatch(next.id)
     send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: false}]))
     Process.sleep(40)
@@ -381,10 +399,11 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert delegated["prompt"] =~ "Earlier requests interrupted by follow-ups (still unanswered)"
     assert delegated["prompt"] =~ "finish the owner-side work"
     assert delegated["prompt"] =~ "human steering"
+    assert delegated["prompt"] =~ "Durable unfinished coordinator responsibility"
     Cascade.Runs.ChatProjection.sync(first["runId"])
 
     {:ok, prior} =
-      Messages.get(ctx.owner_channel.id, ctx.owner.id, "agent-dispatch-#{ctx.dispatch.id}")
+      Messages.get(ctx.owner_channel.id, ctx.owner.id, "agent-dispatch-#{owned.id}")
 
     assert prior.harnessLog =~ "Investigating the deployment timing"
     assert prior.body =~ "Steered into the continuation below."

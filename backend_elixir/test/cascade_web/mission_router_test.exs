@@ -119,6 +119,8 @@ defmodule CascadeWeb.MissionRouterTest do
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions"},
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/history"},
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id"},
+             {"GET", "/api/vaults/:vault_id/channels/:channel_id/continuation"},
+             {"POST", "/api/vaults/:vault_id/channels/:channel_id/continuation"},
              {"GET",
               "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation"},
              {"POST",
@@ -615,6 +617,37 @@ defmodule CascadeWeb.MissionRouterTest do
     assert message.registrationId == ctx.coordinator.id
     SQL.exec("UPDATE chat_mission_tasks SET run_id=? WHERE id=?", [run.id, added.task.id])
     assert request(ctx, :post, path, input, run.id).status == 409
+  end
+
+  test "continuation HTTP checkpoints require a live owning coordinator and current revision",
+       ctx do
+    {:ok, dispatch} = Dispatches.create(ctx.user.id, ctx.channel.id, ctx.root, ctx.coordinator.id)
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Coordinate", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: dispatch.id,
+        conversation_id: dispatch.conversationId
+      )
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+    path = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/continuation"
+    assert request(ctx, :get, path).status == 404
+    response = request(ctx, :get, path, nil, run.id)
+    assert response.status == 200
+
+    input = %{
+      revision: json(response)["revision"],
+      status: "waiting",
+      summary: "Worker already owns delivery"
+    }
+
+    assert request(ctx, :post, path, input).status == 409
+    assert request(ctx, :post, path, input, run.id).status == 200
+    assert request(ctx, :post, path, input, run.id).status == 409
+    RunStore.finish(run.id, "completed", "Waiting")
+    assert request(ctx, :post, path, %{input | revision: 1}, run.id).status == 409
   end
 
   defp request(ctx, method, path, body \\ nil, run_id \\ nil) do

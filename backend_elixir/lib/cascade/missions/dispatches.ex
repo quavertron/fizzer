@@ -94,8 +94,14 @@ defmodule Cascade.Missions.Dispatches do
              "SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?",
              [message.id, registration.id]
            ) do
-        nil -> {:error, "Could not create chat agent dispatch"}
-        row -> hydrate(user_id, channel_id, row)
+        nil ->
+          {:error, "Could not create chat agent dispatch"}
+
+        row ->
+          with {:ok, dispatch} <- hydrate(user_id, channel_id, row) do
+            Cascade.Chat.Continuations.user_return(dispatch)
+            {:ok, dispatch}
+          end
       end
     else
       false -> {:error, "Agent not accepting this request"}
@@ -186,7 +192,8 @@ defmodule Cascade.Missions.Dispatches do
          true <- allowed?(user_id, dispatch.registration, dispatch.message),
          true <- target_unchanged?(dispatch),
          true <- present?(dispatch.conversationId),
-         true <- mission_pending?(dispatch) do
+         true <- mission_pending?(dispatch),
+         true <- Cascade.Chat.Continuations.ready?(dispatch) do
       if Cascade.Chat.NextSteps.dispatch_ready?(dispatch),
         do: {:ok, dispatch},
         else: {:deferred, "Next-step checkpoint is waiting for idle work state or was disabled"}

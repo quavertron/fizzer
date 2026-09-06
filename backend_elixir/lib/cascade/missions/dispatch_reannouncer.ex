@@ -50,6 +50,8 @@ defmodule Cascade.Missions.DispatchReannouncer do
     now = System.monotonic_time(:millisecond)
     recover = is_nil(state.recover_at) or now >= state.recover_at
 
+    if recover, do: Cascade.Chat.Continuations.reconcile()
+
     maintenance =
       if recover, do: Map.merge(state.maintenance, mission_jobs()), else: state.maintenance
 

@@ -103,6 +103,28 @@ defmodule CascadeWeb.MissionRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/channels/:channel_id/continuation" do
+    authenticated(conn, nil, fn conn, user ->
+      case Cascade.Chat.Continuations.get(user.id, channel_id, run_id(conn)) do
+        {:ok, result} -> JSON.send(conn, 200, result)
+        error -> route_error(conn, 404, error, "Continuation not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/continuation" do
+    authenticated(conn, :vault, fn conn, user ->
+      case Cascade.Chat.Continuations.record(user.id, channel_id, run_id(conn), conn.body_params) do
+        {:ok, result} ->
+          Cascade.Missions.DispatchReannouncer.wake()
+          JSON.send(conn, 200, result)
+
+        error ->
+          route_error(conn, 409, error, "Could not record continuation")
+      end
+    end)
+  end
+
   get "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation" do
     authenticated(conn, nil, fn conn, user ->
       case Cascade.Missions.Interpretation.get(

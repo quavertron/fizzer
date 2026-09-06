@@ -1007,3 +1007,26 @@ test('schema fingerprint sees committed WAL DDL without allocating a database co
     fs.rmSync(files.directory, { recursive: true, force: true });
   }
 });
+
+for (const table of ['chat_mission_interpretations', 'chat_coordinator_continuations']) {
+  test(`${table} migration permits only its reviewed empty schema`, () => {
+    const files = fixture();
+    try {
+      const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/missions/schema.ex', import.meta.url), 'utf8');
+      const ddl = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n    \\)`))[0];
+      const after = new Database(files.after);
+      after.exec(ddl);
+      if (table === 'chat_mission_interpretations') {
+        after.exec(schema.match(/CREATE UNIQUE INDEX IF NOT EXISTS chat_mission_interpretations_dispatch_idx[^"\n]+/)[0]);
+      }
+      after.close();
+      assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+      const malformed = new Database(files.after);
+      malformed.exec(`ALTER TABLE ${table} ADD COLUMN unreviewed TEXT`);
+      malformed.close();
+      assert.equal(runComparison(files).ok, false);
+    } finally {
+      fs.rmSync(files.directory, { recursive: true, force: true });
+    }
+  });
+}

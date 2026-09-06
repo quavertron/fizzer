@@ -852,6 +852,9 @@ defmodule CascadeWeb.OrchestrationController do
 
           cond do
             is_nil(owner_id) ->
+              if Dispatches.human?(dispatch),
+                do: Cascade.Chat.Continuations.interrupt(occupied.id, dispatch.id)
+
               Store.finish(occupied.id, "failed", "Run startup interrupted before delegation.")
 
               Store.publish(occupied.id, "status", %{
@@ -867,7 +870,7 @@ defmodule CascadeWeb.OrchestrationController do
             not RunnerLifecycle.online?(owner_id) ->
               {:error, occupied.id, :reconnecting}
 
-            Store.cancel(occupied.id, steering: true) ->
+            interrupt_coordinator(occupied.id, dispatch.id) ->
               :ok
 
             true ->
@@ -875,6 +878,11 @@ defmodule CascadeWeb.OrchestrationController do
           end
       end
     end
+  end
+
+  defp interrupt_coordinator(run_id, next_dispatch_id) do
+    Cascade.Chat.Continuations.interrupt(run_id, next_dispatch_id)
+    Store.cancel(run_id, steering: true)
   end
 
   defp attach_dispatch("", _run_id), do: :ok

@@ -60,6 +60,22 @@ defmodule Cascade.Missions.Schema do
     """)
 
     SQL.exec("""
+    CREATE TABLE IF NOT EXISTS chat_coordinator_continuations (
+      registration_id TEXT NOT NULL REFERENCES chat_agent_members(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      owner_user_id INTEGER NOT NULL REFERENCES users(id),
+      revision INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT NOT NULL DEFAULT '',
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      after_dispatch_id TEXT,
+      dispatch_id TEXT,
+      PRIMARY KEY (registration_id, conversation_id)
+    )
+    """)
+
+    SQL.exec("""
     CREATE TABLE IF NOT EXISTS chat_missions (
       id TEXT PRIMARY KEY,
       vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,

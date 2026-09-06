@@ -9,6 +9,8 @@ import Database from 'better-sqlite3';
 
 const DEFAULT_ALLOWED_ADDITIONS = new Set(['cascade_elixir_schema_migrations']);
 const EMPTY_TABLE_ADDITIONS = new Map([
+  ['chat_mission_interpretations', 'd44a76a3db95aa4badbbc1b189948c2af6d8ba2693506bbdf52b2fb4f9914da6'],
+  ['chat_coordinator_continuations', 'b7bd613258c91ef2efe0c6d8c296135380d22a0b4079d09a651944e255aed1af'],
   ['app_context', '57acd5d3a9e2688fae0f37e190087ce250cee5c421a0bdd6e938fe1de021cf94'],
   ['chat_mission_recovery_evidence', '8039530f643ab926e1306c88d074dc731b6b5c248cd032ac3d591bbaf2ee185b'],
   ['chat_next_step_checks', '975a576a29b23ab328602d5f3a7a888cc1f3624e89242bcb44f38ae0654fd6e5'],
@@ -37,6 +39,7 @@ const NORMALIZED_TABLE_SQL_SHA256 = new Map([
 ]);
 
 const NORMALIZED_OBJECT_SQL_SHA256 = new Map([
+  ['index:chat_mission_interpretations_dispatch_idx', 'a324dce25b644dbb70a98b0d7844d90004045f14283a414ab27e28464aa5d1b0'],
   ['index:chat_mission_tasks_parent_idx', '7f97ee4f014dd90c75c5256385a9fb24806dfb35328915cf9d17b4c06eff4c47'],
   ['index:chat_messages_activity_idx', '57b71e5d8f446140a9ea1a97fdd9b06bf02943fc0c09c38e2a7208ba49dc9fd1'],
   ['index:chat_messages_channel_idx', 'cf59031cf62c9ad6b72e763f899a42bc683db9547811618c25b71720948f4bf2'],

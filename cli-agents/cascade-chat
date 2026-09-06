@@ -26,6 +26,8 @@ Usage:
   cascade-chat send --message <text>    send a standalone message to the channel
   cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
                                         create a typed single-agent handoff
+  cascade-chat continuation              read unfinished coordinator responsibility
+  cascade-chat continuation --status pending|waiting|completed|canceled --revision N --summary TEXT
   cascade-chat members                  list people-callable agent teammates
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list
@@ -446,7 +448,7 @@ async function main() {
     process.exit(raw ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
-  if (!['context', 'history', 'send', 'members', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
+  if (!['context', 'history', 'send', 'members', 'continuation', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
     fail(`unknown command "${raw}". Run with --help.`);
   }
 
@@ -491,6 +493,18 @@ async function main() {
     else process.stdout.write((members.map((agent) => (
       `@${agent.mention}  ${agent.displayName}  ${agent.agentId}${agent.model ? ` · ${agent.model}` : ''}${agent.orchestrator ? ' · coordinator' : ''}`
     )).join('\n') || '(no agents)') + '\n');
+    return;
+  }
+
+  if (cmd === 'continuation') {
+    const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/continuation`;
+    const status = String(args.status || '').trim();
+    if (status && (!['pending', 'waiting', 'completed', 'canceled'].includes(status) || !/^\d+$/.test(String(args.revision || '')))) {
+      fail('continuation needs a valid --status and --revision from the current context.');
+    }
+    const result = await api(url, token, status ? 'POST' : 'GET', endpoint,
+      status ? { status, revision: Number(args.revision), summary: String(args.summary || '') } : undefined);
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     return;
   }
 

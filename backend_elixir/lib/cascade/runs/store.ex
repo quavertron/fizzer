@@ -335,8 +335,10 @@ defmodule Cascade.Runs.Store do
   end
 
   def cancel(run_id, opts \\ []) do
-    unless Keyword.get(opts, :steering, false),
-      do: Cascade.Missions.Steering.cancel_pending(run_id)
+    unless Keyword.get(opts, :steering, false) do
+      Cascade.Missions.Steering.cancel_pending(run_id)
+      Cascade.Chat.Continuations.stop(run_id)
+    end
 
     case get(run_id) do
       nil -> false

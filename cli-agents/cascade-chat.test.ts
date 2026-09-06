@@ -461,3 +461,30 @@ test('mission interpretation uses the scoped API and suppresses only acknowledge
   assert.deepEqual(requests[1].body, { ...input, coordinatorRegistrationId: 'coordinator' });
   assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, true);
 });
+
+test('coordinator continuation sends an explicit run-scoped disposition without suppressing the answer', async (t) => {
+  const requests: any[] = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push({ path: req.url, body: raw ? JSON.parse(raw) : null, run: req.headers['x-cascade-run-id'] });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ revision: 1, status: 'waiting' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-continuation-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, 'helper.json');
+  fs.writeFileSync(configPath, JSON.stringify({ registrationId: 'coordinator', chatChannelId: 'channel' }));
+  const args = [cli, 'continuation', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault', '--channel', 'channel'];
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: configPath, CASCADE_RUN_ID: '42' };
+  await execFileAsync(process.execPath, args, { env });
+  await execFileAsync(process.execPath, [...args, '--status', 'waiting', '--revision', '0', '--summary', 'Existing worker owns delivery'], { env });
+  assert.deepEqual(requests, [
+    { path: '/api/vaults/vault/channels/channel/continuation', body: null, run: '42' },
+    { path: '/api/vaults/vault/channels/channel/continuation', body: { status: 'waiting', revision: 0, summary: 'Existing worker owns delivery' }, run: '42' },
+  ]);
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, undefined);
+});

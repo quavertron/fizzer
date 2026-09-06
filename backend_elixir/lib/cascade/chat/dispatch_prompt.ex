@@ -101,6 +101,9 @@ defmodule Cascade.Chat.DispatchPrompt do
           join([
             header(channel_name, registration, execution.agent, message, resume),
             interrupted_requests(dispatch, execution, message),
+            if(text(message, :missionTaskId) == "",
+              do: Cascade.Chat.Continuations.context(dispatch, registration)
+            ),
             if(
               text(message, :missionTaskId) == "" and field(registration, :orchestrator) == true and
                 field(registration, :ambientGroupChat) != true and is_nil(interpretation),
