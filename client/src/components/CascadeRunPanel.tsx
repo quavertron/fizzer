@@ -21,6 +21,7 @@ import {
   hasRunActivity,
   hasUsageStats,
   isHarnessPromptDump,
+  liveActivityHeadline,
   summarizeActivity,
   toolResultPreview,
   type ActivityItem,
@@ -568,15 +569,20 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
     || activity.stats.model
     || activity.stats.cwd
   ));
+  const live = useMemo(() => {
+    if (!activity || !isRunning || !hasStructuredActivity) return null;
+    const headline = liveActivityHeadline(activity);
+    return headline.verb === 'thinking' ? null : headline;
+  }, [activity, isRunning, hasStructuredActivity]);
   const summary = useMemo(
     () => {
       if (message.status === 'failed') return message.body?.trim() || 'Agent failed.';
       if (message.status === 'canceled') return message.body?.trim() || 'Run canceled.';
       if (isQueued) return 'Queued';
-      if (isRunning) return publicOutput || 'Working';
+      if (isRunning) return publicOutput || (live?.detail ? `${live.verb} ${live.detail}` : hasStructuredActivity ? 'Working' : 'Starting…');
       return activity ? summarizeActivity(activity, false) : 'trace';
     },
-    [activity, isRunning, isQueued, publicOutput, message.body, message.status],
+    [activity, isRunning, isQueued, publicOutput, live, hasStructuredActivity, message.body, message.status],
   );
   const statChips = useMemo(
     () => (activity ? buildHeaderStatChips(activity.stats) : []),
@@ -660,6 +666,11 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
           <span className="crp-toggle-summary">
             {hydrating ? 'loading…' : isQueued ? 'Queued' : publicOutput ? (
               <span className="crp-live-detail">{publicOutput}</span>
+            ) : live?.detail ? (
+              <>
+                <span className="crp-live-verb">{live.verb}</span>
+                <span className="crp-live-detail">{live.detail}</span>
+              </>
             ) : summary}
           </span>
           {statChips.length > 0 && (
