@@ -78,6 +78,142 @@ defmodule Cascade.ContentDomainTest do
     assert Query.one("SELECT id FROM vaults WHERE id = ?", [vault.id]) == nil
   end
 
+  test "agent vault deletion requires current, scoped owner authority and protects active vaults" do
+    current = Store.create_vault(1, %{name: "Current"})
+    target = Store.create_vault(1, %{name: "Orchestration QA 2026-09-05"})
+    channel = hd(Store.list_notes(current.id))
+    body = "add a way to delete vaults and delete the orchestration QA vault for me"
+    user = %{id: 1, username: "alice", auth_version: 0}
+    token = Token.sign_agent(user)
+    {:ok, source} = Cascade.Chat.Messages.create(user, current.id, channel.id, %{body: body})
+    authority = Jason.encode!([%{id: source.id, body: body}])
+
+    Query.execute(
+      "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,created_by,authority_json) VALUES ('deletion',?,?,?,?,?,1,?)",
+      [current.id, channel.id, source.id, "agent", "Delete QA", authority]
+    )
+
+    Query.execute(
+      "INSERT INTO runs(id,vault_id,owner_user_id,prompt,status) VALUES (99001,?,1,'delete','running')",
+      [current.id]
+    )
+
+    Query.execute(
+      "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,run_id) VALUES ('delete-task','deletion','Delete','agent','running',99001)"
+    )
+
+    delete = fn id, name, source_id, bearer, run ->
+      json_conn(
+        :delete,
+        "/api/vaults/#{id}",
+        %{expectedName: name, authorityMessageId: source_id},
+        bearer
+      )
+      |> put_req_header("x-cascade-run-id", run)
+      |> CascadeWeb.ContentRouter.call(@router_options)
+    end
+
+    deny = fn ->
+      assert delete.(target.id, target.name, source.id, token, "99001").status == 403
+    end
+
+    assert request(:delete, "/api/vaults/#{target.id}", %{}, token).status == 403
+    assert delete.(target.id, "wrong", source.id, token, "99001").status == 403
+    assert delete.(target.id, target.name, "missing", token, "99001").status == 403
+    assert delete.(target.id, target.name, source.id, token, "99002").status == 403
+    assert delete.(current.id, current.name, source.id, token, "99001").status == 403
+
+    assert delete.(
+             target.id,
+             target.name,
+             source.id,
+             Token.sign_agent(%{id: 2, username: "bob", auth_version: 0}),
+             "99001"
+           ).status == 403
+
+    Query.execute("UPDATE vaults SET created_by=2 WHERE id=?", [target.id])
+    deny.()
+    Query.execute("UPDATE vaults SET created_by=1 WHERE id=?", [target.id])
+
+    for field <- ["agent_id", "registration_id"] do
+      Query.execute("UPDATE chat_messages SET #{field}='agent' WHERE id=?", [source.id])
+      deny.()
+      Query.execute("UPDATE chat_messages SET #{field}=NULL WHERE id=?", [source.id])
+    end
+
+    Query.execute(
+      "UPDATE chat_messages SET body='do not delete the orchestration QA vault' WHERE id=?",
+      [source.id]
+    )
+
+    deny.()
+    Query.execute("UPDATE chat_messages SET body=? WHERE id=?", [body, source.id])
+
+    for invalid <- [
+          "do not delete the orchestration QA vault",
+          "can you explain how to delete the orchestration QA vault?",
+          "delete the other vault",
+          "delete the orchestration QA vault after approval"
+        ] do
+      Query.execute("UPDATE chat_messages SET body=? WHERE id=?", [invalid, source.id])
+
+      Query.execute("UPDATE chat_missions SET authority_json=? WHERE id='deletion'", [
+        Jason.encode!([%{id: source.id, body: invalid}])
+      ])
+
+      deny.()
+    end
+
+    Query.execute("UPDATE chat_messages SET body=? WHERE id=?", [body, source.id])
+    Query.execute("UPDATE chat_missions SET authority_json=? WHERE id='deletion'", [authority])
+    Query.execute("UPDATE chat_messages SET forwarded_from_json='{}' WHERE id=?", [source.id])
+    deny.()
+    Query.execute("UPDATE chat_messages SET forwarded_from_json=NULL WHERE id=?", [source.id])
+    Query.execute("UPDATE vaults SET created_at=datetime('now','+1 day') WHERE id=?", [target.id])
+    deny.()
+    Query.execute("UPDATE vaults SET created_at=datetime('now','-1 day') WHERE id=?", [target.id])
+    duplicate = Store.create_vault(1, %{name: "Orchestration QA 2026-09-06"})
+    deny.()
+    assert Store.delete_vault(duplicate.id, 1)
+
+    Query.execute(
+      "INSERT INTO runs(id,vault_id,owner_user_id,prompt,status) VALUES (99002,?,1,'busy','running')",
+      [target.id]
+    )
+
+    deny.()
+    Query.execute("DELETE FROM runs WHERE id=99002")
+    Query.execute("UPDATE runs SET status='completed' WHERE id=99001")
+    deny.()
+    Query.execute("UPDATE runs SET status='running' WHERE id=99001")
+    {:ok, stop} = Cascade.Chat.Messages.create(user, current.id, channel.id, %{body: "Stop"})
+    deny.()
+    Query.execute("DELETE FROM chat_messages WHERE id=?", [stop.id])
+    assert File.dir?(target.root_path)
+    assert delete.(target.id, target.name, source.id, token, "99001").status == 200
+    refute File.exists?(target.root_path)
+    assert Store.get_vault(target.id, 1) == nil
+    assert Store.get_vault(current.id, 1)
+    assert delete.(target.id, target.name, source.id, token, "99001").status == 403
+  end
+
+  test "agent-supplied owner names cannot become human deletion authority" do
+    vault = Store.create_vault(1, %{name: "Current"})
+    channel = hd(Store.list_notes(vault.id))
+    user = %{id: 1, username: "alice"}
+
+    assert {:ok, message} =
+             Cascade.Chat.Messages.create(
+               user,
+               vault.id,
+               channel.id,
+               %{author: "alice", body: "delete the QA vault"},
+               access: :agent
+             )
+
+    assert message.agentId == "agent"
+  end
+
   test "note CRUD keeps distinct files, dense ordering, unlisted storage, tags, links and graph" do
     vault = Store.create_vault(1, %{name: "Content"})
     folder_a = Store.create_folder(vault.id, %{name: "A"})

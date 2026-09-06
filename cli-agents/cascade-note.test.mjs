@@ -148,3 +148,32 @@ test('folders can be created and notes moved into them by name', async (t) => {
   assert.deepEqual(requests[0].body, { name: 'docs' });
   assert.deepEqual(requests[3].body, { folder_id: 'folder-docs' });
 });
+
+test('vault deletion binds full ID, exact name, owner source and run, then verifies absence', async (t) => {
+  let deleted = false;
+  const writes = [];
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/api/vaults') {
+      res.end(JSON.stringify({ vaults: deleted ? [] : [{ id: 'target-id', name: 'QA' }] }));
+    } else if (req.method === 'DELETE' && req.url === '/api/vaults/target-id') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      writes.push({ body: JSON.parse(body), run: req.headers['x-cascade-run-id'] });
+      deleted = true;
+      res.end(JSON.stringify({ success: true }));
+    } else {
+      res.statusCode = 404;
+      res.end('{}');
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: '/nonexistent', CASCADE_RUN_ID: '42', CASCADE_NOTE_VAULT: 'current' };
+  const args = [cli, 'vault', 'delete', 'target-id', '--confirm-name', 'QA', '--authority-message', 'owner-msg', '--url', `http://127.0.0.1:${server.address().port}`, '--token', 'agent', '--json'];
+  await assert.rejects(execFileAsync(process.execPath, args.map((v) => v === 'QA' ? 'wrong' : v), { env }), /exact name do not match/);
+  await assert.rejects(execFileAsync(process.execPath, args, { env: { ...env, CASCADE_NOTE_VAULT: 'target-id' } }), /current vault/);
+  const { stdout } = await execFileAsync(process.execPath, args, { env });
+  assert.equal(JSON.parse(stdout).verifiedAbsent, true);
+  assert.deepEqual(writes, [{ body: { expectedName: 'QA', authorityMessageId: 'owner-msg' }, run: '42' }]);
+});

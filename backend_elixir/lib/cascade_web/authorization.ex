@@ -5,7 +5,7 @@ defmodule CascadeWeb.Authorization do
   @agent_rules [
     {~w(GET PUT), ~r<^/api/app-context$>},
     {~w(GET), ~r<^/api/vaults$>},
-    {~w(GET), ~r<^/api/vaults/[^/]+$>},
+    {~w(GET DELETE), ~r<^/api/vaults/[^/]+$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/(?:folders|notes|search|tags)$>},
     {~w(POST), ~r<^/api/vaults/[^/]+/folders$>},
     {~w(PATCH), ~r<^/api/folders/[^/]+$>},

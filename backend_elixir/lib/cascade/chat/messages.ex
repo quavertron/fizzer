@@ -550,7 +550,7 @@ defmodule Cascade.Chat.Messages do
 
     if registration_id == "" do
       author = input |> map_value("author", "") |> to_string() |> String.trim()
-      agent_id = input |> map_value("agentId") |> nilable()
+      agent_id = input |> map_value("agentId") |> nilable() || "agent"
 
       if author == "" do
         {:error, "Author is required"}

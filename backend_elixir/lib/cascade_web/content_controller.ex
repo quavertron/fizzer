@@ -51,12 +51,33 @@ defmodule CascadeWeb.ContentController do
   end
 
   def delete_vault(conn, id) do
-    authenticated(conn, [user_only: true], fn conn, auth ->
+    authenticated(conn, fn conn, auth ->
       safely(conn, "Could not delete vault", fn ->
-        if Store.delete_vault(id, auth.user.id) do
-          JSON.send(conn, 200, %{success: true})
+        if auth.access == "agent" do
+          run_id = List.first(get_req_header(conn, "x-cascade-run-id"))
+
+          case Cascade.Content.VaultDeletion.delete(
+                 auth.user.id,
+                 run_id,
+                 id,
+                 body_value(conn, "expectedName", nil),
+                 body_value(conn, "authorityMessageId", nil)
+               ) do
+            :ok ->
+              JSON.send(conn, 200, %{success: true})
+
+            {:error, :denied} ->
+              JSON.send(conn, 403, %{
+                error:
+                  "Vault deletion requires an active owner mission, a current explicit owner deletion instruction, an exact target name, and an inactive target outside the current vault"
+              })
+          end
         else
-          JSON.send(conn, 404, %{error: "Vault not found or you are not its owner"})
+          if Store.delete_vault(id, auth.user.id) do
+            JSON.send(conn, 200, %{success: true})
+          else
+            JSON.send(conn, 404, %{error: "Vault not found or you are not its owner"})
+          end
         end
       end)
     end)

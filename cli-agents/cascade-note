@@ -52,6 +52,9 @@ const DEFAULT_URL = 'https://cscd.online';
 const USAGE = `cascade-note — note CRUD against a live Cascade instance
 
 Usage:
+  cascade-note vault list                list vault IDs and names
+  cascade-note vault delete <id> --confirm-name <name> --authority-message <id>
+                                        delete an inactive vault under an owner mission
   cascade-note list                      vaults, or notes with --vault
   cascade-note search <query>            search notes in a vault
   cascade-note get <id|title>            print a note's content
@@ -163,11 +166,12 @@ async function getToken(url, args, config) {
   return body.token;
 }
 
-async function api(url, token, method, path, body) {
+async function api(url, token, method, path, body, extraHeaders = {}) {
   const res = await fetch(`${url}${path}`, {
     method,
     headers: {
       authorization: `Bearer ${token}`,
+      ...extraHeaders,
       ...(body ? { 'content-type': 'application/json' } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -303,6 +307,30 @@ async function main() {
   const token = await getToken(url, args, config);
 
   switch (cmd) {
+    case 'vault': {
+      if (args._[1] === 'list') {
+        const { vaults = [] } = await api(url, token, 'GET', '/api/vaults');
+        out(args, vaults.map((v) => `${v.id}  ${v.name}`).join('\n') || '(no vaults)', vaults);
+        break;
+      }
+      const id = args._[2];
+      const name = args['confirm-name'];
+      const source = args['authority-message'];
+      const runId = String(process.env.CASCADE_RUN_ID || '').trim();
+      if (args._[1] !== 'delete' || !id || typeof name !== 'string' || typeof source !== 'string' || !runId) {
+        fail('use vault delete <full-id> --confirm-name <exact-name> --authority-message <owner-message-id> from an active mission run');
+      }
+      if (id === (configString(config, 'vaultId') || process.env.CASCADE_NOTE_VAULT)) fail('cannot delete the current vault');
+      const { vaults = [] } = await api(url, token, 'GET', '/api/vaults');
+      if (!vaults.some((v) => v.id === id && v.name === name)) fail('target ID and exact name do not match a visible vault');
+      const result = await api(url, token, 'DELETE', `/api/vaults/${encodeURIComponent(id)}`, {
+        expectedName: name, authorityMessageId: source,
+      }, { 'x-cascade-run-id': runId });
+      const remaining = await api(url, token, 'GET', '/api/vaults');
+      if (remaining.vaults.some((v) => v.id === id)) fail('deletion returned success but target is still present');
+      out(args, `Deleted vault ${name} (${id}); verified absent.`, { ...result, id, name, verifiedAbsent: true });
+      break;
+    }
     case 'list': {
       const v = String(args.vault || configString(config, 'vaultId') || process.env.CASCADE_NOTE_VAULT || '').trim();
       if (!v) {
