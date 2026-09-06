@@ -34,7 +34,7 @@
  *   --folder <id>    folder id/name (create / move)
  *   --url <base>     API base      (default $CASCADE_NOTE_URL, else cscd.online)
  *   --token <jwt>    bearer token  (default $CASCADE_NOTE_TOKEN)
- *   --json           machine-readable output
+ *   --json           machine-readable output; errors are JSON on stderr
  *
  * Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
  *      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT
@@ -42,6 +42,7 @@
 
 'use strict';
 
+import { createCli, httpError } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -91,41 +92,14 @@ Options:
   --allow-empty    permit an empty body (otherwise empty is rejected)
   --url <base>     API base   (default $CASCADE_NOTE_URL, else cscd.online)
   --token <jwt>    bearer token (default $CASCADE_NOTE_TOKEN)
-  --json           machine-readable output
+  --json           machine-readable output; errors are JSON on stderr
 
 Prefer stdin or --content-file; --content is unsafe for backticks/markdown.
 
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT, CASCADE_HELPER_CONFIG`;
 
-function parseArgs(argv) {
-  const args = { _: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--json') args.json = true;
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) args[key] = true;
-      else { args[key] = next; i++; }
-    } else {
-      args._.push(a);
-    }
-  }
-  return args;
-}
-
-function fail(msg, code = 1) {
-  process.stderr.write(`cascade-note: ${msg}\n`);
-  process.exit(code);
-}
-
-function errorMessage(err) {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause instanceof Error ? ` (${err.cause.message})` : '';
-  return `${err.message}${cause}`;
-}
+const { args, fail } = createCli('cascade-note', {});
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -180,7 +154,10 @@ async function getToken(url, args, config) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: user, password: pass }),
   });
-  if (!res.ok) fail(`login failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    fail(httpError('POST', '/api/auth/login', res.status, text, `login failed (${res.status}): ${text}`));
+  }
   const body = await res.json();
   if (!body.token) fail('login response had no token');
   return body.token;
@@ -198,7 +175,7 @@ async function api(url, token, method, path, body) {
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${path} → ${res.status}: ${json.error || text}`);
+  if (!res.ok) fail(httpError(method, path, res.status, text, undefined, '→'));
   return json;
 }
 
@@ -313,9 +290,9 @@ function out(args, human, obj) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
 
+  if (!cmd && !args.help && args.json) fail('missing command. Run with --help.');
   if (!cmd || args.help) {
     process.stdout.write(USAGE + '\n');
     process.exit(cmd ? 0 : 1);
@@ -559,4 +536,4 @@ async function main() {
   }
 }
 
-main().catch((err) => fail(errorMessage(err)));
+main().catch(fail);

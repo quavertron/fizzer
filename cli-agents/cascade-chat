@@ -9,6 +9,7 @@
 
 'use strict';
 
+import { createCli, httpError } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -99,7 +100,7 @@ Options:
   --scope chat|all          search scope (default chat)
   --url <base>              API base (default $CASCADE_NOTE_URL, else cscd.online)
   --token <jwt>             bearer token (default $CASCADE_NOTE_TOKEN)
-  --json                    machine-readable output
+  --json                    machine-readable output; errors are JSON on stderr
 
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_VAULT,
      CASCADE_CHAT_CHANNEL, CASCADE_CHAT_MESSAGE, CASCADE_CHAT_TRIGGERING_MESSAGE, CASCADE_CHAT_AUTHOR,
@@ -207,35 +208,7 @@ function commandHelp(args) {
   return lines.map((line) => line.trimStart()).join('\n') + '\n\nUse --help after a subcommand for its options.';
 }
 
-function parseArgs(argv) {
-  const args = { _: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--json') args.json = true;
-    else if (a === '--include-reply-context') args['include-reply-context'] = true;
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) args[key] = true;
-      else { args[key] = next; i++; }
-    } else {
-      args._.push(a);
-    }
-  }
-  return args;
-}
-
-function fail(msg, code = 1) {
-  process.stderr.write(`cascade-chat: ${msg}\n`);
-  process.exit(code);
-}
-
-function errorMessage(err) {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause instanceof Error ? ` (${err.cause.message})` : '';
-  return `${err.message}${cause}`;
-}
+const { args, fail } = createCli('cascade-chat', { 'include-reply-context': ['include-reply-context', true] });
 
 function helperConfigPath() {
   // Prefer the explicit per-run config path agent-runner wrote. CASCADE_RUN_ID
@@ -310,7 +283,10 @@ async function getToken(url, args, config) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: user, password: pass }),
   });
-  if (!res.ok) fail(`login failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    fail(httpError('POST', '/api/auth/login', res.status, text, `login failed (${res.status}): ${text}`));
+  }
   const body = await res.json();
   if (!body.token) fail('login response had no token');
   return body.token;
@@ -341,7 +317,7 @@ async function api(url, token, method, path, body) {
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${json.code === 'revision_conflict' ? JSON.stringify(json) : (json.error || text)}`);
+  if (!res.ok) fail(httpError(method, path, res.status, text, undefined, '->'));
   return json;
 }
 
@@ -632,8 +608,8 @@ function formatHuman(messages) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
   const raw = args._[0];
+  if (!raw && !args.help && args.json) fail('missing command. Run with --help.');
   if (!raw || args.help) {
     process.stdout.write((args.help ? commandHelp(args) : USAGE) + '\n');
     process.exit(args.help ? 0 : 1);
@@ -1216,4 +1192,4 @@ async function main() {
   else process.stdout.write(formatHuman(output) + '\n');
 }
 
-main().catch((err) => fail(errorMessage(err)));
+main().catch(fail);

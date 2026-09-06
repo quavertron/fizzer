@@ -1,5 +1,19 @@
 # Agent runtime
 
+## Helper CLI errors
+
+`cascade-chat`, `cascade-note`, and `cascade-scratchpad` keep successful output
+unchanged. With `--json`, failures write one JSON object to stderr and retain
+their nonzero exit status: `{"error":{"command":"cascade-chat","code":"cli_error","message":"...","exitCode":1}}`.
+Without `--json`, errors retain the command prefix and readable message.
+
+HTTP errors additionally include `status`, `method`, `path`, and `details` (the
+complete server response, or `{ "raw": "..." }` for non-JSON responses).
+`code` uses the server error code when available, otherwise `http_error`;
+local failures use a system error code when available, otherwise `cli_error`.
+Revision conflicts retain `revision_conflict` and all recovery fields in
+`details`; callers must read and reconcile before trying another write.
+
 ## Supported adapters
 
 The shared agent adapter is `cli-agents/cli-agent.ts`. Current agent IDs include

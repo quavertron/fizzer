@@ -38,7 +38,7 @@
     "test:native": "node --test scripts/rebuild-natives.test.cjs",
     "test:desktop-runner": "node scripts/test-desktop-runner-e2e.mjs",
     "test:electron": "node --test cascade-electron/*.test.cjs",
-    "test:cli-agents": "tsx --test cli-agents/*.test.ts",
+    "test:cli-agents": "tsx --test cli-agents/*.test.ts cli-agents/*.test.mjs",
     "test:chat-mission": "node scripts/test-chat-mission-e2e.mjs",
     "test:elixir:mix-check": "cd backend_elixir && mix check",
     "test:elixir:data-parity": "node --test scripts/check-elixir-data-compat.test.mjs",

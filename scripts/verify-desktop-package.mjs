@@ -43,6 +43,7 @@ const requiredFiles = [
   path.join(resources, 'dist', 'cli-agents', 'cascade-chat'),
   path.join(resources, 'dist', 'cli-agents', 'cascade-scratchpad'),
   path.join(resources, 'dist', 'cli-agents', 'auto-papercut.mjs'),
+  path.join(resources, 'dist', 'cli-agents', 'cli-common.mjs'),
   path.join(resources, 'embedded-runtime', 'client-dist', 'app.html'),
   path.join(resources, 'embedded-runtime', 'backend-licenses', 'THIRD_PARTY_NOTICES.md'),
   path.join(resources, 'embedded-runtime', 'backend-licenses', 'APACHE-2.0.txt'),

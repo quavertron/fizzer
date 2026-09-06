@@ -10,6 +10,7 @@
 
 'use strict';
 
+import { createCli, httpError } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,7 +55,7 @@ Options:
   --vault <id>       vault id (default $CASCADE_NOTE_VAULT)
   --url <base>       API base (default $CASCADE_NOTE_URL, else cscd.online)
   --token <jwt>      bearer token (default $CASCADE_NOTE_TOKEN)
-  --json             machine-readable output
+  --json             machine-readable output; errors are JSON on stderr
 
 Scratchpad is optional. Preserve reusable root causes, decisions, or dead ends;
 skip routine progress. Open threads are private and agent-managed.
@@ -63,38 +64,7 @@ Read a skill before applying it: cascade-note get <title>
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT, CASCADE_RUN_ID, CASCADE_HELPER_CONFIG`;
 
-function parseArgs(argv) {
-  const args = { _: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--json') args.json = true;
-    else if (a === '--unconsolidated') args.unconsolidated = true;
-    else if (a === '--win') args.result = 'win';
-    else if (a === '--loss') args.result = 'loss';
-    else if (a === '--neutral') args.result = 'neutral';
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) args[key] = true;
-      else { args[key] = next; i++; }
-    } else {
-      args._.push(a);
-    }
-  }
-  return args;
-}
-
-function fail(msg, code = 1) {
-  process.stderr.write(`cascade-scratchpad: ${msg}\n`);
-  process.exit(code);
-}
-
-function errorMessage(err) {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause instanceof Error ? ` (${err.cause.message})` : '';
-  return `${err.message}${cause}`;
-}
+const { args, fail } = createCli('cascade-scratchpad', { unconsolidated: ['unconsolidated', true], win: ['result', 'win'], loss: ['result', 'loss'], neutral: ['result', 'neutral'] });
 
 function helperConfigPath() {
   // Prefer agent-runner's explicit per-run path over CASCADE_RUN_ID alone.
@@ -139,7 +109,10 @@ async function getToken(url, args, config) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: user, password: pass }),
   });
-  if (!res.ok) fail(`login failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    fail(httpError('POST', '/api/auth/login', res.status, text, `login failed (${res.status}): ${text}`));
+  }
   const body = await res.json();
   if (!body.token) fail('login response had no token');
   return body.token;
@@ -156,7 +129,7 @@ async function api(url, token, method, requestPath, body) {
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${requestPath} -> ${res.status}: ${json.error || text}`);
+  if (!res.ok) fail(httpError(method, requestPath, res.status, text, undefined, '->'));
   return json;
 }
 
@@ -202,8 +175,8 @@ function formatEntry(entry) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
+  if (!cmd && !args.help && args.json) fail('missing command. Run with --help.');
   if (!cmd || args.help) {
     process.stdout.write(USAGE + '\n');
     process.exit(cmd ? 0 : 1);
@@ -420,4 +393,4 @@ async function main() {
   );
 }
 
-main().catch((err) => fail(errorMessage(err)));
+main().catch(fail);
