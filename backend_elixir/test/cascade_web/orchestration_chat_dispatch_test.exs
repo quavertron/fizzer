@@ -303,6 +303,70 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert Store.find_by_chat_dispatch(peer.id).id == delegated["runId"]
   end
 
+  for kind <- [:human, :peer] do
+    @startup_kind kind
+    test "#{kind} arrival preserves a coordinator before delegation is bound", ctx do
+      initial = event!(ctx.sid, "run:delegate")
+      Store.finish(initial["runId"], "completed", "done")
+      SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+
+      ctx = %{
+        ctx
+        | guest: ctx.owner,
+          guest_vault: ctx.owner_vault,
+          guest_channel: ctx.owner_channel
+      }
+
+      original = admit(ctx, "finish the original responsibility")
+      first = event!(ctx.sid, "run:delegate")
+      run_id = first["runId"]
+      # Recreate the persisted startup boundary before the desktop owner is bound.
+      Store.clear_delegated(run_id)
+      opts = if @startup_kind == :peer, do: [registrationId: ctx.registration.id], else: []
+      next = admit(ctx, "competing input", opts)
+
+      for _ <- 1..2 do
+        assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+        assert Store.get(run_id).status == "queued"
+        assert Store.find_by_chat_dispatch(original.id).id == run_id
+        refute Store.find_by_chat_dispatch(next.id)
+
+        assert [nil, nil] ==
+                 SQL.one(
+                   "SELECT run_id,failed_at FROM chat_agent_dispatches WHERE id=?",
+                   [next.id]
+                 )
+      end
+
+      assert :ok = Store.record_delegated(run_id, ctx.owner.id)
+      Cascade.Missions.DispatchReannouncer.wake()
+
+      if @startup_kind == :human do
+        cancel = packet!(ctx.sid, "run:cancel")
+        assert Store.get(run_id).status == "queued"
+        refute Store.find_by_chat_dispatch(next.id)
+        send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+      else
+        assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+        Store.finish(run_id, "completed", "original responsibility handled")
+      end
+
+      delegated = event!(ctx.sid, "run:delegate")
+      assert Store.find_by_chat_dispatch(next.id).id == delegated["runId"]
+      assert {:ok, reused} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+      assert reused.id == delegated["runId"]
+      assert [1] == SQL.one("SELECT count(*) FROM runs WHERE chat_dispatch_id=?", [next.id])
+
+      if @startup_kind == :human do
+        assert Store.get(run_id).status == "canceled"
+        assert delegated["prompt"] =~ "finish the original responsibility"
+        assert delegated["prompt"] =~ "Durable unfinished coordinator responsibility"
+      else
+        assert Store.get(run_id).status == "completed"
+      end
+    end
+  end
+
   test "settings changed during a delayed stop ACK are authoritative", ctx do
     event!(ctx.sid, "run:delegate")
 

@@ -851,20 +851,7 @@ defmodule CascadeWeb.OrchestrationController do
           owner_id = Store.delegated_owner(occupied.id)
 
           cond do
-            is_nil(owner_id) ->
-              if Dispatches.human?(dispatch),
-                do: Cascade.Chat.Continuations.interrupt(occupied.id, dispatch.id)
-
-              Store.finish(occupied.id, "failed", "Run startup interrupted before delegation.")
-
-              Store.publish(occupied.id, "status", %{
-                status: "failed",
-                summary: "Run startup interrupted before delegation."
-              })
-
-              :ok
-
-            not Dispatches.human?(dispatch) ->
+            is_nil(owner_id) or not Dispatches.human?(dispatch) ->
               {:error, occupied.id, :busy}
 
             not RunnerLifecycle.online?(owner_id) ->
