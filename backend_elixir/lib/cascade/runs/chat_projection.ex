@@ -439,7 +439,7 @@ defmodule Cascade.Runs.ChatProjection do
 
         emit_message(target, message, dispatches)
 
-        if projection.done and trim(projection.body) == "" do
+        if projection.done and Messages.terminal_shell?(message) do
           SQL.exec("DELETE FROM chat_messages WHERE id=? AND channel_id=?", [
             target.message_id,
             target.source_channel_id

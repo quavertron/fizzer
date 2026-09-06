@@ -115,29 +115,29 @@ export function ChatMissionCard({
   const done = mission.tasks.filter((task) => task.status === 'completed' || task.status === 'canceled').length;
   const total = mission.tasks.length;
   const terminal = mission.status === 'completed' || mission.status === 'canceled';
-  const live = !terminal && (
-    mission.status === 'active'
-      || mission.status === 'reviewing'
-      || mission.tasks.some((task) => task.status === 'running' || task.status === 'pending')
-      || Boolean(tracePeek?.live)
-  );
-  const statusLabel = mission.status === 'active'
-    ? (total ? `${done}/${total} tasks` : 'planning')
-    : needsAttention ? 'needs review' : mission.status;
-  const lead = mission.coordinatorMention || mission.coordinator;
   const runningTask = mission.tasks.find((task) => task.status === 'running');
+  const pendingTask = mission.tasks.find((task) => task.status === 'pending');
+  const attentionTask = mission.tasks.find((task) => task.status === 'failed' || task.status === 'blocked');
+  const live = !terminal && (Boolean(runningTask) || Boolean(tracePeek?.live && tracePeek.phase !== 'routing'));
+  const statusLabel = terminal ? mission.status
+    : needsAttention || attentionTask ? 'needs attention'
+      : live ? 'working'
+        : pendingTask ? 'queued'
+          : mission.status === 'reviewing' ? 'awaiting review' : 'starting';
+  const lead = mission.coordinatorMention || mission.coordinator;
   const peekLive = !terminal && live;
   const peekAuthor = tracePeek?.author
     || (runningTask ? (runningTask.assigneeMention || runningTask.assignee) : '')
     || '';
   const peekLabel = (terminal ? mission.summary : '')
+    || (!terminal && attentionTask ? attentionTask.summary || attentionTask.title : '')
     || (!terminal ? tracePeek?.label : '')
     || (runningTask ? runningTask.title : '')
-    || (mission.status === 'active' && total === 0 ? 'deciding approach…' : '')
-    || (mission.status === 'active' ? `${done}/${total} tasks in flight` : '');
+    || (pendingTask ? `Queued · ${pendingTask.title}` : '')
+    || (!terminal ? 'Waiting for an agent update' : '');
   // Peek is collapsed-only activity exposure. When open, the stream/tasks are the UI.
   // Settled missions without useful activity text skip the second rail entirely.
-  const showPeek = !open && Boolean(peekLabel) && (terminal || peekLive || Boolean(tracePeek || runningTask));
+  const showPeek = !open && Boolean(peekLabel) && (terminal || peekLive || Boolean(tracePeek || runningTask || pendingTask || attentionTask));
   async function toggleTimeline() {
     const next = !timelineOpen;
     setTimelineOpen(next);
@@ -209,7 +209,7 @@ export function ChatMissionCard({
           <span className="chat-mission-status">{statusLabel}</span>
           <ChevronRight size={13} className={`chat-mission-chevron${open ? ' open' : ''}`} aria-hidden="true" />
         </button>
-        {live && vaultId && channelId && (
+        {!terminal && vaultId && channelId && (
           <button
             type="button"
             className="chat-mission-stop"
