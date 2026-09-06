@@ -15,7 +15,6 @@ import {
   workTracePeek,
   isSteeringContinuationMessage,
   workTraceStatusLabel,
-  workTraceSummary,
 } from '../chat/workTrace';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { CascadeRunPanel } from './CascadeRunPanel';
@@ -173,9 +172,10 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const pinBottomRef = useRef(true);
-  const summary = useMemo(() => workTraceSummary(trace), [trace]);
   const peek = useMemo(() => workTracePeek(trace), [trace]);
   const currentPhase = peek?.phase || 'working';
+  const label = peek?.label && peek.label !== '(empty)'
+    ? peek.label : live ? 'Working…' : 'Finished';
   const streamOpen = forceOpen || open;
 
   useEffect(() => {
@@ -239,10 +239,9 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
             aria-expanded={streamOpen}
           >
             {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
-            <span className="chat-work-trace-summary" title={summary}>
-              {live ? peek?.label || 'Working…' : currentPhase === 'blocked' ? 'Stopped · inspect activity' : 'Activity'}
+            <span className="chat-work-trace-summary" title={label}>
+              {label}
             </span>
-            <span className="chat-work-trace-count">{trace.length} update{trace.length === 1 ? '' : 's'}</span>
             <ChevronRight size={13} className={`chat-work-trace-chevron${streamOpen ? ' open' : ''}`} />
           </button>
         )}

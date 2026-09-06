@@ -1,3 +1,6 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ChatWorkTrace } from '../components/ChatWorkTrace';
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../chat/types';
 import {
@@ -25,6 +28,20 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
+  it('shows the completed outcome in the collapsed row instead of activity chrome', () => {
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace: [msg({ id: 'done', author: 'Sol', missionTaskId: 'task', body: 'Child verified and joined.\n\nTask: internal-task-id' })],
+      selectedMessageId: null,
+      onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
+      runningMessageState: new Map(),
+    }));
+    expect(markup).toContain('Child verified and joined.');
+    expect(markup).not.toContain('>Activity<');
+    expect(markup).not.toContain('1 update');
+    expect(markup).not.toContain('internal-task-id');
+    expect(markup).toContain('aria-expanded="false"');
+  });
+
   it('recognizes the durable steering sentinel without exposing it as prose', () => {
     expect(isSteeringContinuationMessage(msg({
       id: 'steered', author: 'Sol', body: 'Steered into the continuation below.', status: 'canceled',

@@ -194,7 +194,8 @@ export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body
   if (message.status === 'failed') return 'failed';
   if (isSteeringContinuationMessage(message)) return 'steered';
   if (message.status === 'canceled') return 'canceled';
-  const preview = workTracePreview(message.body || '');
+  const outcome = recentActivityLines(message.body || '').find((line) => humanizeActivityLine(line));
+  const preview = workTracePreview(outcome || '');
   return preview || '(empty)';
 }
 

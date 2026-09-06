@@ -8075,12 +8075,6 @@ button.chat-avatar.is-clickable:focus-visible {
     background: hsla(226, 12%, 100%, 0.03);
   }
 }
-.chat-work-trace-count {
-  flex-shrink: 0;
-  color: var(--text-secondary);
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-}
 .chat-work-trace-toggle:focus-visible,
 .crp-toggle:focus-visible {
   outline: 2px solid var(--focus-ring);
