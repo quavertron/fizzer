@@ -32,7 +32,7 @@ Usage:
   cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list [--status open|all|<states>] [--task-status open|all|<states>] [--detail]
   cascade-chat mission status [--mission <id|current>]
-  cascade-chat mission interpret --mission <id> [--file <json>]  read or atomically save understanding and explanation
+  cascade-chat mission interpret --mission <id> [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
   cascade-chat mission delegate --mission <id> --to @agent --task T --message P [--after <task-id,...>] [--priority N] [--effort E] [--anonymous] [--isolated]
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
@@ -75,7 +75,7 @@ Options:
   --control-plane           start background work that completes without coordinator review
   --review                  require coordinator review after background work settles
   --root <message-id>       mission root (defaults to triggering chat message)
-  --changes-file <path>     JSON change request metadata for send
+  --changes-file <path|->   JSON change request metadata for send (- reads stdin)
   --raw-message             preserve literal backslash-n sequences in --message
   --url <https-url>         profile picture URL for avatar
   --file <path>            avatar PNG, JPEG, GIF or WebP (max 2MB)
@@ -103,6 +103,103 @@ Options:
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_VAULT,
      CASCADE_CHAT_CHANNEL, CASCADE_CHAT_MESSAGE, CASCADE_CHAT_TRIGGERING_MESSAGE, CASCADE_CHAT_AUTHOR,
      CASCADE_HELPER_CONFIG`;
+
+// Keep detailed contracts beside the command parser; other commands reuse their usage lines.
+const COMMAND_HELP = {
+  'mission interpret': `cascade-chat mission interpret --mission <id|current> [--file <path|->]
+
+Read current revision, fingerprint, understanding and evidence without --file.
+Save a JSON object with --file PATH, or read JSON from stdin with --file -.
+Reads require the owning coordinator; writes also require a live coordinator run.
+Mission workers cannot record interpretation. The helper supplies coordinatorRegistrationId.
+
+Accepted JSON fields:
+  revision: required integer from the latest read (including 0).
+  fingerprint: string from that read; required when an evidence batch is pending.
+    Omission means "". Copy the returned value, never invent a fingerprint.
+  assessment: string replacing the saved assessment; other types leave it unchanged.
+  questions: array of objects with a nonempty string id. Use stable ids across saves.
+    answer and status affect whether a question remains outstanding. A nonempty
+    answer, or status answered|fulfilled|canceled|stopped|declined, closes its agenda item.
+  commitments: array of objects with a nonempty string id. Use stable ids across saves.
+    status: open|fulfilled|canceled (new items default to open).
+    accepted: false excludes an unaccepted proposal from the active agenda.
+    dueAt: optional ISO8601 timestamp for a promised wake.
+    Extra question/commitment metadata is preserved; it does not grant authority.
+  evidenceReferences: array, appended to saved references with duplicates removed.
+  body: optional string; nonblank text publishes an actual channel explanation.
+  noMaterialChange: true acknowledges quietly; omit body for this mode.
+  correctsMessageId: optional id of a previous explanation for this objective.
+
+Merge semantics: question/commitment objects merge by id, retaining omitted fields
+and items. Empty arrays do not delete history. Mark fulfilled/canceled explicitly.
+Other top-level fields are not saved as understanding. Input must stay under 64KB.
+
+Minimal quiet save (valid at revision 0 with no pending fingerprint; replace both
+values with the latest read before writing):
+  printf '%s\\n' '{"revision":0,"fingerprint":"","noMaterialChange":true}' | cascade-chat mission interpret --mission <id> --file -
+To publish, replace noMaterialChange with body: "Your concise explanation".
+The result includes the new revision, messageId and noMaterialChange. A quiet save
+creates no chat message. Do not repeat a published body or narrate a quiet ack;
+end with [no-reply] unless a separate direct owner answer remains.
+
+Errors: malformed/empty JSON or non-object input; stale revision (read and merge);
+changed evidence fingerprint (read again); stopped mission/interpretation; wrong
+coordinator or worker run; invalid stable ids, commitment status/dueAt or references;
+invalid correction id; input over 64KB. A pending batch requires body or explicit
+noMaterialChange:true; body and noMaterialChange:true are mutually exclusive.
+API failures include HTTP status and reason. An identical retry of a saved input
+returns its prior result; changing input at an already-used revision conflicts.`,
+  'mission list': `cascade-chat mission list [--status <filter>] [--task-status <filter>] [--json | --detail]
+
+Default: compact ownership rows for open missions and open tasks, scoped to the
+current channel and coordinator when registered. No prompts or historical payloads.
+  --status open|all|<comma-separated statuses>
+    open (default): active,reviewing,attention,blocked; also completed,canceled.
+  --task-status open|all|<comma-separated statuses>
+    open (default): pending,running,failed,blocked; also completed,canceled.
+    Filters task rows, not the enclosing missions; empty missions remain visible.
+  --json    compact JSON array, with the same filters.
+  --detail  full historical JSON through the existing detail API; no filters allowed.
+
+Example: cascade-chat mission list --status open --task-status running --json
+Use mission status --mission <id> --json for one mission's full detail.
+Invalid statuses and --detail combined with filters are errors.`,
+  'mission status': `cascade-chat mission status [--mission <id|current>] [--json]
+
+Read one mission and its tasks (default: current mission).
+--json returns the full mission; text shows task status and summaries.
+Example: cascade-chat mission status --mission current --json`,
+  'mission history': `cascade-chat mission history --mission <id> [--json]
+
+Read the mission event history. An explicit id is required; current is not accepted.
+--json returns the full events array.
+Example: cascade-chat mission history --mission <id> --json`,
+  send: `cascade-chat send --message <text> [--changes-file <path|->]
+cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
+
+Without --message, message text is read from stdin. --raw-message preserves literal
+backslash-n sequences in inline text. --changes-file - reads JSON metadata from
+stdin and requires an explicit --message so stdin has only one consumer.
+Metadata is a JSON object with required files array: each file has path, additions,
+and deletions. Optional commit and ref are strings. Empty paths are filtered;
+counts are converted to nonnegative numbers. Approvals start empty.
+Example: printf '%s\\n' '{"files":[{"path":"README.md","additions":1,"deletions":0}]}' | cascade-chat send --message 'Updated docs' --changes-file -
+Malformed/empty JSON and a missing files array are errors.
+Typed handoffs require all three routing flags, a registered agent, and relation
+builds_on|review_request|question|contradiction|decision; no --changes-file allowed.`,
+};
+
+function commandHelp(args) {
+  if (args._[0] === 'attachments') args._[0] = 'attachment';
+  if (args._[0] === 'mission' && args._[1] === 'show') return COMMAND_HELP['mission status'];
+  const key = args._.slice(0, args._[0] === 'mission' || args._[0] === 'context' ? 2 : 1).join(' ');
+  if (!key) return USAGE;
+  if (COMMAND_HELP[key]) return COMMAND_HELP[key];
+  const lines = USAGE.split('\n').filter((line) => line.startsWith(`  cascade-chat ${key} `));
+  if (!lines.length) fail(`unknown command "${key}". Run with --help.`);
+  return lines.map((line) => line.trimStart()).join('\n') + '\n\nUse --help after a subcommand for its options.';
+}
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -251,6 +348,18 @@ async function readStdin() {
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', reject);
   });
+}
+
+async function readJsonInput(source, flag) {
+  if (typeof source !== 'string') fail(`${flag} requires a path or - for stdin.`);
+  const raw = source === '-' ? await readStdin() : fs.readFileSync(source, 'utf8');
+  if (!raw.trim()) fail(`${flag}: empty JSON input.`);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { fail(`${flag}: malformed JSON input.`); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(`${flag} must contain a JSON object.`);
+  }
+  return parsed;
 }
 
 function optionString(args, key, envKey, config, configKey) {
@@ -449,8 +558,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const raw = args._[0];
   if (!raw || args.help) {
-    process.stdout.write(USAGE + '\n');
-    process.exit(raw ? 0 : 1);
+    process.stdout.write((args.help ? commandHelp(args) : USAGE) + '\n');
+    process.exit(args.help ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
   if (!['context', 'history', 'send', 'members', 'continuation', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
@@ -633,7 +742,7 @@ async function main() {
         const result = await api(url, token, 'GET', `${endpoint}?coordinator=${encodeURIComponent(registrationId)}`);
         process.stdout.write(JSON.stringify(result) + '\n');
       } else {
-        const input = JSON.parse(fs.readFileSync(String(args.file), 'utf8'));
+        const input = await readJsonInput(args.file, '--file');
         const result = await api(url, token, 'POST', endpoint, { ...input, coordinatorRegistrationId: registrationId });
         if (result.messageId) markChatSendUsed(config);
         process.stdout.write(JSON.stringify(result) + '\n');
@@ -918,6 +1027,7 @@ async function main() {
 
   if (cmd === 'send') {
     const fromStdin = args.message === true || args.message === undefined;
+    if (args['changes-file'] === '-' && fromStdin) fail('--changes-file - requires --message <text>; stdin cannot supply both.');
     const rawBody = fromStdin ? await readStdin() : args.message;
     const body = (fromStdin
       ? String(rawBody)
@@ -962,7 +1072,7 @@ async function main() {
     const idPrefix = agentId || (author && author !== 'Agent' ? author.toLowerCase().replace(/\s+/g, '-') : 'msg');
     let changeRequest;
     if (typeof args['changes-file'] === 'string') {
-      const parsed = JSON.parse(fs.readFileSync(path.resolve(args['changes-file']), 'utf8'));
+      const parsed = await readJsonInput(args['changes-file'], '--changes-file');
       if (!parsed || !Array.isArray(parsed.files)) fail('--changes-file must contain a JSON object with a files array.');
       changeRequest = {
         files: parsed.files.map((file) => ({

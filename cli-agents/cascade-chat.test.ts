@@ -513,3 +513,78 @@ test('coordinator continuation sends an explicit run-scoped disposition without 
   ]);
   assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, undefined);
 });
+
+test('command help is local, focused and documents the interpretation and listing contracts', async () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('CASCADE_')));
+  env.CASCADE_HELPER_CONFIG = '/nonexistent/helper-config.json';
+  for (const command of [['mission', 'interpret'], ['mission', 'list'], ['mission', 'status'], ['mission', 'history'], ['send']]) {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [cli, ...command, '--help'], { env });
+    assert.equal(stderr, '');
+    assert.ok(stdout.startsWith(`cascade-chat ${command.join(' ')}`));
+    assert.doesNotMatch(stdout, /cascade-chat avatar|Env:/);
+    if (command[1] === 'interpret') {
+      for (const term of ['revision', 'fingerprint', 'assessment', 'questions', 'commitments', 'evidenceReferences', 'correctsMessageId', 'noMaterialChange', 'stable ids', 'omitted fields', '64KB', 'workers', 'mutually exclusive']) assert.ok(stdout.includes(term), term);
+      const example = stdout.match(/printf '%s\\n' '(.*?)' \| cascade-chat/);
+      assert.ok(example, 'copyable single-line stdin example');
+      assert.deepEqual(JSON.parse(example[1]), { revision: 0, fingerprint: '', noMaterialChange: true });
+    }
+    if (command[1] === 'list') {
+      assert.match(stdout, /--task-status open\|all/);
+      assert.match(stdout, /empty missions remain visible/);
+      assert.match(stdout, /--detail combined with filters/);
+    }
+  }
+  const general = await execFileAsync(process.execPath, [cli, '--help'], { env });
+  assert.match(general.stdout, /Usage:/);
+});
+
+test('JSON file commands accept actual piped stdin and reject malformed, empty and conflicting input', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push(JSON.parse(raw));
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ revision: 1, noMaterialChange: true, message: { id: 'sent' } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-json-stdin-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId: 'coordinator', chatChannelId: 'channel' }));
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  const common = ['--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault', '--channel', 'channel'];
+  function piped(args: string[], input: string) {
+    return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      const child = execFile(process.execPath, [cli, ...args, ...common], { env, timeout: 5000 }, (error, stdout, stderr) => {
+        if (error) reject(Object.assign(error, { stderr }));
+        else resolve({ stdout, stderr });
+      });
+      child.stdin!.end(input);
+    });
+  }
+  const interpret = ['mission', 'interpret', '--mission', 'mission', '--file', '-'];
+  const quiet = { revision: 0, fingerprint: '', noMaterialChange: true };
+  await piped(interpret, JSON.stringify(quiet));
+  assert.deepEqual(requests.pop(), { ...quiet, coordinatorRegistrationId: 'coordinator' });
+  assert.equal(JSON.parse(fs.readFileSync(config, 'utf8')).usedChatSend, undefined);
+  const changes = { files: [{ path: 'README.md', additions: 1, deletions: 0 }], commit: 'abc', ref: 'master' };
+  const send = ['send', '--message', 'Updated docs', '--changes-file', '-'];
+  await piped(send, JSON.stringify(changes));
+  const stdinRequest = requests.pop()!;
+  assert.deepEqual(stdinRequest.changeRequest, { ...changes, approvals: [] });
+  const file = path.join(dir, 'changes.json');
+  fs.writeFileSync(file, JSON.stringify(changes));
+  await piped(['send', '--message', 'Updated docs', '--changes-file', file], '');
+  assert.deepEqual(requests.pop()!.changeRequest, stdinRequest.changeRequest);
+  for (const args of [interpret, send]) {
+    for (const [input, message] of [['', /empty JSON input/], ['  \n', /empty JSON input/], ['{bad', /malformed JSON input/], ['null', /JSON object/], ['[]', /JSON object/]]) {
+      await assert.rejects(piped(args, String(input)), (error: any) => message instanceof RegExp && message.test(error.stderr));
+    }
+  }
+  await assert.rejects(piped(['send', '--changes-file', '-'], JSON.stringify(changes)), (error: any) => /stdin cannot supply both/.test(error.stderr));
+  await assert.rejects(piped(send, '{}'), (error: any) => /files array/.test(error.stderr));
+  assert.equal(requests.length, 0, 'invalid inputs never reach the API');
+});
