@@ -1,5 +1,5 @@
-use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage};
-use std::collections::HashSet;
+use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage, NoteSummary};
+use std::collections::{HashMap, HashSet};
 use unicode_width::UnicodeWidthChar;
 
 pub const HEADER_HEIGHT: u16 = 1;
@@ -10,6 +10,7 @@ pub enum ActivePane {
     ChatMessages,
     ChatInput,
     Agents,
+    Notes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,10 +404,18 @@ pub struct App {
     pub active_agent_ids: HashSet<String>,
     /// Monotonic animation frame used by the agents panel termimations.
     pub animation_tick: u64,
+    /// Per-run spinner pattern seed, keyed by agent id. Assigned when an agent
+    /// becomes active so one pattern is held for the whole run, then dropped.
+    pub agent_run_seeds: HashMap<String, u64>,
+    /// Bumped each time a new run seed is minted so consecutive runs differ.
+    pub run_seed_counter: u64,
     pub selected_agent_idx: usize,
     pub agent_settings_modal: Option<AgentSettingsState>,
     pub show_channels: bool,
     pub show_agents: bool,
+    pub show_notes: bool,
+    pub notes: Vec<NoteSummary>,
+    pub selected_note_idx: usize,
     pub input: String,
     pub cursor_pos: usize,
     pub input_scroll_offset: usize,
@@ -428,6 +437,8 @@ pub struct App {
     pub runner_online: bool,
     /// When `Some`, the channels panel is capturing a name for a new channel.
     pub new_channel_name: Option<String>,
+    /// Selected channel index while the inline name editor is renaming it.
+    pub renaming_channel_idx: Option<usize>,
     /// Base64 data-URL images staged from clipboard paste, sent with the next message.
     pub pending_images: Vec<String>,
 }
@@ -451,10 +462,15 @@ impl App {
             agents: Vec::new(),
             active_agent_ids: HashSet::new(),
             animation_tick: 0,
+            agent_run_seeds: HashMap::new(),
+            run_seed_counter: 0,
             selected_agent_idx: 0,
             agent_settings_modal: None,
             show_channels: true,
             show_agents: true,
+            show_notes: false,
+            notes: Vec::new(),
+            selected_note_idx: 0,
             input: String::new(),
             cursor_pos: 0,
             input_scroll_offset: 0,
@@ -469,6 +485,7 @@ impl App {
             backend_online: true,
             runner_online: false,
             new_channel_name: None,
+            renaming_channel_idx: None,
             pending_images: Vec::new(),
         }
     }
@@ -479,9 +496,59 @@ impl App {
         }
     }
 
+    /// Fold a fresh active-sessions snapshot into the active set (keyed on the
+    /// per-profile registration id and mention) and reassign spinner seeds.
+    pub fn apply_active_sessions(&mut self, sessions: Vec<crate::api::ActiveSession>) {
+        self.active_agent_ids.clear();
+        for session in sessions {
+            if session.channel_id.as_deref() == self.active_channel_id.as_deref() {
+                if let Some(registration_id) = session.registration_id {
+                    self.active_agent_ids.insert(registration_id);
+                }
+                if !session.mention.is_empty() {
+                    self.active_agent_ids.insert(session.mention);
+                }
+            }
+        }
+        self.refresh_run_seeds();
+    }
+
+    /// Reconcile per-run spinner seeds against the current active set: mint a
+    /// fresh seed for each newly-active agent (so it picks one pattern for the
+    /// whole run) and drop seeds for agents whose run ended.
+    pub fn refresh_run_seeds(&mut self) {
+        let active_ids: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|ag| self.is_agent_active(ag))
+            .map(|ag| ag.id.clone())
+            .collect();
+        self.agent_run_seeds.retain(|id, _| active_ids.contains(id));
+        for id in active_ids {
+            if !self.agent_run_seeds.contains_key(&id) {
+                self.run_seed_counter = self.run_seed_counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                self.agent_run_seeds.insert(id, self.run_seed_counter);
+            }
+        }
+    }
+
+    /// Stable spinner-pattern seed for an agent's current run (falls back to a
+    /// hash of the agent id when no run is active).
+    pub fn agent_run_seed(&self, ag: &AgentItem) -> u64 {
+        if let Some(seed) = self.agent_run_seeds.get(&ag.id) {
+            return *seed;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ag.id.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn is_agent_active(&self, ag: &AgentItem) -> bool {
+        // Match only on per-profile identifiers. `ag.agent_id` is the shared
+        // provider (e.g. claude-code) and would mark every profile of that
+        // provider active when only one was tagged.
         self.active_agent_ids.contains(&ag.id)
-            || self.active_agent_ids.contains(&ag.agent_id)
             || (!ag.mention.is_empty() && self.active_agent_ids.contains(&ag.mention))
             || (!ag.display_name.is_empty() && self.active_agent_ids.contains(&ag.display_name))
             || ag.vault_agent_id.as_deref().map_or(false, |id| self.active_agent_ids.contains(id))
@@ -507,7 +574,25 @@ impl App {
         self.status_message = format!("Agents panel {}", if self.show_agents { "visible" } else { "collapsed" });
     }
 
+    pub fn toggle_notes(&mut self) {
+        self.show_notes = !self.show_notes;
+        if self.show_notes {
+            self.active_pane = ActivePane::Notes;
+        } else if self.active_pane == ActivePane::Notes {
+            self.active_pane = ActivePane::ChatInput;
+        }
+        self.status_message = format!("Notes panel {}", if self.show_notes { "visible" } else { "collapsed" });
+    }
+
     pub fn switch_pane(&mut self, is_wide: bool) {
+        self.switch_pane_by(is_wide, false);
+    }
+
+    pub fn switch_pane_backwards(&mut self, is_wide: bool) {
+        self.switch_pane_by(is_wide, true);
+    }
+
+    fn switch_pane_by(&mut self, is_wide: bool, backwards: bool) {
         let can_show_agents = self.show_agents && is_wide;
         let mut order: Vec<ActivePane> = Vec::new();
         if self.show_channels {
@@ -518,6 +603,11 @@ impl App {
         if can_show_agents {
             order.push(ActivePane::Agents);
         }
+        // Notes live in the left sidebar and remain navigable at narrow widths.
+        // They are not subject to the Agents panel's width constraint.
+        if self.show_notes {
+            order.push(ActivePane::Notes);
+        }
 
         if order.is_empty() {
             self.active_pane = ActivePane::ChatInput;
@@ -525,7 +615,11 @@ impl App {
         }
 
         if let Some(pos) = order.iter().position(|p| *p == self.active_pane) {
-            let next = order[(pos + 1) % order.len()];
+            let next = if backwards {
+                order[(pos + order.len() - 1) % order.len()]
+            } else {
+                order[(pos + 1) % order.len()]
+            };
             if next == ActivePane::ChatMessages && self.active_pane != ActivePane::ChatMessages {
                 self.selected_message_idx = self.messages.len().saturating_sub(1);
             }
@@ -554,11 +648,22 @@ impl App {
 
     pub fn activate_selected_channel(&mut self) {
         if let Some(ch) = self.channels.get(self.selected_channel_idx) {
-            self.active_channel_id = Some(ch.id.clone());
+            let channel_id = ch.id.clone();
+            let channel_title = ch.title.clone();
+            self.active_channel_id = Some(channel_id);
+            self.reset_agent_activity();
             self.scroll_offset = 0;
             self.active_pane = ActivePane::ChatInput;
-            self.status_message = format!("Switched to #{}", ch.title);
+            self.status_message = format!("Switched to #{}", channel_title);
         }
+    }
+
+    /// Drop the previous channel's animation state before its replacement is
+    /// fetched, so stale termimations never finish on the new channel.
+    pub fn reset_agent_activity(&mut self) {
+        self.active_agent_ids.clear();
+        self.agent_run_seeds.clear();
+        self.animation_tick = 0;
     }
 
     pub fn scroll_up(&mut self) {
@@ -659,6 +764,20 @@ impl App {
         self.selected_message_idx = self
             .selected_message_idx
             .min(self.messages.len().saturating_sub(1));
+    }
+
+    pub fn next_note(&mut self) {
+        if !self.notes.is_empty() {
+            self.selected_note_idx = (self.selected_note_idx + 1).min(self.notes.len() - 1);
+        }
+    }
+
+    pub fn prev_note(&mut self) {
+        self.selected_note_idx = self.selected_note_idx.saturating_sub(1);
+    }
+
+    pub fn clamp_note_selection(&mut self) {
+        self.selected_note_idx = self.selected_note_idx.min(self.notes.len().saturating_sub(1));
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -1156,10 +1275,11 @@ mod tests {
         app.active_agent_ids.insert("reg-123".into());
         assert!(app.is_agent_active(&agent));
 
-        // Active by agent provider ID
+        // NOT active by shared provider ID — that would light up every profile
+        // of the provider when only one was tagged.
         app.active_agent_ids.clear();
         app.active_agent_ids.insert("claude-code".into());
-        assert!(app.is_agent_active(&agent));
+        assert!(!app.is_agent_active(&agent));
 
         // Active by mention
         app.active_agent_ids.clear();

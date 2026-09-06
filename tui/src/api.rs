@@ -22,6 +22,20 @@ pub struct NoteSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteDetail {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteDetailResponse {
+    pub note: NoteDetail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotesResponse {
     #[serde(default)]
     pub notes: Vec<NoteSummary>,
@@ -127,6 +141,8 @@ pub struct ChannelAgentsResponse {
 pub struct ActiveSession {
     #[serde(default)]
     pub agent: String,
+    #[serde(default)]
+    pub mention: String,
     #[serde(rename = "registration_id", alias = "registrationId", default)]
     pub registration_id: Option<String>,
     #[serde(rename = "channel_id", alias = "channelId", default)]
@@ -205,6 +221,20 @@ impl CascadeClient {
     }
 
     pub async fn fetch_channels(&self, vault_id: &str) -> Result<Vec<ChannelItem>, String> {
+        const CHAT_NOTE_MARKER: &str = "cascade://chat-channel";
+        Ok(self
+            .fetch_notes(vault_id)
+            .await?
+            .into_iter()
+            .filter(|n| n.content_preview.trim().starts_with(CHAT_NOTE_MARKER))
+            .map(|n| ChannelItem {
+                id: n.id,
+                title: if n.title.is_empty() { "untitled-chat".to_string() } else { n.title },
+            })
+            .collect())
+    }
+
+    pub async fn fetch_notes(&self, vault_id: &str) -> Result<Vec<NoteSummary>, String> {
         let url = format!("{}/api/vaults/{}/notes", self.base_url, vault_id);
         let req = self.auth_header(self.client.get(&url));
         let res = req.send().await.map_err(|e| e.to_string())?;
@@ -222,17 +252,36 @@ impl CascadeClient {
             Vec::new()
         };
 
-        const CHAT_NOTE_MARKER: &str = "cascade://chat-channel";
-        let channels = notes
-            .into_iter()
-            .filter(|n| n.content_preview.trim().starts_with(CHAT_NOTE_MARKER))
-            .map(|n| ChannelItem {
-                id: n.id,
-                title: if n.title.is_empty() { "untitled-chat".to_string() } else { n.title },
-            })
-            .collect();
+        Ok(notes)
+    }
 
-        Ok(channels)
+    pub async fn fetch_note(&self, note_id: &str) -> Result<NoteDetail, String> {
+        let url = format!("{}/api/notes/{}", self.base_url, note_id);
+        let res = self
+            .auth_header(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format!("GET {} returned {}", url, res.status()));
+        }
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        serde_json::from_str::<NoteDetailResponse>(&body)
+            .map(|response| response.note)
+            .map_err(|e| format!("Failed to parse note response: {}", e))
+    }
+
+    pub async fn update_note(&self, note_id: &str, content: &str) -> Result<(), String> {
+        let url = format!("{}/api/notes/{}", self.base_url, note_id);
+        let res = self
+            .auth_header(self.client.put(&url).json(&serde_json::json!({ "content": content })))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format!("PUT {} returned {}", url, res.status()));
+        }
+        Ok(())
     }
 
     pub async fn fetch_messages(&self, vault_id: &str, channel_id: &str) -> Result<Vec<ChatMessage>, String> {
@@ -419,6 +468,35 @@ impl CascadeClient {
         }
 
         Err("Failed to parse created channel response".to_string())
+    }
+
+    pub async fn rename_channel(&self, channel_id: &str, title: &str) -> Result<ChannelItem, String> {
+        let url = format!("{}/api/notes/{}/rename", self.base_url, channel_id);
+        let req = self.auth_header(self.client.post(&url).json(&serde_json::json!({ "title": title })));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let err = res.text().await.unwrap_or_default();
+            return Err(format!("POST {} returned {} ({})", url, status, err));
+        }
+
+        #[derive(Deserialize)]
+        struct RenameNoteResponse {
+            note: NoteSummary,
+        }
+
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        let response = serde_json::from_str::<RenameNoteResponse>(&body)
+            .map_err(|e| format!("Failed to parse renamed channel response: {}", e))?;
+        Ok(ChannelItem {
+            id: response.note.id,
+            title: if response.note.title.is_empty() {
+                "untitled-chat".to_string()
+            } else {
+                response.note.title
+            },
+        })
     }
 }
 

@@ -6,5 +6,15 @@
 	{"name": "blinker_1",
 	 "animation": "·•⊙◎○◎⊙•",
 	 "classes": ["blinker"]
+	},
+	{"name": "petals_1",
+	 "animation": "✾✤❁✺❁✤",
+	 "classes": ["petals"],
+	 "frame_milliseconds": 500
+	},
+	{"name": "drop",
+	 "animation": "˚°ᵒ◦◡⏝⎵⏝◡◦ᵒ°",
+	 "classes":[],
+	 "frame_milliseconds": 80
 	}
 ]

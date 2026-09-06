@@ -2,7 +2,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::symbols::{border, line};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
@@ -72,30 +72,32 @@ pub const MIN_WIDTH_FOR_AGENTS: u16 = 100;
 fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
     let show_channels = app.show_channels;
     let show_agents = app.show_agents && area.width >= MIN_WIDTH_FOR_AGENTS;
+    let show_notes = app.show_notes;
+    let show_left_sidebar = show_channels || show_notes;
 
-    if show_channels && show_agents {
+    if show_left_sidebar && show_agents {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(26), // Left: Channels
+                Constraint::Length(26), // Left: Chats / Notes
                 Constraint::Min(35),    // Center: Chat Messages + Input
                 Constraint::Length(28), // Right: Agents
             ])
             .split(area);
 
-        render_chat_selector(frame, app, chunks[0]);
+        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
         render_chat_modality(frame, app, chunks[1]);
         render_agents_panel(frame, app, chunks[2]);
-    } else if show_channels {
+    } else if show_left_sidebar {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(28), // Left: Channels
+                Constraint::Length(28), // Left: Chats / Notes
                 Constraint::Min(30),    // Center: Chat Messages + Input
             ])
             .split(area);
 
-        render_chat_selector(frame, app, chunks[0]);
+        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
         render_chat_modality(frame, app, chunks[1]);
     } else if show_agents {
         let chunks = Layout::default()
@@ -113,6 +115,21 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn render_left_sidebar(frame: &mut Frame, app: &App, area: Rect, show_channels: bool, show_notes: bool) {
+    if show_channels && show_notes {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        render_chat_selector(frame, app, chunks[0]);
+        render_notes_panel(frame, app, chunks[1]);
+    } else if show_notes {
+        render_notes_panel(frame, app, area);
+    } else {
+        render_chat_selector(frame, app, area);
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TermimationEntry {
     #[allow(dead_code)]
@@ -121,31 +138,57 @@ struct TermimationEntry {
     #[allow(dead_code)]
     #[serde(default)]
     classes: Vec<String>,
+    /// Optional per-pattern frame length; falls back to `DEFAULT_FRAME_MS`.
+    #[serde(default)]
+    frame_milliseconds: Option<u64>,
 }
 
-fn termimation_patterns() -> &'static [Vec<char>] {
-    static PATTERNS: std::sync::OnceLock<Vec<Vec<char>>> = std::sync::OnceLock::new();
+/// A parsed spinner: its frames plus how long each frame is shown.
+struct Termimation {
+    frames: Vec<char>,
+    frame_ms: u64,
+}
+
+/// Redraw cadence for the agents panel. Frame lengths are honored down to this
+/// granularity; keep it a divisor of `DEFAULT_FRAME_MS`.
+pub const ANIMATION_TICK_MS: u64 = 40;
+/// Frame length used when a termimation has no `frame_milliseconds`.
+const DEFAULT_FRAME_MS: u64 = 120;
+
+#[cfg(debug_assertions)]
+fn termimation_json() -> String {
+    std::fs::read_to_string("tui/src/termimations.json")
+        .or_else(|_| std::fs::read_to_string("src/termimations.json"))
+        .unwrap_or_default()
+}
+
+#[cfg(not(debug_assertions))]
+fn termimation_json() -> String {
+    include_str!("termimations.json").to_string()
+}
+
+fn termimation_patterns() -> &'static [Termimation] {
+    static PATTERNS: std::sync::OnceLock<Vec<Termimation>> = std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| {
-        let content = std::fs::read_to_string("tui/src/termimations.json")
-            .or_else(|_| std::fs::read_to_string("src/termimations.json"))
-            .unwrap_or_else(|_| include_str!("termimations.json").to_string());
-        let parsed: Vec<TermimationEntry> = serde_json::from_str(&content)
-            .or_else(|_| serde_json::from_str(include_str!("termimations.json")))
+        let parsed: Vec<TermimationEntry> = serde_json::from_str(&termimation_json())
             .unwrap_or_default();
-        let list: Vec<Vec<char>> = parsed
+        let list: Vec<Termimation> = parsed
             .into_iter()
-            .map(|t| t.animation.chars().collect())
-            .filter(|chars: &Vec<char>| !chars.is_empty())
+            .map(|t| Termimation {
+                frames: t.animation.chars().collect(),
+                frame_ms: t.frame_milliseconds.unwrap_or(DEFAULT_FRAME_MS).max(1),
+            })
+            .filter(|t| !t.frames.is_empty())
             .collect();
         if list.is_empty() {
-            vec![vec!['●']]
+            vec![Termimation { frames: vec!['●'], frame_ms: DEFAULT_FRAME_MS }]
         } else {
             list
         }
     })
 }
 
-fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64) -> String {
+fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64, run_seed: u64) -> String {
     let patterns = termimation_patterns();
     if patterns.is_empty() {
         return "● ".to_string();
@@ -159,16 +202,19 @@ fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64) -> String {
     let phase_offset = (agent_hash >> 16) as u64;
     let local_tick = tick.wrapping_add(phase_offset);
 
-    // Randomize pattern selection per full 8-frame animation cycle
-    let cycle = local_tick / 8;
-    let mut cycle_hasher = std::collections::hash_map::DefaultHasher::new();
-    agent_hash.hash(&mut cycle_hasher);
-    cycle.hash(&mut cycle_hasher);
-    let pattern_idx = (cycle_hasher.finish() as usize) % patterns.len();
+    // Pick one pattern per run (fixed by the run seed) and hold it for the whole
+    // turn; only the frame within the pattern advances with the tick.
+    let mut pattern_hasher = std::collections::hash_map::DefaultHasher::new();
+    agent_hash.hash(&mut pattern_hasher);
+    run_seed.hash(&mut pattern_hasher);
+    let pattern_idx = (pattern_hasher.finish() as usize) % patterns.len();
 
     let pattern = &patterns[pattern_idx];
-    let frame = (local_tick as usize) % pattern.len();
-    let ch = pattern[frame];
+    // Advance the frame by elapsed real time divided by this pattern's frame
+    // length, so `frame_milliseconds` sets how long each frame is shown.
+    let elapsed_ms = local_tick.wrapping_mul(ANIMATION_TICK_MS);
+    let frame = (elapsed_ms / pattern.frame_ms) as usize % pattern.frames.len();
+    let ch = pattern.frames[frame];
 
     if ch.width().unwrap_or(1) <= 1 {
         format!("{ch} ")
@@ -208,7 +254,7 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
 
                 let is_active = app.is_agent_active(ag);
                 let (ball_str, ball_style) = if is_active {
-                    let ball = agent_termimation_ball(ag, app.animation_tick);
+                    let ball = agent_termimation_ball(ag, app.animation_tick, app.agent_run_seed(ag));
                     (ball, Style::default().fg(badge_color).add_modifier(Modifier::BOLD))
                 } else {
                     ("● ".to_string(), Style::default().fg(badge_color))
@@ -255,11 +301,49 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
+fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::Notes;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let items: Vec<ListItem> = if app.notes.is_empty() {
+        vec![ListItem::new(Span::styled("  No notes", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.notes
+            .iter()
+            .enumerate()
+            .map(|(idx, note)| {
+                let title = if note.title.is_empty() { "untitled" } else { &note.title };
+                let title_style = if idx == app.selected_note_idx && is_focused {
+                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+                } else if idx == app.selected_note_idx {
+                    Style::default().fg(Color::Cyan).bold()
+                } else {
+                    Style::default().fg(Color::White).bold()
+                };
+                let preview = note.content_preview.lines().next().unwrap_or("").trim();
+                ListItem::new(vec![
+                    Line::from(vec![Span::raw(if idx == app.selected_note_idx { "> " } else { "  " }), Span::styled(title, title_style)]),
+                    Line::from(vec![Span::raw("   "), Span::styled(preview, Style::default().fg(Color::DarkGray))]),
+                ])
+            })
+            .collect()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(format!(" Notes ({}) ", app.notes.len()), Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold()))
+        .border_style(Style::default().fg(border_color));
+    // Notes occupy two terminal rows each. Stateful list rendering keeps the
+    // selected note inside the viewport as the arrow keys move through it.
+    let mut state = ListState::default().with_selected((!app.notes.is_empty()).then_some(app.selected_note_idx));
+    frame.render_stateful_widget(List::new(items).block(block), area, &mut state);
+}
+
 
 fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::ChatSelector;
-    let creating = app.new_channel_name.is_some();
-    let border_color = if creating {
+    let editing_name = app.new_channel_name.is_some();
+    let renaming = app.renaming_channel_idx.is_some();
+    let border_color = if editing_name {
         Color::Green
     } else if is_focused {
         Color::Cyan
@@ -291,7 +375,7 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
 
         let text = format!("{}{}{}", prefix, marker, ch.title);
 
-        let style = if is_selected && is_focused && !creating {
+        let style = if is_selected && is_focused && !editing_name {
             Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
         } else if is_selected {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -304,8 +388,9 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
         ListItem::new(text).style(style)
     }));
 
-    let title = if creating {
-        Span::styled(" New channel  [Enter ✓  Esc ✗] ", Style::default().fg(Color::Green).bold())
+    let title = if editing_name {
+        let label = if renaming { " Rename channel " } else { " New channel " };
+        Span::styled(format!("{} [Enter ✓  Esc ✗] ", label), Style::default().fg(Color::Green).bold())
     } else {
         Span::styled(
             " Chats / Channels ",
@@ -815,6 +900,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             (" [Tab] ", " Pane  "),
             (" [F1] ", " Chats  "),
             (" [F2] ", " Agents  "),
+            (" [F3] ", " Notes  "),
             (" [Esc] ", " Quit "),
         ],
         global_badge_style,
@@ -824,7 +910,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Right side: Box-specific controls (Yellow)
     let box_hints: &[(&str, &str)] = match app.active_pane {
         ActivePane::ChatInput => &[
-            (" [F3] ", " Expand  "),
+            (" [Alt+e] ", " Expand  "),
             (" [Enter] ", " Send  "),
             (" [Shift+Enter] ", " Newline "),
         ],
@@ -832,6 +918,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             (" [↑/↓] ", " Select  "),
             (" [Enter] ", " Open  "),
             (" [n] ", " New  "),
+            (" [Shift+r] ", " Rename  "),
             (" [r] ", " Refresh "),
         ],
         ActivePane::ChatMessages => &[
@@ -842,6 +929,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             (" [↑/↓] ", " Select  "),
             (" [Enter] ", " Mention  "),
             (" [s] ", " Settings "),
+        ],
+        ActivePane::Notes => &[
+            (" [↑/↓] ", " Select  "),
         ],
     };
     let box_spans = hint_spans(box_hints, box_badge_style, box_text_style);
@@ -1079,18 +1169,17 @@ mod tests {
             conversation_id: None,
         };
 
-        let ball_0 = agent_termimation_ball(&agent, 0);
-        let ball_1 = agent_termimation_ball(&agent, 1);
-        let ball_2 = agent_termimation_ball(&agent, 2);
+        let ball_0 = agent_termimation_ball(&agent, 0, 0);
+        let ball_1 = agent_termimation_ball(&agent, 1, 0);
+        let ball_2 = agent_termimation_ball(&agent, 2, 0);
 
         assert!(!ball_0.is_empty());
         assert!(!ball_1.is_empty());
         assert!(!ball_2.is_empty());
 
-        // Ensure animation changes across ticks
-        let balls: Vec<String> = (0..8).map(|t| agent_termimation_ball(&agent, t)).collect();
+        // Ensure animation changes across ticks (frame advances within a fixed pattern)
+        let balls: Vec<String> = (0..8).map(|t| agent_termimation_ball(&agent, t, 0)).collect();
         let unique_balls: std::collections::HashSet<&String> = balls.iter().collect();
         assert!(unique_balls.len() > 1);
     }
 }
-

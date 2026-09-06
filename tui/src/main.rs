@@ -3,7 +3,10 @@ mod app;
 mod ui;
 mod emacs;
 
+use std::fs;
 use std::io::{self, stdout};
+use std::path::Path;
+use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -32,12 +35,14 @@ enum BackendEvent {
     Messages { channel_id: String, messages: Vec<ChatMessage> },
     Agents { channel_id: String, agents: Vec<AgentItem> },
     ActiveSessions { sessions: Vec<ActiveSession> },
+    Notes(Result<Vec<crate::api::NoteSummary>, String>),
     Channels(Result<Vec<ChannelItem>, String>),
     /// Whether the backend responded to a lightweight health ping.
     Connectivity(bool),
     /// Whether the desktop runner daemon is running locally.
     RunnerStatus(bool),
     ChannelCreated(Result<ChannelItem, String>),
+    ChannelRenamed { channel_idx: usize, result: Result<ChannelItem, String> },
     SendResult { channel_id: String, result: Result<ChatMessage, String> },
     AgentSaved {
         agent_idx: usize,
@@ -76,6 +81,23 @@ fn spawn_active_sessions(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
         if let Ok(sessions) = client.fetch_active_sessions(&vault_id).await {
             let _ = tx.send(BackendEvent::ActiveSessions { sessions });
         }
+    });
+}
+
+fn spawn_notes_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let Some(vault_id) = app.vault_id.clone() else {
+        return;
+    };
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.fetch_notes(&vault_id).await.map(|notes| {
+            notes
+                .into_iter()
+                .filter(|note| !note.content_preview.trim().starts_with("cascade://chat-channel"))
+                .collect()
+        });
+        let _ = tx.send(BackendEvent::Notes(result));
     });
 }
 
@@ -153,6 +175,21 @@ fn spawn_create_channel(app: &App, title: String, tx: &mpsc::UnboundedSender<Bac
     });
 }
 
+fn spawn_rename_channel(
+    app: &App,
+    channel_idx: usize,
+    channel_id: String,
+    title: String,
+    tx: &mpsc::UnboundedSender<BackendEvent>,
+) {
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.rename_channel(&channel_id, &title).await;
+        let _ = tx.send(BackendEvent::ChannelRenamed { channel_idx, result });
+    });
+}
+
 /// Spawn a channel-list refresh (used while the UI is live; startup uses the blocking path).
 fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let Some(vault_id) = app.vault_id.clone() else {
@@ -160,11 +197,12 @@ fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent
     };
     app.is_loading = true;
     app.status_message = "Refreshing channels...".to_string();
+    spawn_notes_sync(app, tx);
     let client = app.client.clone();
-    let tx = tx.clone();
+    let channel_tx = tx.clone();
     tokio::spawn(async move {
         let result = client.fetch_channels(&vault_id).await;
-        let _ = tx.send(BackendEvent::Channels(result));
+        let _ = channel_tx.send(BackendEvent::Channels(result));
     });
 }
 
@@ -188,16 +226,12 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
             }
         }
         BackendEvent::ActiveSessions { sessions } => {
-            app.active_agent_ids.clear();
-            for session in sessions {
-                if session.channel_id.as_deref() == app.active_channel_id.as_deref() {
-                    if let Some(registration_id) = session.registration_id {
-                        app.active_agent_ids.insert(registration_id);
-                    }
-                    if !session.agent.is_empty() {
-                        app.active_agent_ids.insert(session.agent);
-                    }
-                }
+            app.apply_active_sessions(sessions);
+        }
+        BackendEvent::Notes(result) => {
+            if let Ok(notes) = result {
+                app.notes = notes;
+                app.clamp_note_selection();
             }
         }
         BackendEvent::Connectivity(reachable) => {
@@ -212,14 +246,28 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 app.channels.push(channel.clone());
                 app.selected_channel_idx = app.channels.len().saturating_sub(1);
                 app.active_channel_id = Some(channel.id.clone());
+                app.reset_agent_activity();
                 app.scroll_offset = 0;
                 app.messages.clear();
                 app.agents.clear();
                 app.status_message = format!("Created #{}", channel.title);
                 spawn_channel_sync(app, tx);
+                spawn_active_sessions(app, tx);
+                spawn_notes_sync(app, tx);
             }
             Err(err) => {
                 app.status_message = format!("Create channel error: {}", err);
+            }
+        },
+        BackendEvent::ChannelRenamed { channel_idx, result } => match result {
+            Ok(channel) => {
+                if let Some(existing) = app.channels.get_mut(channel_idx) {
+                    *existing = channel.clone();
+                }
+                app.status_message = format!("Renamed #{}", channel.title);
+            }
+            Err(err) => {
+                app.status_message = format!("Rename channel error: {}", err);
             }
         },
         BackendEvent::Channels(result) => {
@@ -234,6 +282,8 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                     app.status_message =
                         format!("Connected ({} channels loaded)", app.channels.len());
                     spawn_channel_sync(app, tx);
+                    spawn_active_sessions(app, tx);
+                    spawn_notes_sync(app, tx);
                 }
                 Ok(_) => {
                     app.status_message = "Vault has no chat channels yet.".to_string();
@@ -324,6 +374,14 @@ async fn main() -> Result<()> {
     }
 
 
+    // Seed active-agent state before the first frame so running agents show
+    // their spinners immediately instead of after the first poll round-trip.
+    if let Some(vault_id) = app.vault_id.clone() {
+        if let Ok(sessions) = app.client.fetch_active_sessions(&vault_id).await {
+            app.apply_active_sessions(sessions);
+        }
+    }
+
     // Terminal initialization
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -363,7 +421,7 @@ async fn run_app(
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
     let mut poll_interval = tokio::time::interval(Duration::from_secs(3));
-    let mut animation_interval = tokio::time::interval(Duration::from_millis(120));
+    let mut animation_interval = tokio::time::interval(Duration::from_millis(ui::ANIMATION_TICK_MS));
     let (tx, mut rx) = mpsc::unbounded_channel::<BackendEvent>();
 
     loop {
@@ -385,10 +443,12 @@ async fn run_app(
                 spawn_runner_check(&tx);
                 spawn_channel_sync(app, &tx);
                 spawn_active_sessions(app, &tx);
+                spawn_notes_sync(app, &tx);
             }
 
             _ = animation_interval.tick() => {
                 app.animation_tick = app.animation_tick.wrapping_add(1);
+                app.refresh_run_seeds();
             }
 
             // Keyboard and terminal events
@@ -398,7 +458,8 @@ async fn run_app(
                     .map(|size| (size.width, size.height))
                     .unwrap_or((100, 24));
                 let show_agents = app.show_agents && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
-                let channels_width = if app.show_channels {
+                let show_notes = app.show_notes;
+                let channels_width = if app.show_channels || show_notes {
                     if show_agents { 26 } else { 28 }
                 } else {
                     0
@@ -529,6 +590,7 @@ async fn run_app(
                             match key.code {
                                 KeyCode::Esc => {
                                     app.new_channel_name = None;
+                                    app.renaming_channel_idx = None;
                                 }
                                 KeyCode::Enter => {
                                     let title = app
@@ -537,8 +599,14 @@ async fn run_app(
                                         .unwrap_or_default()
                                         .trim()
                                         .to_string();
-                                    if !title.is_empty() && app.vault_id.is_some() {
-                                        spawn_create_channel(app, title, &tx);
+                                    if !title.is_empty() {
+                                        if let Some(channel_idx) = app.renaming_channel_idx.take() {
+                                            if let Some(channel) = app.channels.get(channel_idx) {
+                                                spawn_rename_channel(app, channel_idx, channel.id.clone(), title, &tx);
+                                            }
+                                        } else if app.vault_id.is_some() {
+                                            spawn_create_channel(app, title, &tx);
+                                        }
                                     }
                                 }
                                 KeyCode::Backspace => {
@@ -570,10 +638,13 @@ async fn run_app(
                             app.toggle_agents();
                             continue;
                         }
+                        if key.code == KeyCode::F(3) || (key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) && app.active_pane != ActivePane::ChatInput) {
+                            app.toggle_notes();
+                            continue;
+                        }
 
-                        // Input composer height toggle (F3, Alt+E, or Ctrl+E when not typing) and adjustment (Ctrl/Alt+Up/Down)
-                        if key.code == KeyCode::F(3)
-                            || (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::ALT))
+                        // Input composer height toggle (Alt+E, or Ctrl+E when not typing) and adjustment (Ctrl/Alt+Up/Down)
+                        if (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::ALT))
                             || (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) && app.active_pane != ActivePane::ChatInput)
                         {
                             app.toggle_input_expand(term_height);
@@ -589,6 +660,18 @@ async fn run_app(
                         }
 
                         // Pane switching
+                        if key.code == KeyCode::BackTab
+                            || (key.code == KeyCode::Tab
+                                && key.modifiers.contains(KeyModifiers::SHIFT))
+                        {
+                            let is_wide = terminal.size().map(|s| s.width >= ui::MIN_WIDTH_FOR_AGENTS).unwrap_or(true);
+                            app.switch_pane_backwards(is_wide);
+                            if app.active_pane == ActivePane::ChatMessages && app.chat_cursor.is_none() {
+                                let text = ui::chat_log_text(app, center_width.saturating_sub(4).max(10) as usize);
+                                app.chat_cursor = Some(text.chars().count());
+                            }
+                            continue;
+                        }
                         if key.code == KeyCode::Tab {
                             let is_wide = terminal.size().map(|s| s.width >= ui::MIN_WIDTH_FOR_AGENTS).unwrap_or(true);
                             app.switch_pane(is_wide);
@@ -677,6 +760,19 @@ async fn run_app(
                                         app.messages.clear();
                                         app.agents.clear();
                                         spawn_channel_sync(app, &tx);
+                                        spawn_active_sessions(app, &tx);
+                                    }
+                                    KeyCode::Char('r') | KeyCode::Char('R')
+                                        if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                                    {
+                                        if let Some(channel_title) = app
+                                            .channels
+                                            .get(app.selected_channel_idx)
+                                            .map(|channel| channel.title.clone())
+                                        {
+                                            app.renaming_channel_idx = Some(app.selected_channel_idx);
+                                            app.new_channel_name = Some(channel_title);
+                                        }
                                     }
                                     KeyCode::Char('r') => {
                                         spawn_refresh_channels(app, &tx);
@@ -697,6 +793,21 @@ async fn run_app(
                                     }
                                     KeyCode::Char('s') => {
                                         app.open_agent_settings();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            ActivePane::Notes => {
+                                match key.code {
+                                    KeyCode::Up | KeyCode::Char('k') => app.prev_note(),
+                                    KeyCode::Down | KeyCode::Char('j') => app.next_note(),
+                                    KeyCode::Enter => {
+                                        if let Err(err) = open_selected_note_in_editor(terminal, app).await {
+                                            app.status_message = format!("Editor error: {}", err);
+                                        } else {
+                                            spawn_notes_sync(app, &tx);
+                                            app.status_message = "Note saved".to_string();
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -861,8 +972,9 @@ async fn run_app(
 
                         let show_channels = app.show_channels;
                         let show_agents = app.show_agents && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
+                        let show_notes = app.show_notes;
 
-                        let channels_width: u16 = match (show_channels, show_agents) {
+                        let channels_width: u16 = match (show_channels || show_notes, show_agents) {
                             (true, true) => 26,
                             (true, false) => 28,
                             _ => 0,
@@ -872,26 +984,43 @@ async fn run_app(
                         let center_end_x = term_width.saturating_sub(agents_width);
                         let is_in_main_area = mouse.row < term_height.saturating_sub(1);
                         let sidebar_list_top = HEADER_HEIGHT + 1;
+                        let sidebar_split_y = HEADER_HEIGHT + term_height.saturating_sub(HEADER_HEIGHT + 1) / 2;
 
                         match mouse.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
                                 if is_in_main_area {
                                     if mouse.column < channels_width {
-                                        app.active_pane = ActivePane::ChatSelector;
-                                        if mouse.row >= sidebar_list_top {
-                                            let row_idx = (mouse.row - sidebar_list_top) as usize;
-                                            if row_idx < app.channels.len() {
-                                                app.selected_channel_idx = row_idx;
-                                                if let Some(ch) = app.channels.get(row_idx) {
-                                                    let ch_id = ch.id.clone();
-                                                    let ch_title = ch.title.clone();
-                                                    if app.active_channel_id.as_deref() != Some(&ch_id) {
-                                                        app.active_channel_id = Some(ch_id.clone());
-                                                        app.scroll_offset = 0;
-                                                        app.status_message = format!("Switched to #{}", ch_title);
-                                                        app.messages.clear();
-                                                        app.agents.clear();
-                                                        spawn_channel_sync(app, &tx);
+                                        let in_notes = show_notes && (!show_channels || mouse.row >= sidebar_split_y);
+                                        app.active_pane = if in_notes { ActivePane::Notes } else { ActivePane::ChatSelector };
+                                        let list_top = if in_notes && show_channels {
+                                            sidebar_split_y + 1
+                                        } else {
+                                            sidebar_list_top
+                                        };
+                                        if mouse.row >= list_top {
+                                            let row = mouse.row - list_top;
+                                            if in_notes {
+                                                let note_idx = (row / 2) as usize;
+                                                if note_idx < app.notes.len() {
+                                                    app.selected_note_idx = note_idx;
+                                                }
+                                            } else {
+                                                let row_idx = row as usize;
+                                                if row_idx < app.channels.len() {
+                                                    app.selected_channel_idx = row_idx;
+                                                    if let Some(ch) = app.channels.get(row_idx) {
+                                                        let ch_id = ch.id.clone();
+                                                        let ch_title = ch.title.clone();
+                                                        if app.active_channel_id.as_deref() != Some(&ch_id) {
+                                                            app.active_channel_id = Some(ch_id.clone());
+                                                            app.reset_agent_activity();
+                                                            app.scroll_offset = 0;
+                                                            app.status_message = format!("Switched to #{}", ch_title);
+                                                            app.messages.clear();
+                                                            app.agents.clear();
+                                                            spawn_channel_sync(app, &tx);
+                                                            spawn_active_sessions(app, &tx);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -955,7 +1084,11 @@ async fn run_app(
                             }
                             MouseEventKind::ScrollUp => {
                                 if mouse.column < channels_width {
-                                    app.prev_channel();
+                                    if show_notes && (!show_channels || mouse.row >= sidebar_split_y) {
+                                        app.prev_note();
+                                    } else {
+                                        app.prev_channel();
+                                    }
                                 } else if mouse.column >= center_end_x {
                                     app.prev_agent();
                                 } else if mouse.row >= input_top_y {
@@ -970,7 +1103,11 @@ async fn run_app(
                             }
                             MouseEventKind::ScrollDown => {
                                 if mouse.column < channels_width {
-                                    app.next_channel();
+                                    if show_notes && (!show_channels || mouse.row >= sidebar_split_y) {
+                                        app.next_note();
+                                    } else {
+                                        app.next_channel();
+                                    }
                                 } else if mouse.column >= center_end_x {
                                     app.next_agent();
                                 } else if mouse.row >= input_top_y {
@@ -995,11 +1132,100 @@ async fn run_app(
     Ok(())
 }
 
+async fn open_selected_note_in_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &App,
+) -> Result<(), String> {
+    let Some(note) = app.notes.get(app.selected_note_idx) else {
+        return Err("no note selected".to_string());
+    };
+    let note_id = note.id.clone();
+    let detail = app.client.fetch_note(&note_id).await?;
+    let path = std::env::temp_dir().join(format!(
+        "fizzer-note-{}-{}.md",
+        std::process::id(),
+        unique_editor_suffix()
+    ));
+    fs::write(&path, detail.content).map_err(|e| e.to_string())?;
+
+    leave_tui_for_editor(terminal).map_err(|e| e.to_string())?;
+    let editor_result = run_configured_editor(&path);
+    let restore_result = restore_tui_after_editor(terminal).map_err(|e| e.to_string());
+
+    let content_result = editor_result.and_then(|status| {
+        if status.success() {
+            fs::read_to_string(&path).map_err(|e| e.to_string())
+        } else {
+            Err(format!("editor exited with {}", status))
+        }
+    });
+    let _ = fs::remove_file(&path);
+    restore_result?;
+    let content = content_result?;
+    app.client.update_note(&note_id, &content).await
+}
+
+fn unique_editor_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn configured_editor() -> String {
+    ["GIT_EDITOR", "VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+fn run_configured_editor(path: &Path) -> Result<ExitStatus, String> {
+    let editor = configured_editor();
+    Command::new("sh")
+        .args(["-c", "exec ${EDITOR_CMD} \"$1\"", "fizzer-editor", path.to_string_lossy().as_ref()])
+        .env("EDITOR_CMD", editor)
+        .status()
+        .map_err(|e| e.to_string())
+}
+
+fn leave_tui_for_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    crossterm::terminal::disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn restore_tui_after_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
+    terminal.clear()?;
+    Ok(())
+}
+
 async fn refresh_channels_and_messages(app: &mut App) {
-    if let Some(vault_id) = &app.vault_id {
+    if let Some(vault_id) = app.vault_id.clone() {
         app.is_loading = true;
         app.status_message = "Refreshing channels...".to_string();
-        match app.client.fetch_channels(vault_id).await {
+        if let Ok(notes) = app.client.fetch_notes(&vault_id).await {
+            app.notes = notes
+                .into_iter()
+                .filter(|note| !note.content_preview.trim().starts_with("cascade://chat-channel"))
+                .collect();
+            app.clamp_note_selection();
+        }
+        match app.client.fetch_channels(&vault_id).await {
             Ok(channels) => {
                 if !channels.is_empty() {
                     app.channels = channels;
@@ -1007,10 +1233,10 @@ async fn refresh_channels_and_messages(app: &mut App) {
                         app.active_channel_id = Some(app.channels[0].id.clone());
                     }
                     if let Some(channel_id) = &app.active_channel_id {
-                        if let Ok(msgs) = app.client.fetch_messages(vault_id, channel_id).await {
+                        if let Ok(msgs) = app.client.fetch_messages(&vault_id, channel_id).await {
                             app.messages = msgs;
                         }
-                        if let Ok(agents) = app.client.fetch_agents(vault_id, channel_id).await {
+                        if let Ok(agents) = app.client.fetch_agents(&vault_id, channel_id).await {
                             app.agents = agents;
                         }
                     }
