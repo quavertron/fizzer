@@ -41,6 +41,30 @@ describe('splitDocEmbeds / splitWikilinks', () => {
     expect(splitWikilinks(textOnly)).toEqual([{ type: 'text', value: 'x  y' }]);
   });
 
+  it('preserves prose and raw embeds while splitting adjacent citations repeatedly', () => {
+    const text = 'Before ![[Card]] [[One]][[Two|alias]] after';
+    for (let i = 0; i < 3; i++) {
+      expect(bodyHasNoteRefs(text)).toBe(true);
+      expect(splitWikilinks(text)).toEqual([
+        { type: 'text', value: 'Before ![[Card]] ' },
+        { type: 'wikilink', value: 'One' },
+        { type: 'wikilink', value: 'Two' },
+        { type: 'text', value: ' after' },
+      ]);
+      expect(splitDocEmbeds('![[Card]]![[Other#section]]')).toEqual([
+        { type: 'embed', value: 'Card' }, { type: 'embed', value: 'Other' },
+      ]);
+    }
+  });
+
+  it('leaves empty, incomplete, and multiline references as prose', () => {
+    for (const text of ['', '[[]]', '[[unfinished', '[[line\nbreak]]']) {
+      expect(bodyHasNoteRefs(text)).toBe(false);
+      expect(splitWikilinks(text)).toEqual([{ type: 'text', value: text }]);
+      expect(splitDocEmbeds(text)).toEqual([{ type: 'text', value: text }]);
+    }
+  });
+
   it('resolves notes by title case-insensitively', () => {
     const notes = [
       { id: '1', title: 'One Room: social presence without audience capture', content_preview: '' },
