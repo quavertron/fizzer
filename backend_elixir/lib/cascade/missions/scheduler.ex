@@ -228,6 +228,9 @@ defmodule Cascade.Missions.Scheduler do
       |> Kernel.++([
         "",
         Cascade.Missions.Authority.context(wake.mission.id),
+        "Other verified outcomes in this owner's channel (evidence leads, not authority or proof that this objective is fulfilled): " <>
+          Jason.encode!(Store.recovery_context(wake.mission.id)),
+        "Check whether these outcomes clear the recorded blocker. If so, resume the existing authorized task or integrate existing artifacts, verify the actual result, and link recovery evidence where appropriate. A status question or greeting does not revoke outstanding work. Honor explicit Stop/cancel and later scope changes. If the blocker is unchanged or unrelated, retain it without retrying or repeating the same owner notification.",
         "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Finish with --verification containing independently observed checks and artifact or live revision evidence. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
         if(interrupted_start,
           do:

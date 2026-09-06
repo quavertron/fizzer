@@ -151,6 +151,16 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         "sys-mission-#{mission.mission.id}-%"
       ])
 
+    # A conversational follow-up must not erase the durable review before
+    # the headless runner claims it.
+    {:ok, followup} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        body: "@#{ctx.registration.mention} is it running?"
+      })
+
+    assert {:ok, [_]} =
+             Dispatches.create_for_message(ctx.owner.id, ctx.owner_channel.id, followup)
+
     assert {:ok, started} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
     run = Store.get(started.id)
 

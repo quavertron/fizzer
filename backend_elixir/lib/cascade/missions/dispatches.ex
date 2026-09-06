@@ -12,14 +12,12 @@ defmodule Cascade.Missions.Dispatches do
     if String.starts_with?(to_string(field(message, :id, "")), "sys-") do
       {:ok, []}
     else
-      with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
+      with {:ok, _route} <- Channel.assert_channel(channel_id, user_id),
            {:ok, members} <- Agents.list_members(channel_id, user_id) do
         targets =
           if clear_targets(field(message, :body, ""), members),
             do: [],
             else: resolve_targets(user_id, channel_id, message, members)
-
-        remove_stale_coordinator_wakes(route.sourceChannelId, message, targets)
 
         Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
           case create(user_id, channel_id, message, registration.id) do
@@ -600,32 +598,6 @@ defmodule Cascade.Missions.Dispatches do
         )
     end)
     |> Enum.uniq_by(&(&1.vaultAgentId || &1.id))
-  end
-
-  defp remove_stale_coordinator_wakes(source_channel_id, message, targets) do
-    from_agent = present?(field(message, :registrationId)) or present?(field(message, :agentId))
-
-    if not from_agent do
-      targets
-      |> Enum.filter(& &1.orchestrator)
-      |> Enum.each(fn registration ->
-        SQL.transaction(fn ->
-          SQL.all(
-            """
-            SELECT id FROM chat_agent_dispatches
-            WHERE channel_id=? AND registration_id=? AND run_id IS NULL
-              AND message_id LIKE 'sys-mission-%'
-              AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)
-            """,
-            [source_channel_id, registration.id]
-          )
-          |> Enum.each(fn [id] ->
-            retract_pending_reply(id)
-            SQL.exec("DELETE FROM chat_agent_dispatches WHERE id=?", [id])
-          end)
-        end)
-      end)
-    end
   end
 
   defp message_source(message) do

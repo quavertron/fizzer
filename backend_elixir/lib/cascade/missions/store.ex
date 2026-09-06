@@ -1504,7 +1504,7 @@ defmodule Cascade.Missions.Store do
   def review_fingerprint(mission_id) do
     mission = mission_row(mission_id)
 
-    digest(
+    evidence =
       Enum.map(task_rows(mission_id), fn task ->
         {evidence_snapshot(task, mission),
          SQL.one(
@@ -1512,7 +1512,32 @@ defmodule Cascade.Missions.Store do
            [task.id]
          ), recovered_evidence_ready?(task, mission)}
       end)
+
+    # Preserve existing generations when there is no new cross-mission evidence.
+    case recovery_context(mission_id) do
+      [] -> digest(evidence)
+      outcomes -> digest({evidence, outcomes})
+    end
+  end
+
+  @doc "Verified same-owner room outcomes that may clear an open mission's blocker."
+  def recovery_context(mission_id) do
+    SQL.all(
+      """
+      SELECT source.id,source.title,substr(source.verification,1,2000)
+      FROM chat_missions target JOIN chat_missions source
+        ON source.channel_id=target.channel_id AND source.created_by=target.created_by
+      WHERE target.id=? AND source.id<>target.id AND source.status='completed'
+        AND source.verification<>'' AND source.updated_at>=target.created_at
+        AND EXISTS (SELECT 1 FROM chat_mission_tasks t
+          WHERE t.mission_id=target.id AND t.status IN ('blocked','failed'))
+      ORDER BY source.updated_at DESC,source.id LIMIT 8
+      """,
+      [mission_id]
     )
+    |> Enum.map(fn [id, title, verification] ->
+      %{missionId: id, title: title, verification: verification}
+    end)
   end
 
   defp digest(value),
