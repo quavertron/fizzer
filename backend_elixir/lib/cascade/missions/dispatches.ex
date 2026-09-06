@@ -470,7 +470,7 @@ defmodule Cascade.Missions.Dispatches do
         always =
           not from_agent and registration.ownerUserId == user_id and
             registration.replyToEveryMessage and
-            not (registration.orchestrator and calls_specialist) and
+            not calls_specialist and
             reply_to_all_available?(registration)
 
         identity = registration.vaultAgentId || registration.id

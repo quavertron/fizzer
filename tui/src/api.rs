@@ -44,6 +44,19 @@ pub struct ChatMessage {
     pub created_at: String,
     #[serde(rename = "agentId")]
     pub agent_id: Option<String>,
+    /// Data-URL images attached to the message. The list API strips heavy
+    /// data-URLs and instead sets `has_images`, so use `has_image()`.
+    #[serde(default)]
+    pub images: Vec<String>,
+    #[serde(rename = "hasImages", default)]
+    pub has_images: bool,
+}
+
+impl ChatMessage {
+    /// Whether this message carries any image, whether hydrated or stripped by the list API.
+    pub fn has_image(&self) -> bool {
+        self.has_images || !self.images.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +121,22 @@ pub struct AgentItem {
 pub struct ChannelAgentsResponse {
     #[serde(default)]
     pub agents: Vec<AgentItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSession {
+    #[serde(default)]
+    pub agent: String,
+    #[serde(rename = "registration_id", alias = "registrationId", default)]
+    pub registration_id: Option<String>,
+    #[serde(rename = "channel_id", alias = "channelId", default)]
+    pub channel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSessionsResponse {
+    #[serde(default)]
+    pub sessions: Vec<ActiveSession>,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +275,26 @@ impl CascadeClient {
         Ok(Vec::new())
     }
 
+    pub async fn fetch_active_sessions(&self, vault_id: &str) -> Result<Vec<ActiveSession>, String> {
+        let url = format!("{}/api/vaults/{}/active-sessions", self.base_url, vault_id);
+        let req = self.auth_header(self.client.get(&url));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+
+        if !res.status().is_success() {
+            return Err(format!("GET {} returned {}", url, res.status()));
+        }
+
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        if let Ok(resp) = serde_json::from_str::<ActiveSessionsResponse>(&body) {
+            return Ok(resp.sessions);
+        }
+        if let Ok(sessions) = serde_json::from_str::<Vec<ActiveSession>>(&body) {
+            return Ok(sessions);
+        }
+
+        Ok(Vec::new())
+    }
+
     pub async fn send_message(
         &self,
         vault_id: &str,
@@ -283,6 +332,8 @@ impl CascadeClient {
             body: body.to_string(),
             created_at: "Just now".to_string(),
             agent_id: None,
+            images: images.to_vec(),
+            has_images: !images.is_empty(),
         })
     }
 
@@ -374,13 +425,13 @@ impl CascadeClient {
 pub fn format_timestamp(raw: &str) -> String {
     if let Some((_, time_part)) = raw.split_once('T') {
         let time_clean = time_part.trim_end_matches('Z');
-        if let Some((hhmm, _)) = time_clean.split_once('.') {
-            if hhmm.len() >= 5 {
-                return hhmm[..5].to_string();
-            }
+        // Drop any fractional-seconds suffix, keep HH:MM:SS.
+        let hms = time_clean.split('.').next().unwrap_or(time_clean);
+        if hms.len() >= 8 {
+            return hms[..8].to_string();
         }
-        if time_clean.len() >= 5 {
-            return time_clean[..5].to_string();
+        if hms.len() >= 5 {
+            return hms[..5].to_string();
         }
     }
     raw.to_string()

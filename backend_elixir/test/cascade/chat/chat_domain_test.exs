@@ -1602,6 +1602,44 @@ defmodule Cascade.ChatDomainTest do
     assert Enum.map(transcript, & &1.body) == ["Begin the experiment." | replies]
   end
 
+  test "explicitly tagging another agent suppresses reply-to-all agents" do
+    {vault, channel} = chat_vault(1, "Explicit routing", "Explicit routing room")
+    user = %{id: 1, username: "alice"}
+
+    {:ok, always_identity} =
+      Agents.upsert_identity(1, vault.id, %{
+        agentId: "codex",
+        displayName: "Always Codex",
+        mention: "always-codex"
+      })
+
+    {:ok, always_agent} =
+      Agents.add_to_channel(1, vault.id, channel.id, always_identity.id, %{
+        replyToEveryMessage: true
+      })
+
+    {:ok, target_identity} =
+      Agents.upsert_identity(1, vault.id, %{
+        agentId: "claude-code",
+        displayName: "Target Claude",
+        mention: "target-claude"
+      })
+
+    {:ok, target_agent} =
+      Agents.add_to_channel(1, vault.id, channel.id, target_identity.id, %{})
+
+    {:ok, message} =
+      Messages.create(user, vault.id, channel.id, %{
+        id: "explicit-target-with-always-on",
+        body: "@target-claude handle this request",
+        createdAt: "2026-08-14T18:00:00.000Z"
+      })
+
+    assert {:ok, dispatches} = Dispatches.create_for_message(user.id, channel.id, message)
+    assert Enum.map(dispatches, & &1.registration.id) == [target_agent.id]
+    refute Enum.any?(dispatches, &(&1.registration.id == always_agent.id))
+  end
+
   test "exhausted Claude and Codex skip reply-to-all without blocking explicit mentions" do
     {vault, channel} = chat_vault(1, "Usage gate", "Usage gated room")
     user = %{id: 1, username: "alice"}

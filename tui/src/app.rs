@@ -1,6 +1,8 @@
 use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage};
+use std::collections::HashSet;
+use unicode_width::UnicodeWidthChar;
 
-pub const HEADER_HEIGHT: u16 = 4;
+pub const HEADER_HEIGHT: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePane {
@@ -54,6 +56,7 @@ pub fn agent_model_presets(agent_id: &str) -> &'static [ModelPreset] {
             ModelPreset { id: "flash_lite", label: "Gemini Flash Lite (tier)" },
             ModelPreset { id: "flash", label: "Gemini Flash (tier)" },
             ModelPreset { id: "pro", label: "Gemini Pro (tier)" },
+            ModelPreset { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
             ModelPreset { id: "gemini-3.5-flash-extra-low", label: "Gemini 3.5 Flash (Low)" },
             ModelPreset { id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (Medium)" },
             ModelPreset { id: "gemini-3-flash-agent", label: "Gemini 3.5 Flash (High)" },
@@ -393,7 +396,13 @@ pub struct App {
     pub selected_channel_idx: usize,
     pub active_channel_id: Option<String>,
     pub messages: Vec<ChatMessage>,
+    /// Message currently selected while the chat log pane has focus.
+    pub selected_message_idx: usize,
     pub agents: Vec<AgentItem>,
+    /// Agent registration or provider IDs with a queued/running session.
+    pub active_agent_ids: HashSet<String>,
+    /// Monotonic animation frame used by the agents panel termimations.
+    pub animation_tick: u64,
     pub selected_agent_idx: usize,
     pub agent_settings_modal: Option<AgentSettingsState>,
     pub show_channels: bool,
@@ -406,6 +415,10 @@ pub struct App {
     pub is_loading: bool,
     pub author: String,
     pub scroll_offset: usize,
+    /// Character offset in the flattened chat log. `None` initializes at EOF.
+    pub chat_cursor: Option<usize>,
+    /// Anchor for a keyboard text selection in the flattened chat log.
+    pub chat_selection_anchor: Option<usize>,
     pub should_quit: bool,
     /// Whether the last backend request reached the server. When false the
     /// header shows a `[BACKEND DOWN]` badge; the app never fabricates data.
@@ -434,7 +447,10 @@ impl App {
             selected_channel_idx: 0,
             active_channel_id: None,
             messages: Vec::new(),
+            selected_message_idx: 0,
             agents: Vec::new(),
+            active_agent_ids: HashSet::new(),
+            animation_tick: 0,
             selected_agent_idx: 0,
             agent_settings_modal: None,
             show_channels: true,
@@ -447,6 +463,8 @@ impl App {
             is_loading: false,
             author,
             scroll_offset: 0,
+            chat_cursor: None,
+            chat_selection_anchor: None,
             should_quit: false,
             backend_online: true,
             runner_online: false,
@@ -499,7 +517,11 @@ impl App {
         }
 
         if let Some(pos) = order.iter().position(|p| *p == self.active_pane) {
-            self.active_pane = order[(pos + 1) % order.len()];
+            let next = order[(pos + 1) % order.len()];
+            if next == ActivePane::ChatMessages && self.active_pane != ActivePane::ChatMessages {
+                self.selected_message_idx = self.messages.len().saturating_sub(1);
+            }
+            self.active_pane = next;
         } else {
             self.active_pane = order[0];
         }
@@ -537,6 +559,98 @@ impl App {
 
     pub fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(2);
+    }
+
+    fn chat_offset(&self, text: &str) -> usize {
+        self.chat_cursor.unwrap_or_else(|| text.chars().count()).min(text.chars().count())
+    }
+
+    fn set_chat_offset(&mut self, offset: usize, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        if extend {
+            self.chat_selection_anchor.get_or_insert(current);
+        } else {
+            self.chat_selection_anchor = None;
+        }
+        self.chat_cursor = Some(offset.min(text.chars().count()));
+        self.scroll_offset = 0;
+    }
+
+    pub fn move_chat_cursor_horizontal(&mut self, text: &str, delta: isize, extend: bool) {
+        let current = self.chat_offset(text);
+        let next = if delta.is_negative() {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize).min(text.chars().count())
+        };
+        self.set_chat_offset(next, text, extend);
+    }
+
+    pub fn move_chat_cursor_vertical(&mut self, text: &str, delta: isize, extend: bool) {
+        let chars: Vec<char> = text.chars().collect();
+        let current = self.chat_offset(text);
+        let line_start = chars[..current].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
+        let column = current - line_start;
+        let line_end = chars[current..].iter().position(|c| *c == '\n').map_or(chars.len(), |i| current + i);
+        let target_start = if delta.is_negative() {
+            if line_start == 0 { return; }
+            let previous_end = line_start - 1;
+            chars[..previous_end].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1)
+        } else {
+            if line_end == chars.len() { return; }
+            line_end + 1
+        };
+        let target_end = chars[target_start..].iter().position(|c| *c == '\n').map_or(chars.len(), |i| target_start + i);
+        self.set_chat_offset(target_start + column.min(target_end - target_start), text, extend);
+    }
+
+    pub fn move_chat_cursor_home(&mut self, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        let start = text[..text.char_indices().nth(current).map_or(text.len(), |(i, _)| i)]
+            .rfind('\n').map_or(0, |i| i + 1);
+        self.set_chat_offset(text[..start].chars().count(), text, extend);
+    }
+
+    pub fn move_chat_cursor_end(&mut self, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        let byte = text.char_indices().nth(current).map_or(text.len(), |(i, _)| i);
+        let end = text[byte..].find('\n').map_or(text.len(), |i| byte + i);
+        self.set_chat_offset(text[..end].chars().count(), text, extend);
+    }
+
+    pub fn chat_selection_bounds(&self, text: &str) -> Option<(usize, usize)> {
+        let cursor = self.chat_offset(text);
+        let anchor = self.chat_selection_anchor?;
+        (anchor != cursor).then_some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    pub fn selected_chat_text(&self, text: &str) -> Option<String> {
+        let (start, end) = self.chat_selection_bounds(text)?;
+        Some(text.chars().skip(start).take(end - start).collect())
+    }
+
+    pub fn select_all_chat(&mut self, text: &str) {
+        self.chat_selection_anchor = Some(0);
+        self.chat_cursor = Some(text.chars().count());
+        self.scroll_offset = 0;
+    }
+
+    pub fn select_previous_message(&mut self) {
+        if !self.messages.is_empty() {
+            self.selected_message_idx = self.selected_message_idx.saturating_sub(1);
+        }
+    }
+
+    pub fn select_next_message(&mut self) {
+        if !self.messages.is_empty() {
+            self.selected_message_idx = (self.selected_message_idx + 1).min(self.messages.len() - 1);
+        }
+    }
+
+    pub fn clamp_message_selection(&mut self) {
+        self.selected_message_idx = self
+            .selected_message_idx
+            .min(self.messages.len().saturating_sub(1));
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -677,6 +791,59 @@ impl App {
         }
     }
 
+    pub fn move_cursor_word_left(&mut self) {
+        if self.cursor_pos == 0 || self.input.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+
+        while target > 0 && chars[target - 1].is_whitespace() && chars[target - 1] != '\n' {
+            target -= 1;
+        }
+        while target > 0 && !chars[target - 1].is_whitespace() {
+            target -= 1;
+        }
+        self.cursor_pos = target;
+    }
+
+    pub fn move_cursor_word_right(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        let mut target = self.cursor_pos.min(len);
+
+        while target < len && chars[target].is_whitespace() && chars[target] != '\n' {
+            target += 1;
+        }
+        while target < len && !chars[target].is_whitespace() {
+            target += 1;
+        }
+        self.cursor_pos = target;
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        if self.cursor_pos >= len || self.input.is_empty() {
+            return;
+        }
+        let cur = self.cursor_pos;
+        let mut target = cur;
+
+        while target < len && chars[target].is_whitespace() && chars[target] != '\n' {
+            target += 1;
+        }
+        while target < len && !chars[target].is_whitespace() {
+            target += 1;
+        }
+
+        if target > cur {
+            let mut new_chars = chars[..cur].to_vec();
+            new_chars.extend_from_slice(&chars[target..]);
+            self.input = new_chars.into_iter().collect();
+        }
+    }
+
     pub fn move_cursor_home(&mut self) {
         self.cursor_pos = 0;
     }
@@ -766,6 +933,10 @@ impl App {
     }
 
     pub fn input_box_height(&self, total_height: u16) -> u16 {
+        self.input_box_height_for_width(total_height, 80)
+    }
+
+    pub fn input_box_height_for_width(&self, total_height: u16, total_width: u16) -> u16 {
         let available_for_chat_modality = total_height.saturating_sub(HEADER_HEIGHT + 1);
         let max_height = available_for_chat_modality.saturating_sub(5).max(3);
 
@@ -773,9 +944,31 @@ impl App {
             return override_h.min(max_height).max(3);
         }
 
-        let line_count = self.input.split('\n').count().max(1) as u16;
+        let text_width = total_width.saturating_sub(4).max(1) as usize;
+        let line_count = self.visual_input_line_count(text_width).max(1) as u16;
         let desired = line_count + 2;
         desired.min(max_height).max(3)
+    }
+
+    pub fn visual_input_line_count(&self, width: usize) -> usize {
+        let width = width.max(1);
+        self.input
+            .split('\n')
+            .map(|line| {
+                let mut lines = 1;
+                let mut column = 0;
+                for c in line.chars() {
+                    let char_width = c.width().unwrap_or(0);
+                    if char_width > 0 && column + char_width > width {
+                        lines += 1;
+                        column = 0;
+                    }
+                    column += char_width;
+                }
+                lines
+            })
+            .sum::<usize>()
+            .max(1)
     }
 
     pub fn is_input_tall(&self, total_height: u16) -> bool {
@@ -863,5 +1056,68 @@ impl App {
         self.agents.clear();
         self.active_channel_id = None;
         self.status_message = message.into();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_app() -> App {
+        App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None))
+    }
+
+    #[test]
+    fn test_word_cursor_movement() {
+        let mut app = make_app();
+        app.input = "foo   bar  baz".into();
+        app.cursor_pos = 0;
+
+        // Move word right
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 3); // after "foo"
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 9); // after "bar"
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 14); // after "baz"
+
+        // Move past end stays at end
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 14);
+
+        // Move word left
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 11); // start of "baz"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 6); // start of "bar"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0); // start of "foo"
+
+        // Move past start stays at start
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_delete_word_forward() {
+        let mut app = make_app();
+        app.input = "one   two three".into();
+        app.cursor_pos = 0;
+
+        app.delete_word_forward();
+        assert_eq!(app.input, "   two three");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_forward();
+        assert_eq!(app.input, " three");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_forward();
+        assert_eq!(app.input, "");
+        assert_eq!(app.cursor_pos, 0);
     }
 }

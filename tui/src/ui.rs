@@ -1,9 +1,10 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::symbols::{border, line};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
 
@@ -61,11 +62,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         loading_indicator,
     ]);
 
-    let header_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let header_para = Paragraph::new(vec![title_line]).block(header_block);
+    // Borderless: a single line hanging at the top, saving the two border rows.
+    let header_para = Paragraph::new(vec![title_line]);
     frame.render_widget(header_para, area);
 }
 
@@ -188,38 +186,64 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::ChatSelector;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let creating = app.new_channel_name.is_some();
+    let border_color = if creating {
+        Color::Green
+    } else if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
 
-    let items: Vec<ListItem> = app
-        .channels
-        .iter()
-        .enumerate()
-        .map(|(idx, ch)| {
-            let is_selected = idx == app.selected_channel_idx;
-            let is_active = app.active_channel_id.as_deref() == Some(&ch.id);
+    let mut items: Vec<ListItem> = Vec::new();
 
-            let marker = if is_active { "● " } else { "# " };
-            let prefix = if is_selected { "> " } else { "  " };
+    // Inline "new channel" input row, rendered right in the sidebar.
+    if let Some(name) = &app.new_channel_name {
+        let shown = if name.is_empty() {
+            "＋ type a name…".to_string()
+        } else {
+            format!("＋ {}█", name)
+        };
+        items.push(
+            ListItem::new(shown)
+                .style(Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+        );
+    }
 
-            let text = format!("{}{}{}", prefix, marker, ch.title);
+    items.extend(app.channels.iter().enumerate().map(|(idx, ch)| {
+        let is_selected = idx == app.selected_channel_idx;
+        let is_active = app.active_channel_id.as_deref() == Some(&ch.id);
 
-            let style = if is_selected && is_focused {
-                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
+        let marker = if is_active { "● " } else { "# " };
+        let prefix = if is_selected { "> " } else { "  " };
 
-            ListItem::new(text).style(style)
-        })
-        .collect();
+        let text = format!("{}{}{}", prefix, marker, ch.title);
+
+        let style = if is_selected && is_focused && !creating {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        ListItem::new(text).style(style)
+    }));
+
+    let title = if creating {
+        Span::styled(" New channel  [Enter ✓  Esc ✗] ", Style::default().fg(Color::Green).bold())
+    } else {
+        Span::styled(
+            " Chats / Channels ",
+            Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
+        )
+    };
 
     let selector_block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Chats / Channels ", Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold()))
+        .title(title)
         .border_style(Style::default().fg(border_color));
 
     let list = List::new(items).block(selector_block);
@@ -227,7 +251,7 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_chat_modality(frame: &mut Frame, app: &App, area: Rect) {
-    let input_h = app.input_box_height(frame.area().height);
+    let input_h = app.input_box_height_for_width(frame.area().height, area.width);
 
     // Vertical layout inside Chat Modality: Top = Messages, Bottom = Input Composer
     let vertical_chunks = Layout::default()
@@ -297,6 +321,18 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
 
+            // Attached-image indicator (the list API strips heavy data-URLs but flags them)
+            if msg.has_image() {
+                let label = match msg.images.len() {
+                    0 | 1 => " ▤ image ".to_string(),
+                    n => format!(" ▤ {} images ", n),
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(label, Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
+                ]));
+            }
+
             // Only add spacing between messages, never after the last message
             if m_idx + 1 < msg_count {
                 lines.push(Line::from(""));
@@ -304,23 +340,166 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // No bottom border: the composer below draws the shared divider so the two
+    // panes read as one conjoined box.
     let messages_block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
         .title(Span::styled(active_title, Style::default().fg(Color::Cyan).bold()))
         .border_style(Style::default().fg(border_color));
 
-    let visible_lines = area.height.saturating_sub(2) as usize;
+    let visible_lines = area.height.saturating_sub(1) as usize;
     let total_lines = lines.len();
+
+    let plain_lines: Vec<String> = lines
+        .iter()
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+        .collect();
+    let chat_text = plain_lines.join("\n");
+
+    if let Some((selection_start, selection_end)) = app.chat_selection_bounds(&chat_text) {
+        let mut offset = 0;
+        for line in &mut lines {
+            let line_len = line.spans.iter().map(|span| span.content.chars().count()).sum::<usize>();
+            let start = selection_start.saturating_sub(offset).min(line_len);
+            let end = selection_end.saturating_sub(offset).min(line_len);
+            if start < end {
+                highlight_line_range(line, start, end);
+            }
+            offset += line_len + 1;
+        }
+    }
     
     // Auto-scroll to bottom if scroll_offset is 0, else apply offset
     let max_scroll = total_lines.saturating_sub(visible_lines);
-    let scroll_y = max_scroll.saturating_sub(app.scroll_offset);
+    let mut scroll_y = max_scroll.saturating_sub(app.scroll_offset);
+
+    // Keep the text cursor visible while moving through the flattened log.
+    if is_focused && app.scroll_offset == 0 {
+        if let Some(cursor) = app.chat_cursor {
+            let (cursor_line, _) = chat_line_column(&chat_text, cursor);
+            if cursor_line < scroll_y {
+                scroll_y = cursor_line;
+            } else if cursor_line >= scroll_y.saturating_add(visible_lines) {
+                scroll_y = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+            }
+            scroll_y = scroll_y.min(max_scroll);
+        }
+    }
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(messages_block)
         .scroll((scroll_y as u16, 0));
 
     frame.render_widget(paragraph, area);
+
+    if is_focused {
+        if let Some(cursor) = app.chat_cursor {
+            let (cursor_line, cursor_column) = chat_line_column(&chat_text, cursor);
+            if cursor_line >= scroll_y && cursor_line < scroll_y + visible_lines {
+                frame.set_cursor_position(Position {
+                    x: area.x + 1 + cursor_column as u16,
+                    y: area.y + 1 + (cursor_line - scroll_y) as u16,
+                });
+            }
+        }
+    }
+}
+
+fn highlight_line_range(line: &mut Line, start: usize, end: usize) {
+    let spans = std::mem::take(&mut line.spans);
+    let mut next = Vec::new();
+    let mut offset = 0;
+    for span in spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut chunk = String::new();
+        let mut selected = false;
+        for (index, c) in chars.iter().enumerate() {
+            let is_selected = start <= offset + index && offset + index < end;
+            if is_selected != selected && !chunk.is_empty() {
+                let style = if selected {
+                    span.style
+                        .bg(Color::Rgb(50, 50, 50))
+                } else { span.style };
+                next.push(Span::styled(std::mem::take(&mut chunk), style));
+            }
+            selected = is_selected;
+            chunk.push(*c);
+        }
+        if !chunk.is_empty() {
+            let style = if selected {
+                span.style
+                    .bg(Color::Rgb(50, 50, 50))
+            } else { span.style };
+            next.push(Span::styled(chunk, style));
+        }
+        offset += chars.len();
+    }
+    line.spans = next;
+}
+
+fn chat_line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 0;
+    let mut column = 0;
+    for (index, c) in text.chars().enumerate() {
+        if index >= offset {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
+pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
+    if app.messages.is_empty() {
+        return " No messages in this channel yet.".to_string();
+    }
+    let mut lines = Vec::new();
+    for (index, message) in app.messages.iter().enumerate() {
+        let is_agent = message.agent_id.is_some()
+            || message.author.to_lowercase().contains("bot")
+            || message.author.to_lowercase().contains("agent")
+            || message.author == "Codex"
+            || message.author == "Pi";
+        let _author_color = if message.author == app.author {
+            Color::Green
+        } else if is_agent {
+            Color::Cyan
+        } else if message.author == "System" {
+            Color::Magenta
+        } else {
+            Color::Yellow
+        };
+        lines.push(format!(
+            "● {}  {}",
+            message.author,
+            crate::api::format_timestamp(&message.created_at)
+        ));
+        for body_line in message.body.lines() {
+            if body_line.trim().is_empty() {
+                lines.push(String::new());
+            } else {
+                for chunk in wrap_text(body_line, body_wrap_width) {
+                    lines.push(format!("  {}", chunk));
+                }
+            }
+        }
+        if message.has_image() {
+            let label = match message.images.len() {
+                0 | 1 => " ▤ image ".to_string(),
+                count => format!(" ▤ {} images ", count),
+            };
+            lines.push(format!("  {}", label));
+        }
+        if index + 1 < app.messages.len() {
+            lines.push(String::new());
+        }
+    }
+    lines.join("\n")
 }
 
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
@@ -388,19 +567,40 @@ fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::ChatInput;
     let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
 
+    let title = if app.pending_images.is_empty() {
+        Span::styled(" Message ", Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }))
+    } else {
+        Span::styled(
+            format!(" Message  [{} image{} attached] ", app.pending_images.len(), if app.pending_images.len() == 1 { "" } else { "s" }),
+            Style::default().fg(Color::Yellow).bold(),
+        )
+    };
+
+    // Top corners are T-junctions (├ ┤) so the divider connects into the message
+    // pane's side walls, conjoining the two boxes.
+    let joined = border::Set {
+        top_left: line::NORMAL.vertical_right,
+        top_right: line::NORMAL.vertical_left,
+        ..border::PLAIN
+    };
+
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Message ", Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray })))
+        .border_set(joined)
+        .title(title)
         .border_style(Style::default().fg(border_color));
 
     let inner_height = area.height.saturating_sub(2) as usize;
-    // Keep a cell for the cursor and measure terminal columns, not Unicode scalars.
-    let text_width = area.width.saturating_sub(4) as usize;
-    let (cursor_line, cursor_col) = app.cursor_line_col();
-    let cursor_prefix: String = app.input.split('\n').nth(cursor_line).unwrap_or("")
-        .chars().take(cursor_col).collect();
-    let cursor_column = cursor_prefix.width();
-    let horizontal_scroll = cursor_column.saturating_sub(text_width.saturating_sub(1));
+    let text_width = area.width.saturating_sub(4).max(1) as usize;
+    let (cursor_visual_line, cursor_column) = wrapped_cursor_position(&app.input, app.cursor_pos, text_width);
+    let visual_line_count = app.visual_input_line_count(text_width);
+    let max_input_scroll = visual_line_count.saturating_sub(inner_height);
+    let mut input_scroll = app.input_scroll_offset.min(max_input_scroll);
+    if cursor_visual_line < input_scroll {
+        input_scroll = cursor_visual_line;
+    } else if cursor_visual_line >= input_scroll.saturating_add(inner_height) {
+        input_scroll = cursor_visual_line.saturating_sub(inner_height.saturating_sub(1));
+    }
 
     let raw_lines: Vec<&str> = if app.input.is_empty() {
         vec![""]
@@ -422,20 +622,105 @@ fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(prefix).style(Style::default().fg(Color::Cyan).bold()), inner);
         let text_area = Rect::new(inner.x + 2, inner.y, inner.width - 2, inner.height);
         frame.render_widget(Paragraph::new(rendered_lines)
-            .scroll((app.input_scroll_offset.min(u16::MAX as usize) as u16, horizontal_scroll.min(u16::MAX as usize) as u16)), text_area);
+            .wrap(Wrap { trim: false })
+            .scroll((input_scroll.min(u16::MAX as usize) as u16, 0)), text_area);
     }
 
     // Render blinking cursor if input is focused
     if is_focused && inner_height > 0 {
-        if cursor_line >= app.input_scroll_offset && cursor_line < app.input_scroll_offset + inner_height {
-            let row_in_box = (cursor_line - app.input_scroll_offset) as u16;
-            let cursor_x = area.x + 3 + cursor_column.saturating_sub(horizontal_scroll) as u16;
+        if cursor_visual_line >= input_scroll && cursor_visual_line < input_scroll + inner_height {
+            let row_in_box = (cursor_visual_line - input_scroll) as u16;
+            let cursor_x = area.x + 3 + cursor_column as u16;
             let cursor_y = area.y + 1 + row_in_box;
             if cursor_x < area.x + area.width - 1 && cursor_y < area.y + area.height - 1 {
                 frame.set_cursor_position(Position { x: cursor_x, y: cursor_y });
             }
         }
     }
+}
+
+fn wrapped_cursor_position(input: &str, cursor_pos: usize, width: usize) -> (usize, usize) {
+    let width = width.max(1);
+    let chars: Vec<char> = input.chars().collect();
+    let cursor_pos = cursor_pos.min(chars.len());
+    let mut line_start = 0;
+    let mut visual_line = 0;
+
+    for (idx, c) in chars.iter().enumerate() {
+        if *c != '\n' {
+            continue;
+        }
+        if cursor_pos <= idx {
+            return (visual_line + wrapped_cursor_line(&chars[line_start..idx], cursor_pos - line_start, width).0,
+                wrapped_cursor_line(&chars[line_start..idx], cursor_pos - line_start, width).1);
+        }
+        visual_line += wrapped_input_line_count(&chars[line_start..idx], width);
+        line_start = idx + 1;
+    }
+
+    let (line, column) = wrapped_cursor_line(&chars[line_start..], cursor_pos.saturating_sub(line_start), width);
+    (visual_line + line, column)
+}
+
+/// Match Paragraph::wrap(Wrap { trim: false }): complete words move to the
+/// next row when they do not fit, while oversized words split at cell width.
+fn wrapped_cursor_line(line: &[char], cursor_pos: usize, width: usize) -> (usize, usize) {
+    let cursor_pos = cursor_pos.min(line.len());
+    let mut visual_line = 0;
+    let mut column = 0;
+    let mut index = 0;
+
+    while index < line.len() {
+        if line[index].is_whitespace() {
+            let char_width = line[index].width().unwrap_or(0);
+            if char_width > 0 && column + char_width > width {
+                visual_line += 1;
+                column = 0;
+            }
+            if index >= cursor_pos {
+                return (visual_line, column);
+            }
+            column += char_width;
+            index += 1;
+            continue;
+        }
+
+        let word_start = index;
+        while index < line.len() && !line[index].is_whitespace() {
+            index += 1;
+        }
+        let word_width: usize = line[word_start..index]
+            .iter()
+            .map(|c| c.width().unwrap_or(0))
+            .sum();
+        if column > 0 && column + word_width > width {
+            visual_line += 1;
+            column = 0;
+        }
+
+        for (offset, c) in line[word_start..index].iter().enumerate() {
+            let char_width = c.width().unwrap_or(0);
+            if char_width > 0 && column + char_width > width {
+                visual_line += 1;
+                column = 0;
+            }
+            if word_start + offset >= cursor_pos {
+                return (visual_line, column);
+            }
+            column += char_width;
+        }
+    }
+
+    if cursor_pos >= line.len() && column >= width {
+        (visual_line + 1, 0)
+    } else {
+        (visual_line, column)
+    }
+}
+
+fn wrapped_input_line_count(line: &[char], width: usize) -> usize {
+    let end = wrapped_cursor_line(line, line.len(), width).0;
+    end + 1
 }
 
 /// Expand `(key, label)` hint pairs into alternating badge/text spans.

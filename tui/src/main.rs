@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod ui;
+mod emacs;
 
 use std::io::{self, stdout};
 use std::time::Duration;
@@ -8,7 +9,8 @@ use std::time::Duration;
 use color_eyre::Result;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEventKind,
         KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
@@ -22,13 +24,14 @@ use ratatui::Terminal;
 
 use tokio::sync::mpsc;
 
-use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage};
-use crate::app::{ActivePane, AgentSettingsField, App};
+use crate::api::{ActiveSession, AgentItem, CascadeClient, ChannelItem, ChatMessage};
+use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
 
 /// Results from background network tasks, folded back into `App` on the event loop.
 enum BackendEvent {
     Messages { channel_id: String, messages: Vec<ChatMessage> },
     Agents { channel_id: String, agents: Vec<AgentItem> },
+    ActiveSessions { sessions: Vec<ActiveSession> },
     Channels(Result<Vec<ChannelItem>, String>),
     /// Whether the backend responded to a lightweight health ping.
     Connectivity(bool),
@@ -59,6 +62,19 @@ fn spawn_channel_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
         }
         if let Ok(agents) = client.fetch_agents(&vault_id, &channel_id).await {
             let _ = tx.send(BackendEvent::Agents { channel_id, agents });
+        }
+    });
+}
+
+fn spawn_active_sessions(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let Some(vault_id) = app.vault_id.clone() else {
+        return;
+    };
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        if let Ok(sessions) = client.fetch_active_sessions(&vault_id).await {
+            let _ = tx.send(BackendEvent::ActiveSessions { sessions });
         }
     });
 }
@@ -161,6 +177,7 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 && (!messages.is_empty() || app.messages.is_empty())
             {
                 app.messages = messages;
+                app.clamp_message_selection();
             }
         }
         BackendEvent::Agents { channel_id, agents } => {
@@ -168,6 +185,19 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 && (!agents.is_empty() || app.agents.is_empty())
             {
                 app.agents = agents;
+            }
+        }
+        BackendEvent::ActiveSessions { sessions } => {
+            app.active_agent_ids.clear();
+            for session in sessions {
+                if session.channel_id.as_deref() == app.active_channel_id.as_deref() {
+                    if let Some(registration_id) = session.registration_id {
+                        app.active_agent_ids.insert(registration_id);
+                    }
+                    if !session.agent.is_empty() {
+                        app.active_agent_ids.insert(session.agent);
+                    }
+                }
             }
         }
         BackendEvent::Connectivity(reachable) => {
@@ -300,6 +330,7 @@ async fn main() -> Result<()> {
     execute!(
         stdout,
         EnterAlternateScreen,
+        EnableBracketedPaste,
         EnableMouseCapture,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
@@ -311,7 +342,12 @@ async fn main() -> Result<()> {
     // Terminal restoration
     disable_raw_mode()?;
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     if let Err(err) = app_result {
@@ -327,6 +363,7 @@ async fn run_app(
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
     let mut poll_interval = tokio::time::interval(Duration::from_secs(3));
+    let mut animation_interval = tokio::time::interval(Duration::from_millis(120));
     let (tx, mut rx) = mpsc::unbounded_channel::<BackendEvent>();
 
     loop {
@@ -347,17 +384,37 @@ async fn run_app(
                 spawn_health_check(app, &tx);
                 spawn_runner_check(&tx);
                 spawn_channel_sync(app, &tx);
+                spawn_active_sessions(app, &tx);
+            }
+
+            _ = animation_interval.tick() => {
+                app.animation_tick = app.animation_tick.wrapping_add(1);
             }
 
             // Keyboard and terminal events
             Some(Ok(event)) = event_stream.next() => {
-                let term_height = terminal.size().map(|s| s.height).unwrap_or(24);
-                let is_input_tall = app.is_input_tall(term_height);
+                let (term_width, term_height) = terminal
+                    .size()
+                    .map(|size| (size.width, size.height))
+                    .unwrap_or((100, 24));
+                let show_agents = app.show_agents && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
+                let channels_width = if app.show_channels {
+                    if show_agents { 26 } else { 28 }
+                } else {
+                    0
+                };
+                let agents_width = if show_agents { 28 } else { 0 };
+                let center_width = term_width.saturating_sub(channels_width + agents_width);
+                let is_input_tall = app.input_box_height_for_width(term_height, center_width) >= 20;
 
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         // Global quit bindings
-                        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !(app.active_pane == ActivePane::ChatMessages
+                                && key.modifiers.contains(KeyModifiers::SHIFT))
+                        {
                             app.should_quit = true;
                             continue;
                         }
@@ -472,7 +529,6 @@ async fn run_app(
                             match key.code {
                                 KeyCode::Esc => {
                                     app.new_channel_name = None;
-                                    app.status_message = "Cancelled new channel".into();
                                 }
                                 KeyCode::Enter => {
                                     let title = app
@@ -481,13 +537,8 @@ async fn run_app(
                                         .unwrap_or_default()
                                         .trim()
                                         .to_string();
-                                    if title.is_empty() {
-                                        app.status_message = "Channel name empty; cancelled".into();
-                                    } else if app.vault_id.is_some() {
-                                        app.status_message = format!("Creating #{}...", title);
+                                    if !title.is_empty() && app.vault_id.is_some() {
                                         spawn_create_channel(app, title, &tx);
-                                    } else {
-                                        app.status_message = "No vault; cannot create channel".into();
                                     }
                                 }
                                 KeyCode::Backspace => {
@@ -501,10 +552,6 @@ async fn run_app(
                                     }
                                 }
                                 _ => {}
-                            }
-                            if let Some(name) = &app.new_channel_name {
-                                app.status_message =
-                                    format!("New channel (Enter to create, Esc to cancel): {}", name);
                             }
                             continue;
                         }
@@ -545,6 +592,10 @@ async fn run_app(
                         if key.code == KeyCode::Tab {
                             let is_wide = terminal.size().map(|s| s.width >= ui::MIN_WIDTH_FOR_AGENTS).unwrap_or(true);
                             app.switch_pane(is_wide);
+                            if app.active_pane == ActivePane::ChatMessages && app.chat_cursor.is_none() {
+                                let text = ui::chat_log_text(app, center_width.saturating_sub(4).max(10) as usize);
+                                app.chat_cursor = Some(text.chars().count());
+                            }
                             continue;
                         }
 
@@ -553,13 +604,49 @@ async fn run_app(
                         // Any typing or text navigation key seamlessly switches to ChatInput
                         // and immediately falls through to execute in the message bar!
                         if app.active_pane == ActivePane::ChatMessages {
+                            let chat_text = ui::chat_log_text(app, center_width.saturating_sub(4).max(10) as usize);
+                            let extend = key.modifiers.contains(KeyModifiers::SHIFT);
                             match key.code {
                                 KeyCode::Up => {
-                                    app.scroll_up();
+                                    app.scroll_offset = 0;
+                                    app.move_chat_cursor_vertical(&chat_text, -1, extend);
                                     continue;
                                 }
                                 KeyCode::Down => {
-                                    app.scroll_down();
+                                    app.scroll_offset = 0;
+                                    app.move_chat_cursor_vertical(&chat_text, 1, extend);
+                                    continue;
+                                }
+                                KeyCode::Left => {
+                                    app.move_chat_cursor_horizontal(&chat_text, -1, extend);
+                                    continue;
+                                }
+                                KeyCode::Right => {
+                                    app.move_chat_cursor_horizontal(&chat_text, 1, extend);
+                                    continue;
+                                }
+                                KeyCode::Home => {
+                                    app.move_chat_cursor_home(&chat_text, extend);
+                                    continue;
+                                }
+                                KeyCode::End => {
+                                    app.move_chat_cursor_end(&chat_text, extend);
+                                    continue;
+                                }
+                                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    app.select_all_chat(&chat_text);
+                                    continue;
+                                }
+                                KeyCode::Char('c')
+                                    if (key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.modifiers.contains(KeyModifiers::SHIFT))
+                                        || key.modifiers.contains(KeyModifiers::SUPER) =>
+                                {
+                                    if let Some(selected) = app.selected_chat_text(&chat_text) {
+                                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                            let _ = clipboard.set_text(selected);
+                                        }
+                                    }
                                     continue;
                                 }
                                 KeyCode::PageUp => {
@@ -596,8 +683,6 @@ async fn run_app(
                                     }
                                     KeyCode::Char('n') => {
                                         app.new_channel_name = Some(String::new());
-                                        app.status_message =
-                                            "New channel (Enter to create, Esc to cancel): ".into();
                                     }
                                     _ => {}
                                 }
@@ -617,6 +702,12 @@ async fn run_app(
                                 }
                             }
                             ActivePane::ChatInput => {
+                                if emacs::handle_emacs_key(app, &key, is_input_tall) {
+                                    let inner_h = app.input_box_height_for_width(term_height, center_width).saturating_sub(2) as usize;
+                                    app.ensure_cursor_visible(inner_h);
+                                    continue;
+                                }
+
                                 match key.code {
                                     KeyCode::Up => {
                                         if is_input_tall {
@@ -678,47 +769,6 @@ async fn run_app(
                                     KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                         app.insert_char('\n');
                                     }
-                                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.move_cursor_home();
-                                    }
-                                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.move_cursor_end();
-                                    }
-                                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.move_cursor_right();
-                                    }
-                                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.move_cursor_left();
-                                    }
-                                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        if is_input_tall {
-                                            app.move_cursor_up_line();
-                                        } else {
-                                            app.scroll_up();
-                                        }
-                                    }
-                                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        if is_input_tall {
-                                            app.move_cursor_down_line();
-                                        } else {
-                                            app.scroll_down();
-                                        }
-                                    }
-                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.delete();
-                                    }
-                                    KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.backspace();
-                                    }
-                                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.clear_line();
-                                    }
-                                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.delete_word();
-                                    }
-                                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        app.clear_to_end_of_line();
-                                    }
                                     KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                         match clipboard_image_data_url() {
                                             Ok(data_url) => {
@@ -750,7 +800,7 @@ async fn run_app(
                                     KeyCode::End => app.move_cursor_end(),
                                     _ => {}
                                 }
-                                let inner_h = app.input_box_height(term_height).saturating_sub(2) as usize;
+                                let inner_h = app.input_box_height_for_width(term_height, center_width).saturating_sub(2) as usize;
                                 app.ensure_cursor_visible(inner_h);
                             }
                         }
@@ -774,7 +824,7 @@ async fn run_app(
                                     app.insert_char(c);
                                 }
                             }
-                            let inner_h = app.input_box_height(term_height).saturating_sub(2) as usize;
+                            let inner_h = app.input_box_height_for_width(term_height, center_width).saturating_sub(2) as usize;
                             app.ensure_cursor_visible(inner_h);
                         }
                     }
@@ -806,7 +856,7 @@ async fn run_app(
                             continue;
                         }
 
-                        let input_h = app.input_box_height(term_height);
+                        let input_h = app.input_box_height_for_width(term_height, center_width);
                         let input_top_y = term_height.saturating_sub(input_h + 1);
 
                         let show_channels = app.show_channels;
@@ -821,14 +871,15 @@ async fn run_app(
                         let agents_width: u16 = if show_agents { 28 } else { 0 };
                         let center_end_x = term_width.saturating_sub(agents_width);
                         let is_in_main_area = mouse.row < term_height.saturating_sub(1);
+                        let sidebar_list_top = HEADER_HEIGHT + 1;
 
                         match mouse.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
                                 if is_in_main_area {
                                     if mouse.column < channels_width {
                                         app.active_pane = ActivePane::ChatSelector;
-                                        if mouse.row >= 4 {
-                                            let row_idx = (mouse.row - 4) as usize;
+                                        if mouse.row >= sidebar_list_top {
+                                            let row_idx = (mouse.row - sidebar_list_top) as usize;
                                             if row_idx < app.channels.len() {
                                                 app.selected_channel_idx = row_idx;
                                                 if let Some(ch) = app.channels.get(row_idx) {
@@ -847,8 +898,8 @@ async fn run_app(
                                         }
                                     } else if mouse.column >= center_end_x {
                                         app.active_pane = ActivePane::Agents;
-                                        if mouse.row >= 4 {
-                                            let agent_idx = ((mouse.row - 4) / 2) as usize;
+                                        if mouse.row >= sidebar_list_top {
+                                            let agent_idx = ((mouse.row - sidebar_list_top) / 2) as usize;
                                             if agent_idx < app.agents.len() {
                                                 app.selected_agent_idx = agent_idx;
                                             }
@@ -859,8 +910,47 @@ async fn run_app(
                                             app.active_pane = ActivePane::ChatInput;
                                         } else {
                                             app.active_pane = ActivePane::ChatMessages;
+                                            if let Some(offset) = chat_offset_at_position(
+                                                app,
+                                                mouse.row,
+                                                mouse.column,
+                                                center_width,
+                                                channels_width,
+                                                input_top_y,
+                                            ) {
+                                                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                                                    app.chat_selection_anchor.get_or_insert(app.chat_cursor.unwrap_or(offset));
+                                                } else {
+                                                    // Start a plaintext-style mouse selection. A plain click
+                                                    // still has no range until the pointer moves.
+                                                    app.chat_selection_anchor = Some(offset);
+                                                }
+                                                app.chat_cursor = Some(offset);
+                                            }
                                         }
                                     }
+                                }
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                if is_in_main_area
+                                    && mouse.column >= channels_width
+                                    && mouse.column < center_end_x
+                                    && mouse.row < input_top_y
+                                    && let Some(offset) = chat_offset_at_position(
+                                        app,
+                                        mouse.row,
+                                        mouse.column,
+                                        center_width,
+                                        channels_width,
+                                        input_top_y,
+                                    )
+                                {
+                                    app.active_pane = ActivePane::ChatMessages;
+                                    app.chat_selection_anchor.get_or_insert(
+                                        app.chat_cursor.unwrap_or(offset),
+                                    );
+                                    app.chat_cursor = Some(offset);
+                                    app.scroll_offset = 0;
                                 }
                             }
                             MouseEventKind::ScrollUp => {
@@ -936,6 +1026,39 @@ async fn refresh_channels_and_messages(app: &mut App) {
         }
         app.is_loading = false;
     }
+}
+
+fn chat_offset_at_position(
+    app: &App,
+    row: u16,
+    column: u16,
+    center_width: u16,
+    channels_width: u16,
+    input_top_y: u16,
+) -> Option<usize> {
+    if row <= 1 || row >= input_top_y {
+        return None;
+    }
+
+    let body_width = center_width.saturating_sub(4).max(10) as usize;
+    let chat_text = ui::chat_log_text(app, body_width);
+    let total_lines = chat_text.split('\n').count().max(1);
+    let visible_lines = input_top_y.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(visible_lines);
+    let scroll_y = max_scroll.saturating_sub(app.scroll_offset);
+    let line = scroll_y
+        .saturating_add(row.saturating_sub(2) as usize)
+        .min(total_lines.saturating_sub(1));
+    let column = column.saturating_sub(channels_width.saturating_add(1)) as usize;
+
+    let mut offset = 0;
+    for (index, text_line) in chat_text.split('\n').enumerate() {
+        if index == line {
+            return Some(offset + column.min(text_line.chars().count()));
+        }
+        offset += text_line.chars().count() + 1;
+    }
+    Some(chat_text.chars().count())
 }
 
 fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
@@ -1021,4 +1144,3 @@ fn resolve_token() -> Option<String> {
 
     None
 }
-

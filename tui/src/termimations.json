@@ -1,0 +1,10 @@
+[
+	{"name": "bobber_1",
+	 "animation": "◦°˚°◦ₒ˳ₒ",
+	 "classes": ["bobber"]
+	},
+	{"name": "blinker_1",
+	 "animation": "·•⊙◎○◎⊙•",
+	 "classes": ["blinker"]
+	}
+]

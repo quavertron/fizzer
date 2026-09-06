@@ -65,6 +65,7 @@ export const CHAT_AGENT_MODEL_PRESETS: Record<AgentId, { id: string; label: stri
     { id: 'flash_lite', label: 'Gemini Flash Lite (tier)' },
     { id: 'flash', label: 'Gemini Flash (tier)' },
     { id: 'pro', label: 'Gemini Pro (tier)' },
+    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
     { id: 'gemini-3.5-flash-extra-low', label: 'Gemini 3.5 Flash (Low)' },
     { id: 'gemini-3.5-flash-low', label: 'Gemini 3.5 Flash (Medium)' },
     { id: 'gemini-3-flash-agent', label: 'Gemini 3.5 Flash (High)' },

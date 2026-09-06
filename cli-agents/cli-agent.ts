@@ -1668,6 +1668,8 @@ const AGY_POLL_MS = 400;
  * response (no tools). Mid-tool gaps used to kill runs at ~10s.
  */
 const AGY_IDLE_AFTER_FINAL_POLLS = 8; // ~3.2s settle after final text
+/** Surface a terminal tool denial promptly instead of showing Thinking for 3 minutes. */
+const AGY_IDLE_AFTER_FAILED_TOOL_POLLS = 20; // ~8s for a recovery planner response
 /** Hard ceiling if the agent stalls mid-tool forever (still far above old 10s). */
 const AGY_STALL_POLLS = 450; // ~3 min with no new lines
 /** Wait for transcript.jsonl after new-conversation / send-message. */
@@ -1753,7 +1755,10 @@ function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
     grants.add(`${prefix}(${absCwd})`);
     grants.add(`${prefix}(${absCwd}/.env)`);
   }
-  for (const cmd of ['npm', 'node', 'npx', 'agentapi', 'curl', 'rg', 'git', 'bash', 'sh', 'tsx', 'tsc']) {
+  for (const cmd of [
+    'npm', 'node', 'npx', 'agentapi', 'curl', 'rg', 'git', 'bash', 'sh', 'tsx', 'tsc',
+    'cascade-chat', 'cascade-note', 'cascade-scratchpad',
+  ]) {
     grants.add(`command(${cmd})`);
   }
   data.permissionGrants = { permissionGrants: { allow: [...grants] } };
@@ -1810,7 +1815,7 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
   }
   // High flash / mid flash / generic flash → flash
   if (
-    /flash.*\(high\)|flash.*\(medium\)|m132\b|m20\b|m18\b|m21\b|gemini-3-flash|gemini-3\.5-flash|gemini-2\.5-flash|gemini-3\.1-flash/i.test(raw)
+    /flash.*\(high\)|flash.*\(medium\)|m132\b|m20\b|m18\b|m21\b|gemini-3-flash|gemini-3\.8-flash|gemini-3\.5-flash|gemini-2\.5-flash|gemini-3\.1-flash/i.test(raw)
     || lower === 'flash'
   ) {
     return 'flash';
@@ -1874,6 +1879,38 @@ function discoverAntigravityEnv(cwd?: string): Record<string, string> {
 
   let token: string | undefined;
   let port: string | undefined;
+
+  // macOS has no /proc: inspect the running language_server via `ps` (for the
+  // --csrf_token) and `lsof` (for its live listening port). The Antigravity log
+  // records a random port but is unreliable across restarts, so trust the socket.
+  if (process.platform === 'darwin') {
+    try {
+      const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf-8' });
+      const lines = (ps.stdout || '').split('\n');
+      for (const l of lines) {
+        // The real LS binary, not the "Antigravity Helper" Electron children.
+        if (!/\/language_server(\s|$)/.test(l)) continue;
+        const tokenMatch = l.match(/--csrf_token\s+(\S+)/);
+        const pidMatch = l.match(/^\s*(\d+)\s/);
+        if (!tokenMatch || !pidMatch) continue;
+        token = tokenMatch[1];
+        const pid = pidMatch[1];
+        const lsof = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pid], { encoding: 'utf-8' });
+        const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
+          .map((m) => parseInt(m[1], 10))
+          .filter((n) => Number.isFinite(n));
+        // The HTTP endpoint is the higher of the LS's paired ports.
+        if (ports.length > 0) port = String(Math.max(...ports));
+        break;
+      }
+    } catch { /* fall through to /proc + log scanning below */ }
+
+    if (port && token) {
+      env.ANTIGRAVITY_LS_ADDRESS = `127.0.0.1:${port}`;
+      env.ANTIGRAVITY_CSRF_TOKEN = token;
+      return env;
+    }
+  }
 
   try {
     for (const file of fs.readdirSync('/proc')) {
@@ -2152,11 +2189,13 @@ async function runAntigravity(
   let done = false;
   let sawFinalPlanner = false;
   let idleAfterFinal = 0;
+  let idleAfterFailedTool = 0;
   let stallPolls = 0;
   let approvePolls = 0;
   const pendingToolIds: string[] = [];
   const emittedTools = new Set<string>();
   let emittedText = false;
+  let failedToolError = '';
 
   const checkTranscript = (): void => {
     let content: string;
@@ -2171,6 +2210,9 @@ async function runAntigravity(
       if (sawFinalPlanner) {
         idleAfterFinal += 1;
         if (idleAfterFinal >= AGY_IDLE_AFTER_FINAL_POLLS) done = true;
+      } else if (failedToolError && pendingToolIds.length === 0) {
+        idleAfterFailedTool += 1;
+        if (idleAfterFailedTool >= AGY_IDLE_AFTER_FAILED_TOOL_POLLS) done = true;
       } else if (stallPolls >= AGY_STALL_POLLS) {
         emitHarness(emit, `\x1b[33m# stall timeout after ${Math.round((AGY_STALL_POLLS * AGY_POLL_MS) / 1000)}s with no transcript progress\x1b[0m\r\n`);
         done = true;
@@ -2180,6 +2222,7 @@ async function runAntigravity(
 
     stallPolls = 0;
     idleAfterFinal = 0;
+    idleAfterFailedTool = 0;
 
     for (let i = processedLines; i < lines.length; i++) {
       let step: AgyTranscriptStep;
@@ -2199,6 +2242,9 @@ async function runAntigravity(
       }
 
       if (source === 'MODEL' && type === 'PLANNER_RESPONSE') {
+        // A new planner response means the model recovered from any prior
+        // failed command and is continuing the turn.
+        failedToolError = '';
         const text = (step.content || '').trim();
         const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
         const isThinking = toolCalls.length > 0 || agyIsPlannerMonologue(text);
@@ -2274,7 +2320,10 @@ async function runAntigravity(
         if (type !== 'PLANNER_RESPONSE' && type !== 'EPHEMERAL_MESSAGE' && type !== 'CHECKPOINT') {
           const outText = String(step.content || '');
           const toolId = pendingToolIds.shift() || `agy-result-${step.step_index ?? i}`;
-          const isError = status === 'ERROR';
+          const commandFailed = /command exited with code\s+(?!0\b)\d+/i.test(outText)
+            || /operation not permitted|permission denied|awaiting approval/i.test(outText);
+          const isError = status === 'ERROR' || commandFailed;
+          if (isError) failedToolError = outText.trim().slice(-2000) || `${type} failed`;
           emit('user', {
             message: {
               content: [{
@@ -2316,6 +2365,10 @@ async function runAntigravity(
     approvePolls += 1;
     if (approvePolls % 15 === 0) agyTryAutoApprove(conversationId);
     if (!done) await sleep(AGY_POLL_MS);
+  }
+
+  if (failedToolError && !sawFinalPlanner) {
+    throw new Error(`Antigravity stopped after a failed tool call:\n${failedToolError}`);
   }
 
   if (!emittedText || !summary.trim() || agyIsPlannerMonologue(summary)) {
