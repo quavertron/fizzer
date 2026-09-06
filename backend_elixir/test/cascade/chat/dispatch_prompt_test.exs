@@ -89,7 +89,11 @@ defmodule Cascade.Chat.DispatchPromptTest do
       assert coordinator.prompt =~
                "Successful background work completes the mission automatically"
 
-      assert coordinator.prompt =~ "Reuse an existing mission for follow-ups and recovery"
+      assert coordinator.prompt =~ "Reuse a mission only for the same concrete outcome"
+      assert coordinator.prompt =~ "its follow-ups or recovery"
+      assert coordinator.prompt =~ "create separate missions for independently scoped outcomes"
+      assert coordinator.prompt =~ "Shared topic or channel alone does not justify reuse"
+      assert coordinator.prompt =~ "Do not cancel or recreate active work for regrouping"
       assert coordinator.prompt =~ "mission delegate --after <task-id>"
       assert coordinator.prompt =~ "corrections that must change active work now"
 
