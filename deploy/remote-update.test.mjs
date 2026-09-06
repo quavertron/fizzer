@@ -474,7 +474,7 @@ test('full-copy capacity is required only for migrations and rechecked before ga
     '  ensure_cutover_disk_capacity', '  CUTOVER_STARTED=1', '  close_maintenance_gate');
   assertOrderedWithin(functionBody('preflight_candidate'),
     '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
-    '  cleanup_preflight', '  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"');
+    '  cleanup_preflight_clones', '  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"');
   assert.match(source, /docker builder prune -af --keep-storage 1GB/);
 });
 
@@ -501,5 +501,24 @@ test('capacity includes WAL, corpus, reserve, and a separate snapshot filesystem
     assert.equal(check(required, 99999999).status, 0);
     assert.match(check(required - 1, 99999999).stderr, /cutover needs/);
     assert.match(check(required, 1048576).stderr, /snapshot filesystem lacks/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('preflight disposal releases large clones but retains rolling comparison evidence', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-clone-cleanup-'));
+  try {
+    for (const name of ['before.db', 'after.db', 'after.db-wal', 'before-schema.json', 'after-schema.json'])
+      fs.writeFileSync(path.join(directory, name), name);
+    for (const name of ['before-data', 'after-data', 'sqlite-scratch']) {
+      fs.mkdirSync(path.join(directory, name));
+      fs.writeFileSync(path.join(directory, name, 'corpus'), 'data');
+    }
+    const result = spawnSync('bash', ['-c', `set -euo pipefail
+      PREFLIGHT_DIR="$1"
+      ${functionBody('cleanup_preflight_clones')}
+      cleanup_preflight_clones`, 'test', directory], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readdirSync(directory).sort(), ['after-schema.json', 'before-schema.json']);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

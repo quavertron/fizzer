@@ -394,18 +394,13 @@ export function readSchemaFingerprintFromDb(db) {
 }
 
 export function readSchemaFingerprint(filename) {
-  const directory = databaseScratchDirectory('cascade-schema-fingerprint-');
-  const disposable = path.join(directory, 'database.sqlite');
+  // Read schema and ledger from one SQLite snapshot, including committed WAL.
+  // Copying the main file both scales with user data and misses WAL-only DDL.
+  const db = new Database(path.resolve(filename), { readonly: true, fileMustExist: true });
   try {
-    fs.copyFileSync(path.resolve(filename), disposable, fs.constants.COPYFILE_FICLONE);
-    const db = new Database(disposable, { readonly: true, fileMustExist: true });
-    try {
-      return readSchemaFingerprintFromDb(db);
-    } finally {
-      db.close();
-    }
+    return db.transaction(() => readSchemaFingerprintFromDb(db))();
   } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
+    db.close();
   }
 }
 

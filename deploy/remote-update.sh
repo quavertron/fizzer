@@ -411,6 +411,13 @@ cleanup_preflight() {
   fi
 }
 
+cleanup_preflight_clones() {
+  # Keep schema fingerprints: rolling candidates still compare against them.
+  local directory="${PREFLIGHT_DIR:?preflight directory is required}"
+  rm -rf -- "$directory"/before.db* "$directory"/after.db* \
+    "$directory/before-data" "$directory/after-data" "$directory/sqlite-scratch"
+}
+
 restore_database_snapshot() {
   if [[ -z "$SNAPSHOT_DB" || ! -f "$SNAPSHOT_DB" ]]; then
     echo "Error: no cutover database snapshot is available for rollback." >&2
@@ -652,7 +659,7 @@ preflight_candidate() {
   docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null
   # Compatibility and protocol checks are complete. Do not carry disposable
   # database/corpus clones into the rollback snapshot and live verification.
-  cleanup_preflight
+  cleanup_preflight_clones
   mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"
   chown -R 1000:1000 "$PREFLIGHT_DIR"
 }

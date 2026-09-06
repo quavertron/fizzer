@@ -940,3 +940,28 @@ test('child migration preserves existing tasks and starts with empty ownership a
     fs.rmSync(files.directory, { recursive: true, force: true });
   }
 });
+
+test('schema fingerprint sees committed WAL DDL without allocating a database copy', () => {
+  const files = fixture();
+  const writer = new Database(files.before);
+  const previousScratch = process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR;
+  try {
+    writer.pragma('journal_mode = WAL');
+    writer.pragma('wal_autocheckpoint = 0');
+    writer.exec(`CREATE TABLE wal_schema (id INTEGER PRIMARY KEY);
+      CREATE TABLE cascade_elixir_schema_migrations (version INTEGER, name TEXT, checksum TEXT);
+      INSERT INTO cascade_elixir_schema_migrations VALUES (42, 'wal_migration', 'checksum');`);
+    assert.ok(fs.statSync(`${files.before}-wal`).size > 0);
+    // A full-copy implementation cannot succeed with no usable scratch path.
+    process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR = files.before;
+    const fingerprint = readSchemaFingerprint(files.before);
+    assert.ok(fingerprint.objects.some(object => object.name === 'wal_schema'));
+    assert.deepEqual(fingerprint.migrations, [{ version: 42, name: 'wal_migration', checksum: 'checksum' }]);
+    assert.equal(writer.prepare('SELECT COUNT(*) FROM notes').pluck().get(), 1);
+  } finally {
+    if (previousScratch === undefined) delete process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR;
+    else process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR = previousScratch;
+    writer.close();
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
