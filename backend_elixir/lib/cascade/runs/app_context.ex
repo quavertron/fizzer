@@ -41,7 +41,9 @@ defmodule Cascade.Runs.AppContext do
       when is_binary(content) and byte_size(content) <= @max_bytes and is_binary(revision) do
     if String.valid?(content) do
       SQL.transaction(fn ->
-        if get(user_id).revision == revision do
+        current = get(user_id)
+
+        if current.revision == revision do
           next = Ecto.UUID.generate()
 
           SQL.exec(
@@ -54,7 +56,12 @@ defmodule Cascade.Runs.AppContext do
 
           {:ok, %{content: content, revision: next}}
         else
-          {:error, :conflict}
+          Cascade.RevisionConflict.error(
+            "Context changed; read again and merge before saving",
+            current.revision,
+            current,
+            %{"content" => content}
+          )
         end
       end)
     else

@@ -497,7 +497,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
     refute_receive {:published, _}
 
-    assert {:error, _} =
+    assert {:error, conflict} =
              Interpretation.record(
                c.user,
                c.channel,
@@ -507,6 +507,11 @@ defmodule Cascade.Missions.InterpretationTest do
                review.id,
                Cascade.Chat.Events.Noop
              )
+
+    assert conflict.currentRevision == state(c).revision
+    assert "assessment" in conflict.changedFields
+    refute conflict.changesSinceRevisionKnown
+    refute state(c).understanding["assessment"] == "Conflicting stale write"
 
     :ok = Runs.finish(review.id, "completed", "Published")
 

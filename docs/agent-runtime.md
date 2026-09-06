@@ -244,3 +244,13 @@ is no longer connected.
 Brief runner disconnects receive a grace period. After a server restart, the
 desktop reports active run IDs so ownership can be reclaimed before orphaned
 runs are failed.
+
+Revision conflicts from app context, coordinator continuation, and mission
+interpretation return HTTP 409 with `code: "revision_conflict"`, `currentRevision`,
+and `changedFields`. The CLI preserves this JSON in its error output and exits
+unsuccessfully without retrying the write. `changedFieldsBasis: "submitted_values"`
+means the listed persisted fields differ from the values in this request; omitted
+fields and publication-only inputs are not compared. These records have no
+historical baseline (`changesSinceRevisionKnown: false`), so an empty list does
+not mean nothing changed. Re-read the existing detail endpoint and merge
+intentionally before saving with the current revision.

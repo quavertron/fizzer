@@ -654,3 +654,29 @@ test('mission diagnose compares projections without treating recent events as li
   assert.equal(identity.providerEvidence.lastProviderEvent.at, null);
   assert.equal(requests.length, 20, 'exactly four GETs per invocation; no retries or mutations');
 });
+
+test('revision conflicts preserve structured recovery details without retrying the write', async (t) => {
+  let requests = 0;
+  const conflict = {
+    error: 'Continuation changed; read and reconcile before saving',
+    code: 'revision_conflict', currentRevision: 4, changedFields: ['status'],
+    changedFieldsBasis: 'submitted_values', changesSinceRevisionKnown: false,
+  };
+  const server = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume request */ }
+    requests++;
+    res.writeHead(409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(conflict));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address() as import('node:net').AddressInfo;
+  await assert.rejects(execFileAsync(process.execPath, [cli, 'continuation', '--status', 'completed', '--revision', '2'], {
+    env: { ...process.env, CASCADE_HELPER_CONFIG: '/nonexistent/conflict-test-config.json', CASCADE_NOTE_URL: `http://127.0.0.1:${address.port}`, CASCADE_NOTE_TOKEN: 'test-token', CASCADE_NOTE_VAULT: 'vault', CASCADE_CHAT_CHANNEL: 'channel' },
+  }), (error: any) => {
+    assert.equal(error.code, 1);
+    assert.ok(error.stderr.includes(JSON.stringify(conflict)), error.stderr);
+    return true;
+  });
+  assert.equal(requests, 1);
+});

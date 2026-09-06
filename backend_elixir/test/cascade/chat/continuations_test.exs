@@ -204,11 +204,16 @@ defmodule Cascade.Chat.ContinuationsTest do
                "summary" => "Existing worker owns delivery; wait for findings"
              })
 
-    assert {:error, _} =
+    assert {:error, conflict} =
              Continuations.record(c.user.id, c.channel, second.id, %{
                "revision" => current.revision,
                "status" => "pending"
              })
+
+    assert conflict.currentRevision == waiting.revision
+    assert conflict.changedFields == ["status"]
+    assert conflict.changesSinceRevisionKnown == false
+    assert state(c, second) == waiting
 
     Runs.finish(second.id, "completed", "Worker continues")
     Continuations.reconcile()

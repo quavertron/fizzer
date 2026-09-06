@@ -493,6 +493,15 @@ defmodule Cascade.Missions.Interpretation do
        else: {:error, "Only a live coordinator run can record interpretation; workers cannot"}
   end
 
+  defp revision_conflict(record, input, message) do
+    Cascade.RevisionConflict.error(
+      message,
+      record.revision,
+      Map.put(record.state, "fingerprint", record.pending),
+      input
+    )
+  end
+
   defp save!(user, update, input, record) do
     id = update.mission.id
     revision = input["revision"]
@@ -512,16 +521,21 @@ defmodule Cascade.Missions.Interpretation do
 
         if result.inputFingerprint == fingerprint(input),
           do: {:ok, result},
-          else: {:error, "Interpretation changed; read current state and merge"}
+          else:
+            revision_conflict(
+              record,
+              input,
+              "Interpretation changed; read current state and merge"
+            )
 
       record.stopped ->
         {:error, "Interpretation was stopped"}
 
       revision != record.revision ->
-        {:error, "Interpretation changed; read current state and merge"}
+        revision_conflict(record, input, "Interpretation changed; read current state and merge")
 
       (input["fingerprint"] || "") != record.pending ->
-        {:error, "Evidence batch changed; read current interpretation"}
+        revision_conflict(record, input, "Evidence batch changed; read current interpretation")
 
       true ->
         state = merge_state(record.state, input)

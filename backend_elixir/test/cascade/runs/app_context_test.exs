@@ -40,7 +40,13 @@ defmodule Cascade.Runs.AppContextTest do
     assert saved.status == 200
     assert body(request(token, :get)) == body(saved)
     assert AppContext.get(ctx.other.id).content == AppContext.seed()
-    assert request(token, :put, %{content: "stale", revision: original["revision"]}).status == 409
+    conflict = request(token, :put, %{content: "stale", revision: original["revision"]})
+    assert conflict.status == 409
+    assert body(conflict)["currentRevision"] == body(saved)["revision"]
+    assert body(conflict)["changedFields"] == ["content"]
+    assert body(conflict)["changedFieldsBasis"] == "submitted_values"
+    assert body(conflict)["changesSinceRevisionKnown"] == false
+    assert AppContext.get(ctx.user.id).content == body(saved)["content"]
     assert request(token, :put, %{content: "missing"}).status == 400
 
     assert request(token, :put, %{
@@ -61,7 +67,7 @@ defmodule Cascade.Runs.AppContextTest do
       |> Enum.map(fn {:ok, result} -> result end)
 
     assert Enum.count(results, &match?({:ok, _}, &1)) == 1
-    assert Enum.count(results, &(&1 == {:error, :conflict})) == 1
+    assert Enum.count(results, &match?({:error, %{code: "revision_conflict"}}, &1)) == 1
   end
 
   test "fresh coordinator and worker payloads and resumed contexts load durable account guidance",

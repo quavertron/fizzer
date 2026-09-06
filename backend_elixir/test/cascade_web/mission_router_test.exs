@@ -755,6 +755,12 @@ defmodule CascadeWeb.MissionRouterTest do
     posted = request(ctx, :post, path, input, run.id)
     assert posted.status == 200
     assert request(ctx, :post, path, input, run.id).resp_body == posted.resp_body
+    conflict = request(ctx, :post, path, %{input | assessment: "Stale overwrite"}, run.id)
+    assert conflict.status == 409
+    assert json(conflict)["currentRevision"] == json(posted)["revision"]
+    assert "assessment" in json(conflict)["changedFields"]
+    assert json(conflict)["changedFieldsBasis"] == "submitted_values"
+    refute json(conflict)["changesSinceRevisionKnown"]
     {:ok, message} = Messages.get(ctx.channel.id, ctx.user.id, json(posted)["messageId"])
     assert message.body == input.body
     assert message.registrationId == ctx.coordinator.id
@@ -788,7 +794,11 @@ defmodule CascadeWeb.MissionRouterTest do
 
     assert request(ctx, :post, path, input).status == 409
     assert request(ctx, :post, path, input, run.id).status == 200
-    assert request(ctx, :post, path, input, run.id).status == 409
+    conflict = request(ctx, :post, path, input, run.id)
+    assert conflict.status == 409
+    assert json(conflict)["currentRevision"] == input.revision + 1
+    assert json(conflict)["changedFields"] == []
+    refute json(conflict)["changesSinceRevisionKnown"]
     RunStore.finish(run.id, "completed", "Waiting")
     assert request(ctx, :post, path, %{input | revision: 1}, run.id).status == 409
   end

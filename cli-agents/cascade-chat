@@ -341,7 +341,7 @@ async function api(url, token, method, path, body) {
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${json.error || text}`);
+  if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${json.code === 'revision_conflict' ? JSON.stringify(json) : (json.error || text)}`);
   return json;
 }
 

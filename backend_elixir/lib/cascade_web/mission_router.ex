@@ -412,6 +412,9 @@ defmodule CascadeWeb.MissionRouter do
     :ok
   end
 
+  defp route_error(conn, _status, {:error, %{code: "revision_conflict"} = conflict}, _fallback),
+    do: JSON.send(conn, 409, conflict)
+
   defp route_error(conn, status, {:error, message}, fallback),
     do: JSON.send(conn, status, %{error: if(is_binary(message), do: message, else: fallback)})
 

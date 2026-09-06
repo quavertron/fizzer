@@ -246,7 +246,17 @@ defmodule Cascade.Chat.Continuations do
                SQL.one("SELECT status FROM runs WHERE id=?", [run]),
              s <- scope(run, true),
              old <- row(s),
-             true <- input["revision"] == old.revision,
+             :ok <-
+               if(input["revision"] == old.revision,
+                 do: :ok,
+                 else:
+                   Cascade.RevisionConflict.error(
+                     "Continuation changed; read and reconcile before saving",
+                     old.revision,
+                     public(old),
+                     input
+                   )
+               ),
              status when status in ["pending", "waiting", "completed", "canceled"] <-
                input["status"] do
           summary = String.slice(to_string(input["summary"] || old.summary), 0, 8000)

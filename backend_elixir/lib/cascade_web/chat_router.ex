@@ -37,8 +37,8 @@ defmodule CascadeWeb.ChatRouter do
         {:ok, document} ->
           JSON.send(conn, 200, document)
 
-        {:error, :conflict} ->
-          JSON.send(conn, 409, %{error: "Context changed; read again and merge before saving"})
+        {:error, %{code: "revision_conflict"} = conflict} ->
+          JSON.send(conn, 409, conflict)
 
         {:error, :invalid} ->
           JSON.send(conn, 400, %{
