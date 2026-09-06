@@ -1325,6 +1325,80 @@ defmodule Cascade.Missions.MissionStateTest do
     end
   end
 
+  test "recovered task completion uses its bound failed run without rewriting failure or repeating work",
+       ctx do
+    {:ok, created} = mission(ctx, "Recovered delivered outcome")
+    {:ok, added} = task(ctx, created.mission.id, "Delivery")
+    [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Delivery", "codex", chat_dispatch_id: dispatch.id)
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(dispatch.id, run.id)
+    :ok = RunStore.finish(run.id, "failed", "Provider disconnected")
+    {:ok, _} = Scheduler.settle_run(run.id, "failed", "Provider disconnected")
+
+    assert {:error, "Mission has no completed worker evidence"} =
+             finish_recovered(ctx, created.mission)
+
+    evidence =
+      "Recovered existing commit; required checks passed; exact Actions deployment verified"
+
+    {:ok, completed} =
+      Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+        status: "completed",
+        summary: evidence
+      })
+
+    assert completed.mission.status == "reviewing"
+    # Late settlement must not erase the recovered delivery or revive a worker.
+    {:ok, _} = Scheduler.settle_run(run.id, "failed", "Provider disconnected")
+    assert Scheduler.schedule(created.mission.id).dispatches == []
+
+    assert ["failed", "Provider disconnected"] ==
+             SQL.one("SELECT status,summary FROM runs WHERE id=?", [run.id])
+
+    assert ["completed", ^evidence] =
+             SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id=?", [added.task.id])
+
+    assert {:error,
+            "Coordinator verification is required: record observed checks and artifact or live revision evidence"} =
+             Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               status: "completed"
+             })
+
+    assert {:error, "Mission workers cannot finish the mission"} =
+             Store.finish(
+               ctx.user.id,
+               ctx.channel.id,
+               created.mission.id,
+               %{
+                 coordinatorRegistrationId: ctx.coordinator.id,
+                 status: "completed",
+                 verification: evidence
+               }, current_run_id: run.id)
+
+    # Stop, live runs, and foreign bindings must still fail evidence qualification.
+    for status <- ["running", "canceled"] do
+      SQL.exec("UPDATE runs SET status=? WHERE id=?", [status, run.id])
+
+      assert {:error, "Mission has no completed worker evidence"} =
+               finish_recovered(ctx, created.mission)
+    end
+
+    SQL.exec("UPDATE runs SET status='failed',chat_dispatch_id=NULL WHERE id=?", [run.id])
+
+    assert {:error, "Mission has no completed worker evidence"} =
+             finish_recovered(ctx, created.mission)
+
+    SQL.exec("UPDATE runs SET chat_dispatch_id=? WHERE id=?", [dispatch.id, run.id])
+    assert {:ok, closed} = finish_recovered(ctx, created.mission)
+    assert closed.mission.status == "completed"
+    assert ["failed"] == SQL.one("SELECT status FROM runs WHERE id=?", [run.id])
+  end
+
   test "manual completion without a bound worker run cannot enter review or finish", ctx do
     {:ok, created} = mission(ctx, "No borrowed evidence")
     {:ok, added} = task(ctx, created.mission.id, "Pending worker")

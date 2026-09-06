@@ -332,3 +332,38 @@ test('attachment opens note asset paths returned by message detail', async (t) =
   const output = JSON.parse(result.stdout);
   assert.deepEqual(fs.readFileSync(output.files[0].path), bytes);
 });
+
+
+test('mission bookkeeping retries refused local connections only, with a fixed bound', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-connection-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const hook = path.join(dir, 'fetch.cjs');
+  const count = path.join(dir, 'attempts');
+  fs.writeFileSync(hook, `
+    const fs = require('node:fs');
+    let calls = 0;
+    global.fetch = async () => {
+      fs.writeFileSync(process.env.TEST_COUNT, String(++calls));
+      if (calls <= Number(process.env.TEST_REFUSALS)) {
+        throw new TypeError('fetch failed', { cause: { code: process.env.TEST_CODE } });
+      }
+      return new Response(JSON.stringify({ mission: { id: 'm' }, error: 'Authority denied' }),
+        { status: Number(process.env.TEST_STATUS) });
+    };
+  `);
+  const invoke = (refusals: number, code = 'ECONNREFUSED', status = 200, host = '127.0.0.1') =>
+    execFileAsync(process.execPath, ['--require', hook, cli, 'mission', 'update',
+      '--task', 'task-1', '--status', 'completed', '--summary', 'Verified delivery',
+      '--url', `http://${host}:34567`, '--token', 'test', '--vault', 'v', '--channel', 'c'],
+      { env: { ...process.env, CASCADE_HELPER_CONFIG: path.join(dir, 'absent'),
+        TEST_COUNT: count, TEST_REFUSALS: String(refusals), TEST_CODE: code, TEST_STATUS: String(status) } });
+  const recovered = await invoke(2);
+  assert.match(recovered.stdout, /task task-1 → completed/);
+  assert.equal(fs.readFileSync(count, 'utf8'), '3');
+  await assert.rejects(invoke(3));
+  assert.equal(fs.readFileSync(count, 'utf8'), '3');
+  for (const args of [[1, 'ECONNRESET', 200], [0, 'ECONNREFUSED', 403], [1, 'ECONNREFUSED', 200, 'example.com']] as const) {
+    await assert.rejects(invoke(args[0], args[1], args[2], args[3]));
+    assert.equal(fs.readFileSync(count, 'utf8'), '1');
+  }
+});

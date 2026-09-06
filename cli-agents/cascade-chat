@@ -207,11 +207,23 @@ async function api(url, token, method, path, body) {
   const runId = String(process.env.CASCADE_RUN_ID || '').trim();
   if (runId) headers['x-cascade-run-id'] = runId;
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(`${url}${path}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(`${url}${path}`, {
+        method,
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      break;
+    } catch (error) {
+      // A refused loopback connection sent no request. Retry that local restart
+      // briefly; never replay an ambiguous write or bypass an HTTP rejection.
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname);
+      if (!local || error?.cause?.code !== 'ECONNREFUSED' || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }

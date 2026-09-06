@@ -1348,10 +1348,14 @@ defmodule Cascade.Missions.Store do
     do: false
 
   defp direct_evidence_ready?(task, mission) do
+    # Task completion records the delivered outcome; run status records provider
+    # execution. A recovered delivery may complete a task whose bound run failed.
+    # Keep that failure intact, require a settled bound run, and leave observed
+    # verification and coordinator authority to finish/5. Canceled runs never qualify.
     run_produced =
       is_integer(task.run_id) and task.run_id > 0 and task.dispatch_id not in [nil, ""] and
         SQL.one(
-          "SELECT COUNT(*) FROM runs WHERE id=? AND chat_dispatch_id=? AND status='completed'",
+          "SELECT COUNT(*) FROM runs WHERE id=? AND chat_dispatch_id=? AND status IN ('completed','failed')",
           [task.run_id, task.dispatch_id]
         ) == [1]
 
