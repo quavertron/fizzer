@@ -90,6 +90,12 @@ defmodule Cascade.Chat.NextStepsTest do
     prompt = context(c)
     assert prompt =~ "fizzer-next:#{c.source.id}"
     assert prompt =~ "Do not suggest for weak evidence"
+    assert prompt =~ "Actively discover worthwhile new opportunities"
+    assert prompt =~ "do not require a supplied unresolved issue"
+    assert prompt =~ "features, experiments and simplifications"
+    assert prompt =~ "no tools that implement proposed work until owner acceptance"
+    assert prompt =~ "Do not fabricate defects or optimize for spending tokens"
+    refute prompt =~ "if the supplied evidence shows a concrete unresolved need"
 
     assert prompt =~
              "Natural-language acceptance by the owner authorizes only the proposed bounded task"

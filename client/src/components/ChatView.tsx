@@ -30,8 +30,8 @@ import { ChatWorkTrace } from './ChatWorkTrace';
 import { ReportDialog } from './ReportDialog';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { segmentTranscript, workTracePeek, type ChatMessageGroup } from '../chat/workTrace';
-import { useChannelMessages } from '../chat/messageStore';
-import { isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
+import { chatMessageStore, useChannelMessages } from '../chat/messageStore';
+import { applyRemoteChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
 import {
   CHAT_NOTE_MARKER,
 } from '../chat/shared';
@@ -302,6 +302,75 @@ export const ChatView = memo(function ChatView({
     });
     return sortChatMessages(visible);
   }, [messages]);
+  const historySentinelRef = useRef<HTMLDivElement | null>(null);
+  const historyRequestRef = useRef<AbortController | null>(null);
+  const historyCursorRef = useRef<number | null>(null);
+  const historyAnchorRef = useRef<{ id: string; top: number } | null>(null);
+  const [hasOlderHistory, setHasOlderHistory] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  useEffect(() => {
+    historyCursorRef.current = null;
+    historyAnchorRef.current = null;
+    setHasOlderHistory(true);
+    setLoadingHistory(false);
+    setHistoryError('');
+    return () => { historyRequestRef.current?.abort(); historyRequestRef.current = null; };
+  }, [channelId]);
+
+  const loadOlderHistory = useCallback(async () => {
+    if (!vaultId || isLoadingMessages || !hasOlderHistory || historyRequestRef.current) return;
+    const controller = new AbortController();
+    historyRequestRef.current = controller;
+    setLoadingHistory(true);
+    setHistoryError('');
+    const seqs = chatMessageStore.getChannel(channelId).flatMap(row => row.seq == null ? [] : [row.seq]);
+    const cursor = historyCursorRef.current ?? (seqs.length ? Math.min(...seqs) : null);
+    try {
+      const page = await api<{ messages: ChatMessage[]; beforeSeq: number | null; hasMore: boolean }>(
+        `/api/vaults/${vaultId}/channels/${channelId}/messages?detail=list&limit=120${cursor == null ? '' : `&beforeSeq=${cursor}`}`,
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      const root = messagesRef.current;
+      const anchor = root && [...root.querySelectorAll<HTMLElement>('[data-message-id]')]
+        .find(el => el.getBoundingClientRect().bottom > root.getBoundingClientRect().top);
+      historyAnchorRef.current = anchor ? { id: anchor.dataset.messageId!, top: anchor.getBoundingClientRect().top } : null;
+      historyCursorRef.current = page.beforeSeq;
+      setHasOlderHistory(page.hasMore);
+      chatMessageStore.update(channelId, rows => page.messages.reduce((merged, row) => (
+        merged.some(existing => existing.id === row.id) ? merged : applyRemoteChatMessage(merged, row)
+      ), rows));
+    } catch (error) {
+      if (!controller.signal.aborted) setHistoryError(error instanceof Error ? error.message : 'Could not load history');
+    } finally {
+      if (historyRequestRef.current === controller) {
+        historyRequestRef.current = null;
+        setLoadingHistory(false);
+      }
+    }
+  }, [vaultId, channelId, isLoadingMessages, hasOlderHistory]);
+
+  useLayoutEffect(() => {
+    const anchor = historyAnchorRef.current;
+    historyAnchorRef.current = null;
+    if (!anchor || !messagesRef.current) return;
+    const row = [...messagesRef.current.querySelectorAll<HTMLElement>('[data-message-id]')]
+      .find(el => el.dataset.messageId === anchor.id);
+    if (row) messagesRef.current.scrollTop += row.getBoundingClientRect().top - anchor.top;
+  }, [messages]);
+
+  useEffect(() => {
+    const root = messagesRef.current;
+    const sentinel = historySentinelRef.current;
+    if (!root || !sentinel || !vaultId || !hasOlderHistory || loadingHistory || historyError || isLoadingMessages) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadOlderHistory();
+    }, { root, rootMargin: '160px 0px 0px 0px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [vaultId, channelId, hasOlderHistory, loadingHistory, historyError, isLoadingMessages, loadOlderHistory]);
+
   // Grouping identity cache removed: transcript segments are recomputed with
   // message-ref equality via sortedMessages + segmentTranscript.
   // Lazily hydrate messages whose data-URL images the list payload stripped.
@@ -814,7 +883,7 @@ export const ChatView = memo(function ChatView({
         <header className="chat-header">
           <div className="chat-header-copy">
             <h2>{channelName}</h2>
-            <span>{sortedMessages.length} messages</span>
+            <span>{sortedMessages.filter(message => !isLiveAgentStatus(message.status)).length} messages loaded</span>
           </div>
           {vaultId && !directMessage && (
             <button
@@ -870,6 +939,12 @@ export const ChatView = memo(function ChatView({
           }}
         >
           <div ref={messagesContentRef} className="chat-messages-content">
+          {vaultId && <div ref={historySentinelRef} className="chat-history-sentinel">
+            {hasOlderHistory ? <button type="button" disabled={loadingHistory || isLoadingMessages}
+              onClick={() => void loadOlderHistory()}>{loadingHistory ? 'Loading older messages…' : historyError ? 'Retry older messages' : 'Load older messages'}</button>
+              : <span>Beginning of conversation</span>}
+            {historyError && <span role="alert">{historyError}</span>}
+          </div>}
           {/* Never blank an already-loaded transcript for a background refresh. */}
           {isLoadingMessages && sortedMessages.length === 0 ? (
             <div className="chat-empty" aria-live="polite">

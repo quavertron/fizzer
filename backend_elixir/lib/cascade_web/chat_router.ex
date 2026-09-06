@@ -76,11 +76,15 @@ defmodule CascadeWeb.ChatRouter do
       detail = if query(conn, "detail") == "full", do: :full, else: :list
       limit = parse_number(query(conn, "limit"))
 
-      respond(
-        conn,
-        Messages.list(channel_id, user.id, detail: detail, limit: limit || 120),
-        :messages
-      )
+      case Messages.list(channel_id, user.id,
+             detail: detail,
+             limit: limit || 120,
+             before_seq: parse_number(query(conn, "beforeSeq")),
+             page: true
+           ) do
+        {:ok, page} -> JSON.send(conn, 200, page)
+        error -> domain_error(conn, error)
+      end
     end)
   end
 

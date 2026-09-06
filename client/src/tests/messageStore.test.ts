@@ -33,6 +33,18 @@ describe('channel snapshot recovery', () => {
     expect(reconcileChatMessageSnapshot([newer], recovered, baseline)).toEqual([newer]);
   });
 
+  it('retains loaded historical pages across recent snapshots and concurrent realtime changes', async () => {
+    const old = { ...message('historical', 'recovery'), seq: 2 };
+    const deleted = { ...message('deleted-recent', 'recovery'), seq: 130 };
+    const recent = { ...message('recent', 'recovery'), seq: 140 };
+    const snapshot = captureChatMessageSnapshotBaseline([old, deleted]);
+    vi.mocked(api).mockResolvedValueOnce({ messages: [recent], beforeSeq: 120, hasMore: true });
+    const remote = await fetchChatMessageSnapshot('vault', 'recovery', snapshot);
+    const arrived = { ...message('arrived', 'recovery'), seq: 141 };
+    expect(reconcileChatMessageSnapshot([old, deleted, arrived], remote, snapshot)).toEqual([old, recent, arrived]);
+    expect(reconcileChatMessageSnapshot([arrived], remote, snapshot)).toEqual([recent, arrived]);
+  });
+
   it('discovers server-owned queued rows without an optimistic agent shell', async () => {
     const queued = { ...live, status: 'queued' as const, body: 'Queued...' };
     vi.mocked(api).mockResolvedValueOnce({ messages: [queued] });
@@ -140,3 +152,13 @@ describe('chatMessageStore', () => {
     expect(chatMessageStore.getAgentActivity()[channelId]).toBeUndefined();
   });
 });
+
+ it('hides completed empty dispatch shells consistently with snapshots while preserving queued activity', () => {
+   const channel = 'terminal-shell';
+   const row = { ...message('shell', channel), agentId: 'codex', body: 'Thinking...', status: 'queued' as const };
+   chatMessageStore.set(channel, [row]);
+   expect(chatMessageStore.getChannel(channel)).toEqual([row]);
+   chatMessageStore.update(channel, () => [{ ...row, status: undefined }]);
+   expect(chatMessageStore.getChannel(channel)).toEqual([]);
+   chatMessageStore.remove(channel);
+ });

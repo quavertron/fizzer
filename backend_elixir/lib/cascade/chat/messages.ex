@@ -17,11 +17,14 @@ defmodule Cascade.Chat.Messages do
       columns = if detail == :full, do: @full_columns, else: @list_columns
 
       {cutoff, params} =
-        case Keyword.get(opts, :through_message_id) do
-          nil ->
+        case {Keyword.get(opts, :before_seq), Keyword.get(opts, :through_message_id)} do
+          {seq, _} when is_integer(seq) and seq > 0 ->
+            {" AND rowid < ?", [route.sourceChannelId, seq, limit]}
+
+          {_, nil} ->
             {"", [route.sourceChannelId, limit]}
 
-          id ->
+          {_, id} ->
             {" AND rowid <= (SELECT rowid FROM chat_messages WHERE id=? AND channel_id=?)",
              [route.sourceChannelId, id, route.sourceChannelId, limit]}
         end
@@ -33,9 +36,27 @@ defmodule Cascade.Chat.Messages do
         )
         |> Enum.reverse()
         |> Enum.map(&row_to_message(&1, detail, route.localChannelId))
-        |> Enum.reject(&terminal_shell?/1)
 
-      {:ok, messages}
+      visible = Enum.reject(messages, &terminal_shell?/1)
+
+      if Keyword.get(opts, :page, false) do
+        cursor =
+          case messages do
+            [first | _] -> first.seq
+            _ -> nil
+          end
+
+        has_more =
+          cursor != nil and
+            SQL.one(
+              "SELECT 1 FROM chat_messages WHERE channel_id=? AND id NOT LIKE 'sys-next-%' AND rowid < ? LIMIT 1",
+              [route.sourceChannelId, cursor]
+            ) != nil
+
+        {:ok, %{messages: visible, beforeSeq: cursor, hasMore: has_more}}
+      else
+        {:ok, visible}
+      end
     end
   end
 
@@ -1109,7 +1130,7 @@ defmodule Cascade.Chat.Messages do
 
   defp terminal_shell?(message),
     do:
-      message[:agentId] && message[:status] != "running" &&
+      message[:agentId] && message[:status] not in ["queued", "sending", "running"] &&
         String.trim(message.body || "") in ["", "Thinking..."]
 
   defp forwardable?(message),

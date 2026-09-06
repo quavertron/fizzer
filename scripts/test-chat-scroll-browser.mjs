@@ -10,7 +10,8 @@ const fixture = `<!doctype html><html><body><div id="root"></div>
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ChatView } from '/src/components/ChatView.tsx';
-import { chatMessageStore } from '/src/chat/messageStore.ts';
+import { chatMessageStore, fetchChatMessageSnapshot } from '/src/chat/messageStore.ts';
+import { captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '/src/chat/runBlocks.ts';
 import '/src/index.css';
 const noop = () => {};
 let count = 0;
@@ -27,10 +28,17 @@ window.setAgentStatus = status => chatMessageStore.update('scroll-test', rows =>
 window.appendRow = () => chatMessageStore.update('scroll-test', rows => [...rows, row()]);
 const root = ReactDOM.createRoot(document.getElementById('root'));
 window.switchChannel = (channelId = 'scroll-test') => root.render(React.createElement(ChatView, {
-  channelId, channelName: 'Scroll test', currentUser: 'reader',
+  channelId, channelName: 'Scroll test', currentUser: 'reader', vaultId: channelId === 'history-test' ? 'vault' : undefined,
   presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [], sidebarMode: 'hidden',
   onRegisterAgent: noop, onRemoveAgent: noop, onInviteUser: async () => {}, onSendMessage: noop, onCancelRun: noop,
 }));
+window.historyRows = () => chatMessageStore.getChannel('history-test');
+window.refreshHistory = async () => {
+  const baseline = captureChatMessageSnapshotBaseline(window.historyRows());
+  const remote = await fetchChatMessageSnapshot('vault', 'history-test', baseline);
+  chatMessageStore.update('history-test', rows => reconcileChatMessageSnapshot(rows, remote, baseline));
+};
+window.seedHistory = rows => chatMessageStore.set('history-test', rows);
 window.switchChannel();
 </script><style>html,body,#root{height:100%;margin:0}#root{display:flex}</style></body></html>`;
 const server = await createServer({ root: new URL('../client', import.meta.url).pathname,
@@ -104,6 +112,44 @@ try {
   await page.evaluate(() => window.switchChannel('other-channel'));
   await page.waitForTimeout(300);
   assert.ok(await bottomDistance() <= 1, 'channel switching resets history detachment');
+  const historicalRow = seq => ({ id: `history-${seq}`, seq, channelId: 'history-test', author: 'reader',
+    body: `Historical message ${seq}`, createdAt: new Date(1700000000000 + seq * 60000).toISOString() });
+  const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => historicalRow(from + i));
+  const cursors = [];
+  let refreshCount = 0;
+  await page.route('**/api/vaults/vault/channels/history-test/messages?**', async route => {
+    const before = Number(new URL(route.request().url()).searchParams.get('beforeSeq'));
+    if (!before) {
+      refreshCount++;
+      return route.fulfill({ json: { messages: range(361, 481), beforeSeq: 361, hasMore: true } });
+    }
+    cursors.push(before);
+    if (before === 361) return route.fulfill({ json: { messages: range(241, 360), beforeSeq: 241, hasMore: true } });
+    if (before === 241) return route.fulfill({ json: { messages: [], beforeSeq: 121, hasMore: true } });
+    if (before === 121) return route.fulfill({ json: { messages: range(1, 120), beforeSeq: 1, hasMore: false } });
+    throw new Error(`Unexpected history cursor ${before}`);
+  });
+  await page.evaluate(rows => { window.seedHistory(rows); window.switchChannel('history-test'); }, range(361, 480));
+  await page.waitForTimeout(350);
+  assert.deepEqual(cursors, [], 'history sentinel is bound to scroller and does not fetch at live edge');
+  await pane.hover();
+  await page.mouse.wheel(0, -100000);
+  await page.waitForFunction(() => window.historyRows().length === 240);
+  await page.waitForTimeout(250);
+  assert.ok(await pane.evaluate(el => el.scrollTop) > 100, 'prepend preserves the reading anchor');
+  await page.evaluate(() => window.refreshHistory());
+  assert.equal(await page.evaluate(() => window.historyRows().length), 241, 'recent refresh retains older page and new realtime row');
+  await page.mouse.wheel(0, -100000);
+  await page.waitForFunction(() => window.historyRows().some(row => row.seq === 1));
+  assert.deepEqual(cursors, [361, 241, 121], 'sentinel crosses an entirely hidden page without false exhaustion');
+  await page.evaluate(() => window.refreshHistory());
+  assert.equal(await page.evaluate(() => window.historyRows().length), 361);
+  assert.equal(await page.evaluate(() => new Set(window.historyRows().map(row => row.id)).size), 361, 'merge deduplicates pages and snapshots');
+  await page.mouse.wheel(0, -100000);
+  await page.waitForTimeout(300);
+  assert.deepEqual(cursors, [361, 241, 121], 'exhausted history stays exhausted across recent refresh');
+  assert.equal(refreshCount, 2);
+  assert.ok(await page.getByText('Beginning of conversation').isVisible());
   assert.deepEqual(errors, [], 'chat fixture has no runtime errors');
   console.log('Chat scrolling browser regression passed');
 } finally {

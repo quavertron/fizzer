@@ -27,7 +27,7 @@ export async function fetchChatMessageSnapshot(
   signal?: AbortSignal,
 ): Promise<ChatMessage[]> {
   const path = `/api/vaults/${vaultId}/channels/${channelId}/messages`;
-  const { messages = [] } = await api<{ messages: ChatMessage[] }>(`${path}?detail=list&limit=120`, { signal });
+  const { messages = [], beforeSeq } = await api<{ messages: ChatMessage[]; beforeSeq?: number }>(`${path}?detail=list&limit=120`, { signal });
   signal?.throwIfAborted();
   const ids = new Set(messages.map((message) => message.id));
   const missing = [...baseline.ids.values()].filter((message) => (
@@ -44,7 +44,13 @@ export async function fetchChatMessageSnapshot(
     }
   }));
   signal?.throwIfAborted();
-  return [...confirmed.filter((message): message is ChatMessage => message != null), ...messages];
+  // The snapshot is authoritative only within its raw database window. Older
+  // loaded pages are not deletions; realtime still applies explicit removals.
+  const older = [...baseline.ids.values()].filter(message => (
+    beforeSeq != null && message.seq != null && message.seq < beforeSeq
+    && !isLiveAgentStatus(message.status) && !ids.has(message.id)
+  ));
+  return [...older, ...confirmed.filter((message): message is ChatMessage => message != null), ...messages];
 }
 
 const EMPTY: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[];
@@ -68,9 +74,10 @@ function isFinishedAgent(message: ChatMessage): boolean {
 
 // Checkpoint envelopes still reach the dispatcher; they are never conversation.
 function visibleMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.some((message) => message.id.startsWith('sys-next-'))
-    ? messages.filter((message) => !message.id.startsWith('sys-next-'))
-    : messages;
+  const hidden = (message: ChatMessage) => message.id.startsWith('sys-next-')
+    || (Boolean(message.agentId) && !isLiveAgentStatus(message.status)
+      && ['', 'Thinking...'].includes(message.body.trim()));
+  return messages.some(hidden) ? messages.filter(message => !hidden(message)) : messages;
 }
 
 class ChatMessageStore {
