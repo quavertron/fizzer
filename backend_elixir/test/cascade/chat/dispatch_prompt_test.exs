@@ -67,8 +67,8 @@ defmodule Cascade.Chat.DispatchPromptTest do
     for resume <- [nil, "session-id"] do
       worker = build(c, trigger, settings, resume)
       assert worker.prompt =~ "owner-waived optional verification must not make the task blocked"
-      assert worker.prompt =~ "Delivered, awaiting your feedback"
-      assert worker.prompt =~ "explicitly disclose any unverified behavior"
+      assert worker.prompt =~ "State the result plainly"
+      assert worker.prompt =~ "disclose material unverified behavior"
       assert worker.prompt =~ "required-check, deployment, or authority blockers blocked"
       assert worker.prompt =~ "mission worker, not the channel control plane"
       assert worker.prompt =~ "--task task-1 --status blocked"
@@ -82,16 +82,10 @@ defmodule Cascade.Chat.DispatchPromptTest do
     coordinator = build(c, trigger, %{orchestrator: true}, "session-id")
     assert coordinator.prompt =~ "mission start --control-plane"
     assert coordinator.prompt =~ "mission delegate --anonymous"
-    assert coordinator.prompt =~ "do not plan, verify, poll, or wait"
-    assert coordinator.prompt =~ "inspect `cascade-chat mission list` for existing ownership"
-
-    assert coordinator.prompt =~
-             "use `cascade-chat mission steer` for corrections to a running task"
-
-    assert coordinator.prompt =~
-             "Keep implementation, recovery, verification, and delivery under that same owner"
-
-    assert coordinator.prompt =~ "Honor explicit Stop; do not retry or restart canceled work"
+    assert coordinator.prompt =~ "handle bookkeeping directly"
+    assert coordinator.prompt =~ "Successful background work completes the mission automatically"
+    assert coordinator.prompt =~ "Reuse an existing mission for follow-ups and recovery"
+    assert coordinator.prompt =~ "honor explicit Stop"
     refute coordinator.prompt =~ "for actionable work immediately use"
 
     ambient = build(c, trigger, %{ambientGroupChat: true, finalReplyOnly: true})

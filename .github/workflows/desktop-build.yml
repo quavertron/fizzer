@@ -9,6 +9,14 @@ name: Desktop builds
 on:
   push:
     branches: [master]
+    paths:
+      - 'cascade-electron/**'
+      - 'cli-agents/**'
+      - 'scripts/build-desktop-runtime.mjs'
+      - 'scripts/rebuild-natives.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/desktop-build.yml'
     tags: ['v*']
   workflow_dispatch:
 

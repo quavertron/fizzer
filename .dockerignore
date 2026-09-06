@@ -32,3 +32,7 @@ scripts/*
 # build (32MB+ blobs break SSH deploys mid-npm-ci).
 **/*.apk
 client/public/cascade-android.apk
+
+# Tests are not runtime inputs.
+backend_elixir/test
+**/*.test.*

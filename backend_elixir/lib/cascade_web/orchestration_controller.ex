@@ -788,15 +788,6 @@ defmodule CascadeWeb.OrchestrationController do
           _ -> %{text: "", inlineSvgs: []}
         end
 
-      mission_context =
-        if is_nil(resume) and not String.starts_with?(triggering_message_id, "mission-task-") and
-             not String.starts_with?(triggering_message_id, "sys-mission-") and
-             not String.starts_with?(triggering_message_id, "sys-next-") do
-          "For substantive multi-step work that should survive interruption, start a durable mission with `cascade-chat mission start --title \"...\" --objective \"...\"`; keep driving it until its review wake, then finish it. Use judgment: do not start a mission for simple questions, status checks, conversation, or a small one-step change. A mission does not grant authority over other users agents; only delegate when the user explicitly asks and the ownership boundary is valid."
-        else
-          ""
-        end
-
       worker? =
         case Messages.get(
                execution.target_channel_id,
@@ -815,7 +806,7 @@ defmodule CascadeWeb.OrchestrationController do
           worker?
         )
 
-      {[mission_context, room.text, suggestions], room.inlineSvgs}
+      {[room.text, suggestions], room.inlineSvgs}
     end
   rescue
     _ -> {[], []}

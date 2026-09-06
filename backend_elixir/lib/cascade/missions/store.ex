@@ -81,6 +81,11 @@ defmodule Cascade.Missions.Store do
                 ]
               )
 
+              if Keyword.get(opts, :control_plane, false) and
+                   field(input, :reviewRequested) != true do
+                record_event(mission_id, %{kind: "auto_completion_requested"})
+              end
+
               authority =
                 Cascade.Missions.Authority.capture!(
                   user_id,
@@ -719,34 +724,18 @@ defmodule Cascade.Missions.Store do
                  else: status
 
             if final_status == "completed" and
-                 Enum.any?(tasks, &(&1.status in ~w(pending running))) do
+                 Enum.any?(tasks, fn task ->
+                   task.status in ~w(pending running blocked) or
+                     (not current_primary?(task, mission, current_run_id) and
+                        SQL.one(
+                          "SELECT 1 FROM runs WHERE id=? AND status IN ('queued','running')",
+                          [task.run_id]
+                        ) == [1])
+                 end) do
               raise "Mission still has active workers"
             end
 
-            if final_status == "completed" and
-                 not Enum.any?(tasks, fn task ->
-                   completion_evidence_ready?(task, mission) or
-                     current_primary?(task, mission, current_run_id)
-                 end) do
-              raise "Mission has no completed worker evidence"
-            end
-
-            if final_status == "completed" and
-                 Enum.any?(tasks, fn task ->
-                   task.status != "canceled" and
-                     not completion_evidence_ready?(task, mission) and
-                     not current_primary?(task, mission, current_run_id)
-                 end) do
-              raise "Mission task evidence is incomplete"
-            end
-
             verification = clean(field(input, :verification), 8_000)
-
-            if final_status == "completed" and verification == "",
-              do:
-                raise(
-                  "Coordinator verification is required: record observed checks and artifact or live revision evidence"
-                )
 
             SQL.exec("UPDATE chat_missions SET verification=? WHERE id=?", [
               verification,
@@ -885,8 +874,34 @@ defmodule Cascade.Missions.Store do
             )
 
             update = refresh!(task.mission_id)
-            {:ok, wake} = claim_wake(task.mission_id)
-            %{update: wake || update, wake: wake}
+            tasks = task_rows(task.mission_id)
+
+            if mission.status not in ~w(completed canceled) and
+                 Enum.any?(tasks, &(&1.status == "completed")) and
+                 Enum.all?(tasks, &(&1.status in ~w(completed canceled))) and
+                 SQL.one(
+                   "SELECT 1 FROM chat_mission_events WHERE mission_id=? AND kind='auto_completion_requested' LIMIT 1",
+                   [mission.id]
+                 ) == [1] do
+              {:ok, route} = owner_route(mission.created_by, mission.vault_id, mission.channel_id)
+
+              {:ok, completed} =
+                finish(mission.created_by, route.localChannelId, mission.id, %{
+                  coordinatorRegistrationId: mission.coordinator_registration_id,
+                  status: "completed",
+                  summary:
+                    Enum.map_join(
+                      Enum.filter(tasks, &(&1.status == "completed")),
+                      "\n",
+                      & &1.summary
+                    )
+                })
+
+              %{update: completed, wake: nil}
+            else
+              {:ok, wake} = claim_wake(task.mission_id)
+              %{update: wake || update, wake: wake}
+            end
           end)
 
         {:ok, result}

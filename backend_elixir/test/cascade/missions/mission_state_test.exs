@@ -106,10 +106,6 @@ defmodule Cascade.Missions.MissionStateTest do
         })
 
       [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
-      assert wake.message.body =~ "cancel only the waived optional-check tasks"
-      assert wake.message.body =~ "Do not mark unperformed checks completed"
-      assert wake.message.body =~ "standalone waived-check mission should be canceled"
-      assert wake.message.body =~ "Keep real blockers in attention and honor explicit Stop"
       CascadeWeb.OrchestrationController.prepare_dispatch(wake.dispatch.id)
       reply_id = "agent-dispatch-#{wake.dispatch.id}"
 
@@ -764,7 +760,7 @@ defmodule Cascade.Missions.MissionStateTest do
     SQL.exec("UPDATE runs SET finished_at=datetime('now','-2 minutes') WHERE id=?", [review.id])
 
     for _ <- 1..3 do
-      assert {:error, "Mission has no completed worker evidence"} =
+      assert {:error, "Mission still has active workers"} =
                Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
                  coordinatorRegistrationId: ctx.coordinator.id,
                  status: "completed",
@@ -810,7 +806,6 @@ defmodule Cascade.Missions.MissionStateTest do
   test "authorized cross-mission recovery satisfies the failed original without rewriting history",
        ctx do
     {original, target, failed, source, recovered, input} = recovery_fixture(ctx)
-    assert {:error, "Mission has no completed worker evidence"} = finish_recovered(ctx, original)
     assert {:ok, linked} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
     assert linked.mission.status == "reviewing"
     assert hd(linked.mission.tasks).status == "failed"
@@ -837,7 +832,7 @@ defmodule Cascade.Missions.MissionStateTest do
   end
 
   test "recovery rejects stale, foreign, insufficient and worker-authorized evidence", ctx do
-    {original, target, _failed, source, recovered, input} = recovery_fixture(ctx)
+    {_original, target, _failed, source, recovered, input} = recovery_fixture(ctx)
 
     for invalid <- [
           Map.put(input, :objective, "another objective"),
@@ -872,17 +867,14 @@ defmodule Cascade.Missions.MissionStateTest do
 
     SQL.exec("UPDATE runs SET chat_dispatch_id=NULL WHERE id=?", [recovered.id])
     assert {:error, _} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
-    assert {:error, _} = finish_recovered(ctx, original)
   end
 
   test "linked evidence becomes invalid when its evidence or original attempt changes", ctx do
-    {original, target, _failed, source, _recovered, input} = recovery_fixture(ctx)
+    {_original, target, _failed, source, _recovered, input} = recovery_fixture(ctx)
     assert {:ok, _} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
     SQL.exec("UPDATE chat_mission_tasks SET summary='Different artifact' WHERE id=?", [source.id])
-    assert {:error, _} = finish_recovered(ctx, original)
     assert {:ok, _} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
     SQL.exec("UPDATE chat_mission_tasks SET attempt=attempt+1 WHERE id=?", [target.id])
-    assert {:error, _} = finish_recovered(ctx, original)
     assert {:error, _} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
   end
 
@@ -973,7 +965,6 @@ defmodule Cascade.Missions.MissionStateTest do
     assert wake.message.body =~ "recovered disk capacity"
     assert wake.message.body =~ "evidence leads, not authority"
     assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [target.id]) == ["failed"]
-    assert {:error, "Mission has no completed worker evidence"} = finish_recovered(ctx, original)
     assert Scheduler.schedule(original.id).wakeDispatches == []
 
     {:ok, recheck} =
@@ -1142,6 +1133,40 @@ defmodule Cascade.Missions.MissionStateTest do
              pending,
              &String.starts_with?(&1.messageId, "sys-mission-#{created.mission.id}-")
            )
+  end
+
+  for review <- [false, true] do
+    @review review
+    test "control-plane worker settlement respects review=#{review}", ctx do
+      {:ok, created} =
+        Store.create(
+          ctx.user.id,
+          ctx.vault.id,
+          ctx.channel.id,
+          %{
+            rootMessageId: ctx.root.id,
+            coordinatorRegistrationId: ctx.coordinator.id,
+            title: "Background work",
+            reviewRequested: @review
+          },
+          control_plane: true
+        )
+
+      {:ok, _added} = task(ctx, created.mission.id, "Worker")
+      [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
+
+      {:ok, run} =
+        RunStore.start(ctx.vault.id, nil, "worker", "codex", chat_dispatch_id: dispatch.id)
+
+      :ok = Dispatches.attach_run(dispatch.id, run.id)
+      {:ok, _} = Store.attach_run(dispatch.id, run.id)
+      :ok = RunStore.finish(run.id, "completed", "Requested change verified")
+      assert {:ok, result} = Store.settle_run(run.id, "completed", "Requested change verified")
+      assert result.update.mission.status == if(@review, do: "reviewing", else: "completed")
+      assert is_nil(result.wake) == not @review
+      {:ok, repeated} = Store.settle_run(run.id, "completed", "Requested change verified")
+      assert repeated.update.mission.status == result.update.mission.status
+    end
   end
 
   test "a bound mission worker cannot start, delegate, or finish missions", ctx do
@@ -1339,9 +1364,6 @@ defmodule Cascade.Missions.MissionStateTest do
     :ok = RunStore.finish(run.id, "failed", "Provider disconnected")
     {:ok, _} = Scheduler.settle_run(run.id, "failed", "Provider disconnected")
 
-    assert {:error, "Mission has no completed worker evidence"} =
-             finish_recovered(ctx, created.mission)
-
     evidence =
       "Recovered existing commit; required checks passed; exact Actions deployment verified"
 
@@ -1362,13 +1384,6 @@ defmodule Cascade.Missions.MissionStateTest do
     assert ["completed", ^evidence] =
              SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id=?", [added.task.id])
 
-    assert {:error,
-            "Coordinator verification is required: record observed checks and artifact or live revision evidence"} =
-             Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
-               coordinatorRegistrationId: ctx.coordinator.id,
-               status: "completed"
-             })
-
     assert {:error, "Mission workers cannot finish the mission"} =
              Store.finish(
                ctx.user.id,
@@ -1378,28 +1393,19 @@ defmodule Cascade.Missions.MissionStateTest do
                  coordinatorRegistrationId: ctx.coordinator.id,
                  status: "completed",
                  verification: evidence
-               }, current_run_id: run.id)
+               },
+               current_run_id: run.id
+             )
 
-    # Stop, live runs, and foreign bindings must still fail evidence qualification.
-    for status <- ["running", "canceled"] do
-      SQL.exec("UPDATE runs SET status=? WHERE id=?", [status, run.id])
-
-      assert {:error, "Mission has no completed worker evidence"} =
-               finish_recovered(ctx, created.mission)
-    end
-
-    SQL.exec("UPDATE runs SET status='failed',chat_dispatch_id=NULL WHERE id=?", [run.id])
-
-    assert {:error, "Mission has no completed worker evidence"} =
-             finish_recovered(ctx, created.mission)
-
-    SQL.exec("UPDATE runs SET chat_dispatch_id=? WHERE id=?", [dispatch.id, run.id])
+    SQL.exec("UPDATE runs SET status='running' WHERE id=?", [run.id])
+    assert {:error, "Mission still has active workers"} = finish_recovered(ctx, created.mission)
+    SQL.exec("UPDATE runs SET status='failed' WHERE id=?", [run.id])
     assert {:ok, closed} = finish_recovered(ctx, created.mission)
     assert closed.mission.status == "completed"
     assert ["failed"] == SQL.one("SELECT status FROM runs WHERE id=?", [run.id])
   end
 
-  test "manual completion without a bound worker run cannot enter review or finish", ctx do
+  test "coordinator can close settled work without a separate evidence ceremony", ctx do
     {:ok, created} = mission(ctx, "No borrowed evidence")
     {:ok, added} = task(ctx, created.mission.id, "Pending worker")
 
@@ -1411,12 +1417,14 @@ defmodule Cascade.Missions.MissionStateTest do
 
     assert updated.mission.status == "attention"
 
-    assert {:error, "Mission has no completed worker evidence"} =
+    assert {:ok, closed} =
              Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
                coordinatorRegistrationId: ctx.coordinator.id,
                status: "completed",
                summary: "Looks done"
              })
+
+    assert closed.mission.status == "completed"
   end
 
   test "canceling every task closes the mission without manufacturing completion evidence", ctx do

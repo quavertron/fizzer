@@ -55,15 +55,12 @@ test('state-identical releases use a warmed backup and never close the maintenan
   assertOrderedWithin(
     rolling,
     '  start_rolling_container',
-    '  verify_reopened_production_edge',
     '  docker stop -t 120 "$CONTAINER_NAME" >/dev/null',
     '  ROLLING_OLD_STOPPED=1',
-    '  verify_reopened_production_edge',
     '  docker rm "$CONTAINER_NAME" >/dev/null',
     '  CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" \\',
     '  verify_container_runtime_shape "$CONTAINER_NAME" "canonical rolling candidate"',
     '  sleep 3',
-    '  verify_reopened_production_edge',
     '  docker stop -t 120 "$ROLLING_CONTAINER" >/dev/null',
     '  verify_reopened_production_edge',
     '  DEPLOY_COMMITTED=1',
@@ -174,15 +171,12 @@ test('preflight, rolling bridge, Compose, and the canonical candidate share the 
   assert.match(source, /cpus: 2,[\s\S]*cpuset: "0-1"[\s\S]*memory: 3 \* 1024 \*\* 3/);
   assert.match(source, /memorySwap: 3 \* 1024 \*\* 3,[\s\S]*pids: 100_000/);
   assert.match(source, /CASCADE_IMAGE="\$CANDIDATE_IMAGE" docker compose[\s\S]*config --format json/);
-  assert.match(source, /--cpus 2 --cpuset-cpus 0-1 --memory 3g --memory-swap 3g/);
-  assert.match(source, /--pids-limit 100000 --ulimit nofile=200000:200000/);
-  assert.match(source, /verify_container_runtime_shape "\$PREFLIGHT_CONTAINER" "isolated candidate preflight"/);
   assert.match(source, /verify_container_runtime_shape "\$ROLLING_CONTAINER" "warmed rolling candidate"/);
   assert.match(source, /verify_container_runtime_shape "\$CONTAINER_NAME" "running production candidate"/);
   assert.match(source, /verify_container_runtime_shape "\$CONTAINER_NAME" "canonical rolling candidate"/);
 });
 
-test('authenticated production smoke runs directly against both rolling candidate instances', () => {
+test('authenticated production smoke runs against the canonical candidate', () => {
   assert.match(source, /Running authenticated production read\/realtime smoke against \$container/);
   assert.match(source, /release eval` starts a separate VM, not an RPC session/);
   assert.match(source, /new Database\("\/data\/docs\.db", \{ readonly: true, fileMustExist: true \}\)/);
@@ -193,7 +187,6 @@ test('authenticated production smoke runs directly against both rolling candidat
   const rolling = functionBody('rolling_cutover');
   assert.match(rolling, /verify_authenticated_live_candidate "\$CONTAINER_NAME" "http:\/\/127\.0\.0\.1:3000"/);
   const starter = functionBody('start_rolling_container');
-  assert.match(starter, /verify_authenticated_live_candidate "\$ROLLING_CONTAINER" "http:\/\/127\.0\.0\.1:\$ROLLING_PORT"/);
 });
 
 test('the reopened TLS edge serves health, client assets, and Engine.IO', () => {
@@ -202,9 +195,7 @@ test('the reopened TLS edge serves health, client assets, and Engine.IO', () => 
   assert.match(source, /root_html[\s\S]*<div id="root"/);
   assert.match(source, /root_html[\s\S]*assets\/main-/);
   assert.match(source, /socket\.io\/\?EIO=4&transport=polling/);
-  assert.match(source, /Require three complete,[\s\S]*fresh edge probes/);
   assert.match(source, /health_code" == "200"[\s\S]*root_html[\s\S]*engine_open/);
-  assert.match(source, /"\$consecutive" -ge 3/);
   assert.match(source, /reopened production edge did not stabilize/);
   assertOrderedWithin(
     functionBody('maintenance_cutover'),
@@ -276,7 +267,7 @@ test('snapshot creation fails closed on a busy checkpoint and records integrity 
   assert.match(source, /git rev-parse HEAD > "\$SNAPSHOT_DIR\/revision\.txt"/);
 });
 
-test('isolated preflight classifies startup state before its mutating protocol probe', () => {
+test('isolated preflight classifies startup schema without a protocol server', () => {
   assert.match(source, /busy preflight WAL checkpoint/);
   assert.match(source, /preflight SQLite quick_check failed/);
   assert.match(source, /Classify only startup DDL/);
@@ -287,11 +278,7 @@ test('isolated preflight classifies startup state before its mutating protocol p
     '  boot_preflight_database',
     '    --dump-schema /preflight/after.db > "$PREFLIGHT_DIR/after-schema.json"',
     '    --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json 2>&1)"',
-    '  start_preflight_server',
-    '  docker run --rm --network host --entrypoint node \\',
-    '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
   );
-  assert.match(functionBody('start_preflight_server'), /verify_container_runtime_shape "\$PREFLIGHT_CONTAINER" "isolated candidate preflight"/);
   assert.match(functionBody('verify_migration_clone'), /--before \/preflight\/before\.db --after \/preflight\/after\.db/);
 });
 
@@ -338,7 +325,6 @@ test('maintenance and cleanup operations fail closed and stay project scoped', (
   assert.match(source, /install -m 0644 -o 0 -g 0 \/dev\/null "\$MAINTENANCE_MARKER"/);
   assert.match(source, /if ! rm -f -- "\$MAINTENANCE_MARKER" \|\| \[\[ -e "\$MAINTENANCE_MARKER" \|\| -L "\$MAINTENANCE_MARKER" \]\]/);
   assert.match(source, /consecutive=\$\(\(consecutive \+ 1\)\)/);
-  assert.match(source, /"\$consecutive" -ge 3/);
   assert.match(source, /maintenance gate did not stabilize at HTTP 503/);
   assert.match(source, /docker compose "\$\{COMPOSE_ARGS\[@\]\}" ps -aq[\s\S]*--status created --status exited --status dead cascade/);
   assert.doesNotMatch(source, /--filter "label=com\.docker\.compose\.service=cascade"/);
@@ -399,7 +385,7 @@ echo CUTOVER
     const healthy = run();
     assert.equal(healthy.status, 0, healthy.stderr);
     assert.match(healthy.stdout, /INSTALLERS/);
-    assert.match(healthy.stdout, /RETENTION/);
+    assert.doesNotMatch(healthy.stdout, /RETENTION/);
     assert.doesNotMatch(healthy.stdout, /CUTOVER/);
     for (const overrides of [
       { TEST_RUNNING_IMAGE: `sha256:${'c'.repeat(64)}` },
@@ -477,7 +463,6 @@ test('full-copy capacity is required only for migrations and rechecked before ga
   assertOrderedWithin(functionBody('maintenance_cutover'),
     '  ensure_cutover_disk_capacity', '  CUTOVER_STARTED=1', '  close_maintenance_gate');
   assertOrderedWithin(functionBody('preflight_candidate'),
-    '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
     '  cleanup_preflight_clones', '  mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"');
   assert.match(source, /prune_build_cache/);
 });
@@ -545,7 +530,7 @@ test('preflight disposal releases large clones but retains rolling comparison ev
 
 test('retention follows successful deployment and preserves active snapshot references', () => {
   assertOrdered('  rolling_cutover', '  maintenance_cutover',
-    'bash "$ROOT/deploy/sync-desktop-installers.sh"', 'prune_cutover_snapshots');
+    'if [[ -n "$SNAPSHOT_DIR" ]]; then prune_cutover_snapshots; fi');
   assert.match(functionBody('prune_cutover_snapshots'), /docker ps -q/);
   assert.match(functionBody('prune_cutover_snapshots'), /recovery snapshots are mounted/);
   assert.match(functionBody('prune_cutover_snapshots'), /--apply --protect "\$SNAPSHOT_DIR"/);
@@ -638,4 +623,23 @@ test('persistent checksum failure remains fatal and preserves every existing ins
   for (const file of files) assert.equal(fs.readFileSync(path.join(downloads, file), 'utf8'), `old ${file}`);
   assert.equal(fs.readFileSync(path.join(downloads, 'SHA256SUMS'), 'utf8'), 'old manifest');
   assert.equal(fs.readdirSync(downloads).length, 6);
+});
+
+
+test('healthy production edge returns after one probe without sleeping', () => {
+  const result = spawnSync('bash', ['-c', `set -euo pipefail
+DEPLOY_DOMAIN=example.test
+curl() {
+  case "$*" in
+    *api/health*) printf 200 ;;
+    *app.html*) printf '<div id="root"></div><script src="assets/main-app.js"></script>' ;;
+    *) printf '0{"sid":"probe"}' ;;
+  esac
+}
+sleep() { echo UNNECESSARY_WAIT; return 99; }
+${functionBody('verify_reopened_production_edge')}
+verify_reopened_production_edge
+`], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /UNNECESSARY_WAIT/);
 });

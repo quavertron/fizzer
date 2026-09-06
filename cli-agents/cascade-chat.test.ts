@@ -170,6 +170,7 @@ test('coordinator helper starts and delegates a mission with structured API call
     title: 'Release',
     objective: 'Ship safely',
     controlPlane: false,
+    reviewRequested: false,
     authorityMessageIds: [],
   });
   assert.deepEqual(requests[2]?.body, {
@@ -220,6 +221,40 @@ test('control-plane mission start explicitly asks the server not to bind a prima
   assert.equal(runHeaders[0], '4242');
   assert.equal(runHeaders[1], '4242');
   assert.equal(bodies[1]?.controlPlane, true);
+});
+
+test('mission start delegates in one command and preserves explicit review', async (t) => {
+  const runHeaders: Array<string | undefined> = [];
+  const bodies: Array<Record<string, unknown>> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    runHeaders.push(req.headers['x-cascade-run-id'] as string | undefined);
+    bodies.push(raw ? JSON.parse(raw) : {});
+    res.setHeader('content-type', 'application/json');
+    if (req.url?.endsWith('/messages')) return res.end(JSON.stringify({ message:{ id:'control-root' } }));
+    if (req.url?.endsWith('/missions')) return res.end(JSON.stringify({ mission:{ id:'control-mission', title:'Control' } }));
+    if (req.url?.endsWith('/tasks')) return res.end(JSON.stringify({ mission:{ id:'control-mission' }, task:{ id:'task-1', title:'Control' }, scheduled:true }));
+    res.statusCode = 404; res.end(JSON.stringify({ error:'not found' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-chat-control-plane-'));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId:'reg-sol', displayName:'Sol' }));
+  t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
+  await execFileAsync(process.execPath, [cli, 'mission', 'start', '--control-plane', '--title', 'Control', '--message', 'Do the requested work', '--review', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'], {
+    env:{ ...process.env, CASCADE_HELPER_CONFIG:config, CASCADE_RUN_ID:'4242' },
+  });
+  assert.equal(runHeaders[0], '4242');
+  assert.equal(runHeaders[1], '4242');
+  assert.equal(bodies[1]?.controlPlane, true);
+  assert.equal(bodies[1]?.reviewRequested, true);
+  assert.equal(bodies[2]?.assignee, 'reg-sol');
+  assert.equal(bodies[2]?.anonymous, true);
+  assert.equal(bodies[2]?.prompt, 'Do the requested work');
+  assert.equal(runHeaders[2], '4242');
 });
 
 test('send creates a typed single-agent handoff without suppressing the caller reply', async (t) => {

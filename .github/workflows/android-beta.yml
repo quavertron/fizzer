@@ -5,6 +5,13 @@ name: Android Beta APK
 on:
   push:
     branches: [master]
+    paths:
+      - 'android/**'
+      - 'client/**'
+      - 'capacitor.config.*'
+      - 'scripts/prepare-android-codex-runtime.mjs'
+      - 'scripts/prepare-capacitor-assets.mjs'
+      - '.github/workflows/android-beta.yml'
   workflow_dispatch:
 
 concurrency:

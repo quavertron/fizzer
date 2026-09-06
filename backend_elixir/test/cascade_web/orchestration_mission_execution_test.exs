@@ -379,7 +379,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
 
   for outcome <- [:proposal, :none] do
     @tag checkpoint_outcome: outcome
-    test "next-step lifecycle reconsiders #{outcome} after evidence-gated closure and scheduler restart",
+    test "next-step lifecycle reconsiders #{outcome} after mission closure and scheduler restart",
          ctx do
       alias Cascade.Chat.{NextSteps, Schema}
       alias Cascade.Missions.{Authority, DispatchReannouncer, Scheduler}
@@ -503,9 +503,6 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
             )
       }
 
-      assert {:error, "Mission has no completed worker evidence"} =
-               Missions.finish(ctx.owner.id, ctx.owner_channel.id, created.mission.id, finish)
-
       {:ok, _task} =
         Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
           coordinatorRegistrationId: registration.id,
@@ -528,11 +525,6 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
       :ok = Store.finish(worker_run.id, "completed", evidence)
       {:ok, settled} = Scheduler.settle_run(worker_run.id, "completed", evidence)
       assert settled.settled.update.mission.status == "reviewing"
-
-      assert {:error, reason} =
-               Missions.finish(ctx.owner.id, ctx.owner_channel.id, created.mission.id, finish)
-
-      assert reason =~ "Coordinator verification is required"
 
       verification =
         "Fixture verification: inspected artifact and passing focused checks; editor remained open."
@@ -717,7 +709,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
              CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
 
     assert duplicate.id == run.id
-    assert Store.get(run.id).prompt =~ "Finish with --verification"
+    assert Store.get(run.id).prompt =~ "include --verification when useful"
     refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
     refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
 

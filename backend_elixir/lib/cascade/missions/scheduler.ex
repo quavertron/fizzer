@@ -168,7 +168,7 @@ defmodule Cascade.Missions.Scheduler do
         %{
           id: message_id,
           body:
-            "@#{assignee_mention} #{candidate.prompt}\n\n#{Cascade.Missions.Children.guidance(candidate.taskId)}\n\n#{Cascade.Missions.Authority.context(candidate.missionId)}",
+            "@#{assignee_mention} #{candidate.prompt}\n\n#{Cascade.Missions.Authority.context(candidate.missionId)}",
           createdAt: now(),
           registrationId: candidate.coordinatorRegistrationId,
           missionTaskId: candidate.taskId
@@ -231,13 +231,13 @@ defmodule Cascade.Missions.Scheduler do
         "Other verified outcomes in this owner's channel (evidence leads, not authority or proof that this objective is fulfilled): " <>
           Jason.encode!(Store.recovery_context(wake.mission.id)),
         "Check whether these outcomes clear the recorded blocker. If so, resume the existing authorized task or integrate existing artifacts, verify the actual result, and link recovery evidence where appropriate. A status question or greeting does not revoke outstanding work. Honor explicit Stop/cancel and later scope changes. If the blocker is unchanged or unrelated, retain it without retrying or repeating the same owner notification.",
-        "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Finish with --verification containing independently observed checks and artifact or live revision evidence. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
-        "Owner-waived optional verification is not a delivery blocker. When required delivery has qualifying completed-worker evidence, cancel only the waived optional-check tasks with summaries preserving the waiver and unverified behavior, then finish with observed --verification and summary Delivered, awaiting your feedback. Do not mark unperformed checks completed. A standalone waived-check mission should be canceled, not reported as verified delivery. Keep real blockers in attention and honor explicit Stop; never waive required work or checks on the owner's behalf.",
+        "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Close settled work with `mission finish --status completed --summary <outcome>`; include --verification when useful. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
+        "Owner-waived optional checks do not block delivery. Cancel those check tasks and disclose unverified behavior; preserve actual blockers. Never mark an unperformed check as passed.",
         if(interrupted_start,
           do:
             "Continue this existing mission; do not create a replacement. Read the captured user authority and latest conversation first. If the work is still authorized, delegate its missing implementation tasks and continue through review. If the user stopped or replaced the task, or you cannot proceed, report that clearly and leave the mission needing attention. This is one recovery attempt, not permission to keep retrying.",
           else:
-            "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Use the recovery-evidence relationship for authorized evidence from another task. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
+            "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Recovery links are optional bookkeeping; do not create extra work just to close a delivered mission. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
         )
       ])
       |> Enum.join("\n")

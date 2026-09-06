@@ -25,7 +25,7 @@ Usage:
   cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
                                         create a typed single-agent handoff
   cascade-chat members                  list people-callable agent teammates
-  cascade-chat mission start --title T [--objective O] [--control-plane]
+  cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
   cascade-chat mission list
   cascade-chat mission status [--mission <id|current>]
   cascade-chat mission history --mission <id>
@@ -62,7 +62,8 @@ Options:
   --effort <level>          per-task reasoning effort override
   --anonymous               parallel subagent of --to (same agent, no occupancy)
   --isolated                prepare a dedicated worktree instead of the channel cwd
-  --control-plane           start without binding the coordinator run as a task
+  --control-plane           start background work that completes without coordinator review
+  --review                  require coordinator review after background work settles
   --root <message-id>       mission root (defaults to triggering chat message)
   --changes-file <path>     JSON change request metadata for send
   --raw-message             preserve literal backslash-n sequences in --message
@@ -478,9 +479,9 @@ async function main() {
   }
 
   if (cmd === 'mission') {
-    const sub = String(args._[1] || 'status').toLowerCase();
+    let sub = String(args._[1] || 'status').toLowerCase();
     const registrationId = configString(config, 'registrationId');
-    const missionRef = String(args.mission || args._[2] || 'current').trim() || 'current';
+    let missionRef = String(args.mission || args._[2] || 'current').trim() || 'current';
     if (sub === 'start') {
       if (!registrationId) fail('mission start can only be used from a registered coordinator run.');
       const title = String(args.title || '').trim();
@@ -523,13 +524,20 @@ async function main() {
           coordinatorRegistrationId: registrationId,
           title,
           objective: String(args.objective || '').trim(),
-          controlPlane: args['control-plane'] === true,
+          controlPlane: args['control-plane'] === true || args.message !== undefined,
+          reviewRequested: args.review === true,
           authorityMessageIds: String(args['authority-messages'] || '').split(',').map(id => id.trim()).filter(Boolean),
         },
       );
-      if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
-      else process.stdout.write(`mission ${result.mission.id} started: ${result.mission.title}\n`);
-      return;
+      if (args.message === undefined) {
+        if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
+        else process.stdout.write(`mission ${result.mission.id} started: ${result.mission.title}\n`);
+        return;
+      }
+      missionRef = result.mission.id;
+      sub = 'delegate';
+      args.to ||= registrationId;
+      args.anonymous = true;
     }
     if (sub === 'status' || sub === 'show') {
       const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';

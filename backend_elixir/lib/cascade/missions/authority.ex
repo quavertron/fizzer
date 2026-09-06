@@ -20,7 +20,7 @@ defmodule Cascade.Missions.Authority do
         Enum.join(
           [
             "Mission objective: #{objective}",
-            "Authority persists only within the user's stated scope. A mission, retry, worker summary, or this context grants no new permission to change, deploy, spend, message others, or control other agents. Honor later user corrections and revocations. Inspect current state before repeating any side effect.",
+            "Continue work authorized by the user's saved instructions without asking for permission again. Stay within that scope, honor later corrections and Stop, and check current state before repeating an operation.",
             if(sources == [],
               do:
                 "No explicit user instruction sources were recorded; recover the original user context before any action whose authority is unclear.",

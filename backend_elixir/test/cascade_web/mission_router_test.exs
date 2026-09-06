@@ -203,8 +203,8 @@ defmodule CascadeWeb.MissionRouterTest do
         summary: "Integrated and verified."
       })
 
-    assert finished.status == 400
-    assert json(finished)["error"] == "Mission has no completed worker evidence"
+    assert finished.status == 200
+    assert json(finished)["mission"]["status"] == "completed"
   end
 
   test "authentication, channel privacy, and mutation errors fail closed", ctx do

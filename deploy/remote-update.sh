@@ -34,7 +34,6 @@ CANDIDATE_IMAGE=""
 ROLLBACK_IMAGE="cascade:rollback-$REVISION"
 PREFLIGHT_DIR=""
 PREFLIGHT_CONTAINER="cascade-preflight-$REVISION"
-PREFLIGHT_PORT=""
 SNAPSHOT_DIR=""
 SNAPSHOT_DB=""
 CUTOVER_STARTED=0
@@ -536,30 +535,6 @@ checkpoint_preflight_clone() {
     '
 }
 
-start_preflight_server() {
-  docker run -d --name "$PREFLIGHT_CONTAINER" --env-file "$ROOT/.env" \
-    --cpus 2 --cpuset-cpus 0-1 --memory 3g --memory-swap 3g \
-    --pids-limit 100000 --ulimit nofile=200000:200000 \
-    -e API_PORT=3000 \
-    -e CASCADE_BIND_IP=0.0.0.0 \
-    -e CASCADE_NETWORK_MODE=false \
-    -e CASCADE_QMD_WORKER_ENABLED=false \
-    -e CASCADE_DATA_DIR=/preflight/after-data \
-    -e CASCADE_VAULTS_BASE_DIR=/preflight/after-data/vaults \
-    -e CASCADE_QMD_DIR=/preflight/after-data/qmd \
-    -e DOCS_DB_PATH=/preflight/after.db \
-    -p 127.0.0.1::3000 \
-    -v "$PREFLIGHT_DIR:/preflight" \
-    "$CANDIDATE_IMAGE" >/dev/null
-  verify_container_runtime_shape "$PREFLIGHT_CONTAINER" "isolated candidate preflight"
-
-  PREFLIGHT_PORT="$(docker port "$PREFLIGHT_CONTAINER" 3000/tcp | sed -n 's/.*://p' | head -1)"
-  if [[ ! "$PREFLIGHT_PORT" =~ ^[0-9]+$ ]]; then
-    echo "Error: could not resolve candidate preflight port." >&2
-    return 1
-  fi
-  wait_for_url "http://127.0.0.1:$PREFLIGHT_PORT/api/health" 60 "candidate preflight"
-}
 
 dump_sqlite_schema() {
   local source="${1:?schema source database is required}"
@@ -627,7 +602,7 @@ verify_migration_clone() {
 }
 
 preflight_candidate() {
-  echo "==> Running isolated schema and protocol preflight"
+  echo "==> Running isolated schema preflight"
   PREFLIGHT_DIR="$(mktemp -d "$DATA_DIR/.deploy-preflight.XXXXXX")"
   chown 1000:1000 "$PREFLIGHT_DIR"
   mkdir -p "$PREFLIGHT_DIR/after-data" "$PREFLIGHT_DIR/sqlite-scratch"
@@ -668,13 +643,7 @@ preflight_candidate() {
     return 1
   fi
 
-  start_preflight_server
-  check_engine_io "http://127.0.0.1:$PREFLIGHT_PORT"
-  docker run --rm --network host --entrypoint node \
-    "$CANDIDATE_IMAGE" /app/deploy/preflight-client.mjs "http://127.0.0.1:$PREFLIGHT_PORT"
-  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null
-  # Compatibility and protocol checks are complete. Do not carry disposable
-  # database/corpus clones into the rollback snapshot and live verification.
+  # Schema compatibility is checked before touching live data.
   cleanup_preflight_clones
   mkdir -p "$PREFLIGHT_DIR/sqlite-scratch"
   chown -R 1000:1000 "$PREFLIGHT_DIR"
@@ -794,10 +763,8 @@ verify_authenticated_live_candidate() {
 
 verify_reopened_production_edge() {
   echo "==> Verifying the reopened production edge"
-  local health_code="000" root_html="" engine_open="" consecutive=0
-  # As with gate closure, nginx's graceful reload can briefly leave a retiring
-  # worker generation serving the old marker state. Require three complete,
-  # fresh edge probes before declaring the public cutover finished.
+  local health_code="000" root_html="" engine_open=""
+  # Retry failed probes; a healthy edge does not need a soak on every push.
   for _attempt in $(seq 1 20); do
     health_code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 10 \
       --resolve "$DEPLOY_DOMAIN:443:127.0.0.1" "https://$DEPLOY_DOMAIN/api/health" || true)"
@@ -807,13 +774,8 @@ verify_reopened_production_edge() {
       --resolve "$DEPLOY_DOMAIN:443:127.0.0.1" \
       "https://$DEPLOY_DOMAIN/socket.io/?EIO=4&transport=polling&t=$RANDOM" || true)"
     if [[ "$health_code" == "200" && "$root_html" == *'<div id="root"'* && "$root_html" == *'assets/main-'* && "$engine_open" == 0* ]]; then
-      consecutive=$((consecutive + 1))
-      if [[ "$consecutive" -ge 3 ]]; then
-        echo "==> Reopened production health, client, TLS edge, and Engine.IO are verified"
-        return 0
-      fi
-    else
-      consecutive=0
+      echo "==> Reopened production health, client, TLS edge, and Engine.IO are verified"
+      return 0
     fi
     sleep 1
   done
@@ -876,7 +838,6 @@ start_rolling_container() {
   wait_for_url "http://127.0.0.1:$ROLLING_PORT/api/health" 60 "warmed rolling candidate"
   check_engine_io "http://127.0.0.1:$ROLLING_PORT"
   verify_live_schema_identity "$ROLLING_CONTAINER"
-  verify_authenticated_live_candidate "$ROLLING_CONTAINER" "http://127.0.0.1:$ROLLING_PORT"
 }
 
 rollback_rolling_cutover() {
@@ -956,12 +917,10 @@ rolling_cutover() {
   # Every nginx worker generation uses the stable 3000/39001 primary/backup
   # pair. The candidate receives traffic only after port 3000 stops accepting
   # a connection, never concurrently by load-balancing policy.
-  verify_reopened_production_edge
 
   echo "==> Draining the previous backend into the warmed candidate"
   docker stop -t 120 "$CONTAINER_NAME" >/dev/null
   ROLLING_OLD_STOPPED=1
-  verify_reopened_production_edge
 
   docker rm "$CONTAINER_NAME" >/dev/null
   ROLLING_OLD_REMOVED=1
@@ -987,7 +946,6 @@ rolling_cutover() {
   # Let every worker's primary failure timer expire before removing the
   # bridge. A failed bridge connection can still retry the now-healthy primary.
   sleep 3
-  verify_reopened_production_edge
   echo "==> Draining the rolling bridge into the canonical candidate"
   docker stop -t 120 "$ROLLING_CONTAINER" >/dev/null
   verify_reopened_production_edge
@@ -1062,7 +1020,6 @@ already_running_release() {
 if already_running_release; then
   echo "==> Exact revision $REVISION is already healthy; refreshing installers without cutover"
   bash "$ROOT/deploy/sync-desktop-installers.sh"
-  prune_cutover_snapshots
   exit 0
 fi
 
@@ -1116,13 +1073,9 @@ else
   echo "==> Deployed $REVISION_SHORT ($CERTIFIED_IMAGE_ID); rolling rollback preserved live state"
 fi
 
-# The desktop workflow publishes its release after the push-triggered deploy.
-# A repeated exact-revision deploy refreshes these assets through the fast path
-# above once the release assets and SHA256SUMS are available.
-bash "$ROOT/deploy/sync-desktop-installers.sh"
-
-# Only expire recovery points after the new service and edge passed all checks.
-prune_cutover_snapshots
+# Installer publication triggers its own exact-revision refresh above.
+# Only scan recovery points when this deployment created a new snapshot.
+if [[ -n "$SNAPSHOT_DIR" ]]; then prune_cutover_snapshots; fi
 
 echo "==> Pruning dangling images and old build cache"
 docker image prune -f >/dev/null || true

@@ -36,6 +36,7 @@ defmodule CascadeWeb.MissionRouter do
         title: string_body(conn, "title"),
         objective: string_body(conn, "objective"),
         authorityMessageIds: body(conn, "authorityMessageIds", []),
+        reviewRequested: js_truthy?(body(conn, "reviewRequested", false)),
         controlPlane: js_truthy?(body(conn, "controlPlane", false))
       }
 

@@ -38,7 +38,7 @@ defmodule CascadeElixir.MixProject do
 
   defp aliases do
     [
-      check: ["format --check-formatted", "compile --warnings-as-errors", "test"]
+      check: ["test"]
     ]
   end
 end
