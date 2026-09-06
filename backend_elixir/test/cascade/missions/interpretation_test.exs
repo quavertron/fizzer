@@ -136,6 +136,47 @@ defmodule Cascade.Missions.InterpretationTest do
            ]) == [0]
   end
 
+  test "fresh and resumed interpretation share selective publication defaults", c do
+    finding(c, "Local checks passed; worker is retrying delivery")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+
+    for prompt <- [
+          wake.message.body,
+          Interpretation.dispatch_prompt(wake.dispatch.id),
+          Interpretation.context(c.user.id, c.channel, c.coordinator.id)
+        ] do
+      assert prompt =~
+               "Routine progress, retries and intermediate verification belong in the run trace"
+
+      assert prompt =~ "direct answers, actionable owner blockers, significant findings"
+      assert prompt =~ "already published the outcome"
+      assert prompt =~ "noMaterialChange:true even when the saved assessment or evidence changes"
+      assert prompt =~ "end with [no-reply]"
+      assert prompt =~ "Do not hide real failures or leave owner questions unanswered"
+
+      refute prompt =~
+               "when the assessment, blocker, result or promised delivery materially changes"
+    end
+
+    review = run(c, wake.dispatch)
+
+    {{:ok, result}, _} =
+      record(c, review, %{
+        "assessment" => "Checks passed; authorized retry continues without owner action",
+        "evidenceReferences" => ["check:passed", "retry:running"],
+        "questions" => [
+          %{"id" => "delivery", "question" => "Is it deployed?", "status" => "open"}
+        ],
+        "noMaterialChange" => true
+      })
+
+    assert result.messageId == nil
+    assert state(c).understanding["assessment"] =~ "authorized retry"
+    assert state(c).understanding["evidenceReferences"] == ["check:passed", "retry:running"]
+    assert [%{"id" => "delivery", "status" => "open"}] = state(c).understanding["questions"]
+    assert state(c).fingerprint == ""
+  end
+
   test "publication survives a lost fanout acknowledgment, retries once, preserves answers and links corrections",
        c do
     finding(c, "First evidence")
