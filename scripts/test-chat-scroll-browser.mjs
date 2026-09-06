@@ -25,6 +25,8 @@ window.setAgentStatus = status => chatMessageStore.update('scroll-test', rows =>
     createdAt: new Date(1800000000000).toISOString(), status,
     body: status ? 'Internal process commentary' : 'The substantive final answer.' },
 ]);
+window.streamOutput = text => chatMessageStore.update('scroll-test', rows => rows.map(row =>
+  row.id === 'agent-activity' ? { ...row, blocks: [{ type: 'thinking', text: 'Private reasoning' }, { type: 'text', text }] } : row));
 window.appendRow = () => chatMessageStore.update('scroll-test', rows => [...rows, row()]);
 const root = ReactDOM.createRoot(document.getElementById('root'));
 window.switchChannel = (channelId = 'scroll-test') => root.render(React.createElement(ChatView, {
@@ -72,6 +74,21 @@ try {
     const activity = page.locator('[data-message-id="agent-activity"]');
     assert.equal(await pane.locator('.thinking-spinner').count(), status ? 1 : 0);
     assert.ok(!(await activity.innerText()).includes('Internal process commentary'));
+    const decal = page.locator('article').filter({ has: activity }).locator('.chat-working-output');
+    if (status === 'running') {
+      for (const text of ['First public output', 'Second public output']) {
+        await page.evaluate(text => window.streamOutput(text), text);
+        await page.waitForTimeout(100);
+        assert.equal(await decal.innerText(), text);
+        assert.ok(!(await activity.innerText()).includes('Private reasoning'));
+        assert.ok(await bottomDistance() <= 1, 'stream updates preserve the live edge');
+      }
+      assert.equal(await decal.evaluate(el => getComputedStyle(el).animationName), 'chat-activity-flicker');
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      assert.equal(await decal.evaluate(el => getComputedStyle(el).animationName), 'none');
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+    }
+    if (!status) assert.equal(await decal.count(), 0);
     if (!status) assert.ok((await activity.innerText()).includes('The substantive final answer.'));
     assert.ok(await bottomDistance() <= 1, 'activity transitions preserve the live edge');
   }

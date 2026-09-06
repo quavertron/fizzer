@@ -330,6 +330,29 @@ describe('quiet conversation activity', () => {
     expect(rows.map((row) => row.id)).toEqual(['shell', 'outcome']);
   });
 
+  it('streams public text inside the working decal and clears it when the run settles', () => {
+    let rows = [message('stream', { agentId: 'codex', status: 'running', body: 'Thinking...',
+      blocks: [{ type: 'thinking', text: 'Private reasoning' },
+        { type: 'tool_result', text: 'Raw tool output' },
+        { type: 'text', text: 'Checking the first file' }],
+    })];
+    const first = renderRow(rows[0]);
+    expect(first).toMatch(/chat-working-output[^>]*>Checking the first file<\/span>/);
+    expect(first).not.toContain('Private reasoning');
+    expect(first).not.toContain('Raw tool output');
+    rows = applyRemoteChatMessage(rows, { ...rows[0], blocks: [{ type: 'text', text: 'Now checking the second file' }] });
+    const next = renderRow(rows[0]);
+    expect(next).toContain('Now checking the second file');
+    expect(next).not.toContain('Checking the first file');
+    for (const status of [undefined, 'failed', 'canceled'] as const) {
+      const settled = applyRemoteChatMessage(rows, { ...rows[0], status, body: 'Substantive final outcome.' });
+      const html = renderRow(settled[0]);
+      expect(html).not.toContain('chat-working-output');
+      expect(html).not.toContain('thinking-spinner');
+      expect(html).toContain('Substantive final outcome.');
+    }
+  });
+
   it('replaces queued/running process output and removes activity on every terminal state', () => {
     const base = message('activity', {
       author: 'Sol', agentId: 'codex', runId: 42,

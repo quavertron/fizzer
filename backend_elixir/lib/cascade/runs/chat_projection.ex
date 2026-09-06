@@ -290,7 +290,12 @@ defmodule Cascade.Runs.ChatProjection do
 
     %{
       body: if(final_reply_only and no_reply?(body), do: "", else: body),
-      blocks: if(final_reply_only, do: [], else: state.blocks),
+      blocks:
+        cond do
+          not final_reply_only -> state.blocks
+          done or no_reply?(text) -> []
+          true -> normalize_blocks(state.latest_assistant_text)
+        end,
       harnessLog: if(final_reply_only, do: "", else: state.harness_log),
       status: state.status,
       terminal_status: state.terminal_status,

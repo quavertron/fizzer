@@ -240,7 +240,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
             aria-expanded={streamOpen}
           >
             {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
-            <span className="chat-work-trace-summary" title={label}>
+            <span className={`chat-work-trace-summary${live ? ' chat-working-output' : ''}`} title={label}>
               {label}
             </span>
             <ChevronRight size={13} className={`chat-work-trace-chevron${streamOpen ? ' open' : ''}`} />

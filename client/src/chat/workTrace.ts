@@ -183,6 +183,15 @@ export function workTracePreview(body: string, max = 110): string {
   return truncateActivity(fallback, max);
 }
 
+/** Only public assistant text blocks feed the transient decal, never reasoning or tool I/O. */
+export function workTraceOutput(message: Pick<ChatMessage, 'status' | 'blocks'>): string {
+  if (message.status !== 'running') return '';
+  const block = message.blocks?.slice().reverse().find((block) => block.type === 'text' && !block.redacted && block.text?.trim());
+  const text = stripTerminalNoise(block?.text || '').replace(/\s+/g, ' ').trim();
+  // Follow the newest output, including when one text block grows in place.
+  return text.length > 180 ? `…${text.slice(-179)}` : text;
+}
+
 export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body' | 'harnessLog'>): string {
   if (message.status === 'running') {
     const live = message.harnessLog
@@ -481,9 +490,9 @@ export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
     || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
   const message = liveMessage || attention || trace[trace.length - 1];
   const live = Boolean(liveMessage);
-  // Runtime prose belongs in the expanded trace, never the conversation preview.
+  // Public output stays inside the transient decal; settled prose stays in the trace.
   const label = live
-    ? (message.status === 'running' ? 'Working…' : 'Queued…')
+    ? (message.status === 'running' ? workTraceOutput(message) || 'Working…' : 'Queued…')
     : message.status === 'failed' ? 'Failed'
       : message.status === 'canceled' ? 'Canceled' : 'Work details';
   const decals = workTraceDecals(trace);

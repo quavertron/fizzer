@@ -114,7 +114,7 @@ defmodule Cascade.Runs.ChatProjectionTest do
     assert content.harnessLog == "log"
   end
 
-  test "final-reply-only hides live work and suppresses deliberate silence" do
+  test "final-reply-only streams public decal text without chat chatter or terminal residue" do
     live =
       ChatProjection.build(
         [
@@ -133,7 +133,7 @@ defmodule Cascade.Runs.ChatProjectionTest do
       )
 
     assert live.body == "Thinking..."
-    assert live.blocks == []
+    assert live.blocks == [%{type: "text", text: "I am checking"}]
     assert live.harnessLog == ""
 
     settled =
@@ -150,6 +150,7 @@ defmodule Cascade.Runs.ChatProjectionTest do
       )
 
     assert settled.body == "The storage invariant is still violated."
+    assert settled.blocks == []
 
     silent =
       ChatProjection.build(

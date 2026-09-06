@@ -395,3 +395,15 @@ it('keeps running work ahead of queued work and exposes settled failures', () =>
   expect(workTracePeek([{ ...base, id: 'failed', status: 'failed' }, { ...base, id: 'done' }]))
     .toMatchObject({ label: 'Failed', live: false, phase: 'blocked' });
 });
+
+it('updates the transient mission peek only from public text blocks', () => {
+  const running = msg({ id: 'stream', author: 'Sol', status: 'running', body: 'Thinking...', blocks: [
+    { type: 'thinking', text: 'Private reasoning' },
+    { type: 'text', text: 'Checking the public output' },
+    { type: 'text', text: 'Redacted output', redacted: true },
+  ] });
+  expect(workTracePeek([running])?.label).toBe('Checking the public output');
+  expect(workTracePeek([{ ...running, blocks: [{ type: 'text', text: 'x'.repeat(200) + 'newest output' }] }])?.label)
+    .toBe('…' + 'x'.repeat(166) + 'newest output');
+  expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
+});

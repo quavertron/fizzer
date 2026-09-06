@@ -238,7 +238,7 @@ export function ChatMissionCard({
             {/* Empty gutter matches the status-dot column; header owns the spinner. */}
             <span className="chat-mission-peek-gutter" aria-hidden="true" />
             {peekAuthor && <span className="chat-mission-peek-author">{peekAuthor}</span>}
-            <span className="chat-mission-peek-label">{peekLabel}</span>
+            <span className={`chat-mission-peek-label${peekLive ? ' chat-working-output' : ''}`}>{peekLabel}</span>
           </button>
         )}
       </div>
