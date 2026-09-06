@@ -505,6 +505,11 @@ test('coordinator continuation sends an explicit run-scoped disposition without 
   fs.writeFileSync(configPath, JSON.stringify({ registrationId: 'coordinator', chatChannelId: 'channel' }));
   const args = [cli, 'continuation', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault', '--channel', 'channel'];
   const env = { ...process.env, CASCADE_HELPER_CONFIG: configPath, CASCADE_RUN_ID: '42' };
+  await assert.rejects(execFileAsync(process.execPath, [...args, '--status', 'pending'], { env }), (error: any) => {
+    assert.match(error.stderr, /Read `cascade-chat continuation` for the latest revision and reconcile before saving/);
+    return true;
+  });
+  assert.equal(requests.length, 0, 'invalid continuation advice must not write or retry');
   await execFileAsync(process.execPath, args, { env });
   await execFileAsync(process.execPath, [...args, '--status', 'waiting', '--revision', '0', '--summary', 'Existing worker owns delivery'], { env });
   assert.deepEqual(requests, [
@@ -541,6 +546,8 @@ test('command help is local, focused and documents the interpretation and listin
   }
   const general = await execFileAsync(process.execPath, [cli, '--help'], { env });
   assert.match(general.stdout, /Usage:/);
+  const finish = await execFileAsync(process.execPath, [cli, 'mission', 'finish', '--help'], { env });
+  assert.match(finish.stdout, /--verification <observed-evidence>/);
 });
 
 test('JSON file commands accept actual piped stdin and reject malformed, empty and conflicting input', async (t) => {

@@ -115,8 +115,8 @@ Named assignees still get at most one active mission task at a time.
 extra channel membership) so a coordinator can fan out several sols at
 different effort levels without registering duplicate members. Workers inherit
 that agent's tools and authority, not its coordinator role: they execute one
-task and cannot start or delegate missions. A worker can create up to eight direct
-child tasks under its own task, using its own agent identity and the existing runner
+task and cannot start missions or use coordinator delegation. A worker can create
+up to eight direct child tasks under its own task, using its own agent identity and the existing runner
 concurrency limits. Children start isolated worktrees from the parent's committed
 workspace state. Commit prerequisites before creating a child; uncommitted edits
 are not inherited. Children cannot delegate further:
@@ -140,11 +140,21 @@ review. The parent owns integration and the coordinator performs the final revie
 projection is materialized on the root chat message so it arrives in the normal
 transcript, Socket.IO updates, linked multiplayer channels, and reloads without
 a second client-owned task store. Worker terminal events update their task. A
-failed or blocked task puts the still-open mission in `attention`; dependent
-tasks remain pending instead of being permanently blocked, and retrying keeps
-the task identity, workspace, and evidence. The coordinator reviews and
-integrates worker evidence, then explicitly finishes the mission; worker
-completion alone puts a mission in `reviewing`, not `completed`.
+failed or blocked task without qualifying completion evidence puts the still-open
+mission in `attention`; dependent tasks remain pending. A retry preserves task
+identity, workspace and history, but increments the attempt, clears the current
+run/dispatch binding and invalidates linked recovery evidence. Inspect completed
+artifacts and actual provider activity before retrying; a failed projection alone
+is not proof execution stopped. Stop or withdrawn authority must not be undone
+by a retry. Use `mission diagnose --task <id>` and mission history to inspect
+current evidence before choosing recovery.
+
+For missions requiring review, qualifying worker completion leads to `reviewing`;
+the coordinator reviews the integrated evidence and explicitly finishes with
+verification. Missions created with `--control-plane` and without `--review`
+request automatic completion when their evidence qualifies. Neither mode makes
+a completed task proof of deployment: the assigned worker owns its authorized
+delivery and verification.
 
 Chat-to-agent intent is also an outbox (`chat_agent_dispatches`). Message and
 target survive renderer reloads and reconnects. The server admits and starts
@@ -199,9 +209,9 @@ Mission creation snapshots owner-authored messages in the root reply chain.
 Use `mission start --authority-messages <id,id>` to include earlier explicit
 instructions from the same channel. Agent-authored messages cannot be recorded
 as user grants. Saved instructions and the mission objective accompany worker
-and review dispatches. Existing missions have empty source records; recover their
-original user context when authority is unclear. Later user corrections and
-revocations take precedence over saved instructions.
+and review dispatches. Legacy missions created before authority capture may have
+empty source records; recover their original user context when authority is unclear.
+Later user corrections and revocations take precedence over saved instructions.
 
 These records preserve context, not additional tool permissions. They do not
 constitute a general spend/deploy permission system. Coordinator completion
@@ -249,6 +259,29 @@ finished or changed tasks, and is revoked by an explicit stop. Mission history r
 the request and outcome; the following task-start event identifies the continuation.
 Workers cannot steer peers, and steering another owner's worker is rejected.
 
+## Coordinator continuation recovery
+
+`cascade-chat continuation` reads the owning coordinator's unfinished responsibility
+and current revision. Save a disposition with `--status pending|waiting|completed|canceled`,
+`--revision <read revision>` and `--summary <remaining work or disposition>`.
+Mission workers use their assigned task lifecycle instead.
+
+`pending` requests another turn after the preceding turn settles and the same
+coordinator conversation is idle. `waiting` preserves responsibility without
+polling; meaningful worker evidence or an owner message can provide the next wake.
+`completed` means the recorded responsibility is handled; `canceled` requires
+owner cancellation. New owner messages take precedence over queued continuations.
+
+Since `dcf1083c` (2026-09-06), a failed continuation dispatch or run receives at most
+one automatic recovery attempt per responsibility revision through the existing
+outbox. Before that change, failed continuations could leave responsibility
+pending without a replacement dispatch. If recovery also fails, responsibility
+and the failure reason remain in `waiting`, with no automatic retries left.
+Inspect that failure and current artifacts before resuming authorized work; do
+not invent a resume condition or reset the revision just to obtain more retries.
+Stop cancels continuation recovery. This bounded mechanism does not establish
+sustained recurring-work reliability.
+
 ## Cancellation and recovery
 
 Cancellation is routed to the owning desktop and then persisted server-side.
@@ -257,7 +290,10 @@ is no longer connected.
 
 Brief runner disconnects receive a grace period. After a server restart, the
 desktop reports active run IDs so ownership can be reclaimed before orphaned
-runs are failed.
+runs are failed. Reclaim preserves a surviving provider process; it does not
+restart a process killed by quitting or restarting the desktop. A canceled task
+is also distinct from the runner acknowledging that its process stopped; task
+recovery retries cancellation while the bound run remains queued or running.
 
 Revision conflicts from app context, coordinator continuation, and mission
 interpretation return HTTP 409 with `code: "revision_conflict"`, `currentRevision`,

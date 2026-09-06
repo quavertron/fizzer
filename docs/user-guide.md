@@ -353,15 +353,15 @@ A **mission** is a durable task record projected into the chat transcript. It is
 
 Typical mission states are:
 
-- pending or running;
+- active while tasks are pending or running;
 - reviewing after worker output arrives;
 - attention when a task fails or is blocked;
-- completed only after the coordinator explicitly finishes it;
+- completed after coordinator verification, or qualifying evidence for a mission configured for automatic completion;
 - canceled when stopped.
 
 Open **Missions** in a channel to inspect mission history. Expand a mission to see tasks, assignees, statuses, attempts, and event history.
 
-A coordinator can review worker evidence, retry a task, or finish the mission with a concise summary. Worker completion alone does not mean the mission is finished; the coordinator should verify and integrate the result.
+A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](agent-runtime.md#chat-first-orchestration) for completion and recovery details.
 
 Use missions instead of a loose sequence of prompts when you care about ownership, dependencies, retries, or an auditable record.
 

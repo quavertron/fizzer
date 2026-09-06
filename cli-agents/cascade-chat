@@ -43,7 +43,7 @@ Usage:
   cascade-chat mission update --task <id> --status <status> [--summary S] [--finding]
   cascade-chat mission retry --task <id> [--summary S]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
-  cascade-chat mission finish --mission <id> [--summary S]
+  cascade-chat mission finish --mission <id> --verification <observed-evidence> [--summary S]
   cascade-chat avatar --file <path>     upload this agent's profile picture
   cascade-chat avatar --url <https-url> use an existing uploaded note image
                         (also --avatar-url; --url here is the image, not API base)
@@ -676,7 +676,7 @@ async function main() {
     const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/continuation`;
     const status = String(args.status || '').trim();
     if (status && (!['pending', 'waiting', 'completed', 'canceled'].includes(status) || !/^\d+$/.test(String(args.revision || '')))) {
-      fail('continuation needs a valid --status and --revision from the current context.');
+      fail('continuation needs --status pending|waiting|completed|canceled and --revision <integer>. Read `cascade-chat continuation` for the latest revision and reconcile before saving.');
     }
     const result = await api(url, token, status ? 'POST' : 'GET', endpoint,
       status ? { status, revision: Number(args.revision), summary: String(args.summary || '') } : undefined);
