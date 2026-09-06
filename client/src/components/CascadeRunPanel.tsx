@@ -21,7 +21,6 @@ import {
   hasRunActivity,
   hasUsageStats,
   isHarnessPromptDump,
-  liveActivityHeadline,
   summarizeActivity,
   toolResultPreview,
   type ActivityItem,
@@ -34,6 +33,7 @@ const HarnessTerminal = lazy(() =>
   import('./HarnessTerminal').then((m) => ({ default: m.HarnessTerminal })),
 );
 import type { ChatMessage } from '../chat/types';
+import { workTraceOutput } from '../chat/workTrace';
 import { ThinkingSpinner } from './ThinkingSpinner';
 import { api } from '../api';
 
@@ -510,6 +510,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
   onHydrateMessage?: (message: ChatMessage) => void;
 }) {
   const isRunning = message.status === 'running';
+  const publicOutput = workTraceOutput(message);
   const isQueued = message.status === 'queued' || message.status === 'sending';
   const canStopQueued = isQueued && message.id.startsWith('agent-dispatch-')
     && (message.runId != null || Boolean(vaultId && onHydrateMessage));
@@ -571,15 +572,11 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
     () => {
       if (message.status === 'failed') return message.body?.trim() || 'Agent failed.';
       if (message.status === 'canceled') return message.body?.trim() || 'Run canceled.';
-      return activity
-        ? (isRunning && !hasStructuredActivity ? 'Starting…' : summarizeActivity(activity, isRunning))
-        : (isRunning ? 'Starting…' : 'trace');
+      if (isQueued) return 'Queued';
+      if (isRunning) return publicOutput || 'Working';
+      return activity ? summarizeActivity(activity, false) : 'trace';
     },
-    [activity, hasStructuredActivity, isRunning, message.body, message.status],
-  );
-  const live = useMemo(
-    () => (activity && isRunning && hasStructuredActivity ? liveActivityHeadline(activity) : null),
-    [activity, hasStructuredActivity, isRunning],
+    [activity, isRunning, isQueued, publicOutput, message.body, message.status],
   );
   const statChips = useMemo(
     () => (activity ? buildHeaderStatChips(activity.stats) : []),
@@ -621,18 +618,9 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
   useLayoutEffect(() => {
     if (!isRunning && !open) return;
     onContentGrowRef.current?.();
-  }, [scrollEpoch, open, activity, isRunning, live, summary]);
+  }, [scrollEpoch, open, activity, isRunning, summary]);
 
-  if (canStopQueued) return (
-    <div className="cascade-run-panel" onPointerDown={(event) => event.stopPropagation()}>
-      <StopRunButton key={message.id} onStop={async () => {
-        if (message.runId != null) return onCancelRun(message.runId);
-        await api(`/api/vaults/${vaultId}/channels/${message.channelId}/messages/${encodeURIComponent(message.id)}?queuedOnly=true`, { method: 'DELETE' });
-        onHydrateRef.current?.({ ...message, status: 'canceled', body: '' });
-      }} />
-    </div>
-  );
-  if (!isRunning && !canExpand) return null;
+  if (!isRunning && !isQueued && !canExpand) return null;
 
   const hasStructured = hasStructuredActivity;
   // Raw CLI/JSONL is a diagnostic fallback, not a live transcript. Showing it
@@ -646,6 +634,13 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="crp-header">
+        {canStopQueued && (
+          <StopRunButton key={message.id} onStop={async () => {
+            if (message.runId != null) return onCancelRun(message.runId);
+            await api(`/api/vaults/${vaultId}/channels/${message.channelId}/messages/${encodeURIComponent(message.id)}?queuedOnly=true`, { method: 'DELETE' });
+            onHydrateRef.current?.({ ...message, status: 'canceled', body: '' });
+          }} />
+        )}
         <button
           type="button"
           className="crp-toggle"
@@ -663,11 +658,8 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
           <TerminalSquare size={13} className="crp-toggle-icon" />
           <span className="crp-toggle-label">Activity</span>
           <span className="crp-toggle-summary">
-            {hydrating ? 'loading…' : live?.detail ? (
-              <>
-                <span className="crp-live-verb">{live.verb}</span>
-                <span className="crp-live-detail">{live.detail}</span>
-              </>
+            {hydrating ? 'loading…' : isQueued ? 'Queued' : publicOutput ? (
+              <span className="crp-live-detail">{publicOutput}</span>
             ) : summary}
           </span>
           {statChips.length > 0 && (
@@ -683,7 +675,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
               ))}
             </span>
           )}
-          {isRunning && <ThinkingSpinner className="crp-spinner" title="Harness running" />}
+          {(isRunning || isQueued) && <ThinkingSpinner className="crp-spinner" title={isQueued ? 'Queued' : 'Working'} />}
           {canExpand && <ChevronRight size={13} className="crp-chevron" />}
         </button>
         {isRunning && message.runId != null && (

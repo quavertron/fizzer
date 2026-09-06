@@ -209,8 +209,8 @@ describe('chat run panel lifecycle', () => {
   });
 
   it('keeps live diagnostics selectable and failures visible', () => {
-    expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(false);
-    expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(false);
+    expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(true);
+    expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(true);
     expect(shouldRenderRunPanel(message('3', { status: 'failed' }), false, true)).toBe(true);
     expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(true);
     expect(shouldRenderRunPanel(message('5', { status: 'sending', body: 'Queued...' }), false, true)).toBe(false);
@@ -348,14 +348,17 @@ describe('quiet conversation activity', () => {
     expect(settled).not.toContain('chat-working-output');
   });
 
-  it('streams public text inside the working decal and clears it when the run settles', () => {
+  it('streams public text inside the message activity panel without a separate decal', () => {
     let rows = [message('stream', { agentId: 'codex', status: 'running', body: 'Thinking...',
       blocks: [{ type: 'thinking', text: 'Private reasoning' },
         { type: 'tool_result', text: 'Raw tool output' },
         { type: 'text', text: 'Checking the first file' }],
     })];
     const first = renderRow(rows[0]);
-    expect(first).toMatch(/chat-working-output[^>]*>Checking the first file<\/span>/);
+    expect(first).not.toContain('chat-working-decal');
+    expect(first).toContain('cascade-run-panel');
+    expect(first).toMatch(/crp-live-detail[^>]*>Checking the first file<\/span>/);
+    expect(first.match(/thinking-spinner /g)).toHaveLength(1);
     expect(first).not.toContain('Private reasoning');
     expect(first).not.toContain('Raw tool output');
     rows = applyRemoteChatMessage(rows, { ...rows[0], blocks: [{ type: 'text', text: 'Now checking the second file' }] });
@@ -380,6 +383,8 @@ describe('quiet conversation activity', () => {
     for (const status of ['queued', 'sending', 'running'] as const) {
       const html = renderRow({ ...base, status });
       expect(html).toContain('thinking-spinner');
+      expect(html).not.toContain('chat-working-decal');
+      expect(html).toContain('cascade-run-panel');
       expect(html).toContain(status === 'running' ? 'Working' : 'Queued');
       expect(html).not.toContain(base.body);
       expect(html).not.toContain('Internal runtime instructions');

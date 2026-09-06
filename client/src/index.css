@@ -9997,11 +9997,6 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 }
 
 /* Token updates advance the original trailing text window; clip older text at the left. */
-.chat-working-decal {
-  min-width: 0;
-  max-width: min(52vw, 38rem);
-}
-.chat-working-decal .thinking-spinner { flex-shrink: 0; }
 .chat-working-output {
   display: flex;
   justify-content: flex-end;

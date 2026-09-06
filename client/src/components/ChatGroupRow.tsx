@@ -1,5 +1,4 @@
 import { isLiveAgentStatus } from '../chat/runBlocks';
-import { ThinkingSpinner } from './ThinkingSpinner';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Paperclip } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -7,7 +6,7 @@ import { bodyHasNoteRefs } from '../docEmbeds';
 import { formatChatTime } from '../chat/time';
 import type { ChatAgentRegistration, ChatMessage, PlanUsage } from '../chat/types';
 import { hasRunActivity } from '../chat/harnessActivity';
-import { isSteeringContinuationMessage, workTraceOutput } from '../chat/workTrace';
+import { isSteeringContinuationMessage } from '../chat/workTrace';
 import type { ChatMessageGroup } from '../chat/workTrace';
 import { escapeRegExp, normalizeMention } from '../chat/mentions';
 import { CascadeRunPanel } from './CascadeRunPanel';
@@ -88,7 +87,8 @@ export function shouldRenderRunPanel(
   selected: boolean,
   _isLatestRunningMessage: boolean,
 ): boolean {
-  if (selected) return true;
+  if (selected || message.status === 'running') return true;
+  if (message.agentId && isLiveAgentStatus(message.status)) return true;
   if (message.status === 'failed' || message.status === 'canceled') return true;
   return false;
 }
@@ -170,7 +170,6 @@ export const ChatGroupRow = memo(function ChatGroupRow({
 }) {
   const head = group.messages[0];
   const tail = group.messages[group.messages.length - 1];
-  const liveOutput = workTraceOutput(tail);
   const groupHasRunWidget = Boolean(traceContent)
     || group.messages.some((message) => message.status === 'running' || hasExpandableTrace(message));
   const groupSelected = group.messages.some((message) => message.id === selectedMessageId);
@@ -246,13 +245,6 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               {avatarKind === 'agent' && planUsage && <PlanUsageMeters usage={planUsage} />}
               {avatarKind === 'agent' && ownerLabel && <span className="chat-agent-owner">{ownerLabel}'s agent</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
-              {avatarKind === 'agent' && isLiveAgentStatus(tail.status) && (
-                <span className="chat-message-status chat-working-decal">
-                  <ThinkingSpinner title={tail.status === 'running' ? 'Working' : 'Queued'} />
-                  {tail.status === 'running' ? 'working' : 'queued'}
-                  {liveOutput && <span className="crp-live-detail chat-working-output">{liveOutput}</span>}
-                </span>
-              )}
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
               {avatarKind === 'agent' && tail.status === 'canceled' && isSteeringContinuationMessage(tail) && (
                 <span className="chat-message-status is-steered">continued</span>
