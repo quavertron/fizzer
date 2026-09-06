@@ -426,3 +426,20 @@ it('does not revive a blocked verification from a stale working trace', () => {
   expect(markup).not.toContain('Working…');
   expect(markup).not.toContain('mission-status-completed');
 });
+
+it('shows the resumed task instead of the canceled prior attempt in the mission preview', () => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'resumed', rootMessageId: 'root', title: 'Resolve verification failure', objective: '',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'task', title: 'Repair and verify the UI', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status: 'running', summary: '', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 1, updatedAt: '' }],
+    },
+    tracePeek: { live: false, author: 'Astra', label: 'Canceled', summary: '', decals: [], phase: 'canceled' },
+  }));
+  expect(markup).toContain('working');
+  expect(markup).toContain('Repair and verify the UI');
+  expect(markup).not.toContain('Canceled');
+});

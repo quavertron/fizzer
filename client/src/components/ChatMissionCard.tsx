@@ -131,9 +131,10 @@ export function ChatMissionCard({
     || '';
   const peekLabel = (terminal ? mission.summary : '')
     || (!terminal && attentionTask ? attentionTask.summary || attentionTask.title : '')
-    || (!terminal ? tracePeek?.label : '')
+    || (!terminal && tracePeek?.live ? tracePeek.label : '')
     || (runningTask ? runningTask.title : '')
     || (pendingTask ? `Queued · ${pendingTask.title}` : '')
+    || (!terminal ? tracePeek?.label : '')
     || (!terminal ? 'Waiting for an agent update' : '');
   // Peek is collapsed-only activity exposure. When open, the stream/tasks are the UI.
   // Settled missions without useful activity text skip the second rail entirely.
