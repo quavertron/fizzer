@@ -14,6 +14,7 @@ import {
   splitDocEmbeds,
   splitWikilinks,
 } from '../docEmbeds';
+import { stripChatControlMarkers } from '../chat/shared';
 import { escapeRegExp, normalizeMention } from '../chat/mentions';
 import {
   chatMediaLink,
@@ -315,7 +316,7 @@ export const ChatMessageText = memo(function ChatMessageText({
   onOpenSharedNote?: (messageId: string, title: string) => void;
 }) {
   // Suggestion evidence stays in the durable transcript, outside the chat prose.
-  const paintBody = useThrottledStreamBody(body.replace(/^<!-- fizzer-next:[^\s<>]+ -->\s*/, ''), streaming);
+  const paintBody = useThrottledStreamBody(stripChatControlMarkers(body), streaming);
 
   const withInlineMarkup = useCallback((children: ReactNode): ReactNode => {
     const decorate = (value: string): ReactNode[] => {

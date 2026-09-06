@@ -36,7 +36,19 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
   # avoiding a second proposal store. Check again at publication so disablement
   # and concurrent turns take effect even if a provider has stale context.
   def prepare(message, channel_id) do
+    # Misplaced metadata must not leak alongside an otherwise substantive answer.
+    # Leading markers still pass through the authority/checkpoint validation below.
     body = message.body || ""
+
+    body =
+      if present?(message[:agentId]) and not String.starts_with?(body, "<!-- fizzer-next") do
+        Regex.replace(~r/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?-->/, body, "")
+        |> String.trim()
+      else
+        body
+      end
+
+    message = %{message | body: body}
 
     cond do
       not present?(message[:agentId]) ->

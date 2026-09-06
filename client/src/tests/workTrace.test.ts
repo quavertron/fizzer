@@ -407,3 +407,22 @@ it('updates the transient mission peek only from public text blocks', () => {
     .toBe('…' + 'x'.repeat(166) + 'newest output');
   expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
 });
+
+it('does not revive a blocked verification from a stale working trace', () => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'c43e70cb', rootMessageId: 'root', title: 'Verify restored working animation', objective: '',
+      status: 'attention', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'e37c677b', title: 'Verify streaming decal', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status: 'blocked', summary: 'No streaming response was visible.', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '' }],
+    },
+    tracePeek: { live: true, author: 'Astra', label: 'Working…', summary: '', decals: [], phase: 'working' },
+  }));
+  expect(markup).toContain('needs attention');
+  expect(markup).toContain('No streaming response was visible.');
+  expect(markup).not.toContain('thinking-spinner');
+  expect(markup).not.toContain('Working…');
+  expect(markup).not.toContain('mission-status-completed');
+});

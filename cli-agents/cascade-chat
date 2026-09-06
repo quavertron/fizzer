@@ -290,7 +290,7 @@ const IMAGE_EXTENSIONS = {
 
 /** Write one image/attachment source to disk and return its path.
  * Data URLs are decoded in place; http(s) sources are downloaded. */
-async function writeAttachment(source, dir, base, token) {
+async function writeAttachment(source, dir, base, token, apiBase) {
   const dataUrl = /^data:([^;,]+);base64,(.+)$/s.exec(String(source.url || '').trim());
   if (dataUrl) {
     const extension = IMAGE_EXTENSIONS[dataUrl[1]] || (dataUrl[1].split('/')[1] || 'bin').replace(/[^\w.-]/g, '');
@@ -298,7 +298,9 @@ async function writeAttachment(source, dir, base, token) {
     fs.writeFileSync(file, Buffer.from(dataUrl[2], 'base64'));
     return { path: file, media_type: dataUrl[1], name: source.name || path.basename(file) };
   }
-  const href = String(source.url || '').trim();
+  const rawHref = String(source.url || '').trim();
+  const href = rawHref.startsWith('/') && !rawHref.startsWith('//')
+    ? new URL(rawHref, apiBase).href : rawHref;
   if (!/^https?:\/\//i.test(href)) return null;
   const res = await fetch(href, { headers: { authorization: `Bearer ${token}` } });
   if (!res.ok) return null;
@@ -816,7 +818,7 @@ async function main() {
     ];
     const written = [];
     for (const source of sources) {
-      const saved = await writeAttachment(source, outDir, `${target.id}-${source.index}`, token);
+      const saved = await writeAttachment(source, outDir, `${target.id}-${source.index}`, token, url);
       if (saved) written.push(saved);
     }
     if (!written.length) fail(`message ${target.id} has no readable attachment.`);

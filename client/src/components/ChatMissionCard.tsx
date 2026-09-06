@@ -118,7 +118,7 @@ export function ChatMissionCard({
   const runningTask = mission.tasks.find((task) => task.status === 'running');
   const pendingTask = mission.tasks.find((task) => task.status === 'pending');
   const attentionTask = mission.tasks.find((task) => task.status === 'failed' || task.status === 'blocked');
-  const live = !terminal && (Boolean(runningTask) || Boolean(tracePeek?.live && tracePeek.phase !== 'routing'));
+  const live = !terminal && (Boolean(runningTask) || Boolean(!needsAttention && !attentionTask && tracePeek?.live && tracePeek.phase !== 'routing'));
   const statusLabel = terminal ? mission.status
     : needsAttention || attentionTask ? 'needs attention'
       : live ? 'working'

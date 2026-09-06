@@ -7,7 +7,7 @@ import { isLiveAgentStatus } from './runBlocks';
  * TUI-style lines; the last settled non-worker answer stays a full bubble.
  */
 
-import { canGroupChatMessages } from './shared';
+import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
 import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
@@ -187,7 +187,7 @@ export function workTracePreview(body: string, max = 110): string {
 export function workTraceOutput(message: Pick<ChatMessage, 'status' | 'blocks'>): string {
   if (message.status !== 'running') return '';
   const block = message.blocks?.slice().reverse().find((block) => block.type === 'text' && !block.redacted && block.text?.trim());
-  const text = stripTerminalNoise(block?.text || '').replace(/\s+/g, ' ').trim();
+  const text = stripChatControlMarkers(stripTerminalNoise(block?.text || '')).replace(/\s+/g, ' ').trim();
   // Follow the newest output, including when one text block grows in place.
   return text.length > 180 ? `…${text.slice(-179)}` : text;
 }

@@ -370,6 +370,28 @@ defmodule Cascade.Chat.NextStepsTest do
     assert length(checks(c)) == 2
   end
 
+  test "misplaced checkpoint metadata preserves a substantive terminal reply on publication and replay",
+       c do
+    enable(c)
+    body = "Desktop check blocked: no streaming response was visible."
+
+    input = %{
+      proposal_input(c)
+      | body: body <> "\n\n<!-- fizzer-next-none:sys-mission-review -->"
+    }
+
+    {:ok, saved} = Messages.create(c.user, c.vault_id, c.channel.id, input, access: :agent)
+    assert saved.body == body
+    assert SQL.one("SELECT body FROM chat_messages WHERE id=?", [saved.id]) == [body]
+
+    {:ok, replay} =
+      Messages.update(c.user, c.vault_id, c.channel.id, saved.id, %{body: input.body},
+        access: :agent
+      )
+
+    assert replay.body == body
+  end
+
   test "no-suggestion reasons settle the checkpoint durably and survive projection retries", c do
     enable(c)
 

@@ -330,6 +330,24 @@ describe('quiet conversation activity', () => {
     expect(rows.map((row) => row.id)).toEqual(['shell', 'outcome']);
   });
 
+  it('preserves the verification outcome while clearing transient text and misplaced checkpoint metadata', () => {
+    const marker = '<!-- fizzer-next-none:sys-mission-c43e70cb-review -->';
+    let rows = [message('verification', { agentId: 'codex', status: 'running',
+      body: '', blocks: [{ type: 'text', text: `Checking the desktop. ${marker.slice(0, -3)}` }] })];
+    const running = renderRow(rows[0]);
+    expect(running).toContain('Checking the desktop.');
+    expect(running).not.toContain('fizzer-next');
+    const final = 'Desktop check blocked: no streaming response was visible.';
+    rows = applyRemoteChatMessage(rows, { ...rows[0], status: undefined,
+      body: `${final}\n\n${marker}`, blocks: [] });
+    rows = reconcileChatMessageSnapshot(rows, rows, captureChatMessageSnapshotBaseline(rows));
+    const settled = renderRow(rows[0]);
+    expect(settled).toContain(final);
+    expect(settled).not.toContain('fizzer-next');
+    expect(settled).not.toContain('thinking-spinner');
+    expect(settled).not.toContain('chat-working-output');
+  });
+
   it('streams public text inside the working decal and clears it when the run settles', () => {
     let rows = [message('stream', { agentId: 'codex', status: 'running', body: 'Thinking...',
       blocks: [{ type: 'thinking', text: 'Private reasoning' },

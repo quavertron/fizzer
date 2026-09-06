@@ -308,3 +308,27 @@ test('worker child and join use bounded endpoints with current run identity', as
     { path: '/api/vaults/vault-1/channels/channel-1/missions/children/join', run: '51', body: {} },
   ]);
 });
+
+test('attachment opens note asset paths returned by message detail', async (t) => {
+  const bytes = Buffer.from('fixture-image');
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/vaults/v/channels/c/messages/owner') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ message: { id: 'owner', images: ['/api/notes/n/assets/image'] } }));
+    } else if (req.url === '/api/notes/n/assets/image') {
+      assert.equal(req.headers.authorization, 'Bearer fixture-token');
+      res.setHeader('content-type', 'image/png');
+      res.end(bytes);
+    } else { res.statusCode = 404; res.end(); }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const addr = server.address();
+  assert(addr && typeof addr === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-asset-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const result = await execFileAsync(process.execPath, [cli, 'attachment', '--message-id', 'owner',
+    '--url', `http://127.0.0.1:${addr.port}`, '--token', 'fixture-token', '--vault', 'v', '--channel', 'c', '--out', dir, '--json']);
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(fs.readFileSync(output.files[0].path), bytes);
+});

@@ -76,3 +76,8 @@ export function canMergeChatMessages(a: ChatMessage, b: ChatMessage) {
   if ((a.attachments?.length ?? 0) > 0 || (b.attachments?.length ?? 0) > 0) return false;
   return true;
 }
+
+/** Internal checkpoint metadata is never chat prose, including partial streamed markers. */
+export function stripChatControlMarkers(body: string): string {
+  return body.replace(/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?(?:-->|$)/g, '').trim();
+}
