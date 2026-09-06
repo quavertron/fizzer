@@ -379,9 +379,9 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
 
   for outcome <- [:proposal, :none] do
     @tag checkpoint_outcome: outcome
-    test "next-step lifecycle reconsiders #{outcome} after mission closure and scheduler restart",
+    test "next-step lifecycle does not redispatch #{outcome} after mission closure and scheduler restart",
          ctx do
-      alias Cascade.Chat.{NextSteps, Schema}
+      alias Cascade.Chat.Schema
       alias Cascade.Missions.{Authority, DispatchReannouncer, Scheduler}
       alias Cascade.Missions.Store, as: Missions
 
@@ -544,96 +544,22 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
                  verification
                ]
 
-      # Store.finish must persist the completion wake even if publication is interrupted.
+      # Finishing work does not admit another model merely to discover a follow-up.
       completion_source = "sys-next-completed-#{created.mission.id}"
-
-      [completion_dispatch, nil] =
-        SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id=?", [
-          completion_source
-        ])
-
-      assert SQL.one("SELECT kind,outcome FROM chat_next_step_checks WHERE source_id=?", [
-               completion_source
-             ]) == ["completion", "pending"]
-
-      # Restart the scheduler with only persisted outbox/checkpoint state to recover.
       Schema.ensure!()
       recovered = start_supervised!({DispatchReannouncer, interval: 60_000})
       refute recovered == scheduler
-
-      eventually(fn ->
-        match?(
-          [run] when is_integer(run),
-          SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [completion_dispatch])
-        )
-      end)
-
-      [completion_run] =
-        SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [completion_dispatch])
-
-      assert is_integer(completion_run)
-      assert Store.get(completion_run).prompt =~ "must evaluate"
-      assert Store.get(completion_run).prompt =~ finish.summary
-      assert Store.get(completion_run).prompt =~ accepted.body
-      assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
-      assert length(Regex.scan(~r/run:delegate/, packet)) == 1
-
       Scheduler.emit_projection(completed)
       send(recovered, :wake)
-
-      eventually(fn ->
-        match?(
-          [run] when is_integer(run),
-          SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [completion_dispatch])
-        )
-      end)
-
-      assert {:ok, same} =
-               CascadeWeb.OrchestrationController.execute_dispatch(completion_dispatch)
-
-      assert same.id == completion_run
-
-      assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [completion_dispatch]) ==
-               [1]
-
-      Session.emit(ctx.sid, "/runners", "boundary:barrier", [])
-      assert {:ok, replay_packet} = Session.poll(ctx.sid, 1_000)
-      refute replay_packet =~ "run:delegate"
-
-      reconsideration =
-        if ctx.checkpoint_outcome == :proposal,
-          do:
-            "<!-- fizzer-next:#{completion_source} -->\n\nThe separate packaging failure still blocks release. Should diagnosing it be next?",
-          else:
-            "<!-- fizzer-next-none:#{completion_source} --> The updater issue is resolved; no other grounded need remains."
-
-      expected_body =
-        if ctx.checkpoint_outcome == :proposal,
-          do: reconsideration,
-          else: "The updater issue is resolved; no other grounded need remains."
-
-      reconsidered =
-        complete_checkpoint(ctx, completion_dispatch, completion_run, reconsideration)
-
-      assert reconsidered.body == expected_body
-
-      assert NextSteps.context(ctx.owner_channel.id, registration.id, completion_source) =~
-               "already checked"
-
-      :ok = stop_supervised(DispatchReannouncer)
-      final_scheduler = start_supervised!({DispatchReannouncer, interval: 60_000})
-      assert :sys.get_state(final_scheduler).interval == 60_000
-
-      assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [completion_dispatch]) ==
-               [1]
+      :sys.get_state(recovered)
 
       assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [
                completion_source
-             ]) == [1]
+             ]) == [0]
 
-      Session.emit(ctx.sid, "/runners", "boundary:barrier", [])
-      assert {:ok, final_packet} = Session.poll(ctx.sid, 1_000)
-      refute final_packet =~ "run:delegate"
+      assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [
+               completion_source
+             ]) == [0]
     end
   end
 

@@ -58,7 +58,7 @@ const MIGRATION_LEDGER_ROW = {
 
 // Reviewed schema transitions that are safe while the previous release is
 // still serving. Keep these exact and directional: an unrecognized DDL change
-// must continue through the snapshot-backed maintenance cutover.
+// must be migrated separately before the replacement image is deployed.
 const ROLLING_SCHEMA_TRANSITIONS = new Map([
   ['table:chat_agent_members', new Map([
     ['caa0376559c9e2b1327b414bea0b8c92c110f093b2d83277ffbc0778367cd59c',
@@ -416,25 +416,30 @@ export function compareSchemaFingerprints(before, after) {
   const failures = [];
   const beforeObjects = new Map(before.objects.map((object) => [`${object.type}:${object.name}`, object]));
   const afterObjects = new Map(after.objects.map((object) => [`${object.type}:${object.name}`, object]));
-  let objectsMatch = beforeObjects.size === afterObjects.size;
-  if (objectsMatch) {
-    for (const [key, oldObject] of beforeObjects) {
-      const nextObject = afterObjects.get(key);
-      if (!nextObject) {
-        objectsMatch = false;
-        break;
-      }
-      if (same(oldObject, nextObject)) continue;
-      const transitions = ROLLING_SCHEMA_TRANSITIONS.get(key);
-      const oldHash = sha256(normalizedSql(oldObject.sql));
-      const nextHash = sha256(normalizedSql(nextObject.sql));
-      if (oldObject.type !== nextObject.type
-          || oldObject.name !== nextObject.name
-          || oldObject.tableName !== nextObject.tableName
-          || transitions?.get(oldHash) !== nextHash) {
-        objectsMatch = false;
-        break;
-      }
+  // New ordinary tables and their indexes cannot change existing callers.
+  // Existing tables, constraints, triggers and indexes retain their exact schema.
+  const addedTables = new Set(after.objects.filter((object) =>
+    !beforeObjects.has(`table:${object.name}`) && object.type === 'table'
+      && /^CREATE TABLE\b/i.test(object.sql),
+  ).map((object) => object.name));
+  let objectsMatch = true;
+  for (const [key, oldObject] of beforeObjects) {
+    const nextObject = afterObjects.get(key);
+    if (nextObject && same(oldObject, nextObject)) continue;
+    const transitions = ROLLING_SCHEMA_TRANSITIONS.get(key);
+    if (!nextObject || oldObject.type !== nextObject.type
+        || oldObject.name !== nextObject.name || oldObject.tableName !== nextObject.tableName
+        || transitions?.get(sha256(normalizedSql(oldObject.sql))) !== sha256(normalizedSql(nextObject.sql))) {
+      objectsMatch = false;
+      break;
+    }
+  }
+  for (const [key, object] of afterObjects) {
+    if (beforeObjects.has(key)) continue;
+    if (!(object.type === 'table' && addedTables.has(object.name))
+        && !(object.type === 'index' && addedTables.has(object.tableName))) {
+      objectsMatch = false;
+      break;
     }
   }
   if (!objectsMatch) failures.push('database schema changed');

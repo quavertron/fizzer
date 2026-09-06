@@ -766,7 +766,6 @@ defmodule Cascade.Missions.Store do
             end)
 
             update = refresh!(mission.id) |> Map.merge(cleanup)
-            Cascade.Chat.NextSteps.completion(update)
             update
           end)
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Production update with an offline Elixir/data preflight, a zero-503 rolling
-# handoff for state-identical releases, and a gated snapshot rollback fallback
-# for releases that intentionally migrate persistent state.
+# Production update with a schema-only preflight and rolling image replacement.
+# Data audits and destructive migration procedures are separate operator work.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,16 +32,10 @@ CERTIFIED_IMAGE_ID=""
 CANDIDATE_IMAGE=""
 ROLLBACK_IMAGE="cascade:rollback-$REVISION"
 PREFLIGHT_DIR=""
-PREFLIGHT_CONTAINER="cascade-preflight-$REVISION"
+SCHEMA_CHANGED=0
 SNAPSHOT_DIR=""
-SNAPSHOT_DB=""
-CUTOVER_STARTED=0
 DEPLOY_COMMITTED=0
-ROLLBACK_IN_PROGRESS=0
-OLD_BACKEND_STOPPED=0
-CANDIDATE_DATA_TOUCHED=0
 DEPLOY_DOMAIN=""
-ROLLING_SAFE=0
 ROLLING_STARTED=0
 ROLLING_OLD_STOPPED=0
 ROLLING_OLD_REMOVED=0
@@ -50,24 +43,6 @@ ROLLING_FINAL_STARTED=0
 ROLLING_ROLLBACK_IN_PROGRESS=0
 ROLLING_PORT=39001
 NGINX_CONFIG_CHANGED=0
-
-close_maintenance_gate() {
-  # Replace, rather than follow, any unexpected object at the marker path.
-  rm -f -- "$MAINTENANCE_MARKER"
-  install -m 0644 -o 0 -g 0 /dev/null "$MAINTENANCE_MARKER"
-  if [[ -L "$MAINTENANCE_MARKER" || ! -f "$MAINTENANCE_MARKER" ]] ||
-     [[ "$(stat -c '%u:%g:%a' "$MAINTENANCE_MARKER")" != "0:0:644" ]]; then
-    echo "Error: could not establish the root-owned maintenance gate." >&2
-    return 1
-  fi
-}
-
-open_maintenance_gate() {
-  if ! rm -f -- "$MAINTENANCE_MARKER" || [[ -e "$MAINTENANCE_MARKER" || -L "$MAINTENANCE_MARKER" ]]; then
-    echo "CRITICAL: maintenance marker could not be removed; traffic remains gated." >&2
-    return 1
-  fi
-}
 
 load_release_candidate() {
   echo "==> Verifying staged release image for $REVISION"
@@ -243,34 +218,6 @@ check_engine_io() {
   echo "==> Engine.IO v4 accepted and v3 rejected"
 }
 
-verify_maintenance_gate() {
-  if [[ -z "$DEPLOY_DOMAIN" ]]; then
-    echo "Error: deployment domain is unavailable for maintenance-gate verification." >&2
-    return 1
-  fi
-
-  # A graceful nginx reload can leave the retiring worker generation alive for
-  # a moment. Prove that fresh connections consistently reach the gated
-  # generation before stopping the old backend.
-  local code="000" consecutive=0
-  for _attempt in $(seq 1 20); do
-    code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 10 \
-      --resolve "$DEPLOY_DOMAIN:443:127.0.0.1" "https://$DEPLOY_DOMAIN/api/health" || true)
-    if [[ "$code" == "503" ]]; then
-      consecutive=$((consecutive + 1))
-      if [[ "$consecutive" -ge 3 ]]; then
-        echo "==> Nginx maintenance gate verified"
-        return 0
-      fi
-    else
-      consecutive=0
-    fi
-    sleep 1
-  done
-  echo "Error: nginx maintenance gate did not stabilize at HTTP 503 (last status: ${code:-000})." >&2
-  return 1
-}
-
 configure_nginx_upstreams() {
   local primary_port="${1:?primary upstream port is required}"
   local backup_port="${2:-}"
@@ -404,7 +351,6 @@ settle_reloaded_nginx() {
 }
 
 cleanup_preflight() {
-  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null 2>&1 || true
   if [[ -n "$PREFLIGHT_DIR" && "$PREFLIGHT_DIR" == "$DATA_DIR"/.deploy-preflight.* && -d "$PREFLIGHT_DIR" ]]; then
     find "$PREFLIGHT_DIR" -depth -delete 2>/dev/null || true
   fi
@@ -417,82 +363,12 @@ cleanup_preflight_clones() {
     "$directory/before-data" "$directory/after-data" "$directory/sqlite-scratch"
 }
 
-prune_cutover_snapshots() {
-  [[ -d /var/backups/cascade ]] || return 0
-  # The shared deploy lock excludes cutover/restore work. Also fail closed if
-  # another container explicitly mounts a recovery snapshot for investigation.
-  local containers mounts
-  containers="$(docker ps -q)"
-  [[ -n "$containers" ]] || return 1
-  mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' $containers)"
-  if printf '%s\n' "$mounts" | grep -Eq '^(/|/var|/var/backups|/var/backups/cascade(/.*)?)$'; then
-    echo "Error: recovery snapshots are mounted by a running container; refusing retention cleanup." >&2
-    return 1
-  fi
-  python3 "$ROOT/deploy/prune-cutover-snapshots.py" /var/backups/cascade \
-    --apply --protect "$SNAPSHOT_DIR"
-}
-
-restore_database_snapshot() {
-  if [[ -z "$SNAPSHOT_DB" || ! -f "$SNAPSHOT_DB" ]]; then
-    echo "Error: no cutover database snapshot is available for rollback." >&2
-    return 1
-  fi
-
-  "$ROOT/deploy/restore-sqlite-snapshot.sh" "$SNAPSHOT_DIR" "$LIVE_DB" "$REVISION"
-}
-
-rollback_cutover() {
-  if [[ "$ROLLBACK_IN_PROGRESS" == "1" ]]; then
-    return 1
-  fi
-  ROLLBACK_IN_PROGRESS=1
-  set +e
-  echo "==> Candidate failed; restoring the pre-cutover service" >&2
-  if ! close_maintenance_gate; then
-    echo "CRITICAL: rollback cannot prove traffic is gated; refusing to mutate production data." >&2
-    return 1
-  fi
-  local backend_running
-  backend_running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)"
-  if [[ "$OLD_BACKEND_STOPPED" == "1" || "$backend_running" != "true" ]]; then
-    if [[ "$backend_running" == "true" ]]; then
-      CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" stop -t 30 cascade || true
-    fi
-    if [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" == "true" ]]; then
-      echo "CRITICAL: candidate is still running; refusing an unsafe database restore" >&2
-      return 1
-    fi
-    if [[ "$CANDIDATE_DATA_TOUCHED" == "1" ]]; then
-      if ! restore_database_snapshot; then
-        echo "CRITICAL: database restore failed; refusing to boot the old image" >&2
-        return 1
-      fi
-    fi
-    if ! CASCADE_IMAGE="$ROLLBACK_IMAGE" docker compose "${COMPOSE_ARGS[@]}" \
-      up -d --no-build --force-recreate; then
-      echo "CRITICAL: rollback image failed to start" >&2
-      return 1
-    fi
-  fi
-  if wait_for_url "$HEALTH_URL" 60 "rollback" && systemctl is-active --quiet nginx; then
-    if open_maintenance_gate; then
-      echo "==> Rollback is healthy; external traffic restored" >&2
-    fi
-  else
-    echo "CRITICAL: rollback did not become healthy; maintenance gate remains active" >&2
-  fi
-  set -e
-}
-
 on_exit() {
   local status=$?
   trap - EXIT INT TERM
   cleanup_preflight
   if [[ "$ROLLING_STARTED" == "1" && "$DEPLOY_COMMITTED" != "1" ]]; then
     rollback_rolling_cutover || true
-  elif [[ "$CUTOVER_STARTED" == "1" && "$DEPLOY_COMMITTED" != "1" ]]; then
-    rollback_cutover || true
   fi
   exit "$status"
 }
@@ -535,7 +411,6 @@ checkpoint_preflight_clone() {
     '
 }
 
-
 dump_sqlite_schema() {
   local source="${1:?schema source database is required}"
   local destination="${2:?schema dump path is required}"
@@ -575,32 +450,6 @@ boot_preflight_database() {
   checkpoint_preflight_clone
 }
 
-verify_migration_clone() {
-  echo "==> Candidate boot mutates schema; verifying maintenance-cutover compatibility"
-  ensure_cutover_disk_capacity
-  mkdir -p "$PREFLIGHT_DIR/before-data" "$PREFLIGHT_DIR/after-data" "$PREFLIGHT_DIR/sqlite-scratch"
-  if container_running "$CONTAINER_NAME"; then
-    backup_running_database "$PREFLIGHT_DIR/before.db"
-  else
-    cp --reflink=auto --sparse=always "$LIVE_DB" "$PREFLIGHT_DIR/before.db"
-    chown 1000:1000 "$PREFLIGHT_DIR/before.db"
-  fi
-  cp --reflink=auto --sparse=always "$PREFLIGHT_DIR/before.db" "$PREFLIGHT_DIR/after.db"
-  cp -a --reflink=auto -- "$DATA_DIR/.cascade/vaults" "$PREFLIGHT_DIR/before-data/vaults"
-  cp -a --reflink=auto -- "$DATA_DIR/.cascade/qmd" "$PREFLIGHT_DIR/before-data/qmd"
-  rm -rf "$PREFLIGHT_DIR/after-data/vaults" "$PREFLIGHT_DIR/after-data/qmd"
-  cp -a --reflink=auto -- "$PREFLIGHT_DIR/before-data/vaults" "$PREFLIGHT_DIR/after-data/vaults"
-  cp -a --reflink=auto -- "$PREFLIGHT_DIR/before-data/qmd" "$PREFLIGHT_DIR/after-data/qmd"
-  boot_preflight_database
-  docker run --rm --network none --entrypoint node \
-    -e CASCADE_SQLITE_SNAPSHOT_TMPDIR=/sqlite-scratch \
-    -v "$PREFLIGHT_DIR:/preflight:ro" \
-    -v "$PREFLIGHT_DIR/sqlite-scratch:/sqlite-scratch" \
-    "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
-    --before /preflight/before.db --after /preflight/after.db \
-    --before-root /preflight/before-data --after-root /preflight/after-data
-}
-
 preflight_candidate() {
   echo "==> Running isolated schema preflight"
   PREFLIGHT_DIR="$(mktemp -d "$DATA_DIR/.deploy-preflight.XXXXXX")"
@@ -615,33 +464,23 @@ preflight_candidate() {
     --materialize-dest /preflight/after.db
   chown 1000:1000 "$PREFLIGHT_DIR/after.db"
 
-  # Classify only startup DDL. The protocol probe creates disposable rows, so
-  # it must not participate in the rolling-safe decision.
+  # Boot against empty schema; do not clone or scan production data.
   boot_preflight_database
   docker run --rm --network none --entrypoint node \
     -v "$PREFLIGHT_DIR:/preflight" \
     "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
     --dump-schema /preflight/after.db > "$PREFLIGHT_DIR/after-schema.json"
-  local schema_output=""
-  local schema_status=0
-  set +e
-  schema_output="$(docker run --rm --network none --entrypoint node \
+  if ! docker run --rm --network none --entrypoint node \
     -v "$PREFLIGHT_DIR:/preflight:ro" \
     "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
-    --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json 2>&1)"
-  schema_status=$?
-  set -e
-  printf '%s\n' "$schema_output"
-  if [[ "$schema_status" -eq 0 ]]; then
-    ROLLING_SAFE=1
-    echo "==> Candidate boot is schema-identical; rolling cutover is eligible"
-  elif [[ "$schema_output" == *"database schema changed"* || "$schema_output" == *"migration ledger changed"* ]]; then
-    verify_migration_clone
-    ROLLING_SAFE=0
-  else
-    echo "Error: schema preflight failed before a rolling-safe decision could be made." >&2
+    --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json; then
+    echo "Error: incompatible schema change; deploy a backward-compatible migration before this revision." >&2
     return 1
   fi
+  if ! cmp -s "$PREFLIGHT_DIR/before-schema.json" "$PREFLIGHT_DIR/after-schema.json"; then
+    SCHEMA_CHANGED=1
+  fi
+  echo "==> Candidate schema supports rolling deployment"
 
   # Schema compatibility is checked before touching live data.
   cleanup_preflight_clones
@@ -649,65 +488,17 @@ preflight_candidate() {
   chown -R 1000:1000 "$PREFLIGHT_DIR"
 }
 
-checkpoint_and_snapshot() {
-  echo "==> Checkpointing and snapshotting the quiescent production database"
-  # Match the production database owner. SQLite may need to recreate WAL/SHM
-  # sidecars after the old container was force-stopped at its drain deadline.
-  docker run --rm --network none --user 1000:1000 --entrypoint node \
-    -v "$DATA_DIR:/data" "$CANDIDATE_IMAGE" --input-type=module -e '
-      import Database from "better-sqlite3";
-      const db = new Database("/data/docs.db", { fileMustExist: true });
-      try {
-        const result = db.pragma("wal_checkpoint(TRUNCATE)");
-        if (result.some((row) => Number(row.busy) !== 0)) throw new Error(`busy WAL checkpoint: ${JSON.stringify(result)}`);
-        if (db.pragma("quick_check", { simple: true }) !== "ok") throw new Error("SQLite quick_check failed");
-      } finally { db.close(); }
-    '
-
-  SNAPSHOT_DIR="/var/backups/cascade/cutover-$REVISION-$(date -u +%Y%m%dT%H%M%SZ)"
+backup_database_before_migration() {
+  local temporary="$DATA_DIR/.deploy-backup-$REVISION.db"
+  SNAPSHOT_DIR="/var/backups/cascade/database-$REVISION-$(date -u +%Y%m%dT%H%M%SZ)"
   install -d -m 0700 "$SNAPSHOT_DIR"
-  local snapshot_tmp="$SNAPSHOT_DIR/.docs.db.incomplete"
-  cp --reflink=auto --sparse=always --preserve=mode,ownership,timestamps "$LIVE_DB" "$snapshot_tmp"
-  # A WAL-mode database opened from a read-only mount can fail before
-  # `quick_check` because SQLite still needs transient SHM/WAL sidecars. Keep
-  # SQL query-only while allowing those disposable files in the private,
-  # root-owned snapshot directory.
-  docker run --rm --network none --user 0:0 --entrypoint node \
-    -v "$SNAPSHOT_DIR:/snapshot" "$CANDIDATE_IMAGE" --input-type=module -e '
-      import Database from "better-sqlite3";
-      const db = new Database("/snapshot/.docs.db.incomplete", { fileMustExist: true });
-      try {
-        db.pragma("query_only = ON");
-        if (db.pragma("quick_check", { simple: true }) !== "ok") throw new Error("snapshot quick_check failed");
-        if (db.pragma("foreign_key_check").length) throw new Error("snapshot foreign_key_check failed");
-      } finally { db.close(); }
-    '
-  rm -f -- "$snapshot_tmp-wal" "$snapshot_tmp-shm"
-  mv "$snapshot_tmp" "$SNAPSHOT_DIR/docs.db"
-  install -d -m 0700 "$SNAPSHOT_DIR/corpus"
-  cp -a --reflink=auto -- "$DATA_DIR/.cascade/vaults" "$SNAPSHOT_DIR/corpus/vaults"
-  cp -a --reflink=auto -- "$DATA_DIR/.cascade/qmd" "$SNAPSHOT_DIR/corpus/qmd"
+  echo "==> Backing up the database before an additive schema change"
+  backup_running_database "$temporary"
+  mv "$temporary" "$SNAPSHOT_DIR/docs.db"
+  chmod 0600 "$SNAPSHOT_DIR/docs.db"
   (cd "$SNAPSHOT_DIR" && sha256sum docs.db > docs.db.sha256)
-  SNAPSHOT_DB="$SNAPSHOT_DIR/docs.db"
   git rev-parse HEAD > "$SNAPSHOT_DIR/revision.txt"
   docker inspect --format '{{.Image}}' "$CONTAINER_NAME" > "$SNAPSHOT_DIR/rollback-image.txt"
-  python3 "$ROOT/deploy/prune-cutover-snapshots.py" "$SNAPSHOT_DIR" --seal
-}
-
-verify_live_database() {
-  backup_running_database "$PREFLIGHT_DIR/live-after.db"
-  mkdir -p "$PREFLIGHT_DIR/live-corpus"
-  docker run --rm --network none --user 0:0 --entrypoint node \
-    -e CASCADE_SQLITE_SNAPSHOT_TMPDIR=/sqlite-scratch \
-    -v "$SNAPSHOT_DIR:/snapshot:ro" \
-    -v "$PREFLIGHT_DIR:/preflight:ro" \
-    -v "$PREFLIGHT_DIR/sqlite-scratch:/sqlite-scratch" \
-    -v "$PREFLIGHT_DIR/live-corpus:/live-corpus" \
-    -v "$DATA_DIR/.cascade/vaults:/live-corpus/vaults:ro" \
-    -v "$DATA_DIR/.cascade/qmd:/live-corpus/qmd:ro" \
-    "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
-    --before /snapshot/docs.db --after /preflight/live-after.db \
-    --before-root /snapshot/corpus --after-root /live-corpus
 }
 
 verify_live_schema_identity() {
@@ -781,38 +572,6 @@ verify_reopened_production_edge() {
   done
   echo "Error: reopened production edge did not stabilize (health HTTP ${health_code:-000}, client=$([[ "$root_html" == *'<div id="root"'* && "$root_html" == *'assets/main-'* ]] && echo ok || echo failed), Engine.IO=$([[ "$engine_open" == 0* ]] && echo ok || echo failed))." >&2
   return 1
-}
-
-ensure_cutover_disk_capacity() {
-  if [[ ! -f "$LIVE_DB" ]]; then
-    echo "Error: production database $LIVE_DB does not exist." >&2
-    return 1
-  fi
-
-  local database_kb corpus_kb wal_kb available_kb required_kb snapshot_available_kb
-  database_kb="$(( ($(stat -c '%s' "$LIVE_DB") + 1023) / 1024 ))"
-  available_kb="$(df -Pk "$DATA_DIR" | awk 'NR==2 {print $4}')"
-  wal_kb=0
-  if [[ -f "$LIVE_DB-wal" ]]; then
-    wal_kb="$(( ($(stat -c '%s' "$LIVE_DB-wal") + 1023) / 1024 ))"
-  fi
-  corpus_kb="$(du -sk --apparent-size "$DATA_DIR/.cascade/vaults" "$DATA_DIR/.cascade/qmd" | awk '{sum += $1} END {print sum+0}')"
-  # Before/after DBs plus checker copy and SQLite journal; corpus before/after
-  # plus checker scratch. WAL is a conservative allowance for uncheckpointed
-  # growth. No reflink/compression savings are assumed. Clones are removed
-  # before cutover; the same budget covers snapshot, live check and restore.
-  required_kb="$(( (database_kb + wal_kb) * 4 + corpus_kb * 3 + 1048576 ))"
-  install -d -m 0700 /var/backups/cascade
-  snapshot_available_kb="$(df -Pk /var/backups/cascade | awk 'NR==2 {print $4}')"
-  if (( snapshot_available_kb < database_kb + wal_kb + corpus_kb + 1048576 )); then
-    echo "Error: rollback snapshot filesystem lacks database/corpus headroom plus 1 GiB reserve." >&2
-    return 1
-  fi
-  if (( available_kb < required_kb )); then
-    echo "Error: cutover needs ${required_kb} KiB free for verified snapshots; only ${available_kb} KiB is available." >&2
-    return 1
-  fi
-  echo "==> Cutover snapshot capacity available (${available_kb} KiB free; ${required_kb} KiB required)"
 }
 
 start_rolling_container() {
@@ -956,44 +715,6 @@ rolling_cutover() {
   echo "==> Zero-503 rolling cutover committed"
 }
 
-maintenance_cutover() {
-  echo "==> Persistent-state migration requires the snapshot-backed maintenance cutover"
-  ensure_cutover_disk_capacity
-  CUTOVER_STARTED=1
-  close_maintenance_gate
-  verify_maintenance_gate
-
-  # Stopping first closes pre-existing WebSockets; the nginx marker prevents
-  # reconnects and mutations until the migration candidate is verified.
-  docker compose "${COMPOSE_ARGS[@]}" stop -t 120 cascade
-  OLD_BACKEND_STOPPED=1
-  checkpoint_and_snapshot
-
-  echo "==> Starting the Elixir candidate"
-  CANDIDATE_DATA_TOUCHED=1
-  CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" \
-    up -d --no-build --force-recreate
-
-  verify_container_runtime_shape "$CONTAINER_NAME" "running production candidate"
-  wait_for_url "$HEALTH_URL" 90 "Elixir candidate"
-  check_engine_io "http://127.0.0.1:3000"
-  verify_live_database
-  verify_authenticated_live_candidate "$CONTAINER_NAME" "http://127.0.0.1:3000"
-  local running_image_id
-  running_image_id="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
-  if [[ "$running_image_id" != "$CERTIFIED_IMAGE_ID" ]]; then
-    echo "Error: running candidate is $running_image_id, expected certified image $CERTIFIED_IMAGE_ID." >&2
-    return 1
-  fi
-
-  docker tag "$CERTIFIED_IMAGE_ID" cascade:latest
-  # Once the gate opens, external mutations can reach the candidate and an
-  # automatic database rollback would lose them. Commit first, then open it.
-  DEPLOY_COMMITTED=1
-  open_maintenance_gate
-  verify_reopened_production_edge
-}
-
 prune_build_cache() {
   # Keep the dependency layers and compiled Elixir cache between small releases.
   # Under disk pressure, favor recovery space over the next build's speed.
@@ -1060,22 +781,15 @@ if [[ "${CASCADE_TUNE_HOST_CAPACITY:-1}" == "1" ]]; then
   "$ROOT/deploy/tune-host-capacity.sh"
 fi
 
-if [[ "$ROLLING_SAFE" == "1" ]]; then
-  rolling_cutover
-else
-  maintenance_cutover
-fi
+if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi
+rolling_cutover
 
 docker compose "${COMPOSE_ARGS[@]}" ps
 if [[ -n "$SNAPSHOT_DIR" ]]; then
-  echo "==> Deployed $REVISION_SHORT ($CERTIFIED_IMAGE_ID); rollback snapshot: $SNAPSHOT_DIR"
+  echo "==> Deployed $REVISION_SHORT ($CERTIFIED_IMAGE_ID); database backup: $SNAPSHOT_DIR"
 else
   echo "==> Deployed $REVISION_SHORT ($CERTIFIED_IMAGE_ID); rolling rollback preserved live state"
 fi
-
-# Installer publication triggers its own exact-revision refresh above.
-# Only scan recovery points when this deployment created a new snapshot.
-if [[ -n "$SNAPSHOT_DIR" ]]; then prune_cutover_snapshots; fi
 
 echo "==> Pruning dangling images and old build cache"
 docker image prune -f >/dev/null || true

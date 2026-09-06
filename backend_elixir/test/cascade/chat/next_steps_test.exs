@@ -301,7 +301,7 @@ defmodule Cascade.Chat.NextStepsTest do
     assert completed.mission.status == "completed"
     trigger = "sys-next-completed-#{mission.mission.id}"
     prompt = NextSteps.context(c.channel.id, c.member.id, trigger)
-    assert prompt =~ "You may offer"
+    assert prompt =~ "Do not offer a new proactive suggestion"
     assert prompt =~ "Linked mission #{mission.mission.id}: completed"
     assert prompt =~ "keep my editor open"
     assert NextSteps.context(c.channel.id, c.member.id, trigger) == prompt
@@ -317,11 +317,10 @@ defmodule Cascade.Chat.NextStepsTest do
         access: :agent
       )
 
-    assert deferred.body == "No unresolved need."
+    assert deferred.body == ""
 
-    assert SQL.one("SELECT outcome FROM chat_next_step_checks WHERE source_id=?", [trigger]) == [
-             "none"
-           ]
+    assert SQL.one("SELECT outcome FROM chat_next_step_checks WHERE source_id=?", [trigger]) ==
+             nil
   end
 
   test "accepted feedback permits fresh evidence but never repeats the same evidence", c do
@@ -438,8 +437,7 @@ defmodule Cascade.Chat.NextStepsTest do
              nil
   end
 
-  test "completion checkpoint is durable, emitted through the scheduler, and has no hour gate",
-       c do
+  test "mission completion does not launch a suggestion-only run", c do
     enable(c)
 
     {:ok, mission} =
@@ -449,31 +447,23 @@ defmodule Cascade.Chat.NextStepsTest do
         title: "Finished work"
       })
 
-    # Isolate the scheduling boundary; mission closure evidence is tested by the mission suite.
-    SQL.exec(
-      "UPDATE chat_missions SET status='completed',summary='Verified the repair' WHERE id=?",
-      [mission.mission.id]
-    )
+    {:ok, update} =
+      Missions.finish(c.user.id, c.channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: c.member.id,
+        status: "completed",
+        summary: "Done"
+      })
 
-    {:ok, update} = Missions.refresh(mission.mission.id)
-    receiver = self()
-    events = fn event -> send(receiver, {:event, event}) end
-    Cascade.Missions.Scheduler.emit_projection(update, events)
-    source = "sys-next-completed-#{mission.mission.id}"
-    assert_receive {:event, %{message: %{id: ^source}, dispatches: [dispatch]}}
-    Cascade.Missions.Scheduler.emit_projection(update, events)
+    Cascade.Missions.Scheduler.emit_projection(update)
+    Cascade.Missions.Scheduler.emit_projection(update)
 
-    assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [source]) == [
-             1
-           ]
+    assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [
+             "sys-next-completed-#{mission.mission.id}"
+           ]) == [0]
 
-    assert SQL.one("SELECT kind FROM chat_next_step_checks WHERE source_id=?", [source]) == [
-             "completion"
-           ]
-
-    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "must evaluate"
-    assert proposal(%{c | source: %{id: source}}).body != ""
-    assert dispatch.registration.id == c.member.id
+    assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [
+             "sys-next-completed-#{mission.mission.id}"
+           ]) == [0]
   end
 
   test "decline feedback is durable and not cleared by time or unrelated completion", c do
@@ -590,9 +580,10 @@ defmodule Cascade.Chat.NextStepsTest do
 
     SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [mission.mission.id])
     {:ok, update} = Missions.refresh(mission.mission.id)
-    item = NextSteps.completion(update)
-    assert proposal(%{c | source: item.message}).body == ""
-    assert NextSteps.context(c.channel.id, c.member.id, item.message.id) =~ "outstanding"
+    Cascade.Missions.Scheduler.emit_projection(update)
+
+    assert SQL.one("SELECT feedback FROM chat_next_step_checks WHERE message_id=?", [first.id]) ==
+             [nil]
   end
 
   test "one feedback event cannot be reinterpreted on retry and terminal text is preserved", c do

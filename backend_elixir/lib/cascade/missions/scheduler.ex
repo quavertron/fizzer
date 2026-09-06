@@ -76,20 +76,6 @@ defmodule Cascade.Missions.Scheduler do
   def emit_projection(update, events \\ Cascade.Chat.Events.Noop) do
     events = events || Cascade.Chat.Events.Noop
 
-    case Cascade.Chat.NextSteps.completion(update) do
-      nil ->
-        :ok
-
-      item ->
-        Events.emit(events, %{
-          event: "vault:chatMessageCreated",
-          vaultId: item.vaultId,
-          channelId: item.channelId,
-          message: item.message,
-          dispatches: [item.dispatch]
-        })
-    end
-
     case Store.root_message(update) do
       {:ok, message} -> emit_message(update, "vault:chatMessageUpdated", message, [], events)
       _ -> :ok

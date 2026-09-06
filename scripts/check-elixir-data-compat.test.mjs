@@ -13,6 +13,25 @@ import {
   runComparison,
 } from './check-elixir-data-compat.mjs';
 
+test('new tables roll forward without a data audit while destructive schema changes fail', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec('CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES(1)');
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    db.exec(`CREATE TABLE app_context(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, revision TEXT NOT NULL);
+      CREATE INDEX app_context_revision ON app_context(revision)`);
+    const after = fingerprint();
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.deepEqual(db.prepare('SELECT * FROM users').all(), [{id: 1}]);
+    assert.deepEqual(compareSchemaFingerprints(after, before), ['database schema changed']);
+    db.exec('CREATE TRIGGER app_context_delete AFTER INSERT ON app_context BEGIN DELETE FROM users; END');
+    assert.deepEqual(compareSchemaFingerprints(after, fingerprint()), ['database schema changed']);
+    db.exec('DROP TRIGGER app_context_delete; ALTER TABLE users ADD COLUMN required TEXT NOT NULL DEFAULT "new constraint"');
+    assert.deepEqual(compareSchemaFingerprints(after, fingerprint()), ['database schema changed']);
+  } finally { db.close(); }
+});
+
 test('rolling schema classification permits only the pinned agent flag transitions', () => {
   const base = { type: 'table', name: 'chat_agent_members', tableName: 'chat_agent_members', sql: "CREATE TABLE \"chat_agent_members\" ( id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, agent_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', mention TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '', priority_service_tier INTEGER NOT NULL DEFAULT 0, cwd TEXT NOT NULL DEFAULT '', context_prompt TEXT NOT NULL DEFAULT '', taggable_by_agents INTEGER NOT NULL DEFAULT 0, reply_to_every_message INTEGER NOT NULL DEFAULT 0, orchestrator INTEGER NOT NULL DEFAULT 0, pingable_by_others INTEGER NOT NULL DEFAULT 0, yolo INTEGER NOT NULL DEFAULT 0, conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT '' )" };
   const ambient = { ...base, sql: base.sql.replace('yolo INTEGER', 'ambient_group_chat INTEGER NOT NULL DEFAULT 0, yolo INTEGER') };

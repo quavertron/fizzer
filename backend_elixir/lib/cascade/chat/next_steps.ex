@@ -18,7 +18,7 @@ defmodule Cascade.Chat.NextSteps do
 
         guidance =
           if allowed do
-            "You must evaluate the next useful step at this checkpoint. Actively discover worthwhile new opportunities through proportionate read-only exploration of permitted project, code, chat and task evidence; do not require a supplied unresolved issue. Consider useful features, experiments and simplifications as well as repairs. You may offer at most one concrete bounded improvement, pitch its benefit and ask for approval before implementation; ordinary conversation is enough. Distinguish observed problems from proposed opportunities. Do not fabricate defects or optimize for spending tokens itself. Do not suggest for weak evidence, a resolved issue, or when it would interrupt the user's current request. Use only permitted project/chat/task evidence, verify uncertainty, and do not repeat a declined topic without materially new evidence. If suggesting, the entire final reply must be a short standalone suggestion beginning with <!-- fizzer-next:#{trigger_id} --> followed by a blank line (an invisible record linking its evidence). Read-only discovery is allowed; no tools that implement proposed work until owner acceptance. If there is no grounded suggestion, give one concise reason (for example: no worthwhile opportunity found after proportionate discovery, insufficient evidence, or current work takes priority), beginning with <!-- fizzer-next-none:#{trigger_id} -->. Do not use [no-reply] to skip this obligation. Always answer an active user request first; an ordinary answer records conversation/work state as the reason for deferring. Mission completion has its own separate checkpoint."
+            "You must evaluate the next useful step at this checkpoint. Actively discover worthwhile new opportunities through proportionate read-only exploration of permitted project, code, chat and task evidence; do not require a supplied unresolved issue. Consider useful features, experiments and simplifications as well as repairs. You may offer at most one concrete bounded improvement, pitch its benefit and ask for approval before implementation; ordinary conversation is enough. Distinguish observed problems from proposed opportunities. Do not fabricate defects or optimize for spending tokens itself. Do not suggest for weak evidence, a resolved issue, or when it would interrupt the user's current request. Use only permitted project/chat/task evidence, verify uncertainty, and do not repeat a declined topic without materially new evidence. If suggesting, the entire final reply must be a short standalone suggestion beginning with <!-- fizzer-next:#{trigger_id} --> followed by a blank line (an invisible record linking its evidence). Read-only discovery is allowed; no tools that implement proposed work until owner acceptance. If there is no grounded suggestion, give one concise reason (for example: no worthwhile opportunity found after proportionate discovery, insufficient evidence, or current work takes priority), beginning with <!-- fizzer-next-none:#{trigger_id} -->. Do not use [no-reply] to skip this obligation. Always answer an active user request first; an ordinary answer records conversation/work state as the reason for deferring."
           else
             "Do not offer a new proactive suggestion on this turn: this evidence was already checked, evidence is missing, an active mission takes priority, or a suggestion is outstanding. Answer the user's request or feedback normally. If this checkpoint is still pending, record one concise reason beginning with <!-- fizzer-next-none:#{trigger_id} --> (for example, awaiting feedback or respecting the owner's decline). Do not repeat a result already recorded."
           end
@@ -364,23 +364,6 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
       %{message: dispatch.message, dispatch: dispatch, vaultId: vault, channelId: channel}
     else
       _ -> nil
-    end
-  end
-
-  def completion(update) do
-    if update.mission.status == "completed" do
-      [registration_id] =
-        SQL.one("SELECT coordinator_registration_id FROM chat_missions WHERE id=?", [
-          update.mission.id
-        ])
-
-      enqueue(
-        update.channelId,
-        registration_id,
-        "sys-next-completed-#{update.mission.id}",
-        "completion",
-        "Completed mission #{update.mission.id}: #{String.slice(update.mission.summary || "", 0, 1000)}"
-      )
     end
   end
 

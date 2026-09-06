@@ -1036,8 +1036,8 @@ defmodule Cascade.ChatDomainTest do
 
   test "chat route catalog is complete and has no duplicates" do
     catalog = CascadeWeb.ChatRoutes.catalog()
-    assert length(catalog) == 27
-    assert length(Enum.uniq(catalog)) == 27
+    assert length(catalog) == 29
+    assert length(Enum.uniq(catalog)) == 29
     assert {"DELETE", "/api/vaults/:vault_id/vault-agents/:agent_id/profile"} in catalog
 
     assert {"POST", "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id/collaborate"} in catalog

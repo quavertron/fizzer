@@ -43,3 +43,19 @@ Before pushing, inspect the diff and run `npm run build`. Before claiming a
 deployment complete, require a green `Deploy Production` run proving the exact
 live revision and image plus internal and public health; a successful local
 build or push is not deployment evidence.
+
+Routine production deployment boots against an empty copy of the schema and
+checks backward compatibility. New ordinary tables and their indexes can roll
+forward; removals, changes to existing structures, and new triggers are rejected
+before live data is touched. Such changes need a deliberate compatible migration.
+
+An additive schema change takes a consistent online SQLite backup before the
+candidate starts. Image rollback preserves live writes and leaves compatible
+schema additions in place. Deployment does not clone vault/QMD files, hash all
+rows or files, restore database snapshots automatically, or run backup retention.
+Database backups live under `/var/backups/cascade/database-<revision>-<timestamp>`.
+Full data audits and retention are separate operator jobs; the existing
+`deploy/prune-cutover-snapshots.py` only handles older full cutover snapshots.
+
+Completing a mission does not launch a separate next-step discovery run.
+Suggestions remain available on their existing user/conversation checkpoints.
