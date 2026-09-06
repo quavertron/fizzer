@@ -5197,9 +5197,6 @@ button.chat-avatar.is-clickable:focus-visible {
   font-weight: 450;
   letter-spacing: 0;
 }
-.cascade-run-panel.is-running:not(.open) .crp-toggle-icon {
-  animation: chat-activity-flicker 1.45s ease-in-out infinite;
-}
 .crp-toggle {
   min-width: 0;
   min-height: 30px;

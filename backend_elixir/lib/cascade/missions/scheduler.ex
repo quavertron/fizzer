@@ -188,8 +188,8 @@ defmodule Cascade.Missions.Scheduler do
 
   defp materialize_wake!(wake) do
     SQL.exec(
-      "UPDATE chat_missions SET wake_sent=1,review_fingerprint=?,updated_at=datetime('now') WHERE id=?",
-      [wake.generation, wake.mission.id]
+      "UPDATE chat_missions SET wake_sent=1,updated_at=datetime('now') WHERE id=?",
+      [wake.mission.id]
     )
 
     carrier_id = "agent-trace-#{wake.mission.id}-#{wake.generation}"

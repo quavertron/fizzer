@@ -808,7 +808,7 @@ defmodule Cascade.Missions.Store do
             {:ok,
              Map.merge(update, %{
                coordinatorRegistrationId: mission.coordinator_registration_id,
-               generation: review_fingerprint(mission_id)
+               generation: "setup"
              })}
           else
             {:ok, nil}
@@ -1519,25 +1519,6 @@ defmodule Cascade.Missions.Store do
          task.work_item_id
        ])}
     )
-  end
-
-  def review_fingerprint(mission_id) do
-    mission = mission_row(mission_id)
-
-    evidence =
-      Enum.map(task_rows(mission_id), fn task ->
-        {evidence_snapshot(task, mission),
-         SQL.one(
-           "SELECT source_task_id,target_snapshot,source_snapshot,verification FROM chat_mission_recovery_evidence WHERE task_id=?",
-           [task.id]
-         ), recovered_evidence_ready?(task, mission)}
-      end)
-
-    # Preserve existing generations when there is no new cross-mission evidence.
-    case recovery_context(mission_id) do
-      [] -> digest(evidence)
-      outcomes -> digest({evidence, outcomes})
-    end
   end
 
   @doc "Verified same-owner room outcomes that may clear an open mission's blocker."
