@@ -5794,35 +5794,6 @@ button.chat-avatar.is-clickable:focus-visible {
   box-shadow: 0 12px 48px hsla(226, 12%, 2%, 0.6);
   cursor: default;
 }
-.chat-shared-note {
-  width: min(760px, calc(100vw - 32px));
-  max-height: min(82vh, 900px);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-}
-.chat-shared-note > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.chat-shared-note > header h2 {
-  font-size: 1rem;
-  letter-spacing: 0;
-}
-.chat-shared-note-body {
-  overflow: auto;
-  padding: 18px 20px 28px;
-  line-height: 1.65;
-}
-.chat-shared-note-body > * + * { margin-top: 12px; }
 .chat-lightbox-close {
   position: absolute;
   top: 16px;
@@ -10008,3 +9979,14 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 @media (prefers-reduced-motion: reduce) {
   .chat-working-output { animation: none; }
 }
+
+.chat-note-preview {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.chat-note-preview > header { display: flex; align-items: center; gap: 12px; }
+.chat-note-preview > header strong { flex: 1; overflow-wrap: anywhere; }
+.chat-note-preview > header button { color: var(--text-muted); font: inherit; cursor: pointer; background: none; border: 0; }
+.chat-note-preview-body { max-height: 360px; overflow: auto; overflow-wrap: anywhere; margin-top: 8px; }

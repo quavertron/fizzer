@@ -4,7 +4,8 @@ import { Capacitor } from '@capacitor/core';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import DOMPurify from 'dompurify';
-import type { NoteSummary } from '../api';
+import { api, type Note, type NoteSummary } from '../api';
+import type { SharedChatNote } from '../chat/types';
 import { highlightJSON } from './jsonHighlighter';
 import {
   bodyHasNoteRefs,
@@ -96,13 +97,59 @@ function formatChatWikilinks(
           else onOpenSharedNote?.(messageId, target);
         }}
         disabled={!canOpen}
-        title={embedded ? `Open ${embedded.title}` : `Note: ${target}`}
+        title={embedded ? `Preview ${embedded.title}` : `Note: ${target}`}
       >
         {embedded?.title ?? target}
       </button>,
     );
   }
   return nodes.length > 0 ? nodes : [text];
+}
+
+function LinkedNotePreview({ messageId, target, loadSharedNote, onOpenNote, onClose }: {
+  messageId: string;
+  target: { id?: string; title: string };
+  loadSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
+  onOpenNote?: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [note, setNote] = useState<{ title: string; content: string } | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let canceled = false;
+    setNote(null);
+    setError('');
+    const load = async () => {
+      try {
+        const result = target.id
+          ? (await api<{ note: Note }>(`/api/notes/${encodeURIComponent(target.id)}`)).note
+          : await loadSharedNote?.(messageId, target.title);
+        if (canceled) return;
+        if (result) setNote(result);
+        else setError('This note is unavailable.');
+      } catch {
+        if (!canceled) setError('Could not load this note. Close and reopen to retry.');
+      }
+    };
+    void load();
+    return () => { canceled = true; };
+  }, [messageId, target, loadSharedNote]);
+  return (
+    <section className="chat-note-preview" aria-label={`Note preview: ${target.title}`}>
+      <header>
+        <strong>{note?.title ?? target.title}</strong>
+        {target.id && onOpenNote && <button type="button" onClick={() => onOpenNote(target.id!)}>Open note</button>}
+        <button type="button" onClick={onClose} aria-label="Close note preview">Close</button>
+      </header>
+      <div className="chat-note-preview-body" tabIndex={0}>
+        {note ? <ReactMarkdown remarkPlugins={CHAT_MARKDOWN_PLUGINS} components={{
+          img: SafeMarkdownImage,
+          a: ({ href, children }) => <a href={href} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">{children}</a>,
+        }}>{note.content || '*This note is empty.*'}</ReactMarkdown>
+          : <p role="status">{error || 'Loading note…'}</p>}
+      </div>
+    </section>
+  );
 }
 
 function aliasesEqual(a: string[], b: string[]) {
@@ -269,7 +316,7 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
             className={`chat-doc-embed${embedded || onOpenSharedNote ? '' : ' is-missing'}`}
             onClick={() => embedded ? onOpenNote?.(embedded.id) : onOpenSharedNote?.(messageId, part.value)}
             disabled={!embedded && !onOpenSharedNote}
-            title={embedded ? `Open ${embedded.title}` : 'Open shared note'}
+            title={embedded ? `Preview ${embedded.title}` : 'Preview shared note'}
             draggable={!!embedded}
             onDragStart={(event) => {
               if (!embedded) return;
@@ -313,8 +360,15 @@ export const ChatMessageText = memo(function ChatMessageText({
   mentionableAliases: string[];
   notes?: NoteSummary[];
   onOpenNote?: (id: string) => void;
-  onOpenSharedNote?: (messageId: string, title: string) => void;
+  onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
 }) {
+  const [preview, setPreview] = useState<{ id?: string; title: string } | null>(null);
+  const previewLocalNote = useCallback((id: string) => {
+    setPreview({ id, title: notes.find((note) => note.id === id)?.title || 'Note' });
+  }, [notes]);
+  const previewSharedNote = useCallback((_messageId: string, title: string) => {
+    setPreview({ title });
+  }, []);
   // Suggestion evidence stays in the durable transcript, outside the chat prose.
   const paintBody = useThrottledStreamBody(stripChatControlMarkers(body), streaming);
 
@@ -325,8 +379,8 @@ export const ChatMessageText = memo(function ChatMessageText({
         value,
         notes,
         messageId,
-        onOpenNote,
-        onOpenSharedNote,
+        previewLocalNote,
+        onOpenSharedNote ? previewSharedNote : undefined,
       );
       return wikiNodes.flatMap((node) => (
         typeof node === 'string'
@@ -341,7 +395,7 @@ export const ChatMessageText = memo(function ChatMessageText({
     }
     if (typeof children === 'string') return decorate(children);
     return children;
-  }, [mentionableAliases, messageId, notes, onOpenNote, onOpenSharedNote]);
+  }, [mentionableAliases, messageId, notes, previewLocalNote, previewSharedNote, onOpenSharedNote]);
 
   const formattedBody = useMemo(() => {
     // Raw <svg>…</svg> is escaped by react-markdown, so (agents only) lift it
@@ -418,14 +472,19 @@ export const ChatMessageText = memo(function ChatMessageText({
   }), [withInlineMarkup, isAgent]);
 
   return (
-    <ChatMarkdownBody
+    <>
+      <ChatMarkdownBody
       messageId={messageId}
       formattedBody={formattedBody}
       components={components}
       notes={notes}
-      onOpenNote={onOpenNote}
-      onOpenSharedNote={onOpenSharedNote}
+      onOpenNote={previewLocalNote}
+      onOpenSharedNote={onOpenSharedNote ? previewSharedNote : undefined}
     />
+    {preview && <LinkedNotePreview key={`${messageId}:${preview.id || preview.title}`}
+      messageId={messageId} target={preview} loadSharedNote={onOpenSharedNote}
+      onOpenNote={onOpenNote} onClose={() => setPreview(null)} />}
+    </>
   );
 }, (prev, next) =>
   prev.messageId === next.messageId

@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ClipboardList, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { api, type NoteSummary } from '../api';
 import { normalizeMention } from '../chat/mentions';
 import { createChannelWorkItem } from '../chat/workItems';
@@ -22,7 +21,6 @@ import { ChatAvatar } from './ChatAvatar';
 import { ChatChannelSettings } from './ChatChannelSettings';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatGroupRow, getRunningMessageState, getSteeringPromptLabels } from './ChatGroupRow';
-import { CHAT_MARKDOWN_PLUGINS } from './ChatMarkdown';
 import { ChatMissionCard } from './ChatMissionCard';
 import { usePopupMenu } from '../ui/popupMenu';
 import { ChatSidebarButtons } from './ChatSidebarButtons';
@@ -244,7 +242,6 @@ export const ChatView = memo(function ChatView({
   /** Delete is two-step in the context menu rather than a native confirm dialog. */
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const [sharedNote, setSharedNote] = useState<SharedChatNote | null>(null);
   const [missionArchiveOpen, setMissionArchiveOpen] = useState(false);
   const [missionArchive, setMissionArchive] = useState<ChatMission[]>([]);
   const [missionArchiveBusy, setMissionArchiveBusy] = useState(false);
@@ -497,8 +494,7 @@ export const ChatView = memo(function ChatView({
     return Array.from(aliases);
   }, [humanUsers, registeredAgents]);
   const openSharedNote = useCallback(async (messageId: string, title: string) => {
-    const note = await onOpenSharedNote?.(channelId, messageId, title);
-    if (note) setSharedNote(note);
+    return await onOpenSharedNote?.(channelId, messageId, title) ?? null;
   }, [channelId, onOpenSharedNote]);
 
   useEffect(() => {
@@ -1450,21 +1446,6 @@ export const ChatView = memo(function ChatView({
             className="chat-lightbox-image"
             onClick={(event) => event.stopPropagation()}
           />
-        </div>
-      )}
-      {sharedNote && (
-        <div className="chat-lightbox" role="dialog" aria-modal="true" onClick={() => setSharedNote(null)}>
-          <article className="chat-shared-note" onClick={(event) => event.stopPropagation()}>
-            <header>
-              <h2>{sharedNote.title}</h2>
-              <button type="button" className="btn-icon" title="Close" onClick={() => setSharedNote(null)}>
-                <X size={18} />
-              </button>
-            </header>
-            <div className="chat-shared-note-body">
-              <ReactMarkdown remarkPlugins={CHAT_MARKDOWN_PLUGINS}>{sharedNote.content}</ReactMarkdown>
-            </div>
-          </article>
         </div>
       )}
       {reportMessage && vaultId && (

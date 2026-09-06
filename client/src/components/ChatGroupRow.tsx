@@ -4,7 +4,7 @@ import { Paperclip } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
 import { bodyHasNoteRefs } from '../docEmbeds';
 import { formatChatTime } from '../chat/time';
-import type { ChatAgentRegistration, ChatMessage, PlanUsage } from '../chat/types';
+import type { ChatAgentRegistration, ChatMessage, PlanUsage, SharedChatNote } from '../chat/types';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { isSteeringContinuationMessage } from '../chat/workTrace';
 import type { ChatMessageGroup } from '../chat/workTrace';
@@ -144,7 +144,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   mentionableAliases: string[];
   notes: NoteSummary[];
   onOpenNote?: (id: string) => void;
-  onOpenSharedNote?: (messageId: string, title: string) => void;
+  onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
   onCancelRun: (runId: number) => void;
   onToggleSelect: (id: string) => void;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
