@@ -33,12 +33,12 @@ for (const [helper, command] of Object.entries(helpers)) {
         assert.equal(body.command, `cascade-${helper}`);
         assert.equal(body.code, 'cli_error');
         assert.equal(body.exitCode, 1);
-        assert.match(body.message, /missing command|no credentials/);
+        assert.match(body.message, /missing command|no credentials|missing vault/);
         return true;
       });
     }
     await assert.rejects(run(helper, command), error => {
-      assert.match(error.stderr, new RegExp(`^cascade-${helper}: no credentials`));
+      assert.match(error.stderr, new RegExp(`^cascade-${helper}: (no credentials|missing vault)`));
       return true;
     });
   });

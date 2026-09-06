@@ -479,6 +479,14 @@ impl App {
         }
     }
 
+    pub fn is_agent_active(&self, ag: &AgentItem) -> bool {
+        self.active_agent_ids.contains(&ag.id)
+            || self.active_agent_ids.contains(&ag.agent_id)
+            || (!ag.mention.is_empty() && self.active_agent_ids.contains(&ag.mention))
+            || (!ag.display_name.is_empty() && self.active_agent_ids.contains(&ag.display_name))
+            || ag.vault_agent_id.as_deref().map_or(false, |id| self.active_agent_ids.contains(id))
+    }
+
     pub fn close_agent_settings(&mut self) {
         self.agent_settings_modal = None;
     }
@@ -1119,5 +1127,48 @@ mod tests {
         app.delete_word_forward();
         assert_eq!(app.input, "");
         assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_is_agent_active() {
+        let mut app = make_app();
+        let agent = AgentItem {
+            id: "reg-123".into(),
+            display_name: "Claude".into(),
+            mention: "claude".into(),
+            agent_id: "claude-code".into(),
+            model: "claude-sonnet-5".into(),
+            orchestrator: false,
+            vault_agent_id: Some("va-456".into()),
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+        };
+
+        assert!(!app.is_agent_active(&agent));
+
+        // Active by registration ID
+        app.active_agent_ids.insert("reg-123".into());
+        assert!(app.is_agent_active(&agent));
+
+        // Active by agent provider ID
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("claude-code".into());
+        assert!(app.is_agent_active(&agent));
+
+        // Active by mention
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("claude".into());
+        assert!(app.is_agent_active(&agent));
+
+        // Active by vault agent ID
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("va-456".into());
+        assert!(app.is_agent_active(&agent));
     }
 }

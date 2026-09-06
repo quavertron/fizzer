@@ -310,7 +310,7 @@ async function crashHostLeavingAkronOrphan(runId: number): Promise<{ lease: any;
   return { lease, descendantPid };
 }
 
-test('a crashed desktop owner leaves a real Akron group that the next coordinator reaps', async () => {
+test('a crashed desktop owner leaves a real Akron group that the next coordinator reaps', { skip: process.platform !== 'linux' }, async () => {
   fs.rmSync(agentProcessLeaseDir, { recursive: true, force: true });
   const { lease } = await crashHostLeavingAkronOrphan(9090);
 
@@ -330,7 +330,7 @@ test('a crashed desktop owner leaves a real Akron group that the next coordinato
   }
 });
 
-test('cancel after losing the in-memory process map still kills via durable lease', async () => {
+test('cancel after losing the in-memory process map still kills via durable lease', { skip: process.platform !== 'linux' }, async () => {
   fs.rmSync(agentProcessLeaseDir, { recursive: true, force: true });
   fs.rmSync(akronChildPid, { force: true });
   const run = runCliAgent({
@@ -350,7 +350,7 @@ test('cancel after losing the in-memory process map still kills via durable leas
   assert.equal(fs.existsSync(path.join(agentProcessLeaseDir, '9100.json')), false);
 });
 
-test('reaper still kills token-bearing descendants after the group leader dies', async () => {
+test('reaper still kills token-bearing descendants after the group leader dies', { skip: process.platform !== 'linux' }, async () => {
   fs.rmSync(agentProcessLeaseDir, { recursive: true, force: true });
   const { lease, descendantPid } = await crashHostLeavingAkronOrphan(9101);
 

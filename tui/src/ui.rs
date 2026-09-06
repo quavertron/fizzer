@@ -113,6 +113,70 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TermimationEntry {
+    #[allow(dead_code)]
+    name: String,
+    animation: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    classes: Vec<String>,
+}
+
+fn termimation_patterns() -> &'static [Vec<char>] {
+    static PATTERNS: std::sync::OnceLock<Vec<Vec<char>>> = std::sync::OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let content = std::fs::read_to_string("tui/src/termimations.json")
+            .or_else(|_| std::fs::read_to_string("src/termimations.json"))
+            .unwrap_or_else(|_| include_str!("termimations.json").to_string());
+        let parsed: Vec<TermimationEntry> = serde_json::from_str(&content)
+            .or_else(|_| serde_json::from_str(include_str!("termimations.json")))
+            .unwrap_or_default();
+        let list: Vec<Vec<char>> = parsed
+            .into_iter()
+            .map(|t| t.animation.chars().collect())
+            .filter(|chars: &Vec<char>| !chars.is_empty())
+            .collect();
+        if list.is_empty() {
+            vec![vec!['●']]
+        } else {
+            list
+        }
+    })
+}
+
+fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64) -> String {
+    let patterns = termimation_patterns();
+    if patterns.is_empty() {
+        return "● ".to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ag.id.hash(&mut hasher);
+    let agent_hash = hasher.finish();
+
+    // Stagger phase per agent so multiple active agents do not pulse synchronously
+    let phase_offset = (agent_hash >> 16) as u64;
+    let local_tick = tick.wrapping_add(phase_offset);
+
+    // Randomize pattern selection per full 8-frame animation cycle
+    let cycle = local_tick / 8;
+    let mut cycle_hasher = std::collections::hash_map::DefaultHasher::new();
+    agent_hash.hash(&mut cycle_hasher);
+    cycle.hash(&mut cycle_hasher);
+    let pattern_idx = (cycle_hasher.finish() as usize) % patterns.len();
+
+    let pattern = &patterns[pattern_idx];
+    let frame = (local_tick as usize) % pattern.len();
+    let ch = pattern[frame];
+
+    if ch.width().unwrap_or(1) <= 1 {
+        format!("{ch} ")
+    } else {
+        format!("{ch}")
+    }
+}
+
 fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Agents;
     let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
@@ -142,9 +206,17 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
                 };
 
+                let is_active = app.is_agent_active(ag);
+                let (ball_str, ball_style) = if is_active {
+                    let ball = agent_termimation_ball(ag, app.animation_tick);
+                    (ball, Style::default().fg(badge_color).add_modifier(Modifier::BOLD))
+                } else {
+                    ("● ".to_string(), Style::default().fg(badge_color))
+                };
+
                 let top_line = Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled("● ", Style::default().fg(badge_color)),
+                    Span::styled(ball_str, ball_style),
                     Span::styled(&ag.display_name, name_style),
                     Span::raw(" "),
                     Span::styled(format!("@{}", ag.mention), Style::default().fg(Color::DarkGray)),
@@ -974,3 +1046,51 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::AgentItem;
+
+    #[test]
+    fn test_termimations_loaded() {
+        let patterns = termimation_patterns();
+        assert!(!patterns.is_empty());
+        assert!(patterns.len() >= 2);
+    }
+
+    #[test]
+    fn test_agent_termimation_ball_animation() {
+        let agent = AgentItem {
+            id: "agent-1".into(),
+            display_name: "Bot".into(),
+            mention: "bot".into(),
+            agent_id: "codex".into(),
+            model: "".into(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+        };
+
+        let ball_0 = agent_termimation_ball(&agent, 0);
+        let ball_1 = agent_termimation_ball(&agent, 1);
+        let ball_2 = agent_termimation_ball(&agent, 2);
+
+        assert!(!ball_0.is_empty());
+        assert!(!ball_1.is_empty());
+        assert!(!ball_2.is_empty());
+
+        // Ensure animation changes across ticks
+        let balls: Vec<String> = (0..8).map(|t| agent_termimation_ball(&agent, t)).collect();
+        let unique_balls: std::collections::HashSet<&String> = balls.iter().collect();
+        assert!(unique_balls.len() > 1);
+    }
+}
+

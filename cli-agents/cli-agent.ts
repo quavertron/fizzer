@@ -56,7 +56,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1670,6 +1670,8 @@ const AGY_POLL_MS = 400;
 const AGY_IDLE_AFTER_FINAL_POLLS = 8; // ~3.2s settle after final text
 /** Surface a terminal tool denial promptly instead of showing Thinking for 3 minutes. */
 const AGY_IDLE_AFTER_FAILED_TOOL_POLLS = 20; // ~8s for a recovery planner response
+/** Surface an interactive permission block promptly instead of freezing for 3 minutes. */
+const AGY_APPROVAL_STALL_POLLS = 15; // ~6s wait for approval
 /** Hard ceiling if the agent stalls mid-tool forever (still far above old 10s). */
 const AGY_STALL_POLLS = 450; // ~3 min with no new lines
 /** Wait for transcript.jsonl after new-conversation / send-message. */
@@ -1689,7 +1691,7 @@ function antigravityBin(): string {
 }
 
 function antigravityTranscriptPath(conversationId: string): string {
-  return path.join(
+  const p1 = path.join(
     os.homedir(),
     '.gemini',
     'antigravity',
@@ -1699,6 +1701,19 @@ function antigravityTranscriptPath(conversationId: string): string {
     'logs',
     'transcript.jsonl',
   );
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.join(
+    os.homedir(),
+    '.gemini',
+    'antigravity-cli',
+    'brain',
+    conversationId,
+    '.system_generated',
+    'logs',
+    'transcript.jsonl',
+  );
+  if (fs.existsSync(p2)) return p2;
+  return p1;
 }
 
 /** Planner narration ("I will view…") is harness/thinking — not a chat reply. */
@@ -1711,31 +1726,52 @@ function agyIsPlannerMonologue(text: string): boolean {
   return false;
 }
 
-function resolveAntigravityProjectConfigPath(cwd: string): string | null {
+function resolveAntigravityProjectConfigPath(cwd: string, createIfMissing?: boolean): string | null {
   const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
-  if (!fs.existsSync(projectsDir)) return null;
   const absCwd = path.resolve(cwd);
-  for (const file of fs.readdirSync(projectsDir)) {
-    if (!file.endsWith('.json')) continue;
-    const filePath = path.join(projectsDir, file);
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      if (content.includes(absCwd) || content.includes(`file://${absCwd}`)) return filePath;
-    } catch { /* ignore */ }
+  if (fs.existsSync(projectsDir)) {
+    for (const file of fs.readdirSync(projectsDir)) {
+      if (!file.endsWith('.json')) continue;
+      const filePath = path.join(projectsDir, file);
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (content.includes(absCwd) || content.includes(`file://${absCwd}`)) return filePath;
+      } catch { /* ignore */ }
+    }
   }
-  return null;
+
+  if (!createIfMissing) return null;
+
+  try {
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const id = randomUUID();
+    const filePath = path.join(projectsDir, `${id}.json`);
+    const initial = {
+      id,
+      name: path.basename(absCwd) || 'project',
+      projectResources: {
+        resources: [
+          {
+            gitFolder: {
+              folderUri: `file://${absCwd}`,
+              defaultBranch: 'master',
+              allowWrite: true,
+            },
+          },
+        ],
+      },
+    };
+    fs.writeFileSync(filePath, `${JSON.stringify(initial, null, 2)}\n`);
+    return filePath;
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Patch the Antigravity project config so Cascade hookup runs auto-approve
- * plans/commands instead of blocking on IDE permission prompts.
- */
-function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
-  const configPath = resolveAntigravityProjectConfigPath(cwd);
-  if (!configPath) return;
+function patchAntigravityProjectConfig(filePath: string, cwd?: string, yolo?: boolean): void {
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
   } catch {
     return;
   }
@@ -1747,25 +1783,71 @@ function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
   if (yolo) settings.internetPolicy = 'AGENT_SETTING_POLICY_ALLOW';
   data.settings = settings;
 
-  const absCwd = path.resolve(cwd);
   const grants = new Set<string>();
   const existing = data.permissionGrants as { permissionGrants?: { allow?: string[] } } | undefined;
   for (const g of existing?.permissionGrants?.allow || []) grants.add(g);
-  for (const prefix of ['read_file', 'write_file']) {
-    grants.add(`${prefix}(${absCwd})`);
-    grants.add(`${prefix}(${absCwd}/.env)`);
+
+  // Wildcard permissions recognized by Antigravity language_server
+  grants.add('read_file(*)');
+  grants.add('write_file(*)');
+  grants.add('command(*)');
+
+  const home = os.homedir();
+  const allowedDirs = [
+    home,
+    path.join(home, '.cascade'),
+    path.join(home, '.local'),
+    path.join(home, '.local', 'bin'),
+    path.join(home, '.config'),
+    path.join(home, '.gitconfig'),
+    cwd ? path.resolve(cwd) : '',
+  ].filter(Boolean);
+
+  const resources = (data.projectResources as { resources?: Array<{ gitFolder?: { folderUri?: string } }> })?.resources || [];
+  for (const r of resources) {
+    const u = r.gitFolder?.folderUri;
+    if (u && u.startsWith('file://')) {
+      allowedDirs.push(decodeURIComponent(u.replace(/^file:\/\//, '')));
+    }
   }
+
+  for (const dir of allowedDirs) {
+    for (const prefix of ['read_file', 'write_file']) {
+      grants.add(`${prefix}(${dir})`);
+      grants.add(`${prefix}(${dir}/.env)`);
+    }
+  }
+
   for (const cmd of [
-    'npm', 'node', 'npx', 'agentapi', 'curl', 'rg', 'git', 'bash', 'sh', 'tsx', 'tsc',
-    'cascade-chat', 'cascade-note', 'cascade-scratchpad',
+    'npm', 'node', 'npx', 'agentapi', 'curl', 'rg', 'git', 'bash', 'sh', 'zsh', 'tsx', 'tsc',
+    'cascade-chat', 'cascade-note', 'cascade-scratchpad', 'find', 'ls', 'cat', 'grep',
+    'which', 'cargo', 'mix', 'echo', 'head', 'tail', 'sed', 'awk', 'python3',
   ]) {
     grants.add(`command(${cmd})`);
   }
   data.permissionGrants = { permissionGrants: { allow: [...grants] } };
 
   try {
-    fs.writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`);
+    fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
   } catch { /* ignore */ }
+}
+
+/**
+ * Patch Antigravity project configs so Cascade hookup runs auto-approve
+ * plans/commands instead of blocking on Seatbelt restrictions or IDE prompts.
+ */
+function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
+  const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
+  if (fs.existsSync(projectsDir)) {
+    for (const file of fs.readdirSync(projectsDir)) {
+      if (!file.endsWith('.json') || file === 'outside-of-project.json') continue;
+      patchAntigravityProjectConfig(path.join(projectsDir, file), cwd, yolo);
+    }
+  }
+  const configPath = resolveAntigravityProjectConfigPath(cwd, true);
+  if (configPath) {
+    patchAntigravityProjectConfig(configPath, cwd, yolo);
+  }
 }
 
 /** Best-effort LS call to unblock pending plan/permission prompts. */
@@ -1899,8 +1981,21 @@ function discoverAntigravityEnv(cwd?: string): Record<string, string> {
         const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
           .map((m) => parseInt(m[1], 10))
           .filter((n) => Number.isFinite(n));
-        // The HTTP endpoint is the higher of the LS's paired ports.
-        if (ports.length > 0) port = String(Math.max(...ports));
+        // Probe ports to find the real HTTP/gRPC LanguageServerService endpoint.
+        // The LS opens paired HTTPS/HTTP ports initially plus internal sandbox proxy ports later.
+        // The real HTTP endpoint serves HTML with __APP_CONFIG__ and returns HTTP 200 on /.
+        for (const p of ports) {
+          try {
+            const probe = spawnSync('curl', ['-s', '-m', '1', `http://127.0.0.1:${p}/`], { encoding: 'utf-8' });
+            if (probe.stdout && (probe.stdout.includes('__APP_CONFIG__') || probe.stdout.includes('<!doctype html>'))) {
+              port = String(p);
+              break;
+            }
+          } catch { /* ignore */ }
+        }
+        if (!port && ports.length > 0) {
+          port = String(ports.length > 1 ? ports[1] : ports[0]);
+        }
         break;
       }
     } catch { /* fall through to /proc + log scanning below */ }
@@ -2031,6 +2126,8 @@ function runCommand(
   return new Promise((resolve, reject) => {
     const discoveredEnv = discoverAntigravityEnv(cwd);
     const env = { ...(baseEnv || process.env), ...discoveredEnv };
+    delete env.ANTIGRAVITY_CONVERSATION_ID;
+    delete env.ANTIGRAVITY_SOURCE_METADATA;
 
     if (!env.ANTIGRAVITY_LS_ADDRESS || !env.ANTIGRAVITY_CSRF_TOKEN) {
       reject(new Error(
@@ -2193,6 +2290,7 @@ async function runAntigravity(
   let stallPolls = 0;
   let approvePolls = 0;
   const pendingToolIds: string[] = [];
+  const pendingSandboxBypassToolIds = new Set<string>();
   const emittedTools = new Set<string>();
   let emittedText = false;
   let failedToolError = '';
@@ -2207,12 +2305,32 @@ async function runAntigravity(
     const lines = content.split('\n').filter((l) => l.trim());
     if (lines.length <= processedLines) {
       stallPolls += 1;
+      if (pendingToolIds.length > 0 && stallPolls >= 3 && stallPolls % 3 === 0) {
+        agyTryAutoApprove(conversationId);
+      }
       if (sawFinalPlanner) {
         idleAfterFinal += 1;
         if (idleAfterFinal >= AGY_IDLE_AFTER_FINAL_POLLS) done = true;
       } else if (failedToolError && pendingToolIds.length === 0) {
         idleAfterFailedTool += 1;
         if (idleAfterFailedTool >= AGY_IDLE_AFTER_FAILED_TOOL_POLLS) done = true;
+      } else if (pendingSandboxBypassToolIds.size > 0 && stallPolls >= AGY_APPROVAL_STALL_POLLS) {
+        const toolId = pendingToolIds.shift() || [...pendingSandboxBypassToolIds][0];
+        pendingSandboxBypassToolIds.delete(toolId);
+        const errMsg = 'Tool requested BypassSandbox which requires interactive IDE permission approval (unavailable in headless runner).';
+        emit('user', {
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolId,
+              content: errMsg,
+              is_error: true,
+            }],
+          },
+        });
+        emitHarness(emit, `\x1b[31m✖ ${errMsg}\x1b[0m\r\n`);
+        failedToolError = errMsg;
+        done = true;
       } else if (stallPolls >= AGY_STALL_POLLS) {
         emitHarness(emit, `\x1b[33m# stall timeout after ${Math.round((AGY_STALL_POLLS * AGY_POLL_MS) / 1000)}s with no transcript progress\x1b[0m\r\n`);
         done = true;
@@ -2274,6 +2392,9 @@ async function runAntigravity(
           pendingToolIds.push(toolId);
           const name = agyToolFriendlyName(tc.name || 'tool');
           const input = agyNormalizeToolArgs(tc.args);
+          const rawArgs = (tc.args && typeof tc.args === 'object') ? tc.args as Record<string, unknown> : {};
+          const isBypass = String(input.BypassSandbox || rawArgs.BypassSandbox || '').toLowerCase() === 'true';
+          if (isBypass) pendingSandboxBypassToolIds.add(toolId);
           emit('text', {
             message: {
               content: [{ type: 'tool_use', id: toolId, name, input }],
@@ -2302,6 +2423,7 @@ async function runAntigravity(
           emitHarness(emit, `\x1b[31m✖ ${msg}\x1b[0m\r\n`);
           const toolId = pendingToolIds.shift();
           if (toolId) {
+            pendingSandboxBypassToolIds.delete(toolId);
             emit('user', {
               message: {
                 content: [{
@@ -2320,10 +2442,16 @@ async function runAntigravity(
         if (type !== 'PLANNER_RESPONSE' && type !== 'EPHEMERAL_MESSAGE' && type !== 'CHECKPOINT') {
           const outText = String(step.content || '');
           const toolId = pendingToolIds.shift() || `agy-result-${step.step_index ?? i}`;
-          const commandFailed = /command exited with code\s+(?!0\b)\d+/i.test(outText)
-            || /operation not permitted|permission denied|awaiting approval/i.test(outText);
-          const isError = status === 'ERROR' || commandFailed;
-          if (isError) failedToolError = outText.trim().slice(-2000) || `${type} failed`;
+          pendingSandboxBypassToolIds.delete(toolId);
+          const isPermissionDenied = /operation not permitted|permission denied|awaiting approval|user denied permission/i.test(outText);
+          const commandFailed = /command exited with code\s+(?!0\b)\d+/i.test(outText);
+          const isError = status === 'ERROR' || commandFailed || isPermissionDenied;
+          if (isPermissionDenied) {
+            agyTryAutoApprove(conversationId);
+            failedToolError = outText.trim().slice(-2000) || `${type} permission denied`;
+          } else {
+            failedToolError = '';
+          }
           emit('user', {
             message: {
               content: [{
