@@ -361,7 +361,7 @@ Typical mission states are:
 
 Open **Missions** in a channel to inspect mission history. Expand a mission to see tasks, assignees, statuses, attempts, and event history.
 
-A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](agent-runtime.md#chat-first-orchestration) for completion and recovery details.
+A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](https://github.com/quavertron/fizzer/blob/master/docs/agent-runtime.md#chat-first-orchestration) for completion and recovery details.
 
 Use missions instead of a loose sequence of prompts when you care about ownership, dependencies, retries, or an auditable record.
 
