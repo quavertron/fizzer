@@ -1,4 +1,5 @@
 import { Forward, Reply } from 'lucide-react';
+import { stripChatControlMarkers } from '../chat/shared';
 import type { ChatMessage } from '../chat/types';
 
 /**
@@ -34,7 +35,7 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
           >
             <Reply size={12} />
             <strong>{message.replyTo.author}</strong>
-            <span>{message.replyTo.preview}</span>
+            <span>{stripChatControlMarkers(message.replyTo.preview)}</span>
           </button>
         ) : (
           <div
@@ -43,7 +44,7 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
           >
             <Reply size={12} />
             <strong>{message.replyTo.author}</strong>
-            <span>{message.replyTo.preview}</span>
+            <span>{stripChatControlMarkers(message.replyTo.preview)}</span>
           </div>
         )
       )}

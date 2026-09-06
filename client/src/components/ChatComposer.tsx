@@ -3,6 +3,7 @@ import { ImagePlus, Paperclip, Send, Smile, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
 import { NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { normalizeMention } from '../chat/mentions';
+import { stripChatControlMarkers } from '../chat/shared';
 import type { ChatAgentRegistration, ChatMediaAttachment, ChatReplyRef } from '../chat/types';
 
 export const CHAT_MEDIA_LIMIT = 8;
@@ -421,7 +422,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
               <span className="chat-reply-bar-label">
                 Replying to <strong>@{replyTarget.mention}</strong>
               </span>
-              <span className="chat-reply-bar-preview">{replyTarget.preview}</span>
+              <span className="chat-reply-bar-preview">{stripChatControlMarkers(replyTarget.preview)}</span>
             </div>
             {registeredAgents.some((agent) => normalizeMention(agent.mention) === normalizeMention(replyTarget.mention)) && (
               <button
