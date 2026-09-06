@@ -58,11 +58,13 @@ export function applyLocalUserProfile(
 }
 
 /** Keep a burst compact, but never fold a later conversational turn into it. */
-export function canGroupChatMessages(a: ChatMessage, b: ChatMessage) {
-  if (a.author.trim() !== b.author.trim()) return false;
-  const aKey = a.registrationId ?? a.agentId ?? null;
-  const bKey = b.registrationId ?? b.agentId ?? null;
-  if (aKey !== bKey) return false;
+export function canGroupChatMessages(
+  a: ChatMessage,
+  b: ChatMessage,
+  identity = (message: ChatMessage) => `${message.registrationId ?? message.agentId ?? ''}:${message.author.trim()}`,
+) {
+  if (identity(a) !== identity(b)) return false;
+  if (new Date(a.createdAt).toDateString() !== new Date(b.createdAt).toDateString()) return false;
   const elapsed = Date.parse(b.createdAt) - Date.parse(a.createdAt);
   return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= CHAT_MESSAGE_GROUP_WINDOW_MS;
 }

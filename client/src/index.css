@@ -4409,6 +4409,12 @@ button:focus-visible,
   position: relative;
   -webkit-tap-highlight-color: transparent;
 }
+.chat-message-group.is-continuation {
+  padding-top: 0;
+}
+.chat-avatar-spacer {
+  visibility: hidden;
+}
 .chat-message-group.is-offscreen {
   display: block;
   padding: 0;

@@ -33,6 +33,7 @@ import { chatMessageStore, useChannelMessages } from '../chat/messageStore';
 import { applyRemoteChatMessage, isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
 import {
   CHAT_NOTE_MARKER,
+  canGroupChatMessages,
   stripChatControlMarkers,
 } from '../chat/shared';
 
@@ -959,9 +960,17 @@ export const ChatView = memo(function ChatView({
               </span>
             </div>
           ) : (
-            transcriptSegments.flatMap((segment) => {
-              const renderGroupRow = (group: ChatMessageGroup) => {
+            (() => {
+              let previousMessage: ChatMessage | undefined;
+              const displayIdentity = (message: ChatMessage) => {
+                const registration = resolveMessageRegistration(message);
+                return registration ? `agent:${registration.vaultAgentId || registration.id}`
+                  : `${getMessageAvatarKind(message)}:${message.registrationId || message.author.trim()}`;
+              };
+              const renderGroupRow = (group: ChatMessageGroup, traceContent?: ReactNode, contextMenuMessage?: ChatMessage) => {
                 const head = group.messages[0];
+                const continuesPrevious = Boolean(previousMessage && canGroupChatMessages(previousMessage, head, displayIdentity));
+                previousMessage = group.messages.at(-1);
                 const groupSelected = selectedMessageId != null
                   && group.messages.some((message) => message.id === selectedMessageId);
                 const groupJumpHighlighted = jumpHighlightMessageId != null
@@ -972,6 +981,8 @@ export const ChatView = memo(function ChatView({
                   <ChatGroupRow
                     key={head.id}
                     group={group}
+                    continuesPrevious={continuesPrevious}
+                    traceContent={traceContent}
                     selectedMessageId={groupSelected ? selectedMessageId : null}
                     jumpHighlightMessageId={groupJumpHighlighted ? jumpHighlightMessageId : null}
                     avatarKind={getMessageAvatarKind(head)}
@@ -1002,135 +1013,86 @@ export const ChatView = memo(function ChatView({
                     scrollRootRef={messagesRef}
                     vaultId={vaultId}
                     onHydrateMessage={onHydrateMessage}
-                    contextMenuMessage={group.messages.find((message) => Boolean(message.mission))}
+                    contextMenuMessage={contextMenuMessage || group.messages.find((message) => Boolean(message.mission))}
                   />
                 );
               };
-              if (segment.kind === 'work') {
-                // A trace is always nested in an agent row. System notices
-                // that start a run are attributed when persisted; older
-                // unowned notices deliberately stay out of the transcript
-                // instead of looking like progress on the human message.
-                // Anchor a completed mission clump to its user-facing update,
-                // not to an empty worker shell that happened to start the run.
-                // This keeps the mission, mixed-agent trace, and outcome under
-                // one coordinator header while preserving each trace author.
-                const updateHost = segment.updateGroups.at(-1)?.messages.at(-1);
-                const host = updateHost
-                  || segment.carrier
-                  || segment.trace.find((message) => message.registrationId || message.agentId);
-                if (!host) return [];
-                // A real carrier is persisted for system-only work. Existing
-                // agent traces use the same empty shell shape at render time.
-                const carrier = updateHost || !segment.carrier ? {
-                  ...host,
-                  id: `agent-trace-${segment.id}`,
-                  body: '',
-                  status: undefined,
-                } : segment.carrier;
-                const traceSelected = selectedMessageId != null
-                  && segment.trace.some((message) => message.id === selectedMessageId);
-                const traceJumpHighlighted = jumpHighlightMessageId != null
-                  && segment.trace.some((message) => message.id === jumpHighlightMessageId);
-                const missionArtifacts = [
-                  ...(carrier.mission ? [carrier] : []),
-                  ...segment.fullGroups
-                  .flatMap((group) => group.messages)
-                  .filter((message) => Boolean(message.mission)),
-                ];
-                const displayCarrier = carrier.mission ? { ...carrier, mission: undefined } : carrier;
-                const carrierKey = displayCarrier.registrationId || displayCarrier.agentId || displayCarrier.author;
-                const clumpedUpdateMessages: ChatMessage[] = [];
-                const separateUpdateGroups: ChatMessageGroup[] = [];
-                for (const group of segment.updateGroups) {
-                  const head = group.messages[0];
-                  const headKey = head.registrationId || head.agentId || head.author;
-                  if (headKey === carrierKey) clumpedUpdateMessages.push(...group.messages);
-                  else separateUpdateGroups.push(group);
-                }
-                const clumpedSelected = selectedMessageId != null
-                  && clumpedUpdateMessages.some((message) => message.id === selectedMessageId);
-                const missionHasTrace = missionArtifacts.length > 0 && segment.trace.length > 0;
-                const workTrace = (
-                  <ChatWorkTrace
-                    trace={segment.trace}
-                    selectedMessageId={traceSelected || clumpedSelected ? selectedMessageId : null}
-                    onCancelRun={onCancelRun}
-                    onContextMenu={openMessageContextMenu}
-                    onReply={startReply}
-                    vaultId={vaultId}
-                    onHydrateMessage={onHydrateMessage}
-                    runningMessageState={runningMessageState}
-                    embedded={missionHasTrace}
-                    forceOpen={missionHasTrace}
-                    missionIdentity={segment.trace.map((message) => missionIdentities.get(message.id)).find(Boolean)}
-                  />
-                );
-                const peek = workTracePeek(segment.trace);
-                const unifiedMission = missionArtifacts.length > 0
-                  ? missionArtifacts.map((message) => (
-                    <ChatMissionCard
-                      key={message.id}
-                      mission={message.mission!}
-                      vaultId={vaultId}
-                      channelId={message.channelId}
-                      traceContent={workTrace}
-                      tracePeek={peek}
-                      replyMessage={message}
-                      onReply={startReply}
+              return transcriptSegments.flatMap((segment) => {
+                if (segment.kind === 'work') {
+                  // A trace is always nested in an agent row. System notices
+                  // that start a run are attributed when persisted; older
+                  // unowned notices deliberately stay out of the transcript
+                  // instead of looking like progress on the human message.
+                  // Anchor a completed mission clump to its user-facing update,
+                  // not to an empty worker shell that happened to start the run.
+                  // This keeps the mission, mixed-agent trace, and outcome under
+                  // one coordinator header while preserving each trace author.
+                  const updateHost = segment.updateGroups.at(-1)?.messages.at(-1);
+                  const host = updateHost
+                    || segment.carrier
+                    || segment.trace.find((message) => message.registrationId || message.agentId);
+                  if (!host) return [];
+                  // A real carrier is persisted for system-only work. Existing
+                  // agent traces use the same empty shell shape at render time.
+                  const carrier = updateHost || !segment.carrier ? {
+                    ...host,
+                    id: `agent-trace-${segment.id}`,
+                    body: '',
+                    status: undefined,
+                  } : segment.carrier;
+                  const traceSelected = selectedMessageId != null
+                    && segment.trace.some((message) => message.id === selectedMessageId);
+                  const missionArtifacts = [
+                    ...(carrier.mission ? [carrier] : []),
+                    ...segment.fullGroups
+                    .flatMap((group) => group.messages)
+                    .filter((message) => Boolean(message.mission)),
+                  ];
+                  const displayCarrier = carrier.mission ? { ...carrier, mission: undefined, replyTo: undefined } : carrier;
+                  const missionHasTrace = missionArtifacts.length > 0 && segment.trace.length > 0;
+                  const workTrace = (
+                    <ChatWorkTrace
+                      trace={segment.trace}
+                      selectedMessageId={traceSelected ? selectedMessageId : null}
+                      onCancelRun={onCancelRun}
                       onContextMenu={openMessageContextMenu}
+                      onReply={startReply}
+                      vaultId={vaultId}
+                      onHydrateMessage={onHydrateMessage}
+                      runningMessageState={runningMessageState}
+                      embedded={missionHasTrace}
+                      forceOpen={missionHasTrace}
+                      missionIdentity={segment.trace.map((message) => missionIdentities.get(message.id)).find(Boolean)}
                     />
-                  ))
-                  : workTrace;
-                const nodes: ReactNode[] = [
-                  <ChatGroupRow
-                    key={`work-${segment.id}`}
-                    group={{ messages: [displayCarrier, ...clumpedUpdateMessages] }}
-                    selectedMessageId={traceSelected ? selectedMessageId : null}
-                    jumpHighlightMessageId={traceJumpHighlighted ? jumpHighlightMessageId : null}
-                    avatarKind="agent"
-                    avatarUrl={getMessageAvatarUrl(displayCarrier)}
-                    authorLabel={getMessageAuthorLabel(displayCarrier)}
-                    ownerLabel={getMessageOwnerLabel(displayCarrier)}
-                    planUsage={getMessagePlanUsage(displayCarrier)}
-                    latestRunningMessageId={undefined}
-                    runningSiblingCount={0}
-                    missionIdentities={missionIdentities}
-                    mentionableAliases={mentionableAliases}
-                    notes={notes}
-                    onOpenNote={onOpenNote}
-                    onOpenSharedNote={openSharedNote}
-                    onCancelRun={onCancelRun}
-                    onToggleSelect={toggleMessageSelection}
-                    onContextMenu={openMessageContextMenu}
-                    onReply={startReply}
-                    onJumpToMessage={runJumpToMessage}
-                    loadedMessageIds={loadedMessageIds}
-                    onLightbox={openLightbox}
-                    onImageLoad={scrollToBottomIfSticky}
-                    onAgentAvatarClick={
-                      resolveMessageRegistration(displayCarrier)
-                        ? (event) => openAgentSettingsFromMessage(displayCarrier, event)
-                        : undefined
-                    }
-                    scrollRootRef={messagesRef}
-                    vaultId={vaultId}
-                    onHydrateMessage={onHydrateMessage}
-                    traceContent={unifiedMission}
-                    traceAfterFirstMessage={clumpedUpdateMessages.length > 0}
-                    contextMenuMessage={missionArtifacts[0]}
-                  />,
-                ];
-                for (const group of segment.fullGroups) {
-                  const messagesWithoutMissions = group.messages.filter((message) => !message.mission);
-                  if (messagesWithoutMissions.length) nodes.push(renderGroupRow({ messages: messagesWithoutMissions }));
+                  );
+                  const peek = workTracePeek(segment.trace);
+                  const unifiedMission = missionArtifacts.length > 0
+                    ? missionArtifacts.map((message) => (
+                      <ChatMissionCard
+                        key={message.id}
+                        mission={message.mission!}
+                        vaultId={vaultId}
+                        channelId={message.channelId}
+                        traceContent={workTrace}
+                        tracePeek={peek}
+                        replyMessage={message}
+                        onReply={startReply}
+                        onContextMenu={openMessageContextMenu}
+                      />
+                    ))
+                    : workTrace;
+                  const nodes: ReactNode[] = [renderGroupRow({ messages: [displayCarrier] }, unifiedMission, missionArtifacts[0])];
+                  for (const group of segment.fullGroups) {
+                    const messagesWithoutMissions = group.messages.filter((message) => !message.mission);
+                    if (messagesWithoutMissions.length) nodes.push(renderGroupRow({ messages: messagesWithoutMissions }));
+                  }
+                  for (const group of segment.updateGroups) nodes.push(renderGroupRow(group));
+                  return nodes;
                 }
-                for (const group of separateUpdateGroups) nodes.push(renderGroupRow(group));
-                return nodes;
-              }
 
-              return renderGroupRow(segment.group);
-            })
+                return renderGroupRow(segment.group);
+              });
+            })()
           )}
           <div ref={endRef} className="chat-messages-end" aria-hidden="true" />
           </div>

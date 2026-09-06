@@ -283,7 +283,7 @@ describe('quiet conversation activity', () => {
   }));
 
   it('omits mission reply previews while preserving ordinary replies and source identity', () => {
-    const replyTo = { messageId: 'root', author: 'Owner', preview: 'Original request preview' };
+    const replyTo = { messageId: 'root', author: 'Owner', mention: '', preview: 'Original request preview' };
     const normal = message('reply', { body: 'A normal reply', replyTo });
     const normalHtml = renderRow(normal, 'human');
     expect(normalHtml).toContain('chat-reply-quote');
@@ -393,5 +393,71 @@ describe('quiet conversation activity', () => {
       expect(html).toContain('Useful result or failure explanation.');
     }
     expect(renderRow({ ...base, agentId: undefined, status: 'sending' }, 'human')).toContain(base.body);
+  });
+});
+
+
+describe('adjacent displayed author grouping', () => {
+  const mission = message('mission-card', {
+    author: 'Sol', agentId: 'codex', registrationId: agent.id, body: 'Mission created.',
+    createdAt: '2026-09-06T08:58:00',
+    replyTo: { messageId: 'request', author: 'Owner', mention: '', preview: 'Original mission request' },
+    mission: { id: 'mission', rootMessageId: 'request', title: 'Simplify mission coordination', objective: 'Original mission request',
+      status: 'active', coordinator: 'Sol', coordinatorMention: 'sol',
+      tasks: [], summary: '', createdAt: '', updatedAt: '' },
+  });
+  const outcome = message('outcome', {
+    author: 'Sol', agentId: 'codex', body: 'Shipped result', runId: 123,
+    createdAt: '2026-09-06T08:59:00',
+    replyTo: { messageId: 'request', author: 'Owner', mention: '', preview: 'Normal reply navigation' },
+  });
+  const renderChat = (rows: ChatMessage[], registrations = [agent]) => {
+    chatMessageStore.set('channel', rows);
+    return renderToStaticMarkup(createElement(ChatView, {
+      channelId: 'channel', channelName: 'new-channel', currentUser: 'owner',
+      presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: registrations,
+      onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+    }));
+  };
+  const headers = (html: string) => (html.match(/class="chat-message-meta"/g) || []).length;
+
+  it.each([false, true])('shares a header across a mission and result (attached trace: %s)', (withTrace) => {
+    const trace = message('trace', { author: 'Sol', agentId: 'codex', registrationId: agent.id,
+      body: 'Working', status: 'running', createdAt: '2026-09-06T08:58:30',
+      missionTaskId: 'task', runId: 42 });
+    const card: ChatMessage = withTrace ? { ...mission, mission: { ...mission.mission!, tasks: [{
+      id: 'task', title: 'Implement', assignee: 'Sol', assigneeMention: 'sol', assigneeModel: '', status: 'running' as const,
+      runId: 42, summary: '', dependsOn: [], waitingFor: [], priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '',
+    }] } } : mission;
+    const html = renderChat(withTrace ? [card, trace, outcome] : [card, outcome]);
+    expect(headers(html)).toBe(1);
+    expect(html).toContain('is-continuation');
+    expect(html).toContain('data-mission-id="mission"');
+    expect(html).toContain('chat-mission-toggle');
+    expect(html).toContain('Shipped result');
+    expect(html.indexOf('Simplify mission coordination')).toBeLessThan(html.indexOf('Shipped result'));
+    expect(html).not.toContain('Original mission request');
+    expect(html).toContain('Normal reply navigation');
+    expect(html).toContain('chat-reply-quote');
+  });
+
+  it('groups other special messages and ordinary messages with the same displayed identity', () => {
+    const attachment = { ...mission, mission: undefined, replyTo: undefined, attachments: [{ name: 'result.txt', url: '/result.txt', media_type: 'text/plain' }] };
+    expect(headers(renderChat([attachment, outcome]))).toBe(1);
+  });
+
+  it.each([
+    { author: 'Terra', registrationId: 'terra' },
+    { createdAt: '2026-09-06T09:00:00' },
+  ])('keeps real author and elapsed time boundaries: %j', (change) => {
+    expect(headers(renderChat([mission, { ...outcome, ...change }]))).toBe(2);
+  });
+
+  it('keeps different agents separate even when their display names match', () => {
+    expect(headers(renderChat([mission, { ...outcome, registrationId: 'other' }], [agent, { ...agent, id: 'other', vaultAgentId: 'other-agent' }]))).toBe(2);
+  });
+
+  it('keeps the local date boundary within the grouping window', () => {
+    expect(headers(renderChat([{ ...mission, createdAt: '2026-09-05T23:59:50' }, { ...outcome, createdAt: '2026-09-06T00:00:10' }]))).toBe(2);
   });
 });

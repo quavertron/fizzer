@@ -83,7 +83,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   vaultId,
   onHydrateMessage,
   traceContent,
-  traceAfterFirstMessage = false,
+  continuesPrevious = false,
   contextMenuMessage,
   missionIdentities,
 }: {
@@ -122,8 +122,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onHydrateMessage?: (message: ChatMessage) => void;
   /** A collapsed workflow trace carried by this agent row. */
   traceContent?: ReactNode;
-  /** Keep later user-facing updates under this author header, after the mission/work trace. */
-  traceAfterFirstMessage?: boolean;
+  /** Adjacent rows share the displayed author header within the grouping window. */
+  continuesPrevious?: boolean;
   /** Mission origin targeted when the user right-clicks anywhere on this row. */
   contextMenuMessage?: ChatMessage;
 }) {
@@ -180,7 +180,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   return (
     <article
       ref={articleRef}
-      className={`chat-message-group ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
+      className={`chat-message-group ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
       style={showBody ? undefined : { height: placeholderH, minHeight: placeholderH }}
       aria-hidden={showBody ? undefined : true}
       onContextMenu={contextMenuMessage
@@ -189,7 +189,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
     >
       {showBody ? (
         <>
-          <ChatAvatar
+          {continuesPrevious ? <span className="chat-avatar chat-avatar-spacer" aria-hidden="true" /> : <ChatAvatar
             name={authorLabel || head.author}
             kind={avatarKind}
             avatarUrl={avatarUrl}
@@ -197,16 +197,16 @@ export const ChatGroupRow = memo(function ChatGroupRow({
             title={avatarKind === 'agent' && onAgentAvatarClick
               ? `Open settings for ${authorLabel || head.author}`
               : undefined}
-          />
+          />}
           <div className="chat-message-body">
-            <div className="chat-message-meta">
+            {!continuesPrevious && <div className="chat-message-meta">
               <strong>{authorLabel || head.author}</strong>
               {avatarKind === 'agent' && planUsage && <PlanUsageMeters usage={planUsage} />}
               {avatarKind === 'agent' && ownerLabel && <span className="chat-agent-owner">{ownerLabel}'s agent</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
-            </div>
-            {group.messages.map((message, messageIndex) => {
+            </div>}
+            {group.messages.map((message) => {
               const hasRunWidget = message.status === 'running';
               const hasThoughtBlocks = hasExpandableTrace(message);
               const isLatestRunningMessage = message.status !== 'running' || latestRunningMessageId === message.id;
@@ -353,10 +353,9 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                     />
                   )}
                 </SwipeToReply>
-                {traceAfterFirstMessage && messageIndex === 0 && traceContent}
               </Fragment>);
             })}
-            {!traceAfterFirstMessage && traceContent}
+            {traceContent}
           </div>
         </>
       ) : (
@@ -400,7 +399,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.scrollRootRef === next.scrollRootRef
   && prev.vaultId === next.vaultId
   && prev.onHydrateMessage === next.onHydrateMessage
-  && prev.traceAfterFirstMessage === next.traceAfterFirstMessage
+  && prev.continuesPrevious === next.continuesPrevious
   && prev.contextMenuMessage === next.contextMenuMessage
   && prev.traceContent === next.traceContent;
 });
