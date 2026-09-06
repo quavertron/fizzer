@@ -1133,14 +1133,13 @@ defmodule Cascade.Missions.Store do
 
   defp recoverable_creation?(mission) do
     case creation_run(mission) do
-      [_, status] when status in ~w(completed failed) ->
-        true
-
-      [run_id, "canceled"] ->
-        SQL.one(
-          "SELECT 1 FROM run_events WHERE run_id=? AND type='status' AND json_extract(payload_json,'$.steering')=1 LIMIT 1",
-          [run_id]
-        ) == [1]
+      [run_id, status] when status in ~w(completed failed canceled) ->
+        not Cascade.Chat.Continuations.owns_recovery?(run_id) and
+          (status != "canceled" or
+             SQL.one(
+               "SELECT 1 FROM run_events WHERE run_id=? AND type='status' AND json_extract(payload_json,'$.steering')=1 LIMIT 1",
+               [run_id]
+             ) == [1])
 
       _ ->
         false

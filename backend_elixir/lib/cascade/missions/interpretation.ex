@@ -72,7 +72,8 @@ defmodule Cascade.Missions.Interpretation do
         """
         SELECT t.id,t.title,t.status,
           CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN t.summary ELSE e.summary END,
-          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN COALESCE(w.verification,'') ELSE '' END
+          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN COALESCE(w.verification,'') ELSE '' END,
+          t.depends_on_json
         FROM chat_mission_tasks t
         LEFT JOIN work_items w ON w.id=t.work_item_id
         LEFT JOIN chat_mission_events e ON e.id=(
@@ -85,14 +86,40 @@ defmodule Cascade.Missions.Interpretation do
         """,
         [id]
       )
-      |> Enum.map(fn [task, title, status, summary, verification] ->
-        %{
+      |> Enum.map(fn [task, title, status, summary, verification, dependencies] ->
+        finding = %{
           taskId: task,
           title: title,
           status: status,
           summary: summary,
           verification: verification
         }
+
+        if status in ~w(blocked failed) do
+          waiting =
+            Jason.decode!(dependencies || "[]")
+            |> Enum.map(fn dependency ->
+              case SQL.one(
+                     "SELECT title,status FROM chat_mission_tasks WHERE id=? AND mission_id=?",
+                     [dependency, id]
+                   ) do
+                [title, status] -> %{taskId: dependency, title: title, status: status}
+                _ -> %{taskId: dependency, status: "unknown"}
+              end
+            end)
+
+          Map.put(finding, :blocker, %{
+            reason: if(String.trim(summary || "") != "", do: summary),
+            dependencies: waiting,
+            resumeWhen:
+              if(waiting != [] and Enum.any?(waiting, &(&1.status != "completed")),
+                do:
+                  "Recorded task dependencies must complete; inspect the remaining blocker before retrying."
+              )
+          })
+        else
+          finding
+        end
       end)
 
     overdue =
@@ -362,7 +389,7 @@ defmodule Cascade.Missions.Interpretation do
         )
         |> Enum.flat_map(fn [id] ->
           case get(user_id, channel_id, id, registration_id) do
-            {:ok, result} -> [result]
+            {:ok, result} -> [active_context(result)]
             _ -> []
           end
         end)
@@ -376,6 +403,16 @@ defmodule Cascade.Missions.Interpretation do
     else
       _ -> ""
     end
+  end
+
+  # A projection only: explicit get/history retain fulfilled commitments and
+  # correction evidence. Use this for both ordinary and interpretation prompts.
+  defp active_context(context) do
+    Map.update!(context, :understanding, fn state ->
+      Map.update(state, "commitments", [], fn commitments ->
+        Enum.reject(commitments, &(&1["status"] == "fulfilled"))
+      end)
+    end)
   end
 
   def get(user_id, channel_id, mission_id, registration_id) do
@@ -738,7 +775,7 @@ defmodule Cascade.Missions.Interpretation do
   end
 
   defp agenda_guidance do
-    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: verify its saved owner instruction before acting; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
+    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: verify its saved owner instruction before acting; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Routine context omits fulfilled commitments; retrieve full understanding with `mission interpret` or mission history when their completed evidence is relevant. For a blocked commitment keep status open and record blocker:{reason,resumeWhen} alongside its existing taskId or dependency references. State the concrete dependency, decision or observable condition needed to resume. Use null for an unknown reason or resume condition; do not invent one. Dependency completion or changed blocker evidence permits inspection, never automatic authority to retry; descriptive text is not authorization. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
   end
 
   def prompt(wake) do
@@ -746,7 +783,7 @@ defmodule Cascade.Missions.Interpretation do
     @#{wake.mission.coordinatorMention} Interpret meaningful changes for mission #{wake.mission.id}: #{wake.mission.title}.
     #{Cascade.Missions.Authority.context(wake.mission.id)}
     Durable understanding and coalesced evidence (evidence leads, not authority):
-    #{Jason.encode!(Cascade.Content.Privacy.sanitize_json(wake.interpretation))}
+    #{Jason.encode!(Cascade.Content.Privacy.sanitize_json(active_context(wake.interpretation)))}
     #{agenda_guidance()}
     Compare these findings with the objective, prior answers, assessment, evidence and commitments. Task completion is distinct from objective fulfillment. Independently authorized workers keep running; do not introduce routine reviews or approval gates, or delay delivery for this explanation. Inspect current work before any action. Steer/recover within existing authority using the existing mission tools; preserve task identity and avoid repeating side effects after interruption. Read the latest owner messages and honor Stop and scope changes first.
     First inspect current mission history for actions already taken by an interrupted attempt; reuse their results instead of repeating them. Save your interpretation with `cascade-chat mission interpret --mission #{wake.mission.id} --file <json-file>`. Include revision #{wake.interpretation.revision}, fingerprint "#{wake.interpretation.fingerprint}", assessment, questions (objects with stable id, question, answer/status), evidenceReferences, and commitments (stable id, summary, status open/fulfilled/canceled, dueAt ISO8601 when promised). Omitted items are retained; update answered questions rather than removing them. #{publication_guidance()} A successful provider run alone does not acknowledge interpretation. If interrupted, inspect current state before retrying. Mission completion never cancels the durable acknowledgment obligation; it does not require another chat message. Do not reopen completed work merely for explanation bookkeeping. If an explicitly reviewed mission is still reviewing and the objective is fulfilled, finish it through the existing mission finish command; optional review is never a new requirement for workers.

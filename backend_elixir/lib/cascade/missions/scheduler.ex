@@ -6,6 +6,24 @@ defmodule Cascade.Missions.Scheduler do
   alias Cascade.Missions.{Dispatches, Store}
   alias Cascade.Realtime.OrderedPublisher
 
+  @doc "One maintenance selection for periodic and explicit recovery sweeps."
+  def maintenance_missions do
+    SQL.all("""
+    SELECT id,created_by FROM chat_missions m
+    WHERE m.status NOT IN ('completed','canceled') OR (m.status='completed' AND EXISTS (
+      SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=0
+        AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL
+          OR json_extract(i.state_json,'$.executionCompleted') IS NOT 1
+          OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
+            WHERE json_extract(c.value,'$.status')='open' AND json_extract(c.value,'$.accepted') IS NOT 0)
+          OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.questions') q
+            WHERE COALESCE(json_extract(q.value,'$.status'),'open') NOT IN ('answered','fulfilled','canceled','stopped','declined')
+              AND TRIM(COALESCE(json_extract(q.value,'$.answer'),''))='')))) OR EXISTS (
+      SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
+      WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running'))
+    """)
+  end
+
   def schedule(mission_id \\ nil, opts \\ []) do
     OrderedPublisher.mutate(fn -> do_schedule(mission_id, opts) end)
   end
@@ -24,9 +42,7 @@ defmodule Cascade.Missions.Scheduler do
              if(mission_id,
                do: [mission_id],
                else:
-                 SQL.all(
-                   "SELECT id FROM chat_missions WHERE status<>'canceled' AND (status<>'completed' OR EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=chat_missions.id AND i.stopped=0))"
-                 )
+                 maintenance_missions()
                  |> Enum.map(&hd/1)
              ))
           |> Enum.uniq()

@@ -55,6 +55,57 @@ defmodule Cascade.Chat.ContinuationsTest do
     )
   end
 
+  for outcome <- [:stop, :failed] do
+    @outcome outcome
+    test "captured mission creation has one recovery owner and #{@outcome} preserves the right fallback",
+         c do
+      original = dispatch(c, "Start the authorized mission")
+      first = run(c, original)
+
+      {:ok, mission} =
+        Cascade.Missions.Store.create(
+          c.user.id,
+          c.vault,
+          c.channel,
+          %{
+            rootMessageId: original.messageId,
+            coordinatorRegistrationId: c.coordinator.id,
+            title: "Interrupted setup"
+          },
+          agent: true,
+          control_plane: true,
+          current_run_id: first.id
+        )
+
+      followup = dispatch(c, "A short owner followup")
+      Continuations.interrupt(first.id, followup.id)
+      Runs.finish(first.id, "canceled", "Steered")
+      Runs.publish(first.id, "status", %{status: "canceled", steering: true})
+      second = run(c, followup)
+      Runs.finish(second.id, "completed", "Answered")
+
+      for _ <- 1..3 do
+        Continuations.reconcile()
+        assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
+      end
+
+      [[id]] = pending(c)
+      {:ok, continuation} = Dispatches.get(c.user.id, c.channel, id)
+      resumed = run(c, continuation)
+
+      if @outcome == :stop do
+        Continuations.stop(resumed.id)
+        Runs.finish(resumed.id, "canceled", "Owner Stop")
+        assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
+      else
+        Runs.finish(resumed.id, "failed", "Confirmed provider exit")
+        [fallback] = Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches
+        assert fallback.message.body =~ "Continue this existing mission"
+        assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
+      end
+    end
+  end
+
   test "interruption preserves responsibility before cancel and resumes once after handling new message",
        c do
     original = dispatch(c, "Implement accepted work\n:::private\nprivate-responsibility\n:::")

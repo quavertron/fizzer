@@ -102,6 +102,168 @@ defmodule Cascade.Missions.InterpretationTest do
     {result, input}
   end
 
+  test "completed execution with an unanswered question stays in the shared maintenance selection",
+       c do
+    finding(c, "Delivery evidence")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "questions" => [
+          %{"id" => "pending-answer", "question" => "Which condition permits resuming?"}
+        ]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Recorded")
+    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
+
+    SQL.exec(
+      "UPDATE chat_mission_interpretations SET state_json=json_set(state_json,'$.executionCompleted',json('true')) WHERE mission_id=?",
+      [c.mission]
+    )
+
+    assert [c.mission, c.user.id] in Scheduler.maintenance_missions()
+
+    [next] =
+      Scheduler.schedule().wakeDispatches
+      |> Enum.filter(&String.contains?(&1.message.body, c.mission))
+
+    assert next.message.body =~ "Which condition permits resuming?"
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    next_run = run(c, next.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, next_run, %{
+        "noMaterialChange" => true,
+        "questions" => [
+          %{
+            "id" => "pending-answer",
+            "status" => "answered",
+            "answer" => "Wait for the owned dependency."
+          }
+        ]
+      })
+
+    :ok = Runs.finish(next_run.id, "completed", "Answered")
+    refute [c.mission, c.user.id] in Scheduler.maintenance_missions()
+  end
+
+  test "routine prompts retire fulfilled commitments while full retrieval and correction evidence survive",
+       c do
+    finding(c, "Mixed responsibilities")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "commitments" => [
+          %{"id" => "done", "summary" => "fulfilled-only-marker", "status" => "fulfilled"},
+          %{"id" => "open", "summary" => "still-open-marker"},
+          %{"id" => "stopped", "summary" => "Stop constraint marker", "status" => "canceled"}
+        ],
+        "questions" => [%{"id" => "question", "question" => "Still owed answer marker"}],
+        "evidenceReferences" => ["relevant-correction-marker"]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Saved")
+    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
+    [next] = Scheduler.schedule(c.mission).wakeDispatches
+
+    for prompt <- [
+          Interpretation.context(c.user.id, c.channel, c.coordinator.id),
+          next.message.body
+        ] do
+      refute prompt =~ "fulfilled-only-marker"
+      assert prompt =~ "still-open-marker"
+      assert prompt =~ "Stop constraint marker"
+      assert prompt =~ "Still owed answer marker"
+      assert prompt =~ "relevant-correction-marker"
+    end
+
+    assert Enum.any?(
+             state(c).understanding["commitments"],
+             &(&1["summary"] == "fulfilled-only-marker")
+           )
+
+    {:ok, history} = Store.events(c.user.id, c.channel, c.mission)
+    assert Enum.any?(history, &String.contains?(&1.summary, "fulfilled-only-marker"))
+  end
+
+  test "unknown blockers stay quiet and changed dependency evidence wakes once without retrying work",
+       c do
+    {:ok, dependency} =
+      Store.add_task(c.user.id, c.channel, c.mission, %{
+        title: "Owned dependency",
+        assignee: c.worker.id,
+        coordinatorRegistrationId: c.coordinator.id
+      })
+
+    SQL.exec("UPDATE chat_mission_tasks SET depends_on_json=? WHERE id=?", [
+      Jason.encode!([dependency.task.id]),
+      c.task
+    ])
+
+    SQL.exec("UPDATE chat_mission_tasks SET status='blocked' WHERE id=?", [dependency.task.id])
+    finding(c, "", "blocked")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{
+        "noMaterialChange" => true,
+        "commitments" => [
+          %{
+            "id" => "blocked",
+            "taskId" => c.task,
+            "blocker" => %{"reason" => nil, "resumeWhen" => nil}
+          }
+        ]
+      })
+
+    :ok = Runs.finish(review.id, "completed", "Unknown cause retained")
+    [agenda] = Scheduler.schedule(c.mission).wakeDispatches
+    agenda_run = run(c, agenda.dispatch)
+    {{:ok, _}, _} = record(c, agenda_run, %{"noMaterialChange" => true})
+    :ok = Runs.finish(agenda_run.id, "completed", "Waiting")
+    for _ <- 1..3, do: assert(Scheduler.schedule(c.mission).wakeDispatches == [])
+
+    before =
+      Enum.find(
+        Jason.decode!(Jason.encode!(state(c).evidence))["findings"],
+        &(&1["taskId"] == c.task)
+      )
+
+    assert before["blocker"]["reason"] == nil
+    assert [%{"status" => "blocked"}] = before["blocker"]["dependencies"]
+
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed' WHERE id=?", [dependency.task.id])
+    [changed] = Scheduler.schedule(c.mission).wakeDispatches
+    changed_run = run(c, changed.dispatch)
+
+    current =
+      Enum.find(
+        Jason.decode!(Jason.encode!(state(c).evidence))["findings"],
+        &(&1["taskId"] == c.task)
+      )
+
+    assert [%{"status" => "completed"}] = current["blocker"]["dependencies"]
+    assert current["blocker"]["resumeWhen"] == nil
+    assert ["blocked"] == SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [c.task])
+    {{:ok, _}, _} = record(c, changed_run, %{"noMaterialChange" => true})
+
+    :ok =
+      Runs.finish(
+        changed_run.id,
+        "completed",
+        "Dependency changed; unknown cause still needs inspection"
+      )
+
+    for _ <- 1..3, do: assert(Scheduler.schedule(c.mission).wakeDispatches == [])
+  end
+
   test "ordinary implementation and verification stay with the worker without coordinator bookkeeping",
        c do
     [worker] = Scheduler.schedule(c.mission).dispatches

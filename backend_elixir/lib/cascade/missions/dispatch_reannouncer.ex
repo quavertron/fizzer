@@ -3,7 +3,6 @@ defmodule Cascade.Missions.DispatchReannouncer do
   use GenServer
   require Logger
 
-  alias Cascade.Accounts.SQL
   alias Cascade.Missions.{Dispatches, Recovery, Scheduler, Steering}
   alias Cascade.Runs.RunnerLifecycle
   alias CascadeWeb.OrchestrationController
@@ -114,17 +113,7 @@ defmodule Cascade.Missions.DispatchReannouncer do
   end
 
   defp mission_jobs do
-    SQL.all("""
-    SELECT id,created_by FROM chat_missions m
-    WHERE status NOT IN ('completed','canceled') OR (status='completed' AND EXISTS (
-      SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=0
-        AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL
-          OR json_extract(i.state_json,'$.executionCompleted') IS NOT 1
-          OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
-            WHERE json_extract(c.value,'$.status')='open')))) OR EXISTS (
-      SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
-      WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running'))
-    """)
+    Scheduler.maintenance_missions()
     |> Map.new(fn [id, owner] -> {{:mission, id}, owner} end)
   end
 

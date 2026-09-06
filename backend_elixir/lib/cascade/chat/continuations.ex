@@ -150,6 +150,33 @@ defmodule Cascade.Chat.Continuations do
     end)
   end
 
+  @doc "Whether captured responsibility already owns recovery, including a later Stop."
+  def owns_recovery?(run_id) do
+    case scope(run_id) do
+      nil ->
+        false
+
+      s ->
+        state = row(s)
+
+        s.dispatch in state.sources and
+          (state.status in ~w(waiting canceled) or
+             (state.status == "pending" and not failed_dispatch?(state.dispatch)))
+    end
+  end
+
+  defp failed_dispatch?(nil), do: false
+
+  defp failed_dispatch?(dispatch) do
+    SQL.one(
+      """
+      SELECT 1 FROM chat_agent_dispatches d LEFT JOIN runs r ON r.chat_dispatch_id=d.id
+      WHERE d.id=? AND (r.status='failed' OR (r.id IS NULL AND d.failed_at IS NOT NULL))
+      """,
+      [dispatch]
+    ) == [1]
+  end
+
   def stop(run_id) do
     OrderedPublisher.mutate(fn ->
       SQL.transaction(fn ->
