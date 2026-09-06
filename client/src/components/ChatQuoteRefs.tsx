@@ -20,7 +20,7 @@ export function ChatQuoteRefs({ message, onJumpToMessage, canJumpToReply = false
   const jumpable = Boolean(replyId && canJumpToReply && onJumpToMessage);
   return (
     <>
-      {message.replyTo && (
+      {message.replyTo && !message.mission && (
         jumpable ? (
           <button
             type="button"

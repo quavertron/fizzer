@@ -282,6 +282,28 @@ describe('quiet conversation activity', () => {
     onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
   }));
 
+  it('omits mission reply previews while preserving ordinary replies and source identity', () => {
+    const replyTo = { messageId: 'root', author: 'Owner', preview: 'Original request preview' };
+    const normal = message('reply', { body: 'A normal reply', replyTo });
+    const normalHtml = renderRow(normal, 'human');
+    expect(normalHtml).toContain('chat-reply-quote');
+    expect(normalHtml).toContain(replyTo.preview);
+
+    const missionRow = message('mission-card', { replyTo, mission: {
+      id: 'mission', rootMessageId: 'root', title: 'Fix legibility', objective: 'Original request',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      tasks: [], summary: '', createdAt: '', updatedAt: '',
+    } });
+    const missionHtml = renderRow(missionRow);
+    expect(missionHtml).toContain('chat-mission-card');
+    expect(missionHtml).toContain('Fix legibility');
+    expect(missionHtml).not.toContain('chat-reply-quote');
+    expect(missionHtml).not.toContain(replyTo.preview);
+    expect(missionRow.replyTo).toEqual(replyTo);
+    expect(missionRow.mission?.rootMessageId).toBe(replyTo.messageId);
+    expect(missionRow.mission?.status).toBe('active');
+  });
+
   it('keeps startup visible and publishes one outcome through mission replacement, cleanup and reconnect', () => {
     const shell = message('shell', { agentId: 'codex', status: 'queued', body: '', seq: 1 });
     expect(renderRow(shell)).toContain('Queued');
