@@ -946,7 +946,7 @@ type JsonObject = Record<string, any>;
 type CodexAppTurn = {
   threadId: string; turnId: string; runId?: number; emit: AgentEmit;
   resolve: (result: CliAgentResult) => void; reject: (error: Error) => void;
-  summary: string; emittedText: boolean; emittedTools: Set<string>;
+  summary: string; emittedText: boolean; emittedTools: Set<string>; agentText: Map<string, string>;
   idle: ReturnType<typeof createIdleTimer>;
   timing: ReturnType<typeof createRequestTiming>;
 };
@@ -1054,7 +1054,7 @@ class CodexAppServerClient {
         });
         this.turns.set(turnId, {
           threadId, turnId, runId: options.runId, emit: options.emit, resolve, reject,
-          summary: '', emittedText: false, emittedTools: new Set(), idle, timing,
+          summary: '', emittedText: false, emittedTools: new Set(), agentText: new Map(), idle, timing,
         });
         if (options.runId !== undefined) activePersistentCancels.set(options.runId, () => {
           void this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
@@ -1206,7 +1206,7 @@ class CodexAppServerClient {
     const turn = this.turns.get(turnId)
       || [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
     if (!turn) {
-      if (turnId && ['item/started', 'item/completed', 'turn/completed', 'error'].includes(message.method)) {
+      if (turnId && ['item/started', 'item/completed', 'item/agentMessage/delta', 'turn/completed', 'error'].includes(message.method)) {
         const buffered = this.earlyNotifications.get(turnId) || [];
         buffered.push({ ...message, timingObservation: observation });
         this.earlyNotifications.set(turnId, buffered.slice(-100));
@@ -1218,7 +1218,10 @@ class CodexAppServerClient {
       && params.item?.type && !['userMessage', 'contextCompaction'].includes(params.item.type)) {
       turn.timing.firstResponse(observation);
     }
-    if (message.method === 'item/started') this.emitItem(turn, params.item, false);
+    if (message.method === 'item/agentMessage/delta' && params.itemId && typeof params.delta === 'string' && params.delta) {
+      turn.timing.firstResponse(observation);
+      this.emitAgentText(turn, params.itemId, (turn.agentText.get(params.itemId) || '') + params.delta);
+    } else if (message.method === 'item/started') this.emitItem(turn, params.item, false);
     else if (message.method === 'item/completed') this.emitItem(turn, params.item, true);
     else if (message.method === 'thread/tokenUsage/updated') emitCascadeStats(turn.emit, statsFromUsageBlob(params.tokenUsage || params.usage));
     else if (message.method === 'turn/completed') {
@@ -1231,6 +1234,17 @@ class CodexAppServerClient {
     }
   }
 
+  private emitAgentText(turn: CodexAppTurn, itemId: string, text: string): void {
+    const previous = turn.agentText.get(itemId);
+    // Completion repeats the full item; only publish its not-yet-streamed suffix.
+    const delta = previous === undefined ? text : text.startsWith(previous) ? text.slice(previous.length) : '';
+    turn.agentText.set(itemId, text);
+    if (!delta) return;
+    turn.emit('text', { chatVisible: true, message: { content: [{ type: 'text',
+      text: `${previous === undefined && turn.emittedText ? '\n\n' : ''}${delta}` }] } });
+    turn.emittedText = true;
+  }
+
   private emitItem(turn: CodexAppTurn, item: JsonObject | undefined, completed: boolean): void {
     if (!item?.type) return;
     if (item.type === 'agentMessage') {
@@ -1238,8 +1252,7 @@ class CodexAppServerClient {
       const text = String(item.text || '');
       if (text) {
         turn.summary = text;
-        turn.emit('text', { chatVisible: true, message: { content: [{ type: 'text', text: `${turn.emittedText ? '\n\n' : ''}${text}` }] } });
-        turn.emittedText = true;
+        this.emitAgentText(turn, String(item.id || ''), text);
       }
       return;
     }

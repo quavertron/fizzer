@@ -41,6 +41,22 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (message.method === 'thread/unsubscribe') return send({ id: message.id, result: { status: 'unsubscribed' } });
   if (message.method === 'turn/start') {
     const id = 'turn-' + (++turn);
+    if (message.params.input[0].text === 'stream tokens') {
+      // A notification can race the turn/start response; preserve those tokens too.
+      send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'progress', delta: 'Checking' } });
+      send({ id: message.id, result: { turn: { id } } });
+      setTimeout(() => {
+        send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'progress', delta: ' files' } });
+        send({ method: 'item/completed', params: { turnId: id, item: { id: 'progress', type: 'agentMessage', text: 'Checking files.' } } });
+        send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'final', delta: '' } });
+        send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'final', delta: 'Fixed' } });
+        send({ method: 'item/agentMessage/delta', params: { turnId: id, itemId: 'final', delta: ' it.' } });
+        send({ method: 'item/completed', params: { turnId: id, item: { id: 'final', type: 'agentMessage', text: 'Fixed it.' } } });
+        send({ method: 'item/completed', params: { turnId: id, item: { id: 'final', type: 'agentMessage', text: 'Fixed it.' } } });
+        send({ method: 'turn/completed', params: { turn: { id, status: 'completed' } } });
+      }, 200);
+      return;
+    }
     send({ id: message.id, result: { turn: { id } } });
     setImmediate(() => {
       if (message.params.input[0].text === 'empty turn') {
@@ -91,6 +107,31 @@ test('Codex app-server is reused across sequential turns', async () => {
   assert.equal(fs.readFileSync(launchLog, 'utf8').trim().split('\n').length, 1);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(fs.readFileSync(protocolLog, 'utf8'), /thread\/unsubscribe:thread-1/);
+  shutdownPersistentCliAgents();
+});
+
+test('streams public tokens before completion without duplicating final items', async (t) => {
+  t.after(() => shutdownPersistentCliAgents());
+  const chunks: string[] = [];
+  let firstToken!: () => void;
+  const streaming = new Promise<void>(resolve => { firstToken = resolve; });
+  let finished = false;
+  const run = runCliAgent({
+    agent: 'codex', context: '', userPrompt: 'stream tokens', cwd: scratch,
+    emit(type, payload: any) {
+      if (type === 'text' && payload.chatVisible) {
+        chunks.push(payload.message.content[0].text);
+        firstToken();
+      }
+    },
+  }).then(result => { finished = true; return result; });
+  await streaming;
+  assert.equal(finished, false);
+  assert.deepEqual(chunks, ['Checking']);
+  const result = await run;
+  assert.deepEqual(chunks, ['Checking', ' files', '.', '\n\nFixed', ' it.']);
+  assert.equal(chunks.join(''), 'Checking files.\n\nFixed it.');
+  assert.equal(result.summary, 'Fixed it.');
   shutdownPersistentCliAgents();
 });
 
