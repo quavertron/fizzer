@@ -16,11 +16,6 @@ export function missionAccent(id: string): string {
   return ACCENTS[hash % ACCENTS.length];
 }
 
-export function missionShortName(title: string): string {
-  if (title.length <= 56) return title;
-  return title.slice(0, 53).replace(/\s+\S*$/, '') + '…';
-}
-
 /** Resolve only persisted task/run/reply identities, never proximity or author. */
 export function missionMessageIdentities(messages: ChatMessage[]): Map<string, MissionMessageIdentity> {
   const missions = new Map<string, MissionMessageIdentity>();

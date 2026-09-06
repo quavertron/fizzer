@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { Reply } from 'lucide-react';
 
 /** Swipe-left → reply (mobile/touch). Touch/pen only so desktop drag-select stays clean. */
@@ -27,6 +27,8 @@ export function SwipeToReply({
   onReply,
   children,
   className = '',
+  style,
+  title,
   messageId,
   onClick,
   onContextMenu,
@@ -35,6 +37,8 @@ export function SwipeToReply({
   onReply: () => void;
   children: ReactNode;
   className?: string;
+  style?: CSSProperties;
+  title?: string;
   messageId?: string;
   onClick?: () => void;
   onContextMenu?: (event: React.MouseEvent) => void;
@@ -211,6 +215,10 @@ export function SwipeToReply({
       ref={rootRef}
       className={`chat-swipe-row ${className}`}
       data-message-id={messageId}
+      style={style}
+      title={title}
+      aria-label={title}
+      role={title ? 'group' : undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={finish}

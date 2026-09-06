@@ -6,7 +6,7 @@ import { isLiveAgentStatus } from '../chat/runBlocks';
  * Intentionally avoids importing runtime values from ChatView (circular).
  */
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,8 +23,7 @@ import { shouldRenderRunPanel } from './ChatGroupRow';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
 import { SafeMarkdownImage } from './ChatMarkdown';
 import { ThinkingSpinner } from './ThinkingSpinner';
-import { MissionMessageLabel } from './ChatMissionCard';
-import type { MissionMessageIdentity } from '../chat/missionIdentity';
+import { missionAccent, type MissionMessageIdentity } from '../chat/missionIdentity';
 import { SwipeToReply } from './SwipeToReply';
 import type { ChatMessage } from '../chat/types';
 
@@ -42,7 +41,7 @@ function formatTime(value: string) {
 function statusMark(message: ChatMessage): { mark: string; className: string; live?: boolean } {
   if (message.status === 'failed') return { mark: '✗', className: 'err' };
   if (isSteeringContinuationMessage(message)) return { mark: '↪', className: 'steer' };
-  if (message.status === 'canceled') return { mark: '✗', className: 'err' };
+  if (message.status === 'canceled') return { mark: '·', className: 'ok' };
   if (isLiveAgentStatus(message.status)) return { mark: '…', className: 'run', live: true };
   if (message.missionTaskId) return { mark: '›', className: 'task' };
   if (String(message.id || '').startsWith('sys-mission-') || message.author === 'Cascade') {
@@ -229,14 +228,18 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
       <div
         className={[
           'chat-work-trace',
+          !embedded && missionIdentity ? 'has-mission-accent' : '',
           `phase-${currentPhase}`,
           streamOpen ? 'is-open' : '',
           live ? 'is-live' : '',
           embedded ? 'is-embedded' : '',
           forceOpen ? 'is-forced-open' : '',
         ].filter(Boolean).join(' ')}
+        style={!embedded && missionIdentity ? { '--mission-accent': missionAccent(missionIdentity.id) } as CSSProperties : undefined}
+        title={!embedded && missionIdentity ? `${missionIdentity.title} · ${missionIdentity.role}` : undefined}
+        aria-label={!embedded && missionIdentity ? `${missionIdentity.title} · ${missionIdentity.role}` : undefined}
+        role={!embedded && missionIdentity ? 'group' : undefined}
       >
-        {!embedded && missionIdentity && <MissionMessageLabel identity={missionIdentity} />}
         {!forceOpen && (
           <button
             type="button"

@@ -4662,20 +4662,6 @@ button.chat-avatar.is-clickable:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   background: var(--accent-subtle);
 }
-.chat-message-status.is-steered {
-  color: var(--text-tertiary);
-  font-style: italic;
-}
-.chat-steering-prompt {
-  display: inline-flex;
-  margin: 0 0 6px;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
-  border-radius: 6px;
-  background: var(--accent-subtle);
-  color: var(--accent-hover);
-  font: 0.6875rem/1.4 var(--font-mono);
-}
 .chat-message-group.status-running .chat-avatar {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
@@ -9968,20 +9954,11 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   border-color: color-mix(in srgb, var(--mission-accent) 42%, transparent);
   background: color-mix(in srgb, var(--mission-accent) 9%, transparent);
 }
-.chat-mission-identity {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  border-left: 3px solid var(--mission-accent);
-  padding-left: 9px;
-  margin: 0 0 7px;
-  font-family: var(--font-sans);
-  font-size: 0.75rem;
-  line-height: 1.4;
+.has-mission-accent {
+  border-left: 2px solid color-mix(in srgb, var(--mission-accent) 55%, transparent);
+  padding-left: 8px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mission-accent) 5%, transparent), transparent 65%);
 }
-.chat-mission-identity-name { color: var(--mission-accent); font-weight: 600; }
-.chat-mission-identity-role { color: var(--text-secondary); font-size: 0.6875rem; }
 .chat-mission-peek-copy { display: grid; gap: 3px; min-width: 0; }
 .chat-mission-peek-task { color: var(--text-secondary); font-weight: 600; font-size: 0.75rem; }
 .chat-mission-peek .chat-mission-peek-label,

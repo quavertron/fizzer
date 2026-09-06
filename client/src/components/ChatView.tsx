@@ -20,7 +20,7 @@ import { ChatAgentPanel, type ChatAgentPanelHandle, planUsageProviderId } from '
 import { ChatAvatar } from './ChatAvatar';
 import { ChatChannelSettings } from './ChatChannelSettings';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
-import { ChatGroupRow, getRunningMessageState, getSteeringPromptLabels } from './ChatGroupRow';
+import { ChatGroupRow, getRunningMessageState } from './ChatGroupRow';
 import { ChatMissionCard } from './ChatMissionCard';
 import { usePopupMenu } from '../ui/popupMenu';
 import { ChatSidebarButtons } from './ChatSidebarButtons';
@@ -72,7 +72,6 @@ export { REASONING_EFFORTS, ReasoningEffortSelect } from './ChatAgentPanel';
 export { ChatMediaEmbed } from './ChatMarkdown';
 export {
   getRunningMessageState,
-  getSteeringPromptLabels,
   shouldRenderRunPanel,
 } from './ChatGroupRow';
 export { buildReplyRef, resolveReplyMention } from '../chat/replies';
@@ -396,9 +395,6 @@ export const ChatView = memo(function ChatView({
   const runningMessageState = useMemo(() => {
     return getRunningMessageState(sortedMessages);
   }, [sortedMessages]);
-  const steeringPromptLabels = useMemo(() => {
-    return getSteeringPromptLabels(sortedMessages, registeredAgents, runningMessageState);
-  }, [registeredAgents, runningMessageState, sortedMessages]);
   const registeredAgentRows = useMemo(() => registeredAgents.map((registration) => {
     const agent = availableAgents.find((option) => option.id === registration.agentId);
     return agent ? { ...agent, registration } : null;
@@ -983,7 +979,6 @@ export const ChatView = memo(function ChatView({
                     latestRunningMessageId={runState?.latestId}
                     runningSiblingCount={runState?.count || 0}
                     missionIdentities={missionIdentities}
-                    steeringPromptLabels={steeringPromptLabels}
                     mentionableAliases={mentionableAliases}
                     notes={notes}
                     onOpenNote={onOpenNote}
@@ -1097,7 +1092,6 @@ export const ChatView = memo(function ChatView({
                     latestRunningMessageId={undefined}
                     runningSiblingCount={0}
                     missionIdentities={missionIdentities}
-                    steeringPromptLabels={steeringPromptLabels}
                     mentionableAliases={mentionableAliases}
                     notes={notes}
                     onOpenNote={onOpenNote}

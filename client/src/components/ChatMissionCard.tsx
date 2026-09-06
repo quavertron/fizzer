@@ -7,15 +7,7 @@ import type { ChatMessage, ChatMission, ChatMissionEvent, ChatMissionTask } from
 import { ChatTaskReview } from './ChatTaskReview';
 import { SwipeToReply } from './SwipeToReply';
 import { ThinkingSpinner } from './ThinkingSpinner';
-import { missionAccent, missionShortName, type MissionMessageIdentity } from '../chat/missionIdentity';
-
-export function MissionMessageLabel({ identity }: { identity: MissionMessageIdentity }) {
-  return <div className="chat-mission-identity" data-mission-id={identity.id}
-    style={{ '--mission-accent': missionAccent(identity.id) } as CSSProperties} title={identity.title}>
-    <span className="chat-mission-identity-name">{missionShortName(identity.title)}</span>
-    <span className="chat-mission-identity-role">{identity.role}</span>
-  </div>;
-}
+import { missionAccent } from '../chat/missionIdentity';
 
 function missionTaskChangeChips(task: ChatMissionTask, fileCount?: number): Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> {
   const chips: Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> = [];

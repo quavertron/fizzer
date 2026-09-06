@@ -1,5 +1,5 @@
 import { missionAccent, missionMessageIdentities } from '../chat/missionIdentity';
-import { ChatMissionCard, MissionMessageLabel } from '../components/ChatMissionCard';
+import { ChatMissionCard } from '../components/ChatMissionCard';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatWorkTrace } from '../components/ChatWorkTrace';
@@ -487,10 +487,7 @@ it('gives a mission and its bound worker one activity surface, preserving later 
   const answer = { ...worker, status: undefined, body: 'Delivered the helper changes.' };
   const settled = segmentTranscript([mission, assignment, answer, unrelated]);
   expect(settled.some((segment) => segment.kind === 'group' && segment.group.messages.includes(answer))).toBe(true);
-  const label = renderToStaticMarkup(createElement(MissionMessageLabel, { identity: identities.get(worker.id)! }));
-  expect(label).toContain('Simplify worker guidance');
-  expect(label).toContain('Worker');
-  expect(label).toContain(missionAccent(mission.mission!.id));
+
 });
 
 it('keeps coordinator explanations linked to the same identity without borrowing nearby mission work', () => {

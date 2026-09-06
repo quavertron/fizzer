@@ -7,7 +7,6 @@ import {
   ChatView,
   ReasoningEffortSelect,
   getRunningMessageState,
-  getSteeringPromptLabels,
   isPendingAgentRunShell,
   mergeChatPresence,
   shouldRenderRunPanel,
@@ -86,7 +85,7 @@ describe('chat sticky bottom intent', () => {
 });
 
 describe('agent steering presentation', () => {
-  it('marks the newest active response and its triggering follow-up', () => {
+  it('tracks the newest active response', () => {
     const messages = [
       message('1', { author: 'Sol', agentId: 'codex', registrationId: agent.id, status: 'running', body: 'Thinking…' }),
       message('2', { body: '@sol also check mobile' }),
@@ -94,30 +93,6 @@ describe('agent steering presentation', () => {
     ];
     const state = getRunningMessageState(messages);
     expect(state.get(agent.id)).toEqual({ latestId: '3', count: 2 });
-    expect(getSteeringPromptLabels(messages, [agent], state).get('2')).toBe('sol');
-  });
-
-  it('does not call the first prompt steering', () => {
-    const messages = [
-      message('1', { body: '@sol start' }),
-      message('2', { author: 'Sol', agentId: 'codex', registrationId: agent.id, status: 'running' }),
-    ];
-    expect(getSteeringPromptLabels(messages, [agent]).size).toBe(0);
-  });
-
-  it('keeps the steering decal after the interrupted response settles', () => {
-    const messages = [
-      message('1', {
-        author: 'Sol', agentId: 'codex', registrationId: agent.id,
-        status: 'canceled', body: 'Steered into the continuation below.',
-      }),
-      message('2', { body: 'also answer the subscription question' }),
-      message('3', {
-        author: 'Sol', agentId: 'codex', registrationId: agent.id,
-        body: 'It is low risk for personal CLI use.',
-      }),
-    ];
-    expect(getSteeringPromptLabels(messages, [agent]).get('2')).toBe('sol');
   });
 
   it('keeps running-step details folded even when the activity list is open', () => {
@@ -212,7 +187,8 @@ describe('chat run panel lifecycle', () => {
     expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(true);
     expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(true);
     expect(shouldRenderRunPanel(message('3', { status: 'failed' }), false, true)).toBe(true);
-    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(true);
+    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(false);
+    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), true, true)).toBe(true);
     expect(shouldRenderRunPanel(message('5', { status: 'sending', body: 'Queued...' }), false, true)).toBe(false);
   });
 
@@ -300,7 +276,7 @@ describe('quiet conversation activity', () => {
     group: { messages: [row] }, avatarKind,
     selectedMessageId: null, jumpHighlightMessageId: null,
     latestRunningMessageId: row.id, runningSiblingCount: 1,
-    steeringPromptLabels: new Map(), mentionableAliases: [], notes: [],
+    mentionableAliases: [], notes: [],
     loadedMessageIds: new Set([row.id]), scrollRootRef: { current: null },
     onCancelRun() {}, onToggleSelect() {}, onContextMenu() {}, onReply() {},
     onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
