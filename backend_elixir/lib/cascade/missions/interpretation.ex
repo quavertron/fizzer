@@ -61,8 +61,8 @@ defmodule Cascade.Missions.Interpretation do
     end
   end
 
-  # Task summaries are the workers' deliberate findings boundary. Tool events,
-  # heartbeat timestamps, and routine dispatch/start events never enter this digest.
+  # Progress remains in task history. Only deliberate findings and settled work
+  # need interpretation; child results belong to their integrating parent.
   defp snapshot(id, state) do
     [objective, status, summary, verification] =
       SQL.one("SELECT objective,status,summary,verification FROM chat_missions WHERE id=?", [id])
@@ -70,9 +70,17 @@ defmodule Cascade.Missions.Interpretation do
     findings =
       SQL.all(
         """
-        SELECT t.id,t.title,t.status,t.summary,COALESCE(w.verification,'') FROM chat_mission_tasks t
+        SELECT t.id,t.title,t.status,
+          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN t.summary ELSE e.summary END,
+          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN COALESCE(w.verification,'') ELSE '' END
+        FROM chat_mission_tasks t
         LEFT JOIN work_items w ON w.id=t.work_item_id
-        WHERE t.mission_id=? AND (t.summary<>'' OR COALESCE(w.verification,'')<>'' OR t.status IN ('completed','blocked','failed','canceled'))
+        LEFT JOIN chat_mission_events e ON e.id=(
+          SELECT MAX(id) FROM chat_mission_events
+          WHERE mission_id=t.mission_id AND task_id=t.id AND kind='task_finding' AND attempt=t.attempt
+        )
+        WHERE t.mission_id=? AND t.parent_task_id IS NULL
+          AND (e.id IS NOT NULL OR t.status IN ('completed','blocked','failed','canceled'))
         ORDER BY t.id
         """,
         [id]

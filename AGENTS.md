@@ -36,9 +36,9 @@ do not mechanically rename compatibility identifiers without a migration plan.
 - Keep handoffs to the outcome, essential constraints and artifact references.
   Use task steering for corrections to an existing worker's saved context;
   use child tasks only for independent pieces.
-- An implementation worker can return its commit, checks and preview to the
-  parent without waiting on deployment. The parent retains integration and
-  delivery ownership, including watching GitHub Actions and exact live checks.
+- Keep the assigned worker through implementation, verification and authorized
+  delivery, including GitHub Actions and exact live checks. Bounded children
+  return artifacts and checks to their integrating parent.
 - Reuse recorded checks only for the same clean revision, command and relevant
   environment. Changed code or inputs invalidate that evidence. Live health and
   deployed revision must be checked again; a previous green workflow is not a

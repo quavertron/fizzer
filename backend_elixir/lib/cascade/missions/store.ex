@@ -643,10 +643,15 @@ defmodule Cascade.Missions.Store do
                   [status, summary, task_id]
                 )
 
-                if row.status != status or row.summary != summary do
+                if row.status != status or row.summary != summary or
+                     field(input, :finding) == true do
                   record_event(row.mission_id, %{
                     task_id: task_id,
-                    kind: "task_status_changed",
+                    kind:
+                      if(field(input, :finding) == true,
+                        do: "task_finding",
+                        else: "task_status_changed"
+                      ),
                     title: row.title,
                     from_status: row.status,
                     to_status: status,

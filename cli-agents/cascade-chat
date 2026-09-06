@@ -38,7 +38,7 @@ Usage:
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
   cascade-chat mission join            inspect child results; end turn to wait and resume for integration
   cascade-chat mission steer --task <id> --message <instruction>
-  cascade-chat mission update --task <id> --status <status> [--summary S]
+  cascade-chat mission update --task <id> --status <status> [--summary S] [--finding]
   cascade-chat mission retry --task <id> [--summary S]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
   cascade-chat mission finish --mission <id> [--summary S]
@@ -58,6 +58,7 @@ Options:
   --reply-to <message-id>   source message for a typed send handoff
   --relation <type>         builds_on|review_request|question|contradiction|decision
   --status <status>         pending|running|completed|failed|blocked|canceled
+  --finding                 request coordinator interpretation of a significant finding or question
   --summary <text>          concise task/mission outcome
   --authority-messages <ids> comma-separated owner-authored instruction sources for a new mission
   --verification <text>     coordinator-observed checks and artifact/live evidence required to finish
@@ -722,7 +723,7 @@ async function main() {
         token,
         'PATCH',
         `/api/vaults/${vaultId}/channels/${channelId}/missions/tasks/${encodeURIComponent(taskId)}`,
-        { status, summary: String(args.summary || '').trim() },
+        { status, summary: String(args.summary || '').trim(), ...(args.finding ? { finding: true } : {}) },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
       else process.stdout.write(sub === 'retry' ? `task ${taskId} queued for retry\n` : `task ${taskId} → ${status}\n`);

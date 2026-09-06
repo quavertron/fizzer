@@ -112,6 +112,69 @@ defmodule CascadeWeb.MissionRouterTest do
     assert json(request(ctx, :get, base <> query, nil, run.id))["missions"] == []
   end
 
+  test "worker HTTP progress stays quiet and explicit findings use the same authorized update",
+       ctx do
+    {:ok, created} =
+      Store.create(
+        ctx.user.id,
+        ctx.vault.id,
+        ctx.channel.id,
+        %{
+          rootMessageId: ctx.root.id,
+          coordinatorRegistrationId: ctx.coordinator.id,
+          title: "Continuous worker"
+        }, control_plane: true)
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Implement and ship",
+        assignee: ctx.worker.id
+      })
+
+    [worker] = Scheduler.schedule(created.mission.id).dispatches
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Worker", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: worker.dispatch.id
+      )
+
+    :ok = Dispatches.attach_run(worker.dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, run.id)
+    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+
+    path =
+      "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/missions/tasks/#{added.task.id}"
+
+    assert request(ctx, :patch, path, %{status: "running", summary: "Build passes"}, run.id).status ==
+             200
+
+    assert SQL.one("SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?", [
+             created.mission.id
+           ]) == [nil]
+
+    assert request(
+             ctx,
+             :patch,
+             path,
+             %{status: "running", summary: "Scope decision needed", finding: true},
+             run.id
+           ).status == 200
+
+    assert [dispatch] =
+             SQL.one("SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?", [
+               created.mission.id
+             ])
+
+    assert is_binary(dispatch)
+
+    assert SQL.one(
+             "SELECT summary FROM chat_mission_events WHERE task_id=? AND kind='task_finding'",
+             [added.task.id]
+           ) == ["Scope decision needed"]
+  end
+
   test "route catalog exposes the complete Node contract" do
     assert CascadeWeb.MissionRoutes.catalog() == [
              {"GET", "/api/vaults/:vault_id/channels/:channel_id/agent-dispatches/pending"},

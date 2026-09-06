@@ -66,7 +66,11 @@ defmodule Cascade.Missions.InterpretationTest do
 
   defp finding(c, summary, status \\ "running") do
     {:ok, _} =
-      Store.update_task(c.user.id, c.channel, c.task, %{status: status, summary: summary})
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: status,
+        summary: summary,
+        finding: true
+      })
   end
 
   defp run(c, dispatch) do
@@ -96,6 +100,91 @@ defmodule Cascade.Missions.InterpretationTest do
       Interpretation.record(c.user, c.channel, c.mission, c.coordinator.id, input, run.id, events)
 
     {result, input}
+  end
+
+  test "ordinary implementation and verification stay with the worker without coordinator bookkeeping",
+       c do
+    [worker] = Scheduler.schedule(c.mission).dispatches
+    worker_run = run(c, worker.dispatch)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
+
+    for summary <- [
+          "Root cause isolated",
+          "Regression passes",
+          "Build passed",
+          "Production deployment green"
+        ] do
+      {:ok, _} =
+        Store.update_task(c.user.id, c.channel, c.task, %{status: "running", summary: summary})
+
+      SQL.exec(
+        "UPDATE work_items SET verification=? WHERE id=(SELECT work_item_id FROM chat_mission_tasks WHERE id=?)",
+        [summary, c.task]
+      )
+
+      assert Scheduler.schedule(c.mission).wakeDispatches == []
+    end
+
+    finding(c, "A decision is needed about the accepted scope")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+
+    {{:ok, _}, _} =
+      record(c, review, %{"assessment" => "Existing scope stands", "noMaterialChange" => true})
+
+    :ok = Runs.finish(review.id, "completed", "Acknowledged")
+
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: "running",
+        summary: "Delivery retry underway"
+      })
+
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+
+    assert Runs.get(worker_run.id).status in ["queued", "running"]
+
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: "blocked",
+        summary: "Owner credential needed"
+      })
+
+    assert length(Scheduler.schedule(c.mission).wakeDispatches) == 1
+  end
+
+  test "child findings and completion go to the parent without a duplicate coordinator wake", c do
+    [worker] = Scheduler.schedule(c.mission).dispatches
+    worker_run = run(c, worker.dispatch)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
+
+    {:ok, child} =
+      Cascade.Missions.Children.add(
+        c.user.id,
+        c.channel,
+        c.mission,
+        %{title: "Independent piece"},
+        worker_run.id
+      )
+
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, child.task.id, %{
+        status: "running",
+        summary: "Child finding",
+        finding: true
+      })
+
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, child.task.id, %{
+        status: "completed",
+        summary: "Child artifact ready"
+      })
+
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    assert Cascade.Missions.Children.unresolved?(c.task)
+    assert Runs.get(worker_run.id).status in ["queued", "running"]
   end
 
   test "meaningful findings coalesce at admission while workers continue; quiet decisions stay quiet",

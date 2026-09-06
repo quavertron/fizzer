@@ -131,7 +131,7 @@ test('coordinator helper starts and delegates a mission with structured API call
   assert.match(history.stdout, /failed → pending · attempt 2/);
   await execFileAsync(process.execPath, [
     cli, 'mission', 'update', '--task', 'task-1', '--status', 'blocked',
-    '--summary', 'Needs a credential', ...common,
+    '--summary', 'Needs a credential', '--finding', ...common,
   ], { env: withCoordinator });
   await execFileAsync(process.execPath, [
     cli, 'mission', 'retry', '--task', 'task-1', '--summary', 'Try again', ...common,
@@ -184,7 +184,7 @@ test('coordinator helper starts and delegates a mission with structured API call
     anonymous: true,
     workspaceMode: 'shared',
   });
-  assert.deepEqual(requests[6]?.body, { status: 'blocked', summary: 'Needs a credential' });
+  assert.deepEqual(requests[6]?.body, { status: 'blocked', summary: 'Needs a credential', finding: true });
   assert.deepEqual(requests[7]?.body, { status: 'pending', summary: 'Try again' });
   assert.deepEqual(requests[8]?.body, {
     coordinatorRegistrationId: 'reg-sol',

@@ -94,7 +94,7 @@ defmodule Cascade.Missions.ChildrenTest do
 
     renewed = Scheduler.schedule(mission.id)
     [%{dispatch: retry_dispatch}] = renewed.dispatches
-    assert length(renewed.wakeDispatches) == 1
+    assert renewed.wakeDispatches == []
     run = start(ctx, retry_dispatch)
 
     {:ok, child} =
@@ -148,8 +148,8 @@ defmodule Cascade.Missions.ChildrenTest do
            |> Enum.find(&(&1.id == parent.id))
            |> Map.get(:status) == "completed"
 
-    assert final.scheduled.wakeDispatches == []
-    # Findings coalesce into the interpretation already queued during recovery.
+    assert length(final.scheduled.wakeDispatches) == 1
+    # Interpret the integrated outcome once; intermediate child work stayed with the parent.
     assert Scheduler.schedule(mission.id).wakeDispatches == []
   end
 
@@ -165,13 +165,13 @@ defmodule Cascade.Missions.ChildrenTest do
     assert [%{dispatch: continuation, message: message}] = recovered.dispatches
     assert message.missionTaskId == parent.id
     assert message.body =~ "Durable child evidence"
-    assert length(recovered.wakeDispatches) == 1
+    assert recovered.wakeDispatches == []
     assert Scheduler.schedule(mission.id).dispatches == []
     assert {:ok, nil} = Store.settle_run(run.id, "completed", "Late callback")
     resumed = start(ctx, continuation)
     :ok = RunStore.finish(resumed.id, "completed", "Integrated evidence")
     recovered = Scheduler.schedule(mission.id)
-    assert recovered.wakeDispatches == []
+    assert length(recovered.wakeDispatches) == 1
     assert Scheduler.schedule(mission.id).wakeDispatches == []
   end
 
@@ -262,7 +262,7 @@ defmodule Cascade.Missions.ChildrenTest do
     child_run = start(ctx, dispatch)
     :ok = RunStore.finish(child_run.id, "failed", "Test failed")
     {:ok, result} = Scheduler.settle_run(child_run.id, "failed", "Test failed")
-    assert length(result.scheduled.wakeDispatches) == 1
+    assert result.scheduled.wakeDispatches == []
     assert RunStore.get(run.id).status in ["queued", "running"]
     :ok = RunStore.finish(run.id, "completed", "join")
     {:ok, result} = Scheduler.settle_run(run.id, "completed", "join")

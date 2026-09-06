@@ -67,6 +67,9 @@ defmodule Cascade.Chat.DispatchPromptTest do
       worker = build(c, trigger, settings, resume)
       assert worker.prompt =~ "mission worker, not the channel control plane"
       assert worker.prompt =~ "--task task-1 --status blocked"
+      assert worker.prompt =~ "add `--finding`"
+      assert worker.prompt =~ "without waking the coordinator"
+      assert worker.prompt =~ "do not repeat the outcome"
       assert worker.prompt =~ "do not start a mission or spawn provider subagents"
       assert worker.prompt =~ "output exactly [no-reply]"
       refute worker.prompt =~ "mission start --control-plane"
@@ -80,6 +83,8 @@ defmodule Cascade.Chat.DispatchPromptTest do
       assert coordinator.prompt =~ "mission start --control-plane"
       assert coordinator.prompt =~ "mission delegate --anonymous"
       assert coordinator.prompt =~ "handle bookkeeping directly"
+      assert coordinator.prompt =~ "Keep one worker responsible"
+      assert coordinator.prompt =~ "Do not split these milestones"
 
       assert coordinator.prompt =~
                "Successful background work completes the mission automatically"

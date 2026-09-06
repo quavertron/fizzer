@@ -107,7 +107,7 @@ defmodule Cascade.Missions.Children do
   def guidance(id) do
     case SQL.one("SELECT parent_task_id FROM chat_mission_tasks WHERE id=?", [id]) do
       [nil] ->
-        "You own this task and integration. For authorized parallel work use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` (up to eight direct children in isolated worktrees). Children start from your committed workspace state; commit prerequisite edits before delegating them. Keep working independently, then `cascade-chat mission join` and end the turn to resume with child results. Do not start or finish missions or spawn provider subagents."
+        "You own this task, integration and authorized delivery. Continue through ordinary implementation, verification and delivery without handing milestones to the coordinator. For authorized parallel work use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` (up to eight direct children in isolated worktrees). Children start from your committed workspace state; commit prerequisite edits before delegating them. Keep working independently, then `cascade-chat mission join` and end the turn to resume with child results. Do not start or finish missions or spawn provider subagents."
 
       [_parent] ->
         "You are a bounded child worker. Return artifacts and verification to your parent. Do not delegate, integrate other tasks, start or finish missions."

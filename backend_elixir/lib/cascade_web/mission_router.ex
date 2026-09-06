@@ -255,7 +255,8 @@ defmodule CascadeWeb.MissionRouter do
     authenticated(conn, :vault, fn conn, user ->
       input = %{
         status: string_body(conn, "status"),
-        summary: string_body(conn, "summary")
+        summary: string_body(conn, "summary"),
+        finding: conn.body_params["finding"] == true
       }
 
       with :ok <-
