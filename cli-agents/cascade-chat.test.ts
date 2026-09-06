@@ -431,14 +431,16 @@ test('app context helper reads and conditionally saves without requiring a vault
   assert.equal(requests.length, 2);
 });
 
-test('mission interpretation uses the scoped API and suppresses only acknowledged public or quiet replies', async (t) => {
+test('mission interpretation suppresses published explanations but preserves answers after quiet acknowledgment', async (t) => {
   const requests: Array<{ method?: string; path?: string; body: Record<string, unknown>; run?: string }> = [];
   const server = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : {}, run: req.headers['x-cascade-run-id'] as string });
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(req.method === 'GET' ? { revision: 0, fingerprint: 'evidence' } : { revision: 1, messageId: 'explanation-1' }));
+    res.end(JSON.stringify(req.method === 'GET' ? { revision: 0, fingerprint: 'evidence' }
+      : JSON.parse(raw).noMaterialChange ? { revision: 1, messageId: null, noMaterialChange: true }
+      : { revision: 1, messageId: 'explanation-1' }));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
@@ -460,6 +462,18 @@ test('mission interpretation uses the scoped API and suppresses only acknowledge
   assert.equal(requests[1].run, '42');
   assert.deepEqual(requests[1].body, { ...input, coordinatorRegistrationId: 'coordinator' });
   assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, true);
+
+  // A quiet acknowledgment must not clear suppression for an already published answer.
+  fs.writeFileSync(file, JSON.stringify({ revision: 1, noMaterialChange: true }));
+  await execFileAsync(process.execPath, [...args, '--file', file], { env });
+  assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).chatSendCount, 1);
+
+  // A fresh direct-owner turn may acknowledge bookkeeping and then answer separately.
+  fs.writeFileSync(configPath, JSON.stringify({ registrationId: 'coordinator', chatChannelId: 'channel' }));
+  for (let retry = 0; retry < 2; retry++) {
+    await execFileAsync(process.execPath, [...args, '--file', file], { env });
+    assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).usedChatSend, undefined);
+  }
 });
 
 test('coordinator continuation sends an explicit run-scoped disposition without suppressing the answer', async (t) => {

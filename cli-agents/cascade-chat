@@ -614,7 +614,7 @@ async function main() {
       } else {
         const input = JSON.parse(fs.readFileSync(String(args.file), 'utf8'));
         const result = await api(url, token, 'POST', endpoint, { ...input, coordinatorRegistrationId: registrationId });
-        if (result.messageId || result.noMaterialChange) markChatSendUsed(config);
+        if (result.messageId) markChatSendUsed(config);
         process.stdout.write(JSON.stringify(result) + '\n');
       }
       return;
