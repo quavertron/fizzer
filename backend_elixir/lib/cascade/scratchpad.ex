@@ -15,91 +15,13 @@ defmodule Cascade.Scratchpad do
   @default_policies """
   # Scratchpad policies
 
-  These policies are yours to evolve. When experience shows a rule is wrong,
-  rewrite it here (note versions keep the audit trail). Keep this note short —
-  it is injected into every run's context.
-
-  ## Capture (during work)
-
-  - Jot liberally with `cascade-scratchpad jot` — it is append-only and costs
-    nothing to curate later. Do not stop to decide what is "durable".
-  - Always jot: dead ends (`--kind dead-end`: what you tried and why it failed),
-    surprising observations, decisions and their reasons, outcomes of risky steps.
-  - One entry per fact. Plain prose, no formatting required.
-  - Short chat runs still count: if you learned something the *next* ping would
-    re-derive (a root cause, a fix path, a dead end), jot it before your final
-    reply. One `jot` is enough; do not write a report.
-
-  ## Recall (mid-task, when you're stuck)
-
-  - The boot injection is a *guess* at what's relevant, made before you saw the
-    problem. When you hit a familiar failure or a task you suspect you've handled
-    before, don't re-derive — run `cascade-scratchpad recall <query>` to pull the
-    few matching memory notes and skills. Empty results mean "nothing relevant" —
-    do not invent a match. Prefer **skills** over auto-captured run dumps.
-  - Read the full note/skill (`cascade-note get <title>`) before applying it,
-    then report the outcome.
-
-  ## Consolidation (when the boot context says it is due)
-
-  - You do this yourself — no external process will. When the journal backlog is
-    flagged as due (or you just finished a multi-step fix worth keeping),
-    consolidate after finishing the user's actual task (or delegate it to a
-    subagent so it doesn't cost the main thread focus).
-  - Read unconsolidated journal entries oldest-first
-    (`cascade-scratchpad journal --unconsolidated`); distill durable facts into
-    memory notes (`cascade-note memory write/update`). Merge into existing notes
-    rather than duplicating; cite source entries as `journal#<id>`.
-  - Superseded beliefs: correct the note but keep a line noting what was
-    previously believed and why it changed.
-  - Session-local noise (progress chatter, one-off details) gets no note —
-    marking it consolidated is enough. Forgetting is allowed.
-  - Repeatable procedures become **skills**, not prose: if the journal shows the
-    same sequence of steps worked twice, write it as a skill
-    (`cascade-scratchpad skill write --title T` — first line says when to use
-    it, body is the exact commands/steps). Next time, execute the skill instead
-    of re-deriving it.
-  - Finish by marking entries consolidated: `cascade-scratchpad done --through <id>`.
-
-  ## Outcomes (close the loop)
-
-  - When you apply a remembered note or skill, report how it went:
-    `cascade-scratchpad outcome <note-title> --win` (or `--loss`). One command,
-    right after you know the result.
-  - During consolidation, use the counters: rewrite or retire notes that keep
-    losing (several uses, mostly losses); trust and keep ones that keep winning.
-
-  ## Open threads (private intentional trail — agent-owned)
-
-  - Separate from the journal: open threads are what past-you wanted to *continue*,
-    not every observation. At most a handful live at once.
-  - **You manage them alone.** Users cannot see threads and should not be asked
-    about them. Never say "want me to close #N?", never list threads in chat
-    unless the user explicitly asks about your scratchpad/threads. Open and
-    close silently as part of doing the work.
-  - When a run ends unfinished, blocked, or with a clear "next", open a thread:
-    `cascade-scratchpad open --text "continue: …" [--blocked "…"] [--next "…"] [--pointer journal#N|path]`.
-    Shape the intent as continue/blocked/next so a cold run can act without
-    re-reading chat history.
-  - Do **not** open a thread for every completed task or for noise. Ruthlessly
-    `cascade-scratchpad close <id> [--reason "…"]` when done or abandoned —
-    stale threads are worse than none. Decide yourself; do not wait for the user.
-  - Boot injects open threads when any exist — for *your* continuity, not as
-    something to report. Prefer them over archaeology when the user asks what
-    is left or says "continue", then just do the work.
-
-  ## Promotion / demotion
-
-  - INDEX holds one-line pointers, most useful first. Trim pointers that stopped
-    earning recall; the notes remain searchable without them.
-  - When a note or skill proves useful beyond your own context — it keeps
-    winning, or another agent would clearly benefit — share it:
-    `cascade-scratchpad promote <note-title>` moves it to the vault-wide agent
-    folders every agent sees.
-  - Promote a fact into POLICIES itself only if it changes how future runs
-    should *behave*, not just what they know.
+  Use app context for standing behavior; keep only useful agent-specific corrections here.
+  Scratchpad is optional: preserve reusable root causes, decisions, or dead ends,
+  not routine progress. Recall useful knowledge when it helps; read a note before relying on it.
+  Improve existing notes and retain useful unexpected connections within the authorized vault
+  and task. Keep uncertainty and prior work intact. No documentation checklist or unrelated work.
+  Open threads are private, agent-managed continuity, never questions for the user.
   """
-
   def ensure_schema do
     Enum.each(
       [

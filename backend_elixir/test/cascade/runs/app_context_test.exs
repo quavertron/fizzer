@@ -27,7 +27,8 @@ defmodule Cascade.Runs.AppContextTest do
     assert request(nil, :get).status == 401
     token = Token.sign_agent(ctx.user)
     original = request(token, :get) |> body()
-    assert original["content"] =~ "Act on clear requests"
+    assert original["content"] =~ "Act within authorized scope"
+    assert original["content"] =~ "task’s vault as shared working knowledge"
 
     saved =
       request(token, :put, %{

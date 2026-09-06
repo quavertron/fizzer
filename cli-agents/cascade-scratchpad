@@ -56,11 +56,9 @@ Options:
   --token <jwt>      bearer token (default $CASCADE_NOTE_TOKEN)
   --json             machine-readable output
 
-Jot liberally mid-task: entries are append-only and cost nothing to curate later.
-Dead ends ("tried X, failed because Y") are the most valuable journal entries.
-Open threads are a thin intentional trail (continue/blocked/next) — max ~7 live;
-agent-owned and private (users cannot see them) — open/close yourself, never ask
-the user about them. Read a skill's full body with: cascade-note get <title>
+Scratchpad is optional. Preserve reusable root causes, decisions, or dead ends;
+skip routine progress. Open threads are private and agent-managed.
+Read a skill before applying it: cascade-note get <title>
 
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT, CASCADE_RUN_ID, CASCADE_HELPER_CONFIG`;

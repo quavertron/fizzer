@@ -314,7 +314,13 @@ defmodule Cascade.Evolution do
         ranked = Keyword.get(opts, :ranked_note_ids, []) |> Enum.with_index() |> Map.new()
         topic_terms = query_terms(Keyword.get(opts, :channel_topic, ""))
         index = Enum.find(notes, &(String.downcase(&1.title) == "index"))
-        others = Enum.reject(notes, &(String.downcase(&1.title) == "index"))
+        # Named POLICIES is injected by Scratchpad; keep it out of knowledge excerpts.
+        others =
+          Enum.reject(notes, fn note ->
+            String.downcase(note.title) == "index" or
+              (not is_nil(named) and note.folder_id == named.id and
+                 String.downcase(note.title) == "policies")
+          end)
 
         semantic =
           others

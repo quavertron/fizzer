@@ -71,6 +71,9 @@ test('durable work item identity reaches both the provider env and helper contex
     assert.equal(env.CASCADE_WORK_ITEM_ID, 'work-item-1');
     const helper = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf8'));
     assert.equal(helper.workItemId, 'work-item-1');
+    assert.equal(env.CASCADE_NOTE_VAULT, 'vault-1');
+    assert.equal(helper.vaultId, 'vault-1');
+    assert.ok(env.PATH.split(path.delimiter).includes(runnerBinDir));
   } finally {
     cleanupRunHelperConfig(runId);
   }

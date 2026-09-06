@@ -75,13 +75,17 @@ defmodule Cascade.Runs.PromptContextTest do
       )
 
     assert Enum.map(notes, & &1.title) == ["INDEX", "POLICIES"]
-    assert Enum.map(notes, & &1.word_count) == [30, 739]
+    assert hd(notes).word_count == 30
+    assert List.last(notes).word_count < 100
     assert Enum.map(notes, & &1.position) == [0, 1]
     assert Enum.map(notes, & &1.is_listed) == [1, 1]
     policies = List.last(notes)
 
-    assert :crypto.hash(:sha256, policies.content) |> Base.encode16(case: :lower) ==
-             "a9f03a27fa2a1239f7512c9216c2e5d8bd9a5e9e23d6f978e6045ee6e429b8b6"
+    assert policies.content =~ "No documentation checklist or unrelated work."
+    refute prompt =~ "Jot liberally"
+    refute prompt =~ "Always jot"
+    refute prompt =~ "[[POLICIES]]"
+    assert length(Regex.scan(~r/Your POLICIES note:/, prompt)) == 1
 
     assert File.read!(Path.join(context.root, "_agent/codex/memory/INDEX.md")) ==
              hd(notes).content
@@ -110,6 +114,41 @@ defmodule Cascade.Runs.PromptContextTest do
     )
 
     assert [2] = Query.one("SELECT COUNT(*) FROM notes WHERE vault_id=?", [context.vault_id])
+  end
+
+  test "existing custom policies remain loaded once alongside vault knowledge", context do
+    PromptContext.enrich_prompt(context.vault_id, context.user_id, "Start", "codex", nil)
+
+    [policy_id] =
+      Query.one("SELECT id FROM notes WHERE vault_id=? AND title='POLICIES'", [context.vault_id])
+
+    Cascade.Content.Store.update_note(
+      policy_id,
+      "Owner correction: preserve the original research citations.",
+      context.user_id
+    )
+
+    prompt =
+      PromptContext.enrich_prompt(context.vault_id, context.user_id, "Research", "codex", nil)
+
+    assert length(Regex.scan(~r/preserve the original research citations/, prompt)) == 1
+    assert prompt =~ "[[INDEX]]"
+    assert prompt =~ "cascade-note"
+    assert prompt =~ "within your authorized vault and work"
+    refute prompt =~ "[[POLICIES]]"
+  end
+
+  test "shared knowledge remains readable without a named agent folder", context do
+    folders = Evolution.ensure_agent_memory_folders(context.vault_id, context.user_id)
+
+    Cascade.Content.Store.create_note(context.vault_id, context.user_id, %{
+      title: "Shared finding",
+      folder_id: folders.memoryId,
+      content: "A useful connection."
+    })
+
+    injection = Evolution.build_agent_memory_injection(context.vault_id)
+    assert injection.text =~ "A useful connection."
   end
 
   test "resumed runs refresh app guidance without bootstrapping vault memory", context do

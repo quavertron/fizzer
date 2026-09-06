@@ -26,7 +26,7 @@ const CLAUDE_DEFAULT_MODEL = process.env.RUNNER_MODEL || 'claude-sonnet-5';
 // can override either surface without introducing a hard token ceiling.
 const CLAUDE_EFFORT = process.env.RUNNER_EFFORT || 'medium';
 const CLAUDE_CHAT_EFFORT = process.env.RUNNER_CHAT_EFFORT || CLAUDE_EFFORT;
-const CLAUDE_AGENT_CONTEXT = 'You are a local workspace assistant. This checkout is not the live Cascade app: use `cascade-note` for live notes (`cascade-note memory` for durable recall), `cascade-scratchpad jot` for work-journal entries, and normal file edits only for local scratch or non-note work. Notes you create via cascade-note are unlisted by default (chat/search/embed only, not the left sidebar). Only pass `--listed` if the user explicitly asks to put a note in the sidebar tree. Respect auth boundaries and only handle secrets the user explicitly provides for this task.';
+const CLAUDE_AGENT_CONTEXT = 'You are a local workspace assistant. Use normal filesystem edits for requested local work. Respect auth boundaries and only handle secrets the user explicitly provides for this task.';
 
 // Nudge agents to behave like chat participants, not verbose coding CLIs: the
 // chat collapses step narration into a trace disclosure, so the actual message
@@ -326,7 +326,7 @@ function noteCapabilityContext(opts) {
   const helperDir = resolveWrapperDir();
   const vaultId = String(opts && opts.vaultId || '').trim();
   const vaultLine = vaultId ? ` Vault: ${vaultId}.` : '';
-  return `Live notes: \`cascade-note\` (not local .md; creates unlisted by default — use \`--listed\` only if the user asks for sidebar); durable memory: \`cascade-note memory\`; work journal: \`cascade-scratchpad jot\` (append-only — jot observations, outcomes, and dead ends as you work; consolidate into memory notes when the boot context says it is due).${vaultLine} Helpers on PATH and in ${helperDir}.`;
+  return `Live notes: \`cascade-note\` (not local .md; creates unlisted by default — use \`--listed\` only if the user asks for sidebar); durable memory: \`cascade-note memory\`; optional scratchpad: \`cascade-scratchpad jot\` for reusable root causes, decisions, or dead ends. Read and improve useful task-vault knowledge with judgment, including unexpected connections; preserve uncertainty and existing work within authorized scope.${vaultLine} Helpers on PATH and in ${helperDir}.`;
 }
 
 /** Permission rules for helper names plus the absolute paths agents may discover. */
