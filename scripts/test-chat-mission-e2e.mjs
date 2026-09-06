@@ -88,6 +88,18 @@ async function runnerFor(token, activeRunIds = []) {
       type: 'status',
       payload: { status: 'running' },
     });
+    // This harness drives model dispositions deterministically. An interrupted
+    // coordinator must acknowledge waiting while its existing workers continue.
+    if (String(payload.chatTriggeringMessageId || '').startsWith('sys-continuation-')) {
+      const url = `${API_BASE}/api/vaults/${payload.vaultId}/channels/${payload.chatChannelId}/continuation`;
+      const headers = { authorization: `Bearer ${token}`, 'x-cascade-run-id': String(payload.runId) };
+      must(url, { headers }).then((state) => must(url, {
+        method: 'POST', headers, body: JSON.stringify({ revision: state.revision,
+          status: 'waiting', summary: 'Existing workers own delivery; wait for their results.' }),
+      })).then(() => socket.emit('runner:runEvent', {
+        runId: payload.runId, type: 'status', payload: { status: 'completed', summary: 'Worker ownership preserved.' },
+      })).catch((error) => { check(`continuation disposition: ${error.message}`, false); });
+    }
   });
   socket.on('run:cancel', ({ runId }, acknowledge) => {
     canceled.push(Number(runId));
@@ -520,19 +532,43 @@ async function main() {
     }
 
     for (const { mission: parallelMission } of parallel) {
-      const reviewing = await waitUntil(`review wake for ${parallelMission.title}`, async () => {
+      const completed = await waitUntil(`automatic completion for ${parallelMission.title}`, async () => {
         const result = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}`, { headers: agentAuth });
-        return result.mission.status === 'reviewing' ? result.mission : null;
+        return result.mission.status === 'completed' ? result.mission : null;
       });
       check(`parallel mission ${parallelMission.title} reconciles run evidence`, (
-        reviewing.tasks?.[0]?.verification?.startsWith('Produced by run ')
-        && reviewing.tasks?.[0]?.baseCommit === '0123456789abcdef0123456789abcdef01234567'
+        completed.tasks?.[0]?.verification?.startsWith('Produced by run ')
+        && completed.tasks?.[0]?.baseCommit === '0123456789abcdef0123456789abcdef01234567'
       ));
       const reviewRun = await waitUntil(`server-started review for ${parallelMission.title}`, () => (
         runner.delegated.find((run) => run.chatRegistrationId === sol.id
           && String(run.chatTriggeringMessageId || '').startsWith(`sys-mission-${parallelMission.id}-`))
-      ));
+      ), 20_000).catch(async (error) => {
+        console.error('Coordinator deliveries:', JSON.stringify(await Promise.all(runner.delegated
+          .filter((run) => run.chatRegistrationId === sol.id)
+          .map(async (run) => ({ runId: run.runId, trigger: run.chatTriggeringMessageId,
+            status: (await must(`${API_BASE}/api/runs/${run.runId}`, { headers: owner.auth })).run?.status })))));
+        throw error;
+      });
       check(`parallel mission ${parallelMission.title} wakes its coordinator`, true);
+      const interpretationUrl = `${missionBase}/${parallelMission.id}/interpretation`;
+      const reviewAuth = { ...agentAuth, 'x-cascade-run-id': String(reviewRun.runId) };
+      const interpretation = await must(`${interpretationUrl}?coordinator=${sol.id}`, { headers: reviewAuth });
+      const input = {
+        coordinatorRegistrationId: sol.id,
+        revision: interpretation.revision,
+        fingerprint: interpretation.fingerprint,
+        assessment: 'Worker evidence inspected; finite objective complete.',
+        body: `${parallelMission.title}: verified worker outcome published.`,
+      };
+      const published = await must(interpretationUrl, {
+        method: 'POST', headers: reviewAuth, body: JSON.stringify(input),
+      });
+      const replay = await must(interpretationUrl, {
+        method: 'POST', headers: reviewAuth, body: JSON.stringify(input),
+      });
+      check(`parallel mission ${parallelMission.title} publishes idempotently after automatic completion`,
+        Boolean(published.messageId) && replay.messageId === published.messageId);
       runner.socket.emit('runner:runEvent', {
         runId: reviewRun.runId,
         type: 'status',
@@ -542,16 +578,9 @@ async function main() {
         const result = await must(`${API_BASE}/api/runs/${reviewRun.runId}`, { headers: owner.auth });
         return result.run?.status === 'completed';
       });
-      const finishedParallel = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}/finish`, {
-        method: 'POST', headers: agentAuth,
-        body: JSON.stringify({
-          coordinatorRegistrationId: sol.id,
-          status: 'completed',
-          verification: 'Observed bound worker run completion and inspected parallel task results.',
-          summary: 'Parallel worker evidence reconciled.',
-        }),
-      });
-      check(`parallel mission ${parallelMission.title} finishes after review`, finishedParallel.mission?.status === 'completed');
+      const transcript = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, { headers: owner.auth });
+      check(`parallel mission ${parallelMission.title} outcome is readable in chat`,
+        transcript.messages?.some((message) => message.id === published.messageId && message.body === input.body));
     }
     runner.socket.disconnect();
 

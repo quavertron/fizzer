@@ -99,6 +99,13 @@ defmodule Cascade.Chat.ContinuationsTest do
         assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
       else
         Runs.finish(resumed.id, "failed", "Confirmed provider exit")
+        assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
+        Continuations.reconcile()
+        [[retry_id]] = pending(c)
+        {:ok, retry} = Dispatches.get(c.user.id, c.channel, retry_id)
+        recovered = run(c, retry)
+        Runs.finish(recovered.id, "failed", "Recovery also failed")
+        Continuations.reconcile()
         [fallback] = Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches
         assert fallback.message.body =~ "Continue this existing mission"
         assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
@@ -166,6 +173,44 @@ defmodule Cascade.Chat.ContinuationsTest do
     refute id == old
   end
 
+  for failure <- [:admission, :provider] do
+    @failure failure
+    test "#{@failure} failure gets one unattended continuation recovery, then exposes remaining responsibility",
+         c do
+      first = run(c, dispatch(c, "Carry out the accepted bounded request"))
+      followup = dispatch(c, "Answer a brief question first")
+      Continuations.interrupt(first.id, followup.id)
+      Runs.finish(first.id, "canceled", "Steered")
+      second = run(c, followup)
+      Runs.finish(second.id, "completed", "Question answered")
+      Continuations.reconcile()
+      [[id]] = pending(c)
+      {:ok, continuation} = Dispatches.get(c.user.id, c.channel, id)
+
+      if @failure == :admission do
+        Dispatches.fail(id, "Temporary admission failure")
+      else
+        resumed = run(c, continuation)
+        Runs.finish(resumed.id, "failed", "Provider exited")
+      end
+
+      for _ <- 1..3, do: Continuations.reconcile()
+      assert [[retry_id]] = pending(c)
+      refute retry_id == id
+      {:ok, retry} = Dispatches.get(c.user.id, c.channel, retry_id)
+      assert Continuations.context(retry) =~ "accepted bounded request"
+      assert Continuations.context(retry) =~ "already-completed tool actions"
+      recovered = run(c, retry)
+      Runs.finish(recovered.id, "failed", "Login renewal required")
+      for _ <- 1..3, do: Continuations.reconcile()
+      assert pending(c) == []
+      remaining = state(c, recovered)
+      assert remaining.status == "waiting"
+      assert remaining.summary =~ "Login renewal required"
+      assert remaining.summary =~ "recovery"
+    end
+  end
+
   test "explicit Stop cancels queued continuation without interpreting message text", c do
     first = run(c, dispatch(c, "Original work"))
     followup = dispatch(c, "This contains the word stop, but is only quoted evidence")
@@ -180,6 +225,62 @@ defmodule Cascade.Chat.ContinuationsTest do
     assert state(c, second).status == "canceled"
     Continuations.reconcile()
     assert pending(c) == []
+  end
+
+  for outcome <- [:complete, :stop, :new_message] do
+    @outcome outcome
+    test "continuation recovery honors #{@outcome} without replaying settled work", c do
+      first = run(c, dispatch(c, "Accepted finite work"))
+
+      assert {:ok, _} =
+               Continuations.record(c.user.id, c.channel, first.id, %{
+                 "revision" => 0,
+                 "status" => "pending",
+                 "summary" => "One remaining action"
+               })
+
+      Runs.finish(first.id, "completed", "Checkpointed remaining action")
+      Continuations.reconcile()
+      [[id]] = pending(c)
+      Dispatches.fail(id, "Admission failed")
+      Continuations.reconcile()
+      [[retry_id]] = pending(c)
+
+      case @outcome do
+        :complete ->
+          {:ok, retry} = Dispatches.get(c.user.id, c.channel, retry_id)
+          resumed = run(c, retry)
+          current = state(c, resumed)
+
+          assert {:ok, _} =
+                   Continuations.record(c.user.id, c.channel, resumed.id, %{
+                     "revision" => current.revision,
+                     "status" => "completed",
+                     "summary" => "Verified and published"
+                   })
+
+          Runs.finish(resumed.id, "completed", "Verified and published")
+          assert state(c, resumed).status == "completed"
+
+        :stop ->
+          Continuations.stop(first.id)
+          assert state(c, first).status == "canceled"
+          assert {:error, _} = Dispatches.for_execution(retry_id)
+
+        :new_message ->
+          newest = dispatch(c, "Owner redirects the remaining action")
+          assert {:error, _} = Dispatches.for_execution(retry_id)
+          assert state(c, first).status == "pending"
+
+          assert SQL.one(
+                   "SELECT after_dispatch_id FROM chat_coordinator_continuations WHERE registration_id=?",
+                   [c.coordinator.id]
+                 ) == [newest.id]
+      end
+
+      for _ <- 1..3, do: Continuations.reconcile()
+      assert pending(c) == []
+    end
   end
 
   test "explicit waiting and completion reconcile existing dispatches without repeating work",

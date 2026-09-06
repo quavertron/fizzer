@@ -160,8 +160,10 @@ defmodule Cascade.Chat.Continuations do
         state = row(s)
 
         s.dispatch in state.sources and
-          (state.status in ~w(waiting canceled) or
-             (state.status == "pending" and not failed_dispatch?(state.dispatch)))
+          (state.status == "canceled" or
+             (state.status in ~w(waiting pending) and
+                (not failed_dispatch?(state.dispatch) or
+                   (state.status == "pending" and recovery_available?(s, state)))))
     end
   end
 
@@ -175,6 +177,18 @@ defmodule Cascade.Chat.Continuations do
       """,
       [dispatch]
     ) == [1]
+  end
+
+  # The existing outbox identity bounds recovery to one attempt per recorded
+  # responsibility revision, including after a server restart.
+  defp recovery_message_id(s, state),
+    do: "sys-continuation-#{s.registration}-#{state.revision}-recovery"
+
+  defp recovery_available?(s, state) do
+    SQL.one("SELECT 1 FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?", [
+      recovery_message_id(s, state),
+      s.registration
+    ]) == nil
   end
 
   def stop(run_id) do
@@ -376,6 +390,31 @@ defmodule Cascade.Chat.Continuations do
           state = row(s)
 
           cond do
+            failed_dispatch?(state.dispatch) ->
+              if recovery_available?(s, state) do
+                if idle?(s, state), do: enqueue(s, state, recovery_message_id(s, state))
+              else
+                [reason] =
+                  SQL.one(
+                    "SELECT COALESCE(NULLIF(r.summary,''),NULLIF(d.error,''),'Unknown failure') FROM chat_agent_dispatches d LEFT JOIN runs r ON r.chat_dispatch_id=d.id WHERE d.id=?",
+                    [state.dispatch]
+                  )
+
+                put(s, %{
+                  state
+                  | status: "waiting",
+                    summary:
+                      String.slice(
+                        String.slice(state.summary, 0, 6000) <>
+                          "\nAutomatic continuation recovery failed: " <>
+                          reason <>
+                          ". No automatic continuation retries remain. Inspect the failure before resuming; the resume condition is otherwise unknown.",
+                        0,
+                        8000
+                      )
+                })
+              end
+
             state.dispatch != nil ->
               case SQL.one("SELECT r.status FROM runs r WHERE r.chat_dispatch_id=?", [
                      state.dispatch
@@ -411,7 +450,7 @@ defmodule Cascade.Chat.Continuations do
       ) == nil
   end
 
-  defp enqueue(s, state) do
+  defp enqueue(s, state, message_id \\ nil) do
     with {:ok, route} <- Channel.assert_channel(s.channel, s.owner),
          [username] <- SQL.one("SELECT username FROM users WHERE id=?", [s.owner]),
          {:ok, members} <- Cascade.Chat.Agents.list_members(s.channel, s.owner),
@@ -420,7 +459,7 @@ defmodule Cascade.Chat.Continuations do
          true <-
            registration.ownerUserId == s.owner and registration.orchestrator and
              registration.conversationId == s.conversation do
-      message_id = "sys-continuation-#{s.registration}-#{state.revision}"
+      message_id = message_id || "sys-continuation-#{s.registration}-#{state.revision}"
 
       {:ok, message} =
         Messages.create(
