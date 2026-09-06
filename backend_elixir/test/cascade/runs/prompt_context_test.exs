@@ -51,7 +51,8 @@ defmodule Cascade.Runs.PromptContextTest do
         nil
       )
 
-    assert prompt =~ "Exercise release parity\n\n[Context: #{PromptContext.app_context()}"
+    assert prompt =~ "Exercise release parity\n\n[Context: Fizzer app context"
+    assert prompt =~ PromptContext.app_context()
     assert prompt =~ "Agent memory (vault):\n- [[INDEX]]: # Agent memory — @codex"
     assert prompt =~ "Scratchpad is optional persistent memory."
     assert prompt =~ "Your POLICIES note: # Scratchpad policies"
@@ -111,14 +112,14 @@ defmodule Cascade.Runs.PromptContextTest do
     assert [2] = Query.one("SELECT COUNT(*) FROM notes WHERE vault_id=?", [context.vault_id])
   end
 
-  test "resumed runs stay raw and do not bootstrap cold-start state", context do
+  test "resumed runs refresh app guidance without bootstrapping vault memory", context do
     assert PromptContext.enrich_prompt(
              context.vault_id,
              context.user_id,
              "Continue exactly",
              "codex",
              "provider-session"
-           ) == "Continue exactly"
+           ) =~ "Fizzer app context"
 
     assert [0] = Query.one("SELECT COUNT(*) FROM folders WHERE vault_id=?", [context.vault_id])
     assert [0] = Query.one("SELECT COUNT(*) FROM notes WHERE vault_id=?", [context.vault_id])

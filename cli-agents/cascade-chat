@@ -18,6 +18,8 @@ const DEFAULT_URL = 'https://cscd.online';
 const USAGE = `cascade-chat — read/send live Cascade chat
 
 Usage:
+  cascade-chat context get             read account-wide app guidance and revision
+  cascade-chat context set --file PATH --revision REV   replace guidance (conflicts return 409)
   cascade-chat history                 recent messages for the current channel
   cascade-chat attachment              write a message's images/files to disk
                         (--message-id <id>; default: newest message with media)
@@ -443,18 +445,31 @@ async function main() {
     process.exit(raw ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
-  if (!['history', 'send', 'members', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
+  if (!['context', 'history', 'send', 'members', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
     fail(`unknown command "${raw}". Run with --help.`);
   }
 
   const config = readHelperConfig();
   const vaultId = optionString(args, 'vault', 'CASCADE_NOTE_VAULT', config, 'vaultId');
   const channelId = optionString(args, 'channel', 'CASCADE_CHAT_CHANNEL', config, 'chatChannelId');
-  if (!vaultId) fail('missing vault. Pass --vault or set CASCADE_NOTE_VAULT.');
-  if (cmd !== 'search' && !channelId) fail('missing channel. Pass --channel or set CASCADE_CHAT_CHANNEL.');
+  if (cmd !== 'context' && !vaultId) fail('missing vault. Pass --vault or set CASCADE_NOTE_VAULT.');
+  if (!['context', 'search'].includes(cmd) && !channelId) fail('missing channel. Pass --channel or set CASCADE_CHAT_CHANNEL.');
 
   const url = baseUrl(args, config, { ignoreArgsUrl: cmd === 'avatar' });
   const token = await getToken(url, args, config);
+  if (cmd === 'context') {
+    const action = args._[1] || 'get';
+    if (!['get', 'set'].includes(action)) fail('Use context get or context set --file PATH --revision REV.');
+    let body;
+    if (action === 'set') {
+      if (!args.file || !args.revision) fail('Context set requires --file and --revision from context get.');
+      body = { content: fs.readFileSync(String(args.file), 'utf8'), revision: String(args.revision) };
+      if (Buffer.byteLength(body.content, 'utf8') > 12000) fail('App context must be at most 12000 bytes.');
+    }
+    const result = await api(url, token, action === 'get' ? 'GET' : 'PUT', '/api/app-context', body);
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
   if (cmd === 'members') {
     const { agents = [] } = await api(
       url,

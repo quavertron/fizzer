@@ -270,6 +270,29 @@ test('next-step checkpoint migration only permits the reviewed empty table', () 
   }
 });
 
+test('app context migration only permits the reviewed empty table', () => {
+  const files = fixture();
+  try {
+    const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/accounts/schema.ex', import.meta.url), 'utf8');
+    const ddl = schema.match(/CREATE TABLE IF NOT EXISTS app_context \([\s\S]*?\n    \)/)[0];
+    const after = new Database(files.after);
+    after.exec(ddl);
+    after.close();
+    assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+    const changed = new Database(files.after);
+    changed.pragma('foreign_keys = OFF');
+    changed.exec("INSERT INTO app_context(user_id,content,revision) VALUES(1,'guidance','r')");
+    changed.close();
+    assert.equal(runComparison(files).ok, false);
+    const malformed = new Database(files.after);
+    malformed.exec('DELETE FROM app_context; ALTER TABLE app_context ADD COLUMN unreviewed TEXT');
+    malformed.close();
+    assert.equal(runComparison(files).ok, false);
+  } finally {
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
+
 function dispatchAdmissionFixture() {
   const files = chatBackfillFixture();
   normalizeChatMessages(files.before, 'mission_task_id');

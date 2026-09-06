@@ -18,6 +18,14 @@ defmodule Cascade.Accounts.Schema do
   ]
 
   def ensure! do
+    SQL.exec("""
+    CREATE TABLE IF NOT EXISTS app_context (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      revision TEXT NOT NULL
+    )
+    """)
+
     ensure_vault_members!()
     ensure_public_vaults!()
     ensure_direct_messages!()

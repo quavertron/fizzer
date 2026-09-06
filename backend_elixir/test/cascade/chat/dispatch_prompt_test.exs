@@ -55,8 +55,7 @@ defmodule Cascade.Chat.DispatchPromptTest do
 
     continued = build(c, trigger, %{}, "session-id")
     refute continued.prompt =~ "Stay in this clone."
-    assert continued.prompt =~ "verification before replying"
-    assert continued.prompt =~ "Keep progress in the run trace"
+    refute continued.prompt =~ "Keep progress in the run trace"
   end
 
   test "worker role overrides coordinator and ambient roles while delivery remains final-only",
@@ -66,10 +65,6 @@ defmodule Cascade.Chat.DispatchPromptTest do
 
     for resume <- [nil, "session-id"] do
       worker = build(c, trigger, settings, resume)
-      assert worker.prompt =~ "owner-waived optional verification must not make the task blocked"
-      assert worker.prompt =~ "State the result plainly"
-      assert worker.prompt =~ "disclose material unverified behavior"
-      assert worker.prompt =~ "required-check, deployment, or authority blockers blocked"
       assert worker.prompt =~ "mission worker, not the channel control plane"
       assert worker.prompt =~ "--task task-1 --status blocked"
       assert worker.prompt =~ "do not start a mission or spawn provider subagents"

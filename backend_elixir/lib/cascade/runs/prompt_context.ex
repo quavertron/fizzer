@@ -8,25 +8,7 @@ defmodule Cascade.Runs.PromptContext do
   @removed_model_presets ~w(codex-flash codex-pro grok-2 grok-beta gpt-4o claude-3.5-sonnet o1-mini)
   @inline_svg ~r/<svg\b[\s\S]*?<\/svg\s*>/iu
 
-  @app_context "Cascade is a user-facing, Obsidian-style workspace for AI-native project management. " <>
-                 "Its vault folders, project docs, notes, and chats are live app data, not a mirror of the agent process cwd. " <>
-                 "Use `cascade-note` by command name to list, read, create, edit, move live notes, and create/list folders; it is on PATH and pre-authorized. " <>
-                 "Use `cascade-note folder create <name>`, then `cascade-note move <note> --folder <folder>` to organize existing notes. Use `--listed` and `--folder` when placing a new note in the sidebar. " <>
-                 "Do not replace the helper with an absolute path, inspect a local docs.db, or conclude notes are unavailable " <>
-                 "because they are absent from the local filesystem or named tool list. " <>
-                 "Use normal filesystem tools only for local repository/workspace work the user actually requested. " <>
-                 "Chat messages can carry images and files; the text transcript only marks them. " <>
-                 "When a message has media, open it with `cascade-chat attachment --message-id <id>` (writes the file and prints its path) " <>
-                 "before answering about the image. Never claim you cannot see/receive an attachment, and never invent its contents. " <>
-                 "To hand one chat result to another opted-in agent, use `cascade-chat send --to @handle --reply-to <message-id> " <>
-                 "--relation <builds_on|review_request|question|contradiction|decision> --message \"<instruction>\"`; " <>
-                 "this creates a durable linked request instead of copying the whole channel. " <>
-                 "Chat provider sessions are append-only: continued turns carry only new room activity plus an exact message cursor. " <>
-                 "Use `cascade-chat history --around-message-id <id> --include-reply-context` or `cascade-chat search <query>` when the cursor delta is not enough; do not ask for the whole room to be repeated in every prompt. " <>
-                 "Shipping to this repo: run `npm run build` before push to master; after push watch Deploy Production with `gh run watch` until green. " <>
-                 "Push is not ship. Do not ignore a red deploy."
-
-  def app_context, do: @app_context
+  def app_context, do: Cascade.Runs.AppContext.seed()
 
   def normalize_model(value) when is_binary(value) do
     value = String.trim(value)
@@ -54,23 +36,19 @@ defmodule Cascade.Runs.PromptContext do
     do: "/compact"
 
   def enrich_prompt(vault_id, user_id, prompt, agent, resume_session_id, mode) do
-    if normalize_context_mode(mode) == :self_contained do
-      Privacy.redact_blocks(prompt)
-    else
-      if resume_session_id in [nil, ""] do
+    chunks =
+      if normalize_context_mode(mode) != :self_contained and resume_session_id in [nil, ""] do
         key = agent_memory_key(agent)
-        memory = memory_context(vault_id, user_id, prompt, key)
-        scratchpad = scratchpad_context(vault_id, user_id, key)
 
-        [@app_context, memory, scratchpad]
-        |> Enum.reject(&(&1 in [nil, ""]))
-        |> Enum.join("\n\n")
-        |> then(&(prompt <> "\n\n[Context: " <> &1 <> "]"))
-        |> Privacy.redact_blocks()
+        [
+          memory_context(vault_id, user_id, prompt, key),
+          scratchpad_context(vault_id, user_id, key)
+        ]
       else
-        Privacy.redact_blocks(prompt)
+        []
       end
-    end
+
+    append_context(prompt, [Cascade.Runs.AppContext.injection(user_id) | chunks])
   end
 
   def normalize_context_mode("self-contained"), do: :self_contained

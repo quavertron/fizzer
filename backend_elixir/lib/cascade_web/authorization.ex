@@ -3,6 +3,7 @@ defmodule CascadeWeb.Authorization do
 
   @safe_methods ["GET", "HEAD", "OPTIONS"]
   @agent_rules [
+    {~w(GET PUT), ~r<^/api/app-context$>},
     {~w(GET), ~r<^/api/vaults$>},
     {~w(GET), ~r<^/api/vaults/[^/]+$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/(?:folders|notes|search|tags)$>},

@@ -93,6 +93,15 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
       File.rm_rf!(guest_vault.root_path)
     end)
 
+    for {user, content} <- [{owner, "Owner app guidance."}, {guest, "Guest private guidance."}] do
+      {:ok, _} =
+        Cascade.Runs.AppContext.put(
+          user.id,
+          content,
+          Cascade.Runs.AppContext.get(user.id).revision
+        )
+    end
+
     {:ok, dispatch} =
       Dispatches.create(guest.id, guest_channel.id, source_message, registration.id,
         reasoning_effort: "max"
@@ -192,6 +201,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     refute delegate["yolo"]
     assert delegate["prompt"] =~ "finish the owner-side work"
     assert delegate["prompt"] =~ "Shared room state"
+    assert delegate["prompt"] =~ "Owner app guidance."
+    refute delegate["prompt"] =~ "Guest private guidance."
 
     response =
       request(ctx, %{
@@ -712,6 +723,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert Store.get(coordinator["runId"]).status == "queued"
     assert Store.find_by_chat_dispatch(worker.id).conversation_id == "mission:#{task_id}"
     assert delegated["prompt"] =~ "mission worker"
+    assert delegated["prompt"] =~ "Owner app guidance."
+    refute delegated["prompt"] =~ "Guest private guidance."
 
     assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(worker.id)
     assert run.id == delegated["runId"]
@@ -840,6 +853,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     child_run = event!(ctx.sid, "run:delegate")
     assert child_run["cwd"] == "/child/task"
     assert child_run["prompt"] =~ "bounded child worker"
+    assert child_run["prompt"] =~ "Owner app guidance."
+    refute child_run["prompt"] =~ "Guest private guidance."
     assert {:ok, child_item} = Cascade.WorkItems.get(ctx.owner.id, added.task.workItemId)
     assert child_item.baseCommit == "parent-tip"
   end

@@ -21,6 +21,33 @@ defmodule CascadeWeb.ChatRouter do
 
   plug :dispatch
 
+  get "/api/app-context" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      JSON.send(conn, 200, Cascade.Runs.AppContext.get(user.id))
+    end)
+  end
+
+  put "/api/app-context" do
+    authenticated(conn, :any, :account, fn conn, user ->
+      case Cascade.Runs.AppContext.put(
+             user.id,
+             conn.body_params["content"],
+             conn.body_params["revision"]
+           ) do
+        {:ok, document} ->
+          JSON.send(conn, 200, document)
+
+        {:error, :conflict} ->
+          JSON.send(conn, 409, %{error: "Context changed; read again and merge before saving"})
+
+        {:error, :invalid} ->
+          JSON.send(conn, 400, %{
+            error: "Provide UTF-8 content up to 12000 bytes and the current revision"
+          })
+      end
+    end)
+  end
+
   get "/api/vaults/:vault_id/vault-agents" do
     authenticated(conn, :any, nil, fn conn, user ->
       respond(conn, Agents.list_vault(user.id, vault_id), :agents)

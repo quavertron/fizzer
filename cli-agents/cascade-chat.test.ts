@@ -402,3 +402,31 @@ test('mission bookkeeping retries refused local connections only, with a fixed b
     assert.equal(fs.readFileSync(count, 'utf8'), '1');
   }
 });
+
+test('app context helper reads and conditionally saves without requiring a vault or channel', async (t) => {
+  const requests: any[] = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : null });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ content: 'Saved guidance', revision: 'r2' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address() as { port: number };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-context-cli-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'context.txt');
+  fs.writeFileSync(file, 'Saved guidance');
+  const env = { ...process.env, CASCADE_NOTE_VAULT: '', CASCADE_CHAT_CHANNEL: '', CASCADE_HELPER_CONFIG: path.join(dir, 'missing') };
+  const common = ['--url', `http://127.0.0.1:${address.port}`, '--token', 'test-token'];
+  await execFileAsync(process.execPath, [cli, 'context', 'get', ...common], { env });
+  await execFileAsync(process.execPath, [cli, 'context', 'set', '--file', file, '--revision', 'r1', ...common], { env });
+  assert.deepEqual(requests, [
+    { method: 'GET', path: '/api/app-context', body: null },
+    { method: 'PUT', path: '/api/app-context', body: { content: 'Saved guidance', revision: 'r1' } },
+  ]);
+  await assert.rejects(execFileAsync(process.execPath, [cli, 'context', 'set', '--file', file, ...common], { env }), /requires --file and --revision/);
+  assert.equal(requests.length, 2);
+});

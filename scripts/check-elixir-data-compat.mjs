@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 
 const DEFAULT_ALLOWED_ADDITIONS = new Set(['cascade_elixir_schema_migrations']);
 const EMPTY_TABLE_ADDITIONS = new Map([
+  ['app_context', '57acd5d3a9e2688fae0f37e190087ce250cee5c421a0bdd6e938fe1de021cf94'],
   ['chat_mission_recovery_evidence', '8039530f643ab926e1306c88d074dc731b6b5c248cd032ac3d591bbaf2ee185b'],
   ['chat_next_step_checks', '975a576a29b23ab328602d5f3a7a888cc1f3624e89242bcb44f38ae0654fd6e5'],
 ]);
