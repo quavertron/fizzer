@@ -50,7 +50,10 @@ defmodule CascadeWeb.ChatRouter do
 
   get "/api/vaults/:vault_id/vault-agents" do
     authenticated(conn, :any, nil, fn conn, user ->
-      respond(conn, Agents.list_vault(user.id, vault_id), :agents)
+      case Agents.list_for_vault(user.id, vault_id) do
+        {:ok, payload} -> JSON.send(conn, 200, payload)
+        error -> domain_error(conn, error)
+      end
     end)
   end
 

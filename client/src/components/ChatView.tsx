@@ -86,6 +86,7 @@ interface ChatViewProps {
   availableAgents: ChatAgentOption[];
   registeredAgents: ChatAgentRegistration[];
   vaultAgents?: VaultAgent[];
+  myAgents?: VaultAgent[];
   runnerHealth?: DesktopRunnerHealth | null;
   onRegisterAgent: (channelId: string, registration: ChatAgentRegistration) => void;
   onRemoveAgent: (channelId: string, registrationId: string) => void;
@@ -97,6 +98,7 @@ interface ChatViewProps {
     vaultAgentId: string,
     membership?: ChatAgentRegistration,
   ) => Promise<void> | void;
+  onImportMyAgentToChannel?: (channelId: string, sourceAgentId: string) => Promise<void> | void;
   onInviteUser: (channelId: string, username: string) => Promise<void>;
   onRemoveParticipant?: (channelId: string, username: string) => Promise<void>;
   onLeaveChannel?: (channelId: string) => Promise<void>;
@@ -169,6 +171,7 @@ export const ChatView = memo(function ChatView({
   availableAgents,
   registeredAgents,
   vaultAgents = [],
+  myAgents = [],
   runnerHealth = null,
   onRegisterAgent,
   onRemoveAgent,
@@ -176,6 +179,7 @@ export const ChatView = memo(function ChatView({
   onDeleteVaultAgent,
   onDeleteAgentProfile,
   onAddVaultAgentToChannel,
+  onImportMyAgentToChannel,
   onInviteUser,
   onRemoveParticipant,
   onLeaveChannel,
@@ -1262,6 +1266,7 @@ export const ChatView = memo(function ChatView({
           registeredAgents={registeredAgents}
           registeredAgentRows={registeredAgentRows}
           vaultAgents={vaultAgents}
+          myAgents={myAgents}
           runnerHealth={runnerHealth}
           onRegisterAgent={onRegisterAgent}
           onRemoveAgent={onRemoveAgent}
@@ -1269,6 +1274,7 @@ export const ChatView = memo(function ChatView({
           onDeleteVaultAgent={onDeleteVaultAgent}
           onDeleteAgentProfile={onDeleteAgentProfile}
           onAddVaultAgentToChannel={onAddVaultAgentToChannel}
+          onImportMyAgentToChannel={onImportMyAgentToChannel}
           onInviteUser={onInviteUser}
           canManageRegistration={canManageRegistration}
           onExpandRail={() => {

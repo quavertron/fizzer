@@ -241,6 +241,7 @@ export default function App() {
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false);
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
   const [vaultAgents, setVaultAgents] = useState<VaultAgent[]>([]);
+  const [myAgents, setMyAgents] = useState<VaultAgent[]>([]);
   // ─── Derived focus state ────────────────────────────────────────
   const focusedPane = Layout.findPane(layout, focusedPaneId) ?? Layout.getFirstPane(layout);
   const activeTabId = focusedPane.activeTabId;
@@ -282,6 +283,7 @@ export default function App() {
     setFolders(listing?.folders ?? []);
     setNotes(listing?.notes ?? []);
     setVaultAgents([]);
+    setMyAgents([]);
     setSuperkanbanNotes([]);
     setSuperkanbanLiveWork([]);
     setSuperkanbanLoading(false);
@@ -926,10 +928,16 @@ export default function App() {
   const loadVaultAgents = useCallback(async (vaultId: string) => {
     const epoch = workspaceStore.epoch;
     try {
-      const data = await api<{ agents: VaultAgent[] }>(`/api/vaults/${vaultId}/vault-agents`);
-      if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId) setVaultAgents(data.agents ?? []);
+      const data = await api<{ agents: VaultAgent[]; myAgents?: VaultAgent[] }>(`/api/vaults/${vaultId}/vault-agents`);
+      if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId) {
+        setVaultAgents(data.agents ?? []);
+        setMyAgents(data.myAgents ?? []);
+      }
     } catch {
-      if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId) setVaultAgents([]);
+      if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId) {
+        setVaultAgents([]);
+        setMyAgents([]);
+      }
     }
   }, []);
 
@@ -1193,6 +1201,7 @@ export default function App() {
       setFolders([]);
       setNotes([]);
       setVaultAgents([]);
+      setMyAgents([]);
     }
   }, [activeVaultId, loadVaultData]);
 
@@ -1362,9 +1371,6 @@ export default function App() {
                 displayName: agent.displayName,
                 avatarUrl: agent.avatarUrl,
                 mention: agent.mention,
-                model: agent.model,
-                cwd: agent.cwd,
-                contextPrompt: agent.contextPrompt,
               }
             : r
         ));
@@ -1425,6 +1431,7 @@ export default function App() {
         ...prev.registeredAgentsByChannel,
         [channelId]: [
           ...(prev.registeredAgentsByChannel[channelId] ?? []).filter((item) => item.id !== reg.id && item.vaultAgentId !== vaultAgentId),
+
           reg,
         ],
       },
@@ -1434,6 +1441,26 @@ export default function App() {
     // vault-wide projection (server ensure) lands in client state everywhere.
     void loadChatAgentMembers(vaultId, notesRef.current);
   }, [loadVaultAgents, loadChatAgentMembers]);
+
+  const handleImportMyAgentToChannel = useCallback(async (
+    channelId: string,
+    sourceAgentId: string,
+  ) => {
+    const vaultId = activeVaultIdRef.current;
+    if (!vaultId) throw new Error('No active vault');
+
+    const data = await api<{ agent: VaultAgent }>(`/api/vaults/${vaultId}/vault-agents`, {
+      method: 'PUT',
+      body: JSON.stringify({ sourceAgentId }),
+    });
+    const agent = data.agent;
+    setVaultAgents((prev) => {
+      const rest = prev.filter((item) => item.id !== agent.id);
+      return [...rest, agent].sort((a, b) => (a.displayName || a.mention).localeCompare(b.displayName || b.mention));
+    });
+    await handleAddVaultAgentToChannel(channelId, agent.id);
+    void loadVaultAgents(vaultId);
+  }, [handleAddVaultAgentToChannel, loadVaultAgents]);
 
   const handleInviteChatUser = useCallback(async (_channelId: string, username: string) => {
     const vaultId = activeVaultIdRef.current;
@@ -1862,9 +1889,6 @@ export default function App() {
                   displayName: agent.displayName,
                   avatarUrl: agent.avatarUrl,
                   mention: agent.mention,
-                  model: agent.model,
-                  cwd: agent.cwd,
-                  contextPrompt: agent.contextPrompt,
                 }
               : registration
           ));
@@ -2381,14 +2405,12 @@ export default function App() {
           </div>
         </div>
       );
-    }
     if (tab.type === 'superkanban') {
       return (
         <Suspense fallback={<div className="pane-empty">Loading board…</div>}>
           <SuperkanbanView
             notes={superkanbanNotes}
             loading={superkanbanLoading}
-            error={superkanbanError}
             onOpenNote={openNote}
             liveWorkItems={superkanbanLiveWork}
           />
@@ -2412,6 +2434,7 @@ export default function App() {
             availableAgents={AVAILABLE_CHAT_AGENTS}
             registeredAgents={chatState.registeredAgentsByChannel[tab.id] ?? EMPTY_CHAT_AGENTS}
             vaultAgents={vaultAgents}
+            myAgents={myAgents}
             runnerHealth={runnerHealth}
             onRegisterAgent={handleRegisterChatAgent}
             onRemoveAgent={handleRemoveChatAgent}
@@ -2419,6 +2442,7 @@ export default function App() {
             onDeleteVaultAgent={handleDeleteVaultAgent}
             onDeleteAgentProfile={handleDeleteAgentProfile}
             onAddVaultAgentToChannel={handleAddVaultAgentToChannel}
+            onImportMyAgentToChannel={handleImportMyAgentToChannel}
             onInviteUser={handleInviteChatUser}
             onRemoveParticipant={handleRemoveChatParticipant}
             onLeaveChannel={handleLeaveChatChannel}
@@ -2461,7 +2485,7 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, chatDraftsByVault, handleChatDraftChange, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled]);
+  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, chatDraftsByVault, handleChatDraftChange, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, myAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleImportMyAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled]);
 
   if (!authReady) return <main className="auth-shell" id="auth-pending" />;
 
@@ -2791,14 +2815,12 @@ export default function App() {
             openTabs={openTabs}
             focusedPaneId={focusedPaneId}
             onFocusPane={setFocusedPaneId}
-            onSelectTab={selectTabInPane}
             onCloseTab={closeTab}
             onCloseOtherTabs={closeOtherTabs}
             onDropTab={handleDropTab}
             onDropNote={handleDropNote}
             onResize={handleResizeSplit}
             onCreateNote={handleCreateNoteInPane}
-            onCreateTab={handleCreateTabInPane}
             onCreateChat={handleCreateChatInPane}
             onOpenSuperkanban={openSuperkanban}
             onDetachTab={handleDetachTab}
@@ -2822,6 +2844,8 @@ export default function App() {
                 availableAgents={AVAILABLE_CHAT_AGENTS}
                 registeredAgents={chatState.registeredAgentsByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_AGENTS}
                 vaultAgents={vaultAgents}
+                myAgents={myAgents}
+                onImportMyAgentToChannel={handleImportMyAgentToChannel}
                 runnerHealth={runnerHealth}
                 onRegisterAgent={handleRegisterChatAgent}
                 onRemoveAgent={handleRemoveChatAgent}

@@ -20,22 +20,60 @@ defmodule Cascade.Chat.Agents do
             va.identity_scope,va.expires_at,
             va.owner_user_id,u.username,va.created_at,va.updated_at
           FROM vault_agents va LEFT JOIN users u ON u.id=va.owner_user_id
-          WHERE va.owner_user_id=? OR (
+          WHERE (
             (va.vault_id=? OR EXISTS(
               SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=va.id AND m.vault_id=?
             )) AND NOT EXISTS(
               SELECT 1 FROM vault_agent_exclusions x WHERE x.vault_id=? AND x.vault_agent_id=va.id
-            )
-          ) ORDER BY va.display_name COLLATE NOCASE,va.mention COLLATE NOCASE
+            ) OR (va.owner_user_id=? AND va.vault_id=?)
+          ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+          ORDER BY va.display_name COLLATE NOCASE,va.mention COLLATE NOCASE
           """,
-          [user_id, vault_id, vault_id, vault_id]
+          [vault_id, vault_id, vault_id, user_id, vault_id]
         )
         |> Enum.map(&identity/1)
-        |> Enum.map(&Map.put(&1, :channelIds, channel_ids(&1.id)))
+        |> Enum.map(&Map.put(&1, :channelIds, channel_ids(&1.id, vault_id)))
 
       {:ok, agents}
     else
       {:error, "Vault not found"}
+    end
+  end
+
+  @doc "Lists the current user's active identities that are not linked to this vault."
+  def list_owned_elsewhere(user_id, vault_id) do
+    if VaultMembers.role(vault_id, user_id) do
+      purge_expired_sessions!()
+
+      agents =
+        SQL.all(
+          """
+          SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,
+            va.model,va.cwd,va.context_prompt,va.hermes_profile,va.hermes_safe_mode,
+            va.identity_scope,va.expires_at,
+            va.owner_user_id,u.username,va.created_at,va.updated_at
+          FROM vault_agents va LEFT JOIN users u ON u.id=va.owner_user_id
+          WHERE va.owner_user_id=? AND va.vault_id!=?
+            AND NOT EXISTS(
+              SELECT 1 FROM chat_agent_members m
+              WHERE m.vault_agent_id=va.id AND m.vault_id=?
+            ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+          ORDER BY va.display_name COLLATE NOCASE,va.mention COLLATE NOCASE
+          """,
+          [user_id, vault_id, vault_id]
+        )
+        |> Enum.map(&identity/1)
+
+      {:ok, agents}
+    else
+      {:error, "Vault not found"}
+    end
+  end
+
+  def list_for_vault(user_id, vault_id) do
+    with {:ok, agents} <- list_vault(user_id, vault_id),
+         {:ok, my_agents} <- list_owned_elsewhere(user_id, vault_id) do
+      {:ok, %{agents: agents, myAgents: my_agents}}
     end
   end
 
@@ -47,40 +85,103 @@ defmodule Cascade.Chat.Agents do
       end
     end
   end
-
   def upsert_identity(user_id, vault_id, input) do
-    if VaultMembers.role(vault_id, user_id) do
-      agent_id = input |> value("agentId", "") |> to_string() |> String.trim()
+    source_id = value(input, "sourceAgentId", "") |> to_string() |> String.trim()
 
-      id =
-        input |> value("id", "") |> to_string() |> String.trim() |> nonblank(Ecto.UUID.generate())
-
-      mention = Schema.normalize_mention(value(input, "mention", ""), agent_id)
-
-      existing =
-        SQL.one(
-          "SELECT owner_user_id,avatar_url,identity_scope,expires_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
-          [id, user_id, vault_id]
-        )
-
-      cond do
-        agent_id == "" ->
-          {:error, "agentId is required"}
-
-        existing && hd(existing) not in [nil, user_id] ->
-          {:error, "Only the agent owner can edit it"}
-
-        identity_clash?(id, mention, user_id, vault_id) ->
-          {:error, "Mention @#{mention} is already used by another agent"}
-
-        true ->
-          persist_identity(user_id, vault_id, id, agent_id, mention, input, existing)
-      end
+    if source_id != "" do
+      import_identity(user_id, vault_id, source_id)
     else
-      {:error, "Vault not found"}
+      if VaultMembers.role(vault_id, user_id) do
+        agent_id = input |> value("agentId", "") |> to_string() |> String.trim()
+
+        id =
+          input |> value("id", "") |> to_string() |> String.trim() |> nonblank(Ecto.UUID.generate())
+
+        mention = Schema.normalize_mention(value(input, "mention", ""), agent_id)
+
+        existing =
+          SQL.one(
+            "SELECT owner_user_id,avatar_url,identity_scope,expires_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
+            [id, user_id, vault_id]
+          )
+
+        cond do
+          agent_id == "" ->
+            {:error, "agentId is required"}
+
+          existing && hd(existing) not in [nil, user_id] ->
+            {:error, "Only the agent owner can edit it"}
+
+          identity_clash?(id, mention, user_id, vault_id) ->
+            {:error, "Mention @#{mention} is already used by another agent"}
+
+          true ->
+            persist_identity(user_id, vault_id, id, agent_id, mention, input, existing)
+        end
+      else
+        {:error, "Vault not found"}
+      end
     end
   rescue
     error in Exqlite.Error -> {:error, Exception.message(error)}
+  end
+
+  @doc "Copies an owned identity into a different vault without carrying private or channel state."
+  defp import_identity(user_id, vault_id, source_id) do
+    with true <- not is_nil(VaultMembers.role(vault_id, user_id)),
+         [
+           _source_identity,
+           _source_vault,
+           agent_id,
+           display_name,
+           _avatar_url,
+           source_mention,
+           model
+         ] <-
+           SQL.one(
+             """
+             SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,va.model
+             FROM vault_agents va
+             WHERE va.id=? AND va.owner_user_id=? AND va.vault_id!=?
+               AND NOT EXISTS(
+                 SELECT 1 FROM chat_agent_members m
+                 WHERE m.vault_agent_id=va.id AND m.vault_id=?
+               ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+             """,
+             [source_id, user_id, vault_id, vault_id]
+           ),
+         id <- Ecto.UUID.generate(),
+         mention <- import_mention(vault_id, source_mention) do
+      SQL.exec(
+        """
+        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,
+          hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        [
+          id,
+          vault_id,
+          agent_id,
+          display_name || agent_id,
+          "",
+          mention,
+          model || "",
+          "",
+          "",
+          "",
+          0,
+          "vault",
+          nil,
+          user_id
+        ]
+      )
+
+      get(user_id, vault_id, id)
+    else
+      false -> {:error, "Vault not found"}
+      nil -> {:error, "Agent is not available to import"}
+      _ -> {:error, "Agent is not available to import"}
+    end
   end
 
   @doc "Unlinks an agent from one vault; the owner-scoped profile and other vault memberships survive."
@@ -174,9 +275,9 @@ defmodule Cascade.Chat.Agents do
            owner_id | _
          ] <-
            SQL.one(
-             "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
-             [identity_id, user_id, route.localVaultId, route.localVaultId]
-           ),
+            "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
+            [identity_id, route.localVaultId, route.localVaultId]
+          ),
          :ok <- manage_identity(owner_id, user_id),
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
          mention <- Schema.normalize_mention(default_mention, agent_id),
@@ -651,11 +752,11 @@ defmodule Cascade.Chat.Agents do
     }
   end
 
-  defp channel_ids(id),
+  defp channel_ids(id, vault_id),
     do:
       SQL.all(
-        "SELECT DISTINCT channel_id FROM chat_agent_members WHERE vault_agent_id=? ORDER BY channel_id",
-        [id]
+        "SELECT DISTINCT channel_id FROM chat_agent_members WHERE vault_agent_id=? AND vault_id=? ORDER BY channel_id",
+        [id, vault_id]
       )
       |> List.flatten()
 
@@ -674,6 +775,35 @@ defmodule Cascade.Chat.Agents do
           [mention, id, vault_id, vault_id]
         )
       )
+
+  defp import_mention(vault_id, source_mention) do
+    base = Schema.normalize_mention(source_mention, "agent")
+    import_mention(vault_id, base, 0)
+  end
+
+  defp import_mention(vault_id, base, suffix) do
+    mention = if suffix == 0, do: base, else: "#{base}_#{suffix + 1}"
+
+    clash =
+      SQL.one(
+        """
+        SELECT 1 FROM vault_agents va
+        WHERE va.mention=? COLLATE NOCASE AND (
+          va.vault_id=? OR EXISTS(
+            SELECT 1 FROM chat_agent_members m
+            WHERE m.vault_agent_id=va.id AND m.vault_id=?
+          )
+        ) AND NOT EXISTS(
+          SELECT 1 FROM vault_agent_exclusions x
+          WHERE x.vault_id=? AND x.vault_agent_id=va.id
+        ) LIMIT 1
+        """,
+        [mention, vault_id, vault_id, vault_id]
+      )
+
+    if is_nil(clash), do: mention, else: import_mention(vault_id, base, suffix + 1)
+  end
+
 
   defp identity_scope(value) do
     normalized = value |> to_string() |> String.trim() |> String.downcase()

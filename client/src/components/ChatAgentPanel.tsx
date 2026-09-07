@@ -171,6 +171,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   availableAgents: ChatAgentOption[];
   registeredAgents: ChatAgentRegistration[];
   registeredAgentRows: ChatAgentRow[];
+  myAgents: VaultAgent[];
   vaultAgents: VaultAgent[];
   runnerHealth?: DesktopRunnerHealth | null;
   onRegisterAgent: (channelId: string, registration: ChatAgentRegistration) => void;
@@ -183,6 +184,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     vaultAgentId: string,
     membership?: ChatAgentRegistration,
   ) => Promise<void> | void;
+  onImportMyAgentToChannel?: (channelId: string, sourceAgentId: string) => Promise<void> | void;
   onInviteUser: (channelId: string, username: string) => Promise<void>;
   canManageRegistration: (registration: ChatAgentRegistration) => boolean;
   onExpandRail: () => void;
@@ -195,6 +197,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   registeredAgents,
   registeredAgentRows,
   vaultAgents,
+  myAgents,
   runnerHealth = null,
   onRegisterAgent,
   onRemoveAgent,
@@ -202,6 +205,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   onDeleteVaultAgent,
   onDeleteAgentProfile,
   onAddVaultAgentToChannel,
+  onImportMyAgentToChannel,
   onInviteUser,
   canManageRegistration,
   onExpandRail,
@@ -450,6 +454,18 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     }
   }
 
+  async function importMyAgentFromPicker(sourceAgentId: string) {
+    if (!onImportMyAgentToChannel) return;
+    setAgentFormError('');
+    try {
+      await onImportMyAgentToChannel(channelId, sourceAgentId);
+      setAgentMenuOpen(false);
+      setAgentPanelMode('picker');
+    } catch (error) {
+      setAgentFormError(error instanceof Error ? error.message : 'Could not add agent');
+    }
+  }
+
   async function submitAgentRegistration(event: React.FormEvent) {
     event.preventDefault();
     if (!agentForm.agentId) return;
@@ -671,67 +687,93 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
 
           {agentMenuOpen && agentPanelMode === 'picker' && (
           <div className="chat-agent-menu" onClick={(event) => event.stopPropagation()}>
-            <div className="chat-agent-menu-heading">Vault agents</div>
+            <div className="chat-agent-menu-heading">Current vault agents</div>
             {vaultAgents.length === 0 ? (
               <div className="chat-runs-empty">No vault agents yet</div>
             ) : (
-              <div className="chat-agent-picker-list">{vaultAgents.map((va) => {
-                const inChannel = channelVaultAgentIds.has(va.id);
-                const canManage = va.ownerUsername === currentUser;
-                return (
-                  <div key={va.id} className={`chat-vault-pick-row${inChannel ? ' is-in-channel' : ''}`}>
+              <div className="chat-agent-picker-list">
+                {vaultAgents.map((va) => {
+                  const inChannel = channelVaultAgentIds.has(va.id);
+                  const canManage = va.ownerUsername === currentUser;
+                  return (
+                    <div key={va.id} className={`chat-vault-pick-row${inChannel ? ' is-in-channel' : ''}`}>
+                      <button
+                        type="button"
+                        className="chat-vault-pick-btn"
+                        disabled={inChannel || !canManage}
+                        onClick={() => {
+                          if (!inChannel) void addVaultAgentFromPicker(va.id);
+                        }}
+                        title={inChannel ? 'Already in this channel' : canManage ? 'Add to this channel' : 'Only the agent owner can add it'}
+                      >
+                        <ChatAvatar name={va.displayName || va.mention} kind="agent" avatarUrl={va.avatarUrl} size="sm" />
+                        <span className="chat-user-copy">
+                          <strong>{va.displayName || va.mention}</strong>
+                          <span>
+                            @{va.mention} · {va.model || va.agentId} · {va.identityScope === 'session'
+                              ? 'temporary agent'
+                              : 'vault agent'}
+                            {va.identityScope === 'network' && va.ownerUsername
+                              ? ` · legacy identity ${va.mention}~${va.ownerUsername}`
+                              : ''}
+                            {va.ownerUsername ? ` · ${va.ownerUsername}'s agent` : ''}
+                            {inChannel ? ' · in this channel' : ''}
+                          </span>
+                        </span>
+                      </button>
+                      {canManage && (
+                        <button
+                          type="button"
+                          className="chat-vault-edit-agent"
+                          title={`Edit @${va.mention} vault identity`}
+                          onClick={(event) => openVaultIdentity(event, va)}
+                        >
+                          Edit identity
+                        </button>
+                      )}
+                      {onDeleteAgentProfile && canManage && (
+                        <button
+                          type="button"
+                          className="chat-remove-agent"
+                          title="Permanently delete agent profile"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (window.confirm(`Permanently delete @${va.mention} from your agent profiles and every vault?`)) {
+                              void onDeleteAgentProfile(va.id);
+                            }
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="chat-agent-menu-heading">My Agents</div>
+            {myAgents.length === 0 ? (
+              <div className="chat-runs-empty">No owned agents from other vaults</div>
+            ) : (
+              <div className="chat-agent-picker-list">
+                {myAgents.map((agent) => (
+                  <div key={agent.id} className="chat-vault-pick-row">
                     <button
                       type="button"
                       className="chat-vault-pick-btn"
-                      disabled={inChannel || !canManage}
-                      onClick={() => {
-                        if (!inChannel) void addVaultAgentFromPicker(va.id);
-                      }}
-                      title={inChannel ? 'Already in this vault' : canManage ? 'Add to this vault' : 'Only the agent owner can add it'}
+                      disabled={!onImportMyAgentToChannel}
+                      onClick={() => void importMyAgentFromPicker(agent.id)}
+                      title="Copy this safe agent identity into the current vault"
                     >
-                      <ChatAvatar name={va.displayName || va.mention} kind="agent" avatarUrl={va.avatarUrl} size="sm" />
+                      <ChatAvatar name={agent.displayName || agent.mention} kind="agent" avatarUrl={agent.avatarUrl} size="sm" />
                       <span className="chat-user-copy">
-                        <strong>{va.displayName || va.mention}</strong>
-                        <span>
-                          @{va.mention} · {va.model || va.agentId} · {va.identityScope === 'session'
-                            ? 'temporary agent'
-                            : 'vault agent'}
-                          {va.identityScope === 'network' && va.ownerUsername
-                            ? ` · legacy identity ${va.mention}~${va.ownerUsername}`
-                            : ''}
-                          {va.ownerUsername ? ` · ${va.ownerUsername}'s agent` : ''}
-                          {inChannel ? ' · in vault' : ''}
-                        </span>
+                        <strong>{agent.displayName || agent.mention}</strong>
+                        <span>@{agent.mention} · {agent.model || agent.agentId} · from another vault</span>
                       </span>
                     </button>
-                    {canManage && (
-                      <button
-                        type="button"
-                        className="chat-vault-edit-agent"
-                        title={`Edit @${va.mention} vault identity`}
-                        onClick={(event) => openVaultIdentity(event, va)}
-                      >
-                        Edit identity
-                      </button>
-                    )}
-                    {onDeleteAgentProfile && canManage && (
-                      <button
-                        type="button"
-                        className="chat-remove-agent"
-                        title="Permanently delete agent profile"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (window.confirm(`Permanently delete @${va.mention} from your agent profiles and every vault?`)) {
-                            void onDeleteAgentProfile(va.id);
-                          }
-                        }}
-                      >
-                        <X size={12} />
-                      </button>
-                    )}
                   </div>
-                );
-              })}</div>
+                ))}
+              </div>
             )}
             {agentFormError && <div className="chat-agent-form-error">{agentFormError}</div>}
             <div className="chat-agent-menu-actions">
