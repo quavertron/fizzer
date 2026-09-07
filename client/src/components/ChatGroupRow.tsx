@@ -116,7 +116,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onLightbox: (src: string) => void;
   onImageLoad: () => void;
   /** Resolve ownership only for individual agent message rows. */
-  resolveMessageOwnership: ChatMessageOwnershipResolver;
+  resolveMessageOwnership?: ChatMessageOwnershipResolver;
   onAgentAvatarClick?: (event: React.MouseEvent) => void;
   /** Chat scroller element — used as IntersectionObserver root. */
   scrollRootRef: RefObject<HTMLDivElement | null>;
@@ -134,7 +134,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   const groupHasRunWidget = Boolean(traceContent)
     || group.messages.some((message) => message.status === 'running' || hasExpandableTrace(message));
   const groupSelected = group.messages.some((message) => message.id === selectedMessageId);
-  const ownership = avatarKind === 'agent' ? resolveMessageOwnership(head) : 'unknown';
+  const ownership = avatarKind === 'agent' ? (resolveMessageOwnership?.(head) ?? 'unknown') : 'unknown';
   const articleRef = useRef<HTMLElement | null>(null);
   const heightRef = useRef(0);
   // Start mounted so first paint / stick-to-bottom has real content; IO then unmounts offscreen.

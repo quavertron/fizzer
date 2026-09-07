@@ -115,9 +115,10 @@ interface ChatViewProps {
   membersOpen?: boolean;
   onMembersOpenChange?: (open: boolean) => void;
   vaultId?: string;
-  draft: string;
+  /** Optional for isolated consumers; App supplies controlled per-vault drafts. */
+  draft?: string;
   draftKey?: string;
-  onDraftChange: (draft: string) => void;
+  onDraftChange?: (draft: string) => void;
   /** Merge a full message (e.g. harness log) after expand-fetch. */
   onHydrateMessage?: (message: ChatMessage) => void;
   /** When set, scroll to and highlight this message once it's in the list (e.g. from search). */
@@ -193,15 +194,22 @@ export const ChatView = memo(function ChatView({
   membersOpen: membersOpenProp,
   onMembersOpenChange,
   vaultId,
-  draft,
+  draft: draftProp,
   draftKey,
-  onDraftChange,
+  onDraftChange: onDraftChangeProp,
   onHydrateMessage,
   jumpToMessageId,
   onJumpHandled,
   sidebarMode = 'inline',
   directMessage = false,
 }: ChatViewProps) {
+  // Keep the composer controlled even when an isolated consumer omits the
+  // optional draft props. App-controlled vault chats still use both supplied
+  // props, while DM and legacy consumers own a local draft here.
+  const [localDraft, setLocalDraft] = useState(() => draftProp ?? '');
+  const draftIsControlled = draftProp !== undefined && onDraftChangeProp !== undefined;
+  const composerDraft = draftIsControlled ? draftProp : localDraft;
+  const handleDraftChange = draftIsControlled ? onDraftChangeProp : setLocalDraft;
   // Messages come from an external per-channel store, not props: streaming tokens
   // then re-render only this ChatView, never the App shell. See messageStore.ts.
   const messages = useChannelMessages(channelId);
@@ -1141,9 +1149,9 @@ export const ChatView = memo(function ChatView({
           notes={notes}
           mentionableAliases={mentionableAliases}
           registeredAgents={registeredAgents}
-          draft={draft}
+          draft={composerDraft}
           draftKey={draftKey}
-          onDraftChange={onDraftChange}
+          onDraftChange={handleDraftChange}
           onSendMessage={sendMessage}
         />
       </div>}

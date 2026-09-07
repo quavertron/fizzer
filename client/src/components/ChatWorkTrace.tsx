@@ -167,7 +167,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   onCancelRun: (runId: number) => void;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
-  resolveMessageOwnership: ChatMessageOwnershipResolver;
+  resolveMessageOwnership?: ChatMessageOwnershipResolver;
   vaultId?: string;
   onHydrateMessage?: (message: ChatMessage) => void;
   runningMessageState: ReadonlyMap<string, { latestId: string; count: number }>;
@@ -282,7 +282,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
                   onCancelRun={onCancelRun}
                   onContextMenu={onContextMenu}
                   onReply={onReply}
-                  ownership={resolveMessageOwnership(message)}
+                  ownership={resolveMessageOwnership?.(message) ?? 'unknown'}
                   selected={selectedMessageId === message.id}
                   vaultId={vaultId}
                   onHydrateMessage={onHydrateMessage}
