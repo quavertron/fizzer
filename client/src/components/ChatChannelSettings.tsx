@@ -57,6 +57,24 @@ export function ChatChannelSettings({
     } catch { /* ignore — transient save failure */ }
   }, [vaultId, channelId, channelCwd, onCwdChange]);
 
+  const cascadeBridge = Reflect.get(window, 'cascade');
+  const selectDirectory = cascadeBridge && typeof cascadeBridge === 'object'
+    ? Reflect.get(cascadeBridge, 'selectDirectory')
+    : undefined;
+  const canSelectDirectory = typeof selectDirectory === 'function';
+
+  const chooseChannelCwd = useCallback(async () => {
+    if (!canSelectDirectory) return;
+    try {
+      const selected = await selectDirectory();
+      if (typeof selected !== 'string' || !selected) return;
+      setChannelCwd(selected);
+      await saveChannelCwd(selected);
+    } catch {
+      // Keep the current input when the native dialog is unavailable or fails.
+    }
+  }, [canSelectDirectory, saveChannelCwd, selectDirectory]);
+
   return (
     <div className="chat-channel-settings-panel">
       <div className="chat-channel-settings-heading">
@@ -76,6 +94,16 @@ export function ChatChannelSettings({
           autoCapitalize="off"
           autoCorrect="off"
         />
+        <button
+          type="button"
+          className="chat-channel-board-link"
+          disabled={!canSelectDirectory}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => { void chooseChannelCwd(); }}
+          title="Choose a project folder"
+        >
+          Browse
+        </button>
         {channelCwdSaved && <span className="chat-channel-cwd-saved">saved</span>}
       </div>
       <p>Where agents work in this channel. You can add this later.</p>

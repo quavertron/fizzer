@@ -97,3 +97,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('app:updateFailed', listener);
   },
 });
+
+// Keep the small, renderer-facing picker API separate from the legacy desktop
+// surface so browser and hosted renderers can safely omit it.
+contextBridge.exposeInMainWorld('cascade', {
+  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+});

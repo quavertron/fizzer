@@ -431,6 +431,25 @@ function createPaneWindow(descriptor, bounds) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * Open a native folder-only picker for the renderer. Cancel and dialog errors
+ * resolve to null so the renderer can leave its current input untouched.
+ */
+ipcMain.handle('dialog:selectDirectory', async (event) => {
+  try {
+    const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const options = { properties: ['openDirectory'] };
+    const result = parent
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths?.[0]) return null;
+    return result.filePaths[0];
+  } catch (error) {
+    console.error('[IPC] Failed to select directory:', error);
+    return null;
+  }
+});
+
+/**
  * Pop a tab out into its own OS window when it was dragged and released outside
  * the sending window. `screenX/screenY` are the drop point in screen pixels;
  * if they fall inside the sender's bounds we treat it as an in-window drop and
