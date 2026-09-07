@@ -205,7 +205,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
                     %{reason: :other}}
   end
 
-  test "participant snapshots preserve exact mixed-case author identity" do
+  test "participant snapshots exclude history-only author aliases" do
     {source, source_channel, _local, _local_channel} = linked_chat()
 
     SQL.exec(
@@ -214,7 +214,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     )
 
     snapshot = Channel.participant_snapshot(source.id, source_channel.id)
-    assert "ALICE" in snapshot.participants
+    refute "ALICE" in snapshot.participants
     assert "alice" in snapshot.participants
     assert Map.has_key?(snapshot.profiles, "alice")
     refute Map.has_key?(snapshot.profiles, "ALICE")
@@ -270,6 +270,50 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     refute "builder" in snapshot.participants
     refute "Sol" in snapshot.participants
     refute "eve" in snapshot.participants
+  end
+
+  test "member kick evicts sockets without announcing source note deletion", %{target: target} do
+    source = Store.create_vault(1, %{name: "Member kick"})
+
+    source_channel =
+      Store.create_note(source.id, 1, %{title: "Room", content: "cascade://chat-channel"})
+
+    {:ok, _} = Cascade.Accounts.VaultMembers.add(source.id, 1, 2, "editor")
+    alice = open_probe(target, token(1, "alice"), "alice")
+    bob = open_probe(target, token(2, "bob"), "bob")
+    close_on_exit([alice, bob])
+    join_vault(alice, source.id, 1)
+    join_vault(bob, source.id, 2)
+    join_chat(bob, source_channel.id, source_channel.id, 2)
+    flush_probe(alice)
+    flush_probe(bob)
+
+    {:ok, participant} = Channel.remove_participant(source_channel.id, 1, "bob")
+
+    Events.emit(%{
+      event: "vault:chatParticipantRemoved",
+      vaultId: source.id,
+      channelId: source_channel.id,
+      participant: participant
+    })
+
+    assert receive_matching(
+             alice,
+             fn event ->
+               refute event["event"] == "vault:noteDeleted"
+               event["event"] == "vault:membersChanged"
+             end,
+             5_000
+           )
+
+    assert eventually(fn ->
+             not joined?("vault:#{source.id}", 2) and not joined?("chat:#{source_channel.id}", 2)
+           end)
+
+    Events.emit_presence_now(source.id, source_channel.id)
+    presence = await_event(alice, "vault", "vault:chatPresence")
+    assert get_in(presence, ["args", Access.at(0), "participants"]) == ["alice"]
+    assert Store.get_note(source_channel.id).id == source_channel.id
   end
 
   test "real Bandit keeps mutation responses in the stream owner", %{target: target} do

@@ -464,23 +464,11 @@ export const ChatView = memo(function ChatView({
     return runnerHealth?.planUsage?.[planUsageProviderId(agentId)] || null;
   };
   const onlineUsers = useMemo(() => new Set(presence.online), [presence.online]);
-  const humanMessageAuthors = useMemo(() => {
-    const names = new Set<string>();
-    for (const message of messages) {
-      if (message.author === 'Cascade') continue;
-      if (message.agentId || agentAuthors.has(message.author)) continue;
-      if (message.author) names.add(message.author);
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b)).join('\n');
-  }, [agentAuthors, messages]);
   const humanUsers = useMemo(() => {
     const names = new Set<string>(presence.participants);
     if (currentUser) names.add(currentUser);
-    for (const name of humanMessageAuthors.split('\n')) {
-      if (name) names.add(name);
-    }
     return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [currentUser, humanMessageAuthors, presence.participants]);
+  }, [currentUser, presence.participants]);
   const mentionableAliases = useMemo(() => {
     const aliases = new Set<string>();
     for (const registration of registeredAgents) {

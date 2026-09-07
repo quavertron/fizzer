@@ -1,7 +1,7 @@
 defmodule Cascade.Chat.Channel do
   @moduledoc "Authorization, local/source projection, participants, presence, settings, and channel membership."
 
-  alias Cascade.Accounts.SQL
+  alias Cascade.Accounts.{SQL, VaultMembers}
   alias Cascade.Chat.Events
   alias Cascade.Content.{Assets, Store}
 
@@ -176,20 +176,6 @@ defmodule Cascade.Chat.Channel do
                   agent.agent_id=u.username COLLATE NOCASE
                 )
               )
-          UNION
-          SELECT legacy.author FROM (
-            SELECT DISTINCT author FROM chat_messages
-            WHERE channel_id=? AND COALESCE(agent_id,'')=''
-              AND author NOT IN ('','Cascade') LIMIT 200
-          ) legacy
-          WHERE NOT EXISTS (
-            SELECT 1 FROM chat_agent_members agent
-            WHERE agent.channel_id=? AND (
-              agent.display_name=legacy.author COLLATE NOCASE OR
-              agent.mention=legacy.author COLLATE NOCASE OR
-              agent.agent_id=legacy.author COLLATE NOCASE
-            )
-          )
         )
         SELECT u.id,n.username,u.username,
           COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username,#{avatar_column}
@@ -201,8 +187,6 @@ defmodule Cascade.Chat.Channel do
         [
           source_vault_id,
           source_vault_id,
-          source_channel_id,
-          source_channel_id,
           source_channel_id,
           source_channel_id
         ]
@@ -320,28 +304,44 @@ defmodule Cascade.Chat.Channel do
            SQL.one("SELECT id FROM users WHERE username=? COLLATE NOCASE", [
              String.trim(to_string(username))
            ]),
-         true <- target_id != actor_id,
-         [local_channel_id, local_vault_id] <-
-           SQL.one(
-             """
-               SELECT l.local_channel_id,l.local_vault_id FROM chat_channel_links l
-               JOIN vaults v ON v.id=l.local_vault_id
-               WHERE l.source_channel_id=? AND v.created_by=? ORDER BY l.created_at LIMIT 1
-             """,
-             [route.sourceChannelId, target_id]
-           ) do
-      Assets.delete_all(local_channel_id)
-      Store.delete_note(local_channel_id)
+         true <- target_id != actor_id do
+      member? = not is_nil(VaultMembers.role(route.sourceVaultId, target_id))
 
-      {:ok,
-       %{
-         username: username,
-         channelId: local_channel_id,
-         userId: target_id,
-         localVaultId: local_vault_id,
-         sourceVaultId: route.sourceVaultId,
-         sourceChannelId: route.sourceChannelId
-       }}
+      links =
+        SQL.all(
+          """
+          SELECT l.local_channel_id,l.local_vault_id FROM chat_channel_links l
+          JOIN vaults v ON v.id=l.local_vault_id
+          WHERE l.source_channel_id=? AND v.created_by=? AND l.local_channel_id != ?
+          """,
+          [route.sourceChannelId, target_id, route.sourceChannelId]
+        )
+
+      with true <- member? or links != [],
+           :ok <-
+             if(member?,
+               do: VaultMembers.remove(route.sourceVaultId, actor_id, target_id),
+               else: :ok
+             ) do
+        for [local_channel_id, _local_vault_id] <- links do
+          Assets.delete_all(local_channel_id)
+          Store.delete_note(local_channel_id)
+        end
+
+        {:ok,
+         %{
+           username: username,
+           userId: target_id,
+           membershipRemoved: member?,
+           removedLinks:
+             Enum.map(links, fn [channel, vault] -> %{channelId: channel, localVaultId: vault} end),
+           sourceVaultId: route.sourceVaultId,
+           sourceChannelId: route.sourceChannelId
+         }}
+      else
+        false -> {:error, "Participant not found"}
+        error -> error
+      end
     else
       _ -> {:error, "Participant not found"}
     end

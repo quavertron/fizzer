@@ -134,6 +134,99 @@ defmodule Cascade.ChatDomainTest do
     :ok
   end
 
+  test "owner kick removes invited vault member while preserving history and other vaults" do
+    {vault, channel} = chat_vault(1, "Roster", "Room")
+    {other, other_channel} = chat_vault(3, "Other", "Other room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    {:ok, _} = VaultMembers.add(other.id, 3, 2, "editor")
+
+    {:ok, message} =
+      Messages.create(%{id: 2, username: "bob"}, vault.id, channel.id, %{body: "Keep history"})
+
+    token = Token.sign_user(%{id: 1, username: "alice", auth_version: 0})
+
+    response =
+      chat_request(
+        :delete,
+        "/api/vaults/#{vault.id}/channels/#{channel.id}/members/BOB",
+        token,
+        %{}
+      )
+
+    assert response.status == 200
+    assert is_nil(VaultMembers.role(vault.id, 2))
+    assert {:error, _} = Channel.assert_channel(channel.id, 2)
+    assert {:ok, _} = Channel.assert_channel(other_channel.id, 2)
+    assert {:ok, ["alice"]} = Channel.participants(channel.id, 1)
+    assert ["Keep history"] = SQL.one("SELECT body FROM chat_messages WHERE id=?", [message.id])
+    assert {:ok, _} = Channel.assert_channel(channel.id, 1)
+    assert {:error, "Participant not found"} = Channel.remove_participant(channel.id, 1, "bob")
+  end
+
+  test "kick denies non-owner, owner self-removal, unknown users and agent credentials" do
+    {vault, channel} = chat_vault(1, "Authorization", "Room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 3, "viewer")
+    path = "/api/vaults/#{vault.id}/channels/#{channel.id}/members/"
+
+    for {actor, username, target} <- [
+          {2, "bob", "carol"},
+          {3, "carol", "bob"},
+          {1, "alice", "alice"},
+          {1, "alice", "missing"}
+        ] do
+      token = Token.sign_user(%{id: actor, username: username, auth_version: 0})
+      assert chat_request(:delete, path <> target, token, %{}).status in [400, 403]
+    end
+
+    token = Token.sign_agent(%{id: 1, username: "alice", auth_version: 0})
+    assert chat_request(:delete, path <> "bob", token, %{}).status == 403
+    assert {:ok, ["alice", "bob", "carol"]} = Channel.participants(channel.id, 1)
+  end
+
+  test "kick removes all target legacy projections, including mixed membership, without unrelated links" do
+    {vault, channel} = chat_vault(1, "Source", "Room")
+    {other, other_channel} = chat_vault(1, "Unrelated", "Other room")
+    {guest, mirror} = chat_vault(2, "Guest", "Mirror")
+    {guest_two, mirror_two} = chat_vault(2, "Guest two", "Mirror two")
+
+    unrelated =
+      Store.create_note(guest.id, 2, %{title: "Other mirror", content: "cascade://chat-channel"})
+
+    {:ok, _} = Channel.link(vault.id, channel.id, guest.id, mirror.id, 1)
+    {:ok, _} = Channel.link(vault.id, channel.id, guest_two.id, mirror_two.id, 1)
+    {:ok, _} = Channel.link(other.id, other_channel.id, guest.id, unrelated.id, 1)
+
+    {:ok, message} =
+      Messages.create(%{id: 2, username: "bob"}, guest.id, mirror.id, %{body: "Legacy history"})
+
+    # The same removal must handle legacy-only and mixed invitation/link access.
+    for member? <- [false, true] do
+      if member? do
+        {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+
+        mixed =
+          Store.create_note(guest.id, 2, %{
+            title: "Mixed mirror",
+            content: "cascade://chat-channel"
+          })
+
+        {:ok, _} = Channel.link(vault.id, channel.id, guest.id, mixed.id, 1)
+      end
+
+      assert {:ok, result} = Channel.remove_participant(channel.id, 1, "bob")
+      assert result.membershipRemoved == member?
+      assert length(result.removedLinks) == if(member?, do: 1, else: 2)
+      assert {:ok, ["alice"]} = Channel.participants(channel.id, 1)
+    end
+
+    assert {:error, _} = Channel.assert_channel(mirror.id, 2)
+    assert {:error, _} = Channel.assert_channel(mirror_two.id, 2)
+    assert {:ok, _} = Channel.assert_channel(unrelated.id, 2)
+    assert {:ok, _} = Channel.assert_channel(channel.id, 1)
+    assert ["Legacy history"] = SQL.one("SELECT body FROM chat_messages WHERE id=?", [message.id])
+  end
+
   test "fresh schema creates every table, index, FTS table, and trigger explicitly" do
     for trigger <- ~w(chat_messages_ai chat_messages_ad chat_messages_au),
         do: SQL.exec("DROP TRIGGER IF EXISTS #{trigger}")

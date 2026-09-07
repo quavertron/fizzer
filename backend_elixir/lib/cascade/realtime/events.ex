@@ -446,7 +446,6 @@ defmodule Cascade.Realtime.Events do
 
   defp participant_removed(intent) do
     participant = field(intent, :participant) || %{}
-    local_channel_id = field(participant, :channelId)
     user_id = field(participant, :userId)
 
     case {field(participant, :sourceVaultId), field(participant, :sourceChannelId)} do
@@ -455,12 +454,15 @@ defmodule Cascade.Realtime.Events do
         if is_integer(user_id),
           do: Hub.evict_user(user_id, @vault_namespace, "chat:#{source_channel_id}")
 
-        local_vault_id = field(participant, :localVaultId) || field(intent, :vaultId)
+        for link <- field(participant, :removedLinks) || [] do
+          vault_event(field(link, :localVaultId), "vault:noteDeleted", %{
+            noteId: field(link, :channelId),
+            vaultId: field(link, :localVaultId)
+          })
+        end
 
-        vault_event(local_vault_id, "vault:noteDeleted", %{
-          noteId: local_channel_id,
-          vaultId: local_vault_id
-        })
+        if field(participant, :membershipRemoved),
+          do: members_changed(%{vaultId: source_vault_id})
 
         emit_presence(source_vault_id, source_channel_id)
 
