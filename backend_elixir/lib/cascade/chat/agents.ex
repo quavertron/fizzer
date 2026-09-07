@@ -57,10 +57,13 @@ defmodule Cascade.Chat.Agents do
             AND NOT EXISTS(
               SELECT 1 FROM chat_agent_members m
               WHERE m.vault_agent_id=va.id AND m.vault_id=?
+            ) AND NOT EXISTS(
+              SELECT 1 FROM vault_agents imported
+              WHERE imported.imported_from_agent_id=va.id AND imported.vault_id=?
             ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
           ORDER BY va.display_name COLLATE NOCASE,va.mention COLLATE NOCASE
           """,
-          [user_id, vault_id, vault_id]
+          [user_id, vault_id, vault_id, vault_id]
         )
         |> Enum.map(&identity/1)
 
@@ -129,57 +132,70 @@ defmodule Cascade.Chat.Agents do
   @doc "Copies an owned identity into a different vault without carrying private or channel state."
   defp import_identity(user_id, vault_id, source_id) do
     with true <- not is_nil(VaultMembers.role(vault_id, user_id)),
-         [
-           _source_identity,
-           _source_vault,
-           agent_id,
-           display_name,
-           _avatar_url,
-           source_mention,
-           model
-         ] <-
-           SQL.one(
-             """
-             SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,va.model
-             FROM vault_agents va
-             WHERE va.id=? AND va.owner_user_id=? AND va.vault_id!=?
-               AND NOT EXISTS(
-                 SELECT 1 FROM chat_agent_members m
-                 WHERE m.vault_agent_id=va.id AND m.vault_id=?
-               ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
-             """,
-             [source_id, user_id, vault_id, vault_id]
-           ),
-         id <- Ecto.UUID.generate(),
-         mention <- import_mention(vault_id, source_mention) do
-      SQL.exec(
-        """
-        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,
-          hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        [
-          id,
-          vault_id,
-          agent_id,
-          display_name || agent_id,
-          "",
-          mention,
-          model || "",
-          "",
-          "",
-          "",
-          0,
-          "vault",
-          nil,
-          user_id
-        ]
-      )
+         {:ok, id} <-
+           SQL.transaction(fn ->
+             case SQL.one(
+                    """
+                    SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,va.model
+                    FROM vault_agents va
+                    WHERE va.id=? AND va.owner_user_id=? AND va.vault_id!=?
+                      AND NOT EXISTS(
+                        SELECT 1 FROM chat_agent_members m
+                        WHERE m.vault_agent_id=va.id AND m.vault_id=?
+                      ) AND NOT EXISTS(
+                        SELECT 1 FROM vault_agents imported
+                        WHERE imported.imported_from_agent_id=va.id AND imported.vault_id=?
+                      ) AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+                    """,
+                    [source_id, user_id, vault_id, vault_id, vault_id]
+                  ) do
+               [
+                 _source_identity,
+                 _source_vault,
+                 agent_id,
+                 display_name,
+                 _avatar_url,
+                 source_mention,
+                 model
+               ] ->
+                 id = Ecto.UUID.generate()
+                 mention = import_mention(vault_id, source_mention, user_id, id)
 
+                 SQL.exec(
+                   """
+                   INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,
+                     hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,imported_from_agent_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   """,
+                   [
+                     id,
+                     vault_id,
+                     agent_id,
+                     display_name || agent_id,
+                     "",
+                     mention,
+                     model || "",
+                     "",
+                     "",
+                     "",
+                     0,
+                     "vault",
+                     nil,
+                     user_id,
+                     source_id
+                   ]
+                 )
+
+                 {:ok, id}
+
+               _ ->
+                 {:error, "Agent is not available to import"}
+             end
+           end) do
       get(user_id, vault_id, id)
     else
       false -> {:error, "Vault not found"}
-      nil -> {:error, "Agent is not available to import"}
+      {:error, _} = error -> error
       _ -> {:error, "Agent is not available to import"}
     end
   end
@@ -280,16 +296,29 @@ defmodule Cascade.Chat.Agents do
           ),
          :ok <- manage_identity(owner_id, user_id),
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
-         mention <- Schema.normalize_mention(default_mention, agent_id),
-         model <- value(flags, "model", default_model) |> to_string() |> String.trim(),
-         cwd <- value(flags, "cwd", default_cwd) |> to_string(),
-         prompt <- value(flags, "contextPrompt", default_prompt) |> to_string(),
+         existing <-
+           SQL.one(
+             "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions,mention,model,cwd,context_prompt FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? ORDER BY rowid LIMIT 1",
+             [identity_id, route.sourceChannelId]
+           ),
+         mention <-
+           Schema.normalize_mention(
+             value(
+               flags,
+               "mention",
+               nonblank(to_string(existing_value(existing, 12, "")), default_mention)
+             ),
+             agent_id
+           ),
+         model <-
+           value(flags, "model", existing_value(existing, 13, default_model))
+           |> to_string()
+           |> String.trim(),
+         cwd <- value(flags, "cwd", existing_value(existing, 14, default_cwd)) |> to_string(),
+         prompt <-
+           value(flags, "contextPrompt", existing_value(existing, 15, default_prompt))
+           |> to_string(),
          :ok <- member_handle_available(route.sourceChannelId, identity_id, mention) do
-      existing =
-        SQL.one(
-          "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? ORDER BY rowid LIMIT 1",
-          [identity_id, route.sourceChannelId]
-        )
 
       registration_id = if existing, do: hd(existing), else: Ecto.UUID.generate()
 
@@ -760,48 +789,35 @@ defmodule Cascade.Chat.Agents do
       )
       |> List.flatten()
 
-  defp identity_clash?(id, mention, _user_id, vault_id),
+  defp identity_clash?(id, mention, user_id, vault_id),
     do:
       not is_nil(
         SQL.one(
           """
           SELECT 1 FROM vault_agents va
           WHERE va.mention=? COLLATE NOCASE AND va.id!=? AND (
-            va.vault_id=? OR EXISTS(
+            va.owner_user_id=? OR va.vault_id=? OR EXISTS(
               SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=va.id AND m.vault_id=?
             )
           ) LIMIT 1
           """,
-          [mention, id, vault_id, vault_id]
+          [mention, id, user_id, vault_id, vault_id]
         )
       )
 
-  defp import_mention(vault_id, source_mention) do
+  defp import_mention(vault_id, source_mention, user_id, identity_id) do
     base = Schema.normalize_mention(source_mention, "agent")
-    import_mention(vault_id, base, 0)
+    import_mention(vault_id, base, user_id, identity_id, 0)
   end
 
-  defp import_mention(vault_id, base, suffix) do
+  defp import_mention(vault_id, base, user_id, identity_id, suffix) do
     mention = if suffix == 0, do: base, else: "#{base}_#{suffix + 1}"
 
-    clash =
-      SQL.one(
-        """
-        SELECT 1 FROM vault_agents va
-        WHERE va.mention=? COLLATE NOCASE AND (
-          va.vault_id=? OR EXISTS(
-            SELECT 1 FROM chat_agent_members m
-            WHERE m.vault_agent_id=va.id AND m.vault_id=?
-          )
-        ) AND NOT EXISTS(
-          SELECT 1 FROM vault_agent_exclusions x
-          WHERE x.vault_id=? AND x.vault_agent_id=va.id
-        ) LIMIT 1
-        """,
-        [mention, vault_id, vault_id, vault_id]
-      )
-
-    if is_nil(clash), do: mention, else: import_mention(vault_id, base, suffix + 1)
+    if identity_clash?(identity_id, mention, user_id, vault_id) do
+      import_mention(vault_id, base, user_id, identity_id, suffix + 1)
+    else
+      mention
+    end
   end
 
 

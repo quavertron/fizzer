@@ -266,6 +266,7 @@ export default function App() {
   const vaultSocketRef = useRef<ReturnType<typeof connectVaultSocket> | null>(null);
   const joinedChatChannelsRef = useRef<Set<string>>(new Set());
   const acceptedInviteTokenRef = useRef<string | null>(null);
+  const workspaceEpochRef = useRef(0);
   // Debounce socket-driven soft vault reloads (note create/change/delete bursts).
   const socketVaultReloadTimerRef = useRef<number | null>(null);
   const communityRefreshTimerRef = useRef<number | null>(null);
@@ -293,14 +294,17 @@ export default function App() {
 
   const switchVaultWorkspace = useCallback((nextVaultId: string | null) => {
     if (workspaceStore.activeVaultId === nextVaultId) return;
+    workspaceEpochRef.current += 1;
     workspaceStore.switchVault(nextVaultId);
     clearWorkspacePanels();
   }, [workspaceStore, clearWorkspacePanels]);
 
   const resetVaultWorkspaces = useCallback(() => {
+    workspaceEpochRef.current += 1;
     workspaceStore.reset();
     loadVaultDataInflight.clear();
     vaultListingsRef.current = {};
+    setChatDraftsByVault({});
     clearWorkspacePanels();
   }, [workspaceStore, clearWorkspacePanels]);
 
@@ -1410,13 +1414,14 @@ export default function App() {
     });
   }, []);
 
-  const handleAddVaultAgentToChannel = useCallback(async (
+  const addVaultAgentToChannelForContext = useCallback(async (
+    vaultId: string,
+    workspaceEpoch: number,
+    vaultEpoch: number,
     channelId: string,
     vaultAgentId: string,
     membership?: ChatAgentRegistration,
-  ) => {
-    const vaultId = activeVaultIdRef.current;
-    if (!vaultId) throw new Error('No active vault');
+  ): Promise<boolean> => {
     const data = await api<{ registration: ChatAgentRegistration }>(
       `/api/vaults/${vaultId}/channels/${channelId}/agents/from-vault`,
       {
@@ -1424,6 +1429,13 @@ export default function App() {
         body: JSON.stringify(vaultAgentMembershipPayload(vaultAgentId, membership)),
       },
     );
+    if (
+      workspaceStore.epoch !== workspaceEpoch
+      || workspaceEpochRef.current !== vaultEpoch
+      || activeVaultIdRef.current !== vaultId
+    ) {
+      return false;
+    }
     const reg = data.registration;
     setChatState((prev) => ({
       ...prev,
@@ -1431,7 +1443,6 @@ export default function App() {
         ...prev.registeredAgentsByChannel,
         [channelId]: [
           ...(prev.registeredAgentsByChannel[channelId] ?? []).filter((item) => item.id !== reg.id && item.vaultAgentId !== vaultAgentId),
-
           reg,
         ],
       },
@@ -1440,7 +1451,25 @@ export default function App() {
     // from-vault only seats the agent on one channel; reload all rooms so the
     // vault-wide projection (server ensure) lands in client state everywhere.
     void loadChatAgentMembers(vaultId, notesRef.current);
-  }, [loadVaultAgents, loadChatAgentMembers]);
+    return true;
+  }, [loadVaultAgents, loadChatAgentMembers, workspaceStore]);
+
+  const handleAddVaultAgentToChannel = useCallback(async (
+    channelId: string,
+    vaultAgentId: string,
+    membership?: ChatAgentRegistration,
+  ) => {
+    const vaultId = activeVaultIdRef.current;
+    if (!vaultId) throw new Error('No active vault');
+    await addVaultAgentToChannelForContext(
+      vaultId,
+      workspaceStore.epoch,
+      workspaceEpochRef.current,
+      channelId,
+      vaultAgentId,
+      membership,
+    );
+  }, [addVaultAgentToChannelForContext, workspaceStore]);
 
   const handleImportMyAgentToChannel = useCallback(async (
     channelId: string,
@@ -1448,19 +1477,33 @@ export default function App() {
   ) => {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) throw new Error('No active vault');
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
 
     const data = await api<{ agent: VaultAgent }>(`/api/vaults/${vaultId}/vault-agents`, {
       method: 'PUT',
       body: JSON.stringify({ sourceAgentId }),
     });
+    if (
+      workspaceStore.epoch !== workspaceEpoch
+      || workspaceEpochRef.current !== vaultEpoch
+      || activeVaultIdRef.current !== vaultId
+    ) {
+      return;
+    }
     const agent = data.agent;
     setVaultAgents((prev) => {
       const rest = prev.filter((item) => item.id !== agent.id);
       return [...rest, agent].sort((a, b) => (a.displayName || a.mention).localeCompare(b.displayName || b.mention));
     });
-    await handleAddVaultAgentToChannel(channelId, agent.id);
-    void loadVaultAgents(vaultId);
-  }, [handleAddVaultAgentToChannel, loadVaultAgents]);
+    await addVaultAgentToChannelForContext(
+      vaultId,
+      workspaceEpoch,
+      vaultEpoch,
+      channelId,
+      agent.id,
+    );
+  }, [addVaultAgentToChannelForContext, workspaceStore]);
 
   const handleInviteChatUser = useCallback(async (_channelId: string, username: string) => {
     const vaultId = activeVaultIdRef.current;

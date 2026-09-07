@@ -61,6 +61,7 @@ defmodule Cascade.Chat.Schema do
     {"identity_scope", "TEXT NOT NULL DEFAULT 'network'"},
     {"expires_at", "TEXT"},
     {"owner_user_id", "INTEGER REFERENCES users(id)"},
+    {"imported_from_agent_id", "TEXT REFERENCES vault_agents(id) ON DELETE SET NULL"},
     {"created_at", "TEXT"},
     {"updated_at", "TEXT"}
   ]
@@ -259,6 +260,7 @@ defmodule Cascade.Chat.Schema do
       context_prompt TEXT NOT NULL DEFAULT '', hermes_profile TEXT NOT NULL DEFAULT '',
       hermes_safe_mode INTEGER NOT NULL DEFAULT 0, identity_scope TEXT NOT NULL DEFAULT 'network',
       expires_at TEXT, owner_user_id INTEGER REFERENCES users(id),
+      imported_from_agent_id TEXT REFERENCES vault_agents(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(owner_user_id,mention)
     )
@@ -406,6 +408,7 @@ defmodule Cascade.Chat.Schema do
       "CREATE INDEX IF NOT EXISTS chat_agent_members_channel_idx ON chat_agent_members(channel_id)",
       "CREATE UNIQUE INDEX IF NOT EXISTS chat_agent_members_identity_idx ON chat_agent_members(channel_id,vault_agent_id)",
       "CREATE INDEX IF NOT EXISTS vault_agents_vault_idx ON vault_agents(vault_id)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS vault_agents_import_source_idx ON vault_agents(vault_id,imported_from_agent_id) WHERE imported_from_agent_id IS NOT NULL",
       "CREATE INDEX IF NOT EXISTS vault_agents_owner_idx ON vault_agents(owner_user_id)",
       "CREATE INDEX IF NOT EXISTS chat_channel_links_source_idx ON chat_channel_links(source_channel_id)",
       "CREATE INDEX IF NOT EXISTS chat_note_grants_channel_idx ON chat_note_grants(channel_id,message_id)",
@@ -463,7 +466,7 @@ defmodule Cascade.Chat.Schema do
               SQL.exec(create_table_sql("vault_agents", "vault_agents_owner_scoped"))
 
               SQL.exec(
-                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,created_at,updated_at FROM vault_agents"
+                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,imported_from_agent_id,created_at,updated_at FROM vault_agents"
               )
 
               SQL.exec("DROP TABLE vault_agents")
