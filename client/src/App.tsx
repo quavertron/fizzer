@@ -1438,6 +1438,7 @@ export default function App() {
     if (workspaceStore.epoch !== workspaceEpoch
       || workspaceEpochRef.current !== vaultEpoch
       || activeVaultIdRef.current !== vaultId) return;
+    setVaultAgents((prev) => prev.filter((agent) => agent.id !== vaultAgentId));
     setChatState((prev) => {
       const next: Record<string, ChatAgentRegistration[]> = {};
       for (const [chId, regs] of Object.entries(prev.registeredAgentsByChannel)) {
