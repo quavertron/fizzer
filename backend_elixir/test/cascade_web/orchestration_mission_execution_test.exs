@@ -169,6 +169,8 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
         coordinatorRegistrationId: ctx.registration.id,
         title: "Steer wire"
       })
+    approve_mission(ctx, mission)
+
 
     {:ok, added} =
       Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
@@ -176,6 +178,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
         assignee: ctx.registration.id,
         anonymous: true,
         title: "Worker",
+        purpose: "implementation",
         prompt: "Keep a file edit and remember a context marker."
       })
 
@@ -491,11 +494,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
           title: "Fix updater failure",
           objective: "Fix only the updater failure; keep the editor open."
         })
-
-      authority = Authority.context(created.mission.id)
-      assert authority =~ accepted.body
-      assert authority =~ Jason.encode!(proposed.body)
-      assert authority =~ "bounded_proposal_context"
+      approve_mission(ctx, created)
 
       finish = %{
         coordinatorRegistrationId: registration.id,
@@ -509,12 +508,13 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
             )
       }
 
-      {:ok, _task} =
+      {:ok, implementation} =
         Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
           coordinatorRegistrationId: registration.id,
           assignee: registration.id,
           anonymous: true,
           title: "Repair and verify updater",
+          purpose: "implementation",
           workspaceMode: "shared"
         })
 
@@ -531,6 +531,75 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
       :ok = Store.finish(worker_run.id, "completed", evidence)
       {:ok, settled} = Scheduler.settle_run(worker_run.id, "completed", evidence)
       assert settled.settled.update.mission.status == "reviewing"
+      {:ok, reviewer_identity} =
+        Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
+          agentId: "reviewer-#{created.mission.id}",
+          displayName: "Reviewer",
+          mention: "reviewer-#{created.mission.id}"
+        })
+
+      {:ok, reviewer} =
+        Agents.add_to_channel(
+          ctx.owner.id,
+          ctx.owner_vault.id,
+          ctx.owner_channel.id,
+          reviewer_identity.id
+        )
+
+      {:ok, review} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: reviewer.id,
+          title: "Independent review",
+          purpose: "review",
+          dependsOn: [implementation.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(ctx.owner.id, ctx.owner_channel.id, review.task.id, %{
+                 status: "completed",
+                 summary: "Review accepted",
+                 reviewOutcome: "accepted"
+               })
+
+      {:ok, integration} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: registration.id,
+          anonymous: true,
+          title: "Integrate repair",
+          purpose: "integration",
+          dependsOn: [review.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(ctx.owner.id, ctx.owner_channel.id, integration.task.id, %{
+                 status: "completed",
+                 summary: "Repair integrated"
+               })
+
+      {:ok, verification_task} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: registration.id,
+          anonymous: true,
+          title: "Verify repair",
+          purpose: "verification",
+          dependsOn: [integration.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(
+                 ctx.owner.id,
+                 ctx.owner_channel.id,
+                 verification_task.task.id,
+                 %{
+                   status: "completed",
+                   summary: "Verification passed",
+                   verificationPassed: true
+                 }
+               )
+
 
       verification =
         "Fixture verification: inspected artifact and passing focused checks; editor remained open."
@@ -605,13 +674,16 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
         coordinatorRegistrationId: ctx.registration.id,
         title: "Review without UI"
       })
+    approve_mission(ctx, mission)
+
 
     {:ok, added} =
       Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
         coordinatorRegistrationId: ctx.registration.id,
         assignee: ctx.registration.id,
         anonymous: true,
-        title: "Worker"
+        title: "Worker",
+        purpose: "implementation"
       })
 
     {:ok, _} =
@@ -652,6 +724,34 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [
              mission.mission.id
            ]) == [1]
+  end
+
+  defp approve_mission(ctx, mission) do
+    content = "Approved mission brief."
+    note_id = "mission-brief-#{mission.mission.id}"
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: note_id,
+        title: "Mission brief",
+        content: content,
+        is_listed: true
+      })
+
+    revision = Cascade.Content.Privacy.note_revision(note)
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+      [mission.mission.id, note.id, revision]
+    )
+
+    assert {:ok, _} =
+             Cascade.Missions.Store.approve_workspace(
+               ctx.owner.id,
+               ctx.owner_vault.id,
+               mission.mission.id,
+               %{note.id => revision}
+             )
   end
 
   defp eventually(fun, attempts \\ 200)

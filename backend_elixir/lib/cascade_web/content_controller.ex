@@ -196,22 +196,35 @@ defmodule CascadeWeb.ContentController do
     writable_note_action(conn, note_id, "Could not update note", fn conn, auth, existing ->
       proposed = body_value(conn, "content", existing.content) |> to_string()
 
-      content =
-        if agent?(auth),
-          do: Privacy.restore_blocks(existing.content, proposed),
-          else: proposed
+      opts = [
+        expected_revision:
+          body_value(conn, "expectedRevision", body_value(conn, "expected_revision", nil)),
+        actor_origin: if(agent?(auth), do: :agent, else: :human),
+        auth: mutation_auth(conn, auth)
+      ]
 
-      note = Store.update_note(note_id, content, auth.user.id)
-      Versions.create(note.id, content, "auto")
+      case Store.update_note(note_id, proposed, auth.user.id, opts) do
+        {:error, %{error: "revision_required"}} ->
+          JSON.send(conn, 428, %{error: "revision_required"})
 
-      emit(conn, %{
-        event: "vault:noteChanged",
-        noteId: note.id,
-        vaultId: note.vault_id,
-        title: note.title
-      })
+        {:error, %{error: "revision_conflict", note: current}} ->
+          JSON.send(conn, 409, %{
+            error: "revision_conflict",
+            note: Privacy.redact_note(current, agent?(auth))
+          })
 
-      JSON.send(conn, 200, %{note: Privacy.redact_note(note, agent?(auth))})
+        note ->
+          Versions.create(note.id, note.content, "auto")
+
+          emit(conn, %{
+            event: "vault:noteChanged",
+            noteId: note.id,
+            vaultId: note.vault_id,
+            title: note.title
+          })
+
+          JSON.send(conn, 200, %{note: Privacy.redact_note(note, agent?(auth))})
+      end
     end)
   end
 
@@ -548,11 +561,32 @@ defmodule CascadeWeb.ContentController do
             if Enum.member?(lines, entry) do
               JSON.send(conn, 200, %{logged: false})
             else
-              content = String.trim_trailing(existing.content) <> "\n" <> entry <> "\n"
-              note = Store.update_note(note_id, content, auth.user.id)
-              Versions.create(note.id, content, "orbit-caption")
-              emit_note_changed(conn, note)
-              JSON.send(conn, 200, %{logged: true})
+              proposal_base =
+                if agent?(auth), do: Privacy.redact_blocks(existing.content), else: existing.content
+
+              content = String.trim_trailing(proposal_base) <> "\n" <> entry <> "\n"
+
+              opts = [
+                expected_revision: Privacy.note_revision(existing),
+                actor_origin: if(agent?(auth), do: :agent, else: :human),
+                auth: mutation_auth(conn, auth)
+              ]
+
+              case Store.update_note(note_id, content, auth.user.id, opts) do
+                {:error, %{error: "revision_required"}} ->
+                  JSON.send(conn, 428, %{error: "revision_required"})
+
+                {:error, %{error: "revision_conflict", note: current}} ->
+                  JSON.send(conn, 409, %{
+                    error: "revision_conflict",
+                    note: Privacy.redact_note(current, agent?(auth))
+                  })
+
+                note ->
+                  Versions.create(note.id, note.content, "orbit-caption")
+                  emit_note_changed(conn, note)
+                  JSON.send(conn, 200, %{logged: true})
+              end
             end
           end
         end
@@ -665,6 +699,45 @@ defmodule CascadeWeb.ContentController do
     do: emit(conn, %{event: "vault:noteChanged", noteId: id, vaultId: vault_id, title: title})
 
   defp emit_note_changed(_conn, _note), do: :ok
+  defp mutation_auth(conn, auth) do
+    base = %{actor_id: auth.user.id, origin: if(agent?(auth), do: :agent, else: :human)}
+
+    if agent?(auth) do
+      case agent_run_provenance(conn, auth.user.id) do
+        %{run_id: _, dispatch_id: _, registration_id: _} = provenance ->
+          Map.merge(base, provenance)
+
+        _ ->
+          base
+      end
+    else
+      base
+    end
+  end
+
+  defp agent_run_provenance(conn, user_id) do
+    with [header | _] <- get_req_header(conn, "x-cascade-run-id"),
+         {run_id, ""} <- Integer.parse(header),
+         true <- run_id > 0,
+         [^run_id, dispatch_id, registration_id] <-
+           Cascade.Accounts.SQL.one(
+             """
+             SELECT r.id,d.id,d.registration_id
+             FROM runs r
+             JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
+             JOIN chat_agent_members m ON m.id=d.registration_id
+             JOIN vault_agents va ON va.id=m.vault_agent_id
+             WHERE r.id=? AND r.owner_user_id=? AND va.owner_user_id=?
+               AND r.status IN ('queued','running') AND d.failed_at IS NULL
+             """,
+             [run_id, user_id, user_id]
+           ) do
+      %{run_id: run_id, dispatch_id: dispatch_id, registration_id: registration_id}
+    else
+      _ -> nil
+    end
+  end
+
 
   defp emit(conn, intent) do
     options = Map.get(conn.assigns, :domain_options, [])

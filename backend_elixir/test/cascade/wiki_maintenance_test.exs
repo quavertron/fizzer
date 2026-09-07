@@ -119,7 +119,8 @@ defmodule Cascade.WikiMaintenanceTest do
                })
              )
 
-    redacted = Privacy.redact_note(private, true)
+    current = Store.get_note(private.id)
+    redacted = Privacy.redact_note(current, true)
 
     assert {:ok, 1} =
              Wiki.apply_result(
@@ -129,7 +130,7 @@ defmodule Cascade.WikiMaintenanceTest do
                  updates: [
                    %{
                      noteId: private.id,
-                     revision: redacted.revision,
+                     revision: Wiki.revision(current.content),
                      content: redacted.content <> "\nEvidence"
                    }
                  ]

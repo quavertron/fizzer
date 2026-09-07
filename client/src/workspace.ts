@@ -3,9 +3,45 @@ import type { Tab } from './components/TabBar';
 import type { Note } from './api';
 import { emptyWorkspace, type PersistedSession, type PersistedWorkspace } from './chat/session';
 
-export type Workspace = PersistedWorkspace & { noteContents: Record<string, { note: Note; draft: string }> };
+/** Notes carry an optimistic-concurrency revision when served by the API. */
+export type WorkspaceNote = Note & { revision?: string };
+export type WorkspaceNoteContent = {
+  /** Most recently observed server record (may be newer than a dirty draft). */
+  note: WorkspaceNote;
+  draft: string;
+  /** Revision the current draft was based on, never silently rebased. */
+  baseRevision?: string;
+};
+export type Workspace = PersistedWorkspace & { noteContents: Record<string, WorkspaceNoteContent> };
 type Update<T> = T | ((previous: T) => T);
 const createWorkspace = (): Workspace => ({ ...emptyWorkspace(), noteContents: {} });
+
+/**
+ * Reconcile a fetched note with the workspace's current editor state.
+ *
+ * Clean editors follow the fetched server content and revision. Dirty editors
+ * retain both their draft and the revision they originally started from, so a
+ * refresh can never silently rebase an in-progress save onto someone else's
+ * write.
+ */
+export function reconcileWorkspaceNoteContent(
+  previous: WorkspaceNoteContent | undefined,
+  incoming: WorkspaceNote,
+): WorkspaceNoteContent {
+  if (previous && previous.draft !== previous.note.content) {
+    const baseRevision = previous.baseRevision ?? previous.note.revision;
+    return {
+      note: incoming,
+      draft: previous.draft,
+      ...(baseRevision === undefined ? {} : { baseRevision }),
+    };
+  }
+  return {
+    note: incoming,
+    draft: incoming.content,
+    ...(incoming.revision === undefined ? {} : { baseRevision: incoming.revision }),
+  };
+}
 
 /** One synchronous authority for handlers, React, and inactive vaults. */
 export class WorkspaceStore {
@@ -86,14 +122,24 @@ export class WorkspaceStore {
       };
     });
   }
-  completeSave(vaultId: string, tabId: string, draft: string, note: Note, epoch: number) {
+  completeSave(vaultId: string, tabId: string, draft: string, note: WorkspaceNote, epoch: number) {
     if (epoch !== this.epoch) return;
     this.update((workspace) => {
       const entry = workspace.noteContents[tabId];
       if (!entry) return workspace;
       const nextDraft = entry.draft === draft ? note.content : entry.draft;
+      const baseRevision = note.revision ?? entry.baseRevision;
       return { ...workspace,
-        noteContents: { ...workspace.noteContents, [tabId]: { note, draft: nextDraft } },
+        noteContents: {
+          ...workspace.noteContents,
+          [tabId]: {
+            note,
+            draft: nextDraft,
+            // Even when typing continued during the request, the next draft
+            // must be based on the revision this response committed.
+            ...(baseRevision === undefined ? {} : { baseRevision }),
+          },
+        },
         openTabs: workspace.openTabs.map((tab) => tab.id === tabId ? { ...tab, title: note.title } : tab),
       };
     }, vaultId);

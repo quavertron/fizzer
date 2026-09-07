@@ -325,6 +325,8 @@ defmodule Cascade.Chat.NextStepsTest do
         title: "Fix updater"
       })
 
+    approve_mission(c, mission)
+
     # No simulated provider feedback marker: exercise the actual mission link.
     assert SQL.one("SELECT feedback FROM chat_next_step_checks WHERE message_id=?", [proposed.id]) ==
              [nil]
@@ -336,12 +338,13 @@ defmodule Cascade.Chat.NextStepsTest do
 
     {:ok, worker} = Agents.add_to_channel(c.user.id, c.vault_id, c.channel.id, worker_identity.id)
 
-    {:ok, _} =
+    {:ok, implementation} =
       Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
         coordinatorRegistrationId: c.member.id,
         title: "Repair updater",
         prompt: "Accepted proposal unchanged:\n" <> proposed.body,
-        assignee: worker.id
+        assignee: worker.id,
+        purpose: "implementation"
       })
 
     [%{dispatch: dispatch}] = Cascade.Missions.Scheduler.schedule(mission.mission.id).dispatches
@@ -353,6 +356,56 @@ defmodule Cascade.Chat.NextStepsTest do
     {:ok, _} = Missions.attach_run(dispatch.id, run.id)
     :ok = Cascade.Runs.Store.finish(run.id, "completed", "Fixture worker result")
     {:ok, _} = Cascade.Missions.Scheduler.settle_run(run.id, "completed", "Fixture worker result")
+    {:ok, review} =
+      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: c.member.id,
+        assignee: c.member.id,
+        anonymous: true,
+        title: "Independent review",
+        purpose: "review",
+        dependsOn: [implementation.task.id]
+      })
+
+    assert {:ok, _} =
+             Missions.update_task(c.user.id, c.channel.id, review.task.id, %{
+               status: "completed",
+               summary: "Review accepted",
+               reviewOutcome: "accepted"
+             })
+
+    {:ok, integration} =
+      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: c.member.id,
+        assignee: c.member.id,
+        anonymous: true,
+        title: "Integrate repair",
+        purpose: "integration",
+        dependsOn: [review.task.id]
+      })
+
+    assert {:ok, _} =
+             Missions.update_task(c.user.id, c.channel.id, integration.task.id, %{
+               status: "completed",
+               summary: "Repair integrated"
+             })
+
+    {:ok, verification} =
+      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: c.member.id,
+        assignee: c.member.id,
+        anonymous: true,
+        title: "Verify repair",
+        purpose: "verification",
+        dependsOn: [integration.task.id]
+      })
+
+    assert {:ok, _} =
+             Missions.update_task(c.user.id, c.channel.id, verification.task.id, %{
+               status: "completed",
+               summary: "Regression passed",
+               verificationPassed: true
+             })
+
     # Reproduce the pre-obligation deployment: plain owner authority and no check
     # row, with the accepted proposal carried unchanged in the worker handoff.
     SQL.exec("UPDATE chat_missions SET authority_json=? WHERE id=?", [
@@ -508,32 +561,32 @@ defmodule Cascade.Chat.NextStepsTest do
              nil
   end
 
-  test "mission completion does not launch a suggestion-only run", c do
+  test "mission cancellation does not launch a suggestion-only run", c do
     enable(c)
 
     {:ok, mission} =
       Missions.create(c.user.id, c.vault_id, c.channel.id, %{
         rootMessageId: c.source.id,
         coordinatorRegistrationId: c.member.id,
-        title: "Finished work"
+        title: "Canceled work"
       })
 
     {:ok, update} =
       Missions.finish(c.user.id, c.channel.id, mission.mission.id, %{
         coordinatorRegistrationId: c.member.id,
-        status: "completed",
-        summary: "Done"
+        status: "canceled",
+        summary: "Stopped by owner"
       })
 
     Cascade.Missions.Scheduler.emit_projection(update)
     Cascade.Missions.Scheduler.emit_projection(update)
 
     assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [
-             "sys-next-completed-#{mission.mission.id}"
+             "sys-next-canceled-#{mission.mission.id}"
            ]) == [0]
 
     assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [
-             "sys-next-completed-#{mission.mission.id}"
+             "sys-next-canceled-#{mission.mission.id}"
            ]) == [0]
   end
 
@@ -802,5 +855,32 @@ defmodule Cascade.Chat.NextStepsTest do
       Messages.create(c.user, c.vault_id, c.channel.id, proposal_input(c), access: :agent)
 
     message
+  end
+  defp approve_mission(c, mission) do
+    content = "Approved mission brief."
+    note_id = "mission-brief-#{mission.mission.id}"
+
+    note =
+      Store.create_note(c.vault_id, c.user.id, %{
+        id: note_id,
+        title: "Mission brief",
+        content: content,
+        is_listed: true
+      })
+
+    revision = Cascade.Content.Privacy.note_revision(note)
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+      [mission.mission.id, note.id, revision]
+    )
+
+    assert {:ok, _} =
+             Missions.approve_workspace(
+               c.user.id,
+               c.vault_id,
+               mission.mission.id,
+               %{note.id => revision}
+             )
   end
 end

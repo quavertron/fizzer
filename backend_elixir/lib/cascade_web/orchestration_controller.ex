@@ -134,6 +134,7 @@ defmodule CascadeWeb.OrchestrationController do
               resume
             )
             |> PromptContext.append_context(context)
+            |> PromptContext.append_mission_context(dispatch, execution.runner_user_id)
 
           start_dispatch(dispatch, execution, %{built | prompt: prompt}, resume, inline_svgs)
         else

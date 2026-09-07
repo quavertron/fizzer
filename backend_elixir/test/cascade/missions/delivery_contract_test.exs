@@ -1,0 +1,317 @@
+defmodule Cascade.Missions.DeliveryContractTest do
+  use ExUnit.Case, async: false
+
+  alias Cascade.Accounts.SQL
+  alias Cascade.Chat.Agents
+  alias Cascade.Content.Store, as: ContentStore
+  alias Cascade.Missions.Store
+
+  setup do
+    suffix = System.unique_integer([:positive])
+    user_id = suffix + 700_000
+    username = "delivery_owner_#{suffix}"
+
+    SQL.exec(
+      "INSERT INTO users(id,username,password_hash,display_name,avatar_url,auth_version) VALUES(?,?,?,?,'',0)",
+      [user_id, username, "x", username]
+    )
+
+    vault = ContentStore.create_vault(user_id, %{name: "Delivery #{suffix}"})
+    other_vault = ContentStore.create_vault(user_id, %{name: "Other delivery #{suffix}"})
+
+    {:ok, coordinator_identity} =
+      Agents.upsert_identity(user_id, vault.id, %{
+        agentId: "codex",
+        displayName: "Coordinator #{suffix}",
+        mention: "delivery-coordinator-#{suffix}",
+        model: "gpt-5.6"
+      })
+
+    {:ok, other_coordinator_identity} =
+      Agents.upsert_identity(user_id, other_vault.id, %{
+        agentId: "codex",
+        displayName: "Other coordinator #{suffix}",
+        mention: "other-delivery-coordinator-#{suffix}",
+        model: "gpt-5.6"
+      })
+
+    %{
+      user_id: user_id,
+      user: %{id: user_id, username: username},
+      vault: vault,
+      other_vault: other_vault,
+      coordinator_identity: coordinator_identity,
+      other_coordinator_identity: other_coordinator_identity,
+      suffix: suffix
+    }
+  end
+
+  test "a deterministic mission id cannot roll back a workspace in another vault", ctx do
+    id = Ecto.UUID.generate()
+
+    {:ok, first} =
+      workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id, id, "First workspace")
+
+    assert {:error, _reason} =
+             Store.create_workspace(ctx.user_id, ctx.other_vault.id, %{
+               id: id,
+               title: "Cross-vault collision",
+               coordinatorIdentityId: ctx.other_coordinator_identity.id,
+               briefContent: "Must not claim the first workspace"
+             })
+
+    assert ContentStore.get_note(first.channelId)
+    assert Enum.any?(first.mission.notes, &ContentStore.get_note(&1.noteId))
+    assert match?({:ok, _}, Store.get_workspace(ctx.user_id, ctx.vault.id, first.mission.id))
+  end
+
+  test "omitted brief revisions capture once and retries reuse the captured snapshot", ctx do
+    {:ok, created} =
+      workspace_fixture(
+        ctx,
+        ctx.vault.id,
+        ctx.coordinator_identity.id,
+        Ecto.UUID.generate(),
+        "Brief retry"
+      )
+
+    {:ok, worker_identity} =
+      Agents.upsert_identity(ctx.user_id, ctx.vault.id, %{
+        agentId: "codex",
+        displayName: "Worker #{ctx.suffix}",
+        mention: "delivery-worker-#{ctx.suffix}",
+        model: "gpt-5.6"
+      })
+
+    {:ok, worker} =
+      Agents.add_to_channel(ctx.user_id, ctx.vault.id, created.channelId, worker_identity.id)
+
+    brief = Enum.find(created.mission.notes, &(&1.kind == "mission"))
+
+    input = %{
+      coordinatorRegistrationId: created.mission.coordinatorRegistrationId,
+      title: "Research the brief",
+      assignee: worker.id,
+      purpose: "research",
+      briefNoteId: brief.noteId
+    }
+
+    {:ok, first} = Store.add_task(ctx.user_id, created.channelId, created.mission.id, input)
+    captured = first.task.briefRevisions[brief.noteId]
+
+    ContentStore.update_note(brief.noteId, "Changed after delegation", ctx.user_id,
+      expected_revision: brief.revision
+    )
+
+    {:ok, retry} = Store.add_task(ctx.user_id, created.channelId, created.mission.id, input)
+    assert retry.task.id == first.task.id
+    assert retry.task.briefRevisions[brief.noteId] == captured
+
+    assert {:error, {:revision_conflict, _}} =
+             Store.add_task(
+               ctx.user_id,
+               created.channelId,
+               created.mission.id,
+               Map.put(input, :briefRevisions, %{brief.noteId => "note-v1:999"})
+             )
+  end
+
+  test "approval rejects an empty revision set when the durable brief is missing", ctx do
+    {:ok, created} =
+      workspace_fixture(
+        ctx,
+        ctx.vault.id,
+        ctx.coordinator_identity.id,
+        Ecto.UUID.generate(),
+        "Missing brief"
+      )
+
+    SQL.exec("DELETE FROM chat_mission_notes WHERE mission_id=?", [created.mission.id])
+
+    assert {:error, "Mission brief is missing"} =
+             Store.approve_workspace(ctx.user_id, ctx.vault.id, created.mission.id, %{})
+  end
+
+  test "integration and verification tasks need their required stage dependencies", ctx do
+    {:ok, created} =
+      workspace_fixture(
+        ctx,
+        ctx.vault.id,
+        ctx.coordinator_identity.id,
+        Ecto.UUID.generate(),
+        "Stage dependencies"
+      )
+
+    {:ok, approved} =
+      Store.approve_workspace(
+        ctx.user_id,
+        ctx.vault.id,
+        created.mission.id,
+        Map.new(created.mission.notes, &{&1.noteId, &1.revision})
+      )
+
+    {:ok, worker_identity} =
+      Agents.upsert_identity(ctx.user_id, ctx.vault.id, %{
+        agentId: "codex",
+        displayName: "Stage worker #{ctx.suffix}",
+        mention: "stage-worker-#{ctx.suffix}",
+        model: "gpt-5.6"
+      })
+
+    {:ok, worker} =
+      Agents.add_to_channel(ctx.user_id, ctx.vault.id, created.channelId, worker_identity.id)
+
+    {:ok, integration} =
+      Store.add_task(ctx.user_id, created.channelId, approved.id, %{
+        coordinatorRegistrationId: approved.coordinatorRegistrationId,
+        title: "Integration without review",
+        assignee: worker.id,
+        purpose: "integration"
+      })
+
+    {:ok, verification} =
+      Store.add_task(ctx.user_id, created.channelId, approved.id, %{
+        coordinatorRegistrationId: approved.coordinatorRegistrationId,
+        title: "Verification without integration",
+        assignee: worker.id,
+        purpose: "verification"
+      })
+
+    candidates = Store.schedulable(approved.id).candidates
+    refute Enum.any?(candidates, &(&1.taskId in [integration.task.id, verification.task.id]))
+  end
+
+  test "finish requires a covered chain and accepts only an explicit fix and re-review", ctx do
+    {:ok, created} =
+      workspace_fixture(
+        ctx,
+        ctx.vault.id,
+        ctx.coordinator_identity.id,
+        Ecto.UUID.generate(),
+        "Finish coverage"
+      )
+
+    {:ok, approved} =
+      Store.approve_workspace(
+        ctx.user_id,
+        ctx.vault.id,
+        created.mission.id,
+        Map.new(created.mission.notes, &{&1.noteId, &1.revision})
+      )
+
+    {:ok, worker_identity} =
+      Agents.upsert_identity(ctx.user_id, ctx.vault.id, %{
+        agentId: "codex",
+        displayName: "Finish worker #{ctx.suffix}",
+        mention: "finish-worker-#{ctx.suffix}",
+        model: "gpt-5.6"
+      })
+
+    {:ok, worker} =
+      Agents.add_to_channel(ctx.user_id, ctx.vault.id, created.channelId, worker_identity.id)
+    coordinator_id = approved.coordinatorRegistrationId
+    mission_id = approved.id
+
+    {:ok, implementation} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Implementation A", "implementation", worker.id)
+
+    {:ok, review} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Review A", "review", coordinator_id,
+        depends_on: [implementation.task.id], anonymous: true
+      )
+
+    {:ok, integration} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Integration A", "integration", worker.id,
+        depends_on: [review.task.id]
+      )
+
+    {:ok, verification} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Verification A", "verification", worker.id,
+        depends_on: [integration.task.id]
+      )
+
+    complete(implementation.task.id)
+    complete(review.task.id, review_outcome: "accepted")
+    complete(integration.task.id)
+    complete(verification.task.id, verification_passed: 1)
+
+    {:ok, implementation_b} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Implementation B", "implementation", worker.id)
+
+    {:ok, rejected} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Review B", "review", coordinator_id,
+        depends_on: [implementation_b.task.id], anonymous: true
+      )
+
+    complete(implementation_b.task.id)
+    complete(rejected.task.id, review_outcome: "changes_requested")
+
+    assert {:error, _} =
+             Store.finish(ctx.user_id, created.channelId, mission_id, %{
+               coordinatorRegistrationId: coordinator_id,
+               status: "completed",
+               summary: "Must not bypass the unresolved review"
+             })
+
+    {:ok, fix} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Fix B", "fix", worker.id,
+        depends_on: [rejected.task.id]
+      )
+
+    {:ok, rereview} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Re-review B", "review", coordinator_id,
+        depends_on: [fix.task.id], anonymous: true
+      )
+
+    {:ok, integration_b} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Integration B", "integration", worker.id,
+        depends_on: [rereview.task.id]
+      )
+
+    {:ok, verification_b} =
+      add_task(ctx, created.channelId, mission_id, coordinator_id, "Verification B", "verification", worker.id,
+        depends_on: [integration_b.task.id]
+      )
+
+    complete(fix.task.id)
+    complete(rereview.task.id, review_outcome: "accepted")
+    complete(integration_b.task.id)
+    complete(verification_b.task.id, verification_passed: 1)
+
+    assert {:ok, finished} =
+             Store.finish(ctx.user_id, created.channelId, mission_id, %{
+               coordinatorRegistrationId: coordinator_id,
+               status: "completed",
+               summary: "The fix and re-review completed the delivery chain"
+             })
+
+    assert finished.mission.status == "completed"
+  end
+
+  defp workspace_fixture(ctx, vault_id, identity_id, id, title) do
+    Store.create_workspace(ctx.user_id, vault_id, %{
+      id: id,
+      title: title,
+      coordinatorIdentityId: identity_id,
+      briefContent: "#{title} brief"
+    })
+  end
+
+  defp add_task(ctx, channel_id, mission_id, coordinator_id, title, purpose, assignee, opts \\ []) do
+    Store.add_task(ctx.user_id, channel_id, mission_id, %{
+      coordinatorRegistrationId: coordinator_id,
+      title: title,
+      assignee: assignee,
+      purpose: purpose,
+      dependsOn: Keyword.get(opts, :depends_on, []),
+      anonymous: Keyword.get(opts, :anonymous, false)
+    })
+  end
+
+  defp complete(task_id, opts \\ []) do
+    SQL.exec(
+      "UPDATE chat_mission_tasks SET status='completed',summary=?,review_outcome=?,verification_passed=? WHERE id=?",
+      ["completed", Keyword.get(opts, :review_outcome), Keyword.get(opts, :verification_passed), task_id]
+    )
+  end
+end
