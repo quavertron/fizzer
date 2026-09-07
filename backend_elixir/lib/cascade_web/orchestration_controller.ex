@@ -768,6 +768,9 @@ defmodule CascadeWeb.OrchestrationController do
     end
   end
 
+  defp chat_context(_execution, _registration_id, _message_id, "sys-mission-wiki-" <> _, _resume),
+    do: {[], []}
+
   defp chat_context(execution, registration_id, message_id, triggering_message_id, resume) do
     if execution.target_channel_id == "" do
       {[], []}

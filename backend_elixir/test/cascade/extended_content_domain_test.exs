@@ -487,10 +487,10 @@ defmodule Cascade.ExtendedContentDomainTest do
     assert Evolution.build_agent_memory_injection(vault.id).enabled == false
   end
 
-  test "isolated router exposes the exact 23-route catalog and preserves wrappers/statuses",
+  test "isolated router exposes the exact 25-route catalog and preserves wrappers/statuses",
        context do
-    assert length(CascadeWeb.ExtendedContentRoutes.catalog()) == 23
-    assert length(Enum.uniq(CascadeWeb.ExtendedContentRoutes.catalog())) == 23
+    assert length(CascadeWeb.ExtendedContentRoutes.catalog()) == 25
+    assert length(Enum.uniq(CascadeWeb.ExtendedContentRoutes.catalog())) == 25
     vault = Store.create_vault(context.user_id, %{name: "HTTP extended"})
 
     unauthorized = request(:get, "/api/vaults/#{vault.id}/scratchpad/status", nil, nil)

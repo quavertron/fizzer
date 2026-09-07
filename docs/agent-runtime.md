@@ -304,3 +304,41 @@ fields and publication-only inputs are not compared. These records have no
 historical baseline (`changesSinceRevisionKnown: false`), so an empty list does
 not mean nothing changed. Re-read the existing detail endpoint and merge
 intentionally before saving with the current revision.
+
+## Change-driven wiki maintenance
+
+Wiki upkeep is opt-in per vault. With the owner's authorization, enable it using
+`cascade-note wiki enable --channel <local-channel-id> --registration <owner-agent-id>`.
+Use `cascade-note wiki status --json` for the pending references, last result and
+run ID; `cascade-note wiki disable` pauses it and cancels its outstanding pass.
+The corresponding owner-scoped endpoint is `GET/PUT /api/vaults/:id/wiki-maintenance`.
+Enabling it does not immediately rewrite a vault or establish permission for a
+one-time cleanup.
+
+Content changes and completed owner runs with substantive summaries (at least
+80 characters) mark the vault dirty. Two minutes of quiet coalesce the changes,
+with at least one hour between starts. The existing dispatch scheduler performs
+only queued maintenance; there is no idle model polling or additional timer.
+The owner's registered desktop runner must be online. Each pass uses a fresh
+conversation through the usual serialized agent dispatch queue, preserving its
+admission, Stop and recovery behavior.
+
+A pass is instructed to read at most twelve relevant records and propose at most
+three edits to existing canonical topics or navigation. The server enforces the
+three-page limit, a 30 KB content limit per page, vault ownership, content revision
+checks and private-block preservation. It saves `pre-ai` and `ai-edit` versions.
+Conflicting proposals reject the batch before writes. Recovery snapshots precede
+filesystem writes, so an I/O failure can leave partial work recoverable in history.
+Redundant generated text may become a linked pointer after its evidence has been
+consolidated; automatic creation, deletion and folder reorganization are outside
+this first maintenance pass. Original user writing and useful uncertainty remain
+part of the curator's preservation instructions, not facts that a text validator
+can infer.
+
+The change queue retains thirty references; overflow requests a current-vault
+review. Changes arriving during a pass remain queued for the next allowed pass.
+Curator writes, curator completion, chat-marker notes and `_agent` memory notes
+do not trigger another pass. Success/no-op settles without a generated report or
+suggestion. Invalid output, conflicts, failure or cancellation pauses upkeep and
+retains the reason in status. A ten-minute execution limit requests cancellation;
+resume explicitly after inspecting the result and rereading affected pages.

@@ -54,6 +54,11 @@ defmodule CascadeWeb.ExtendedContentRouter do
   post "/api/vaults/:vaultId/channels/:channelId/distill",
     do: ExtendedContentController.distill(conn, vaultId, channelId)
 
+  get "/api/vaults/:id/wiki-maintenance", do: ExtendedContentController.wiki_maintenance(conn, id)
+
+  put "/api/vaults/:id/wiki-maintenance",
+    do: ExtendedContentController.configure_wiki_maintenance(conn, id)
+
   get "/api/vaults/:id/agent-memory", do: ExtendedContentController.get_agent_memory(conn, id)
   put "/api/vaults/:id/agent-memory", do: ExtendedContentController.update_agent_memory(conn, id)
 

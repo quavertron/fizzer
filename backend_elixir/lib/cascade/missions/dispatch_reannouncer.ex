@@ -52,7 +52,10 @@ defmodule Cascade.Missions.DispatchReannouncer do
     if recover, do: Cascade.Chat.Continuations.reconcile()
 
     maintenance =
-      if recover, do: Map.merge(state.maintenance, mission_jobs()), else: state.maintenance
+      if recover,
+        do:
+          Map.merge(state.maintenance, Map.merge(mission_jobs(), Cascade.WikiMaintenance.jobs())),
+        else: state.maintenance
 
     # Offline outbox rows stay untouched, including during maintenance cutover.
     # Runner registration wakes the queue after the owner can actually execute.
@@ -115,6 +118,10 @@ defmodule Cascade.Missions.DispatchReannouncer do
   defp mission_jobs do
     Scheduler.maintenance_missions()
     |> Map.new(fn [id, owner] -> {{:mission, id}, owner} end)
+  end
+
+  defp perform({:wiki, id}, owner) do
+    if RunnerLifecycle.online?(owner), do: Cascade.WikiMaintenance.tick(id)
   end
 
   defp perform({:delivery, id}, owner), do: RunnerLifecycle.replay_delivery(id, owner)

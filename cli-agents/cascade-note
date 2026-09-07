@@ -52,6 +52,7 @@ const DEFAULT_URL = 'https://cscd.online';
 const USAGE = `cascade-note — note CRUD against a live Cascade instance
 
 Usage:
+  cascade-note wiki status|enable|disable  upkeep settings (enable: --channel ID --registration ID)
   cascade-note vault list                list vault IDs and names
   cascade-note vault delete <id> --confirm-name <name> --authority-message <id>
                                         delete an inactive vault under an owner mission
@@ -333,6 +334,23 @@ async function main() {
       const remaining = await api(url, token, 'GET', '/api/vaults');
       if (remaining.vaults.some((v) => v.id === id)) fail('deletion returned success but target is still present');
       out(args, `Deleted vault ${name} (${id}); verified absent.`, { ...result, id, name, verifiedAbsent: true });
+      break;
+    }
+    case 'wiki': {
+      const vaultId = await resolveVault(url, token, args, config);
+      const action = args._[1] || 'status';
+      if (!['status', 'enable', 'disable'].includes(action)) fail('wiki needs status|enable|disable');
+      const endpoint = `/api/vaults/${vaultId}/wiki-maintenance`;
+      let data;
+      if (action === 'status') data = await api(url, token, 'GET', endpoint);
+      else if (action === 'disable') data = await api(url, token, 'PUT', endpoint, { enabled: false });
+      else {
+        const channelId = args.channel || configString(config, 'chatChannelId') || process.env.CASCADE_CHAT_CHANNEL;
+        const registrationId = args.registration || configString(config, 'chatRegistrationId');
+        if (!channelId || !registrationId) fail('wiki enable needs --channel ID --registration ID');
+        data = await api(url, token, 'PUT', endpoint, { enabled: action === 'enable', channelId, registrationId });
+      }
+      out(args, JSON.stringify(data), data);
       break;
     }
     case 'list': {

@@ -230,3 +230,25 @@ test('cascade-note read/show/view/cat aliases get and resolves typos like nab fo
   const cat = await execFileAsync(process.execPath, [cli, 'cat', 'Navigation', ...targetArgs]);
   assert.equal(cat.stdout.trim(), 'Navigation content here');
 });
+
+test('wiki setup is vault-scoped and disabling needs no surviving registration', async (t) => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let text = '';
+    for await (const chunk of req) text += chunk;
+    requests.push({ method: req.method, url: req.url, body: text ? JSON.parse(text) : null });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ enabled: false }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const common = ['--url', `http://127.0.0.1:${server.address().port}`, '--token', 'test', '--vault', 'vault-1'];
+  await execFileAsync(process.execPath, [cli, 'wiki', 'enable', '--channel', 'channel-1', '--registration', 'agent-1', ...common]);
+  await execFileAsync(process.execPath, [cli, 'wiki', 'status', ...common]);
+  await execFileAsync(process.execPath, [cli, 'wiki', 'disable', ...common]);
+  assert.deepEqual(requests, [
+    { method: 'PUT', url: '/api/vaults/vault-1/wiki-maintenance', body: { enabled: true, channelId: 'channel-1', registrationId: 'agent-1' } },
+    { method: 'GET', url: '/api/vaults/vault-1/wiki-maintenance', body: null },
+    { method: 'PUT', url: '/api/vaults/vault-1/wiki-maintenance', body: { enabled: false } },
+  ]);
+});

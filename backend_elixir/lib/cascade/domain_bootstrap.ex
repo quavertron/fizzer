@@ -14,6 +14,7 @@ defmodule Cascade.DomainBootstrap do
     :ok = Cascade.Publishing.ensure_schema()
     :ok = Cascade.Evolution.ensure_schema()
     :ok = Cascade.Scratchpad.ensure_schema()
+    :ok = Cascade.WikiMaintenance.ensure_schema()
     :ok = Cascade.Realtime.Events.install_note_mutation_sink()
     {:ok, %{bootstrapped_at: DateTime.utc_now()}}
   end

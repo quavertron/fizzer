@@ -199,6 +199,75 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
            ]) == [1]
   end
 
+  test "wiki change reaches the runner once and persists guarded proposals without a chat report",
+       ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    alias Cascade.WikiMaintenance, as: Wiki
+
+    assert {:ok, _} =
+             Wiki.configure(ctx.owner.id, ctx.owner_vault.id, %{
+               "enabled" => true,
+               "channelId" => ctx.owner_channel.id,
+               "registrationId" => ctx.registration.id
+             })
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        title: "Canonical topic",
+        content: "Earlier evidence"
+      })
+
+    # Advance only the debounce clock; the actual scheduler admits and delegates.
+    SQL.exec("UPDATE wiki_maintenance SET due_at=1 WHERE vault_id=?", [ctx.owner_vault.id])
+    Wiki.tick(ctx.owner_vault.id)
+    delegated = event!(ctx.sid, "run:delegate")
+    assert delegated["prompt"] =~ "one bounded wiki maintenance pass"
+    refute delegated["prompt"] =~ "channel control plane"
+    refute delegated["prompt"] =~ "offer exactly one new bounded"
+    run_id = delegated["runId"]
+    %{dispatchId: dispatch_id} = Wiki.status(ctx.owner.id, ctx.owner_vault.id)
+    assert Store.get(run_id).conversation_id != ctx.registration.conversationId
+    assert {:ok, same} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+    assert same.id == run_id
+
+    summary =
+      Jason.encode!(%{
+        updates: [
+          %{
+            noteId: note.id,
+            revision: Wiki.revision(note.content),
+            content: "Current evidence; see [[Source]]"
+          }
+        ]
+      })
+
+    send_socket!(
+      ctx.sid,
+      SocketIO.event("/runners", "runner:runEvent", [
+        %{
+          "runId" => run_id,
+          "type" => "status",
+          "payload" => %{status: "completed", summary: summary}
+        }
+      ])
+    )
+
+    eventually(fn -> assert Store.get(run_id).status == "completed" end)
+    Wiki.tick(ctx.owner_vault.id)
+
+    eventually(fn ->
+      assert ContentStore.get_note(note.id).content == "Current evidence; see [[Source]]"
+    end)
+
+    assert %{enabled: true, pending: [], dispatchId: nil} =
+             Wiki.status(ctx.owner.id, ctx.owner_vault.id)
+
+    Wiki.tick(ctx.owner_vault.id)
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch_id]) == [1]
+    assert SQL.one("SELECT body FROM chat_messages WHERE run_id=?", [run_id]) in [nil, [""]]
+  end
+
   test "headless admission starts on the owner's projection; HTTP cannot override or duplicate",
        ctx do
     delegate = event!(ctx.sid, "run:delegate")

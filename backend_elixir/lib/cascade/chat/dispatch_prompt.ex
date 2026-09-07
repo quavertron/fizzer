@@ -27,6 +27,10 @@ defmodule Cascade.Chat.DispatchPrompt do
   }
 
   @doc "Returns prompt, provider images, and the outgoing collaboration reply reference. Room context is added by the caller."
+  def build(%{messageId: "sys-mission-wiki-" <> _} = dispatch, _execution, _resume) do
+    %{prompt: Privacy.redact_blocks(dispatch.message.body), images: [], reply_to: nil}
+  end
+
   def build(dispatch, execution, resume) do
     channel_id = execution.target_channel_id
     user_id = execution.runner_user_id

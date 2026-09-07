@@ -198,6 +198,7 @@ defmodule Cascade.Realtime.Events do
   def note_mutation(note_id, actor_user_id, _kind)
       when is_binary(note_id) and is_integer(actor_user_id) do
     CommunityActivity.record_note_change(note_id, actor_user_id)
+    Cascade.WikiMaintenance.note_changed(note_id)
 
     case SQL.one("SELECT vault_id FROM notes WHERE id=?", [note_id]) do
       [vault_id] -> community_changed_for_vault(vault_id)

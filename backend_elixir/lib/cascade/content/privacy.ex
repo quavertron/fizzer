@@ -13,6 +13,11 @@ defmodule Cascade.Content.Privacy do
   def redact_note(note, agent?) do
     note = Map.delete(note, :file_path)
 
+    note =
+      if is_binary(note[:content]),
+        do: Map.put(note, :revision, Cascade.WikiMaintenance.revision(note.content)),
+        else: note
+
     if agent? do
       note
       |> maybe_update(:content, &redact_blocks/1)

@@ -311,7 +311,7 @@ defmodule Cascade.Runs.Store do
           """,
           [
             status,
-            clean(summary, 20_000),
+            clean(summary, if(Cascade.WikiMaintenance.run?(run_id), do: 200_000, else: 20_000)),
             if(missing_session?, do: 1, else: 0),
             nil_if_blank(session_id),
             run_id
@@ -320,6 +320,8 @@ defmodule Cascade.Runs.Store do
 
         clear_delegated(run_id)
         Cascade.Missions.DispatchReannouncer.wake()
+
+        Cascade.WikiMaintenance.run_finished(run_id, status, summary)
         :ok
     end
   end

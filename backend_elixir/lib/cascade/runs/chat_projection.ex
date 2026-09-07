@@ -50,6 +50,12 @@ defmodule Cascade.Runs.ChatProjection do
 
     target = target(run_id, owner_id) || restore_target(run_id, owner_id)
     projection = content(state, not is_nil(target) and target.final_reply_only)
+
+    projection =
+      if Cascade.WikiMaintenance.run?(run_id),
+        do: %{projection | body: "", blocks: [], harnessLog: ""},
+        else: projection
+
     persisted = cursor.persisted
     fingerprint = persist_fingerprint(projection)
 
