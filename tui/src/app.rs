@@ -18,6 +18,12 @@ pub enum AgentSettingsField {
     Model,
     ReasoningEffort,
     PriorityServiceTier,
+    ColorR,
+    ColorG,
+    ColorB,
+    ColorH,
+    ColorS,
+    ColorV,
     Orchestrator,
     ReplyToEveryMessage,
     TaggableByAgents,
@@ -25,6 +31,20 @@ pub enum AgentSettingsField {
     Yolo,
     Save,
     Cancel,
+}
+
+impl AgentSettingsField {
+    pub fn is_color_slider(&self) -> bool {
+        matches!(
+            self,
+            Self::ColorR
+                | Self::ColorG
+                | Self::ColorB
+                | Self::ColorH
+                | Self::ColorS
+                | Self::ColorV
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,11 +131,94 @@ pub struct AgentSettingsState {
     pub model_choice_idx: usize,
     pub editing_custom_model: bool,
     pub custom_model_input: String,
+    pub color_r: u8,
+    pub color_g: u8,
+    pub color_b: u8,
+    pub color_h: u16,
+    pub color_s: u8,
+    pub color_v: u8,
     pub error_message: Option<String>,
 }
 
+pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let s = hex.trim().trim_start_matches('#');
+    if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some((r, g, b))
+    } else if s.len() == 3 {
+        let r = u8::from_str_radix(&s[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&s[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&s[2..3], 16).ok()?;
+        Some((r * 17, g * 17, b * 17))
+    } else {
+        None
+    }
+}
+
+pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (u16, u8, u8) {
+    let rf = r as f64 / 255.0;
+    let gf = g as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+
+    let cmax = rf.max(gf).max(bf);
+    let cmin = rf.min(gf).min(bf);
+    let delta = cmax - cmin;
+
+    let h = if delta < 1e-6 {
+        0.0
+    } else if (cmax - rf).abs() < 1e-6 {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if (cmax - gf).abs() < 1e-6 {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let h = if h < 0.0 { h + 360.0 } else { h };
+
+    let s = if cmax < 1e-6 { 0.0 } else { (delta / cmax) * 100.0 };
+    let v = cmax * 100.0;
+
+    (
+        h.round().clamp(0.0, 360.0) as u16 % 360,
+        s.round().clamp(0.0, 100.0) as u8,
+        v.round().clamp(0.0, 100.0) as u8,
+    )
+}
+
+pub fn hsv_to_rgb(h: u16, s: u8, v: u8) -> (u8, u8, u8) {
+    let hf = (h % 360) as f64;
+    let sf = (s.min(100) as f64) / 100.0;
+    let vf = (v.min(100) as f64) / 100.0;
+
+    let c = vf * sf;
+    let x = c * (1.0 - ((hf / 60.0) % 2.0 - 1.0).abs());
+    let m = vf - c;
+
+    let (r1, g1, b1) = if hf < 60.0 {
+        (c, x, 0.0)
+    } else if hf < 120.0 {
+        (x, c, 0.0)
+    } else if hf < 180.0 {
+        (0.0, c, x)
+    } else if hf < 240.0 {
+        (0.0, x, c)
+    } else if hf < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    (
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
 impl AgentSettingsState {
-    pub fn new(agent_idx: usize, agent: AgentItem) -> Self {
+    pub fn new(agent_idx: usize, mut agent: AgentItem) -> Self {
         let presets = agent_model_presets(&agent.agent_id);
         let cur_model = agent.model.trim();
 
@@ -127,6 +230,28 @@ impl AgentSettingsState {
             (1 + presets.len(), cur_model.to_string())
         };
 
+        let (r, g, b) = if let Some(ref c) = agent.color {
+            parse_hex_color(c).unwrap_or_else(|| match agent.agent_id.as_str() {
+                "claude-code" => (217, 119, 87),
+                "codex" => (16, 163, 127),
+                "antigravity" => (66, 133, 244),
+                "hermes" => (168, 85, 247),
+                _ => (100, 180, 240),
+            })
+        } else {
+            match agent.agent_id.as_str() {
+                "claude-code" => (217, 119, 87),
+                "codex" => (16, 163, 127),
+                "antigravity" => (66, 133, 244),
+                "hermes" => (168, 85, 247),
+                _ => (100, 180, 240),
+            }
+        };
+        let (h, s, v) = rgb_to_hsv(r, g, b);
+        if agent.color.is_none() {
+            agent.color = Some(format!("#{:02X}{:02X}{:02X}", r, g, b));
+        }
+
         Self {
             agent_idx,
             agent,
@@ -135,6 +260,12 @@ impl AgentSettingsState {
             model_choice_idx,
             editing_custom_model: false,
             custom_model_input,
+            color_r: r,
+            color_g: g,
+            color_b: b,
+            color_h: h,
+            color_s: s,
+            color_v: v,
             error_message: None,
         }
     }
@@ -193,6 +324,68 @@ impl AgentSettingsState {
         }
     }
 
+    pub fn sync_color_to_agent(&mut self) {
+        self.agent.color = Some(format!("#{:02X}{:02X}{:02X}", self.color_r, self.color_g, self.color_b));
+    }
+
+    pub fn adjust_slider(&mut self, field: AgentSettingsField, delta: i32) {
+        match field {
+            AgentSettingsField::ColorR => {
+                self.color_r = (self.color_r as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorG => {
+                self.color_g = (self.color_g as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorB => {
+                self.color_b = (self.color_b as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorH => {
+                let mut new_h = self.color_h as i32 + delta;
+                while new_h < 0 {
+                    new_h += 360;
+                }
+                self.color_h = (new_h % 360) as u16;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorS => {
+                self.color_s = (self.color_s as i32 + delta).clamp(0, 100) as u8;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorV => {
+                self.color_v = (self.color_v as i32 + delta).clamp(0, 100) as u8;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            _ => {}
+        }
+    }
+
     pub fn fields(&self) -> Vec<AgentSettingsField> {
         let is_codex = self.agent.agent_id == "codex";
         let is_claude = self.agent.agent_id == "claude-code";
@@ -203,6 +396,12 @@ impl AgentSettingsState {
         if is_codex {
             list.push(AgentSettingsField::PriorityServiceTier);
         }
+        list.push(AgentSettingsField::ColorR);
+        list.push(AgentSettingsField::ColorG);
+        list.push(AgentSettingsField::ColorB);
+        list.push(AgentSettingsField::ColorH);
+        list.push(AgentSettingsField::ColorS);
+        list.push(AgentSettingsField::ColorV);
         list.push(AgentSettingsField::Orchestrator);
         list.push(AgentSettingsField::ReplyToEveryMessage);
         list.push(AgentSettingsField::TaggableByAgents);
@@ -258,6 +457,12 @@ impl AgentSettingsState {
                 self.agent.priority_service_tier = !self.agent.priority_service_tier;
                 None
             }
+            AgentSettingsField::ColorR
+            | AgentSettingsField::ColorG
+            | AgentSettingsField::ColorB
+            | AgentSettingsField::ColorH
+            | AgentSettingsField::ColorS
+            | AgentSettingsField::ColorV => None,
             AgentSettingsField::Orchestrator => {
                 self.agent.orchestrator = !self.agent.orchestrator;
                 if self.agent.orchestrator {
@@ -535,6 +740,7 @@ impl App {
             pingable_by_others: false,
             yolo: false,
             conversation_id: None,
+            color: None,
         };
         self.agent_settings_modal = Some(AgentSettingsState::new_agent(self.agents.len(), agent));
     }
@@ -1310,6 +1516,7 @@ mod tests {
             pingable_by_others: false,
             yolo: false,
             conversation_id: None,
+            color: None,
         };
 
         assert!(!app.is_agent_active(&agent));
@@ -1333,5 +1540,74 @@ mod tests {
         app.active_agent_ids.clear();
         app.active_agent_ids.insert("va-456".into());
         assert!(app.is_agent_active(&agent));
+    }
+
+    #[test]
+    fn test_color_hex_parsing() {
+        assert_eq!(parse_hex_color("#FF0000"), Some((255, 0, 0)));
+        assert_eq!(parse_hex_color("00FF00"), Some((0, 255, 0)));
+        assert_eq!(parse_hex_color("#0000FF"), Some((0, 0, 255)));
+        assert_eq!(parse_hex_color("#FFF"), Some((255, 255, 255)));
+        assert_eq!(parse_hex_color("invalid"), None);
+    }
+
+    #[test]
+    fn test_rgb_hsv_conversions() {
+        // Red
+        let (h, s, v) = rgb_to_hsv(255, 0, 0);
+        assert_eq!((h, s, v), (0, 100, 100));
+        let (r, g, b) = hsv_to_rgb(0, 100, 100);
+        assert_eq!((r, g, b), (255, 0, 0));
+
+        // Green
+        let (h, s, v) = rgb_to_hsv(0, 255, 0);
+        assert_eq!((h, s, v), (120, 100, 100));
+        let (r, g, b) = hsv_to_rgb(120, 100, 100);
+        assert_eq!((r, g, b), (0, 255, 0));
+
+        // Blue
+        let (h, s, v) = rgb_to_hsv(0, 0, 255);
+        assert_eq!((h, s, v), (240, 100, 100));
+        let (r, g, b) = hsv_to_rgb(240, 100, 100);
+        assert_eq!((r, g, b), (0, 0, 255));
+    }
+
+    #[test]
+    fn test_color_slider_adjustments() {
+        let agent = AgentItem {
+            id: "test-agent".into(),
+            display_name: "Test".into(),
+            mention: "test".into(),
+            agent_id: "codex".into(),
+            model: "".into(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+            color: Some("#FF0000".to_string()),
+        };
+
+        let mut modal = AgentSettingsState::new(0, agent);
+        assert_eq!(modal.color_r, 255);
+        assert_eq!(modal.color_g, 0);
+        assert_eq!(modal.color_b, 0);
+
+        // Adjust Red down by 55
+        modal.adjust_slider(AgentSettingsField::ColorR, -55);
+        assert_eq!(modal.color_r, 200);
+        assert_eq!(modal.agent.color.as_deref(), Some("#C80000"));
+
+        // Adjust Hue to 120 (Green)
+        modal.adjust_slider(AgentSettingsField::ColorH, 120);
+        assert_eq!(modal.color_h, 120);
+        let (r, g, b) = (modal.color_r, modal.color_g, modal.color_b);
+        assert_eq!(g > r, true);
+        assert_eq!(g > b, true);
     }
 }

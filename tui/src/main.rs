@@ -534,7 +534,10 @@ async fn run_app(
                                     KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
                                     KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
                                     KeyCode::Left | KeyCode::Char('h') => {
-                                        if modal.selected_field == AgentSettingsField::Model {
+                                        let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                        if modal.selected_field.is_color_slider() {
+                                            modal.adjust_slider(modal.selected_field, -step);
+                                        } else if modal.selected_field == AgentSettingsField::Model {
                                             modal.cycle_model(false);
                                         } else if modal.selected_field == AgentSettingsField::ReasoningEffort {
                                             modal.cycle_reasoning(false);
@@ -543,12 +546,25 @@ async fn run_app(
                                         }
                                     }
                                     KeyCode::Right | KeyCode::Char('l') => {
-                                        if modal.selected_field == AgentSettingsField::Model {
+                                        let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                        if modal.selected_field.is_color_slider() {
+                                            modal.adjust_slider(modal.selected_field, step);
+                                        } else if modal.selected_field == AgentSettingsField::Model {
                                             modal.cycle_model(true);
                                         } else if modal.selected_field == AgentSettingsField::ReasoningEffort {
                                             modal.cycle_reasoning(true);
                                         } else if modal.selected_field == AgentSettingsField::Save {
                                             modal.selected_field = AgentSettingsField::Cancel;
+                                        }
+                                    }
+                                    KeyCode::Char('[') | KeyCode::PageDown => {
+                                        if modal.selected_field.is_color_slider() {
+                                            modal.adjust_slider(modal.selected_field, -5);
+                                        }
+                                    }
+                                    KeyCode::Char(']') | KeyCode::PageUp => {
+                                        if modal.selected_field.is_color_slider() {
+                                            modal.adjust_slider(modal.selected_field, 5);
                                         }
                                     }
                                     KeyCode::Char(' ') => {

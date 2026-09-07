@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
+use crate::app::{parse_hex_color, ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let size = frame.area();
@@ -237,12 +237,13 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                 let is_selected = idx == app.selected_agent_idx;
                 let prefix = if is_selected { "> " } else { "  " };
 
-                let badge_color = match ag.agent_id.as_str() {
+                let default_badge = match ag.agent_id.as_str() {
                     "claude-code" => Color::Magenta,
                     "codex" => Color::Cyan,
                     "pi" => Color::Blue,
                     _ => Color::Yellow,
                 };
+                let badge_color = resolve_color(ag.color.as_deref(), default_badge);
 
                 let name_style = if is_selected && is_focused {
                     Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -442,6 +443,11 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let msg_count = app.messages.len();
         for (m_idx, msg) in app.messages.iter().enumerate() {
+            // Consecutive messages from the same author/agent within the grouping
+            // window fold together, just like the Electron frontend's chat batching.
+            let continues_group = m_idx > 0
+                && crate::api::continues_chat_group(&app.messages[m_idx - 1], msg);
+
             // Author formatting
             let is_agent = msg.agent_id.is_some() || msg.author.to_lowercase().contains("bot") || msg.author.to_lowercase().contains("agent") || msg.author == "Codex" || msg.author == "Pi";
             let is_self = msg.author == app.author;
@@ -449,20 +455,36 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             let author_color = if is_self {
                 Color::Green
             } else if is_agent {
-                Color::Cyan
+                let maybe_agent = app.agents.iter().find(|a| {
+                    msg.agent_id.as_deref() == Some(&a.id)
+                        || msg.agent_id.as_deref() == Some(&a.agent_id)
+                        || a.mention.eq_ignore_ascii_case(&msg.author)
+                        || a.display_name.eq_ignore_ascii_case(&msg.author)
+                });
+                if let Some(ag) = maybe_agent {
+                    resolve_color(ag.color.as_deref(), Color::Cyan)
+                } else {
+                    Color::Cyan
+                }
             } else if msg.author == "System" {
                 Color::Magenta
             } else {
                 Color::Yellow
             };
 
-            let author_line = Line::from(vec![
-                Span::styled("● ", Style::default().fg(author_color)),
-                Span::styled(&msg.author, Style::default().fg(author_color).bold()),
-                Span::raw("  "),
-                Span::styled(crate::api::format_timestamp(&msg.created_at), Style::default().fg(Color::DarkGray)),
-            ]);
-            lines.push(author_line);
+            if !continues_group {
+                let author_line = Line::from(vec![
+                    Span::styled("● ", Style::default().fg(author_color)),
+                    Span::styled(&msg.author, Style::default().fg(author_color).bold()),
+                    Span::raw("  "),
+                    Span::styled(crate::api::format_timestamp(&msg.created_at), Style::default().fg(Color::DarkGray)),
+                ]);
+                lines.push(author_line);
+            }
+
+            // A grouped continuation has no author line to mark its start, so its
+            // first content row gets a colored `>` in the margin instead.
+            let mut marker_pending = continues_group;
 
             // Message Body: word-wrapped so each Line is exactly 1 visual terminal row
             for body_line in msg.body.lines() {
@@ -470,8 +492,14 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                     lines.push(Line::from(""));
                 } else {
                     for wrapped_chunk in wrap_text(body_line, body_wrap_width) {
+                        let margin = if marker_pending {
+                            marker_pending = false;
+                            Span::styled("> ", Style::default().fg(author_color))
+                        } else {
+                            Span::raw("  ")
+                        };
                         lines.push(Line::from(vec![
-                            Span::raw("  "),
+                            margin,
                             Span::styled(wrapped_chunk, Style::default().fg(Color::White)),
                         ]));
                     }
@@ -484,14 +512,24 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                     0 | 1 => " ▤ image ".to_string(),
                     n => format!(" ▤ {} images ", n),
                 };
+                let margin = if marker_pending {
+                    marker_pending = false;
+                    Span::styled("> ", Style::default().fg(author_color))
+                } else {
+                    Span::raw("  ")
+                };
                 lines.push(Line::from(vec![
-                    Span::raw("  "),
+                    margin,
                     Span::styled(label, Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
                 ]));
             }
+            let _ = marker_pending;
 
-            // Only add spacing between messages, never after the last message
-            if m_idx + 1 < msg_count {
+            // Grouped continuations sit flush against each other; only a fresh
+            // group (or the stream's end) gets a blank line after it.
+            let next_continues = m_idx + 1 < msg_count
+                && crate::api::continues_chat_group(msg, &app.messages[m_idx + 1]);
+            if m_idx + 1 < msg_count && !next_continues {
                 lines.push(Line::from(""));
             }
         }
@@ -525,7 +563,7 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             offset += line_len + 1;
         }
     }
-    
+
     // Auto-scroll to bottom if scroll_offset is 0, else apply offset
     let max_scroll = total_lines.saturating_sub(visible_lines);
     let mut scroll_y = max_scroll.saturating_sub(app.scroll_offset);
@@ -616,7 +654,11 @@ pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
         return " No messages in this channel yet.".to_string();
     }
     let mut lines = Vec::new();
+    let msg_count = app.messages.len();
     for (index, message) in app.messages.iter().enumerate() {
+        let continues_group = index > 0
+            && crate::api::continues_chat_group(&app.messages[index - 1], message);
+
         let is_agent = message.agent_id.is_some()
             || message.author.to_lowercase().contains("bot")
             || message.author.to_lowercase().contains("agent")
@@ -631,17 +673,30 @@ pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
         } else {
             Color::Yellow
         };
-        lines.push(format!(
-            "● {}  {}",
-            message.author,
-            crate::api::format_timestamp(&message.created_at)
-        ));
+        if !continues_group {
+            lines.push(format!(
+                "● {}  {}",
+                message.author,
+                crate::api::format_timestamp(&message.created_at)
+            ));
+        }
+
+        // Mirrors render_messages_stream: a grouped continuation's first content
+        // row gets a `>` margin marker instead of a blank author line.
+        let mut marker_pending = continues_group;
+
         for body_line in message.body.lines() {
             if body_line.trim().is_empty() {
                 lines.push(String::new());
             } else {
                 for chunk in wrap_text(body_line, body_wrap_width) {
-                    lines.push(format!("  {}", chunk));
+                    let margin = if marker_pending {
+                        marker_pending = false;
+                        "> "
+                    } else {
+                        "  "
+                    };
+                    lines.push(format!("{}{}", margin, chunk));
                 }
             }
         }
@@ -650,9 +705,19 @@ pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
                 0 | 1 => " ▤ image ".to_string(),
                 count => format!(" ▤ {} images ", count),
             };
-            lines.push(format!("  {}", label));
+            let margin = if marker_pending {
+                marker_pending = false;
+                "> "
+            } else {
+                "  "
+            };
+            lines.push(format!("{}{}", margin, label));
         }
-        if index + 1 < app.messages.len() {
+        let _ = marker_pending;
+
+        let next_continues = index + 1 < msg_count
+            && crate::api::continues_chat_group(message, &app.messages[index + 1]);
+        if index + 1 < msg_count && !next_continues {
             lines.push(String::new());
         }
     }
@@ -954,9 +1019,141 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+pub fn supports_truecolor() -> bool {
+    if let Ok(force) = std::env::var("FORCE_ANSI") {
+        if force == "1" || force.eq_ignore_ascii_case("true") {
+            return false;
+        }
+    }
+    if let Ok(val) = std::env::var("COLORTERM") {
+        let val = val.to_ascii_lowercase();
+        if val == "truecolor" || val == "24bit" {
+            return true;
+        }
+    }
+    if let Ok(term) = std::env::var("TERM") {
+        let term = term.to_ascii_lowercase();
+        if term.contains("24bit") || term.contains("truecolor") || term.contains("direct") {
+            return true;
+        }
+    }
+    false
+}
+
+const ANSI_COLORS: &[(Color, u8, u8, u8)] = &[
+    (Color::Black, 0, 0, 0),
+    (Color::Red, 178, 34, 34),
+    (Color::Green, 34, 139, 34),
+    (Color::Yellow, 204, 153, 0),
+    (Color::Blue, 30, 144, 255),
+    (Color::Magenta, 186, 85, 211),
+    (Color::Cyan, 0, 191, 255),
+    (Color::Gray, 192, 192, 192),
+    (Color::DarkGray, 105, 105, 105),
+    (Color::LightRed, 255, 99, 71),
+    (Color::LightGreen, 50, 205, 50),
+    (Color::LightYellow, 255, 255, 0),
+    (Color::LightBlue, 100, 149, 237),
+    (Color::LightMagenta, 238, 130, 238),
+    (Color::LightCyan, 127, 255, 212),
+    (Color::White, 255, 255, 255),
+];
+
+pub fn closest_ansi_color(r: u8, g: u8, b: u8) -> Color {
+    let mut best_color = Color::White;
+    let mut min_dist = i64::MAX;
+
+    for &(color, ar, ag, ab) in ANSI_COLORS {
+        let dr = (r as i64) - (ar as i64);
+        let dg = (g as i64) - (ag as i64);
+        let db = (b as i64) - (ab as i64);
+        let dist = dr * dr + dg * dg + db * db;
+        if dist < min_dist {
+            min_dist = dist;
+            best_color = color;
+        }
+    }
+
+    best_color
+}
+
+pub fn resolve_color(hex_str: Option<&str>, default_color: Color) -> Color {
+    let Some(hex) = hex_str else {
+        return default_color;
+    };
+    let Some((r, g, b)) = parse_hex_color(hex) else {
+        return default_color;
+    };
+
+    if supports_truecolor() {
+        Color::Rgb(r, g, b)
+    } else {
+        closest_ansi_color(r, g, b)
+    }
+}
+
+pub fn render_slider_line<'a>(
+    label: &'static str,
+    val: u16,
+    max: u16,
+    unit: &'static str,
+    is_selected: bool,
+    color: Color,
+    total_width: usize,
+) -> Line<'a> {
+    let prefix = format!("  {}: ", label);
+    let suffix = format!(" {:>3}{} ", val, unit);
+    let used = prefix.len() + suffix.len();
+    let track_width = total_width.saturating_sub(used).max(10);
+
+    let ratio = (val as f64 / max as f64).clamp(0.0, 1.0);
+    let knob_pos = (ratio * (track_width.saturating_sub(1) as f64)).round() as usize;
+
+    let left_len = knob_pos;
+    let right_len = track_width.saturating_sub(knob_pos + 1);
+
+    let left_bar: String = "━".repeat(left_len);
+    let knob: &str = "●";
+    let right_bar: String = "─".repeat(right_len);
+
+    let label_style = if is_selected {
+        Style::default().fg(Color::Black).bg(color).bold()
+    } else {
+        Style::default().fg(color).bold()
+    };
+
+    let left_style = if is_selected {
+        Style::default().fg(color).bold()
+    } else {
+        Style::default().fg(color)
+    };
+
+    let knob_style = if is_selected {
+        Style::default().fg(Color::White).bold()
+    } else {
+        Style::default().fg(color).bold()
+    };
+
+    let right_style = Style::default().fg(Color::DarkGray);
+
+    let suffix_style = if is_selected {
+        Style::default().fg(Color::White).bold()
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    Line::from(vec![
+        Span::styled(prefix, label_style),
+        Span::styled(left_bar, left_style),
+        Span::styled(knob, knob_style),
+        Span::styled(right_bar, right_style),
+        Span::styled(suffix, suffix_style),
+    ])
+}
+
 pub fn agent_modal_rect(area: Rect) -> Rect {
-    let width = 78.min(area.width.saturating_sub(4)).max(34);
-    let height = 25.min(area.height.saturating_sub(2)).max(16);
+    let width = 86.min(area.width.saturating_sub(4)).max(34);
+    let height = 34.min(area.height.saturating_sub(2)).max(18);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width, height)
@@ -1056,6 +1253,43 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         ]));
     }
 
+    // Color (RGB / HSV) Section
+    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(Color::DarkGray))));
+
+    let hex_display = modal.agent.color.as_deref().unwrap_or("#FFFFFF");
+    let swatch_color = resolve_color(Some(hex_display), Color::White);
+    lines.push(Line::from(vec![
+        Span::styled("  Preview: [", Style::default().fg(Color::DarkGray)),
+        Span::styled("██████████", Style::default().fg(swatch_color)),
+        Span::styled("] ", Style::default().fg(Color::DarkGray)),
+        Span::styled(hex_display, Style::default().fg(Color::White).bold()),
+        Span::styled(format!("  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let slider_width = inner_width.saturating_sub(1);
+
+    // 6 Full-Width Sliders
+    let r_sel = modal.selected_field == AgentSettingsField::ColorR;
+    lines.push(render_slider_line("R", modal.color_r as u16, 255, "", r_sel, Color::LightRed, slider_width));
+
+    let g_sel = modal.selected_field == AgentSettingsField::ColorG;
+    lines.push(render_slider_line("G", modal.color_g as u16, 255, "", g_sel, Color::LightGreen, slider_width));
+
+    let b_sel = modal.selected_field == AgentSettingsField::ColorB;
+    lines.push(render_slider_line("B", modal.color_b as u16, 255, "", b_sel, Color::LightBlue, slider_width));
+
+    let h_sel = modal.selected_field == AgentSettingsField::ColorH;
+    let (hr, hg, hb) = crate::app::hsv_to_rgb(modal.color_h, 100, 100);
+    let h_color = resolve_color(Some(&format!("#{:02X}{:02X}{:02X}", hr, hg, hb)), Color::LightYellow);
+    lines.push(render_slider_line("H", modal.color_h, 360, "°", h_sel, h_color, slider_width));
+
+    let s_sel = modal.selected_field == AgentSettingsField::ColorS;
+    lines.push(render_slider_line("S", modal.color_s as u16, 100, "%", s_sel, Color::LightCyan, slider_width));
+
+    let v_sel = modal.selected_field == AgentSettingsField::ColorV;
+    lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", v_sel, Color::White, slider_width));
+
     // Replies Section
     lines.push(Line::from(Span::styled("  ── Replies ─────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
 
@@ -1123,7 +1357,7 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  Controls: ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[↑/↓] Navigate  [Space/Arrows] Cycle/Toggle  [Enter] Select/Edit  [Ctrl+S] Save  [Esc] Cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("[↑/↓] Navigate  [←/→] Adjust Slider  [Shift+←/→] ±10  [[ / ]] ±5  [Enter] Select  [Ctrl+S] Save  [Esc] Cancel", Style::default().fg(Color::DarkGray)),
     ]));
 
     if let Some(ref err) = modal.error_message {
@@ -1168,6 +1402,7 @@ mod tests {
             pingable_by_others: false,
             yolo: false,
             conversation_id: None,
+            color: None,
         };
 
         let ball_0 = agent_termimation_ball(&agent, 0, 0);
@@ -1182,5 +1417,29 @@ mod tests {
         let balls: Vec<String> = (0..8).map(|t| agent_termimation_ball(&agent, t, 0)).collect();
         let unique_balls: std::collections::HashSet<&String> = balls.iter().collect();
         assert!(unique_balls.len() > 1);
+    }
+
+    #[test]
+    fn test_ansi_color_fallback() {
+        // Pure red should match Red or LightRed
+        let ansi_red = closest_ansi_color(255, 0, 0);
+        assert!(ansi_red == Color::Red || ansi_red == Color::LightRed);
+
+        // Pure green should match Green or LightGreen
+        let ansi_green = closest_ansi_color(0, 255, 0);
+        assert!(ansi_green == Color::Green || ansi_green == Color::LightGreen);
+
+        // Pure blue should match Blue or LightBlue
+        let ansi_blue = closest_ansi_color(0, 0, 255);
+        assert!(ansi_blue == Color::Blue || ansi_blue == Color::LightBlue);
+    }
+
+    #[test]
+    fn test_render_slider_line_width() {
+        let line = render_slider_line("R", 128, 255, "", true, Color::LightRed, 60);
+        assert_eq!(line.spans.len(), 5);
+        // Spans: prefix, left_bar, knob, right_bar, suffix
+        let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(total_chars, 60);
     }
 }

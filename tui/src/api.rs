@@ -73,6 +73,60 @@ impl ChatMessage {
     }
 }
 
+/// Keep a burst compact, but never fold a later conversational turn into it.
+/// Mirrors the Electron frontend's `canGroupChatMessages` (client/src/chat/shared.ts).
+const CHAT_MESSAGE_GROUP_WINDOW_MS: i64 = 90_000;
+
+pub fn continues_chat_group(prev: &ChatMessage, next: &ChatMessage) -> bool {
+    if prev.agent_id != next.agent_id || prev.author.trim() != next.author.trim() {
+        return false;
+    }
+    let prev_date = prev.created_at.split('T').next().unwrap_or("");
+    let next_date = next.created_at.split('T').next().unwrap_or("");
+    if prev_date.is_empty() || prev_date != next_date {
+        return false;
+    }
+    match (parse_iso8601_ms(&prev.created_at), parse_iso8601_ms(&next.created_at)) {
+        (Some(a), Some(b)) => {
+            let elapsed = b - a;
+            (0..=CHAT_MESSAGE_GROUP_WINDOW_MS).contains(&elapsed)
+        }
+        _ => false,
+    }
+}
+
+/// Parses an ISO-8601 UTC timestamp ("YYYY-MM-DDTHH:MM:SS[.fff]Z") into
+/// milliseconds since the epoch, without pulling in a datetime crate.
+fn parse_iso8601_ms(raw: &str) -> Option<i64> {
+    let (date, time) = raw.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+
+    let time_clean = time.trim_end_matches('Z');
+    let (hms, frac) = time_clean.split_once('.').unwrap_or((time_clean, "0"));
+    let mut time_parts = hms.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts.next()?.parse().ok()?;
+    let millis: i64 = format!("{:0<3}", frac).chars().take(3).collect::<String>().parse().ok()?;
+
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1000 + millis)
+}
+
+/// Howard Hinnant's `days_from_civil`: proleptic-Gregorian day count since the epoch.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
     #[serde(default)]
@@ -127,6 +181,8 @@ pub struct AgentItem {
     pub pingable_by_others: bool,
     #[serde(default)]
     pub yolo: bool,
+    #[serde(default)]
+    pub color: Option<String>,
     #[serde(rename = "conversationId", default)]
     pub conversation_id: Option<String>,
 }
@@ -398,7 +454,7 @@ impl CascadeClient {
             "vaultAgentId": agent.vault_agent_id,
             "agentId": agent.agent_id,
             "displayName": agent.display_name,
-            "mention": agent.mention,
+            "color": agent.color,
             "model": agent.model,
             "reasoningEffort": agent.reasoning_effort,
             "priorityServiceTier": agent.priority_service_tier,
@@ -407,6 +463,7 @@ impl CascadeClient {
             "taggableByAgents": agent.taggable_by_agents,
             "pingableByOthers": agent.pingable_by_others,
             "yolo": agent.yolo,
+            "mention": agent.mention,
         });
 
         let req = self.auth_header(self.client.put(&url).json(&payload));
