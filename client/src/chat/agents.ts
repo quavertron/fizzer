@@ -64,11 +64,9 @@ export function vaultAgentMembershipPayload(
  */
 export const CHAT_AGENT_MODEL_PRESETS: Record<AgentId, { id: string; label: string }[]> = {
   'claude-code': [
-    // Most capable first. Do not add speculative ids (e.g. a guessed
-    // "claude-opus-5"): the CLI resolves an unknown alias to its default
-    // instead of erroring, so the picker silently lies about what ran.
-    { id: 'claude-fable-5', label: 'Claude Fable 5' },
-    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+    // Most capable first. These pinned IDs are from the official current catalog.
+    { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+    { id: 'claude-opus-5', label: 'Claude Opus 5' },
     { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
     { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
   ],
@@ -81,8 +79,8 @@ export const CHAT_AGENT_MODEL_PRESETS: Record<AgentId, { id: string; label: stri
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
   ],
   grok: [
+    { id: 'grok-4.6', label: 'Grok 4.6' },
     { id: 'grok-4.5', label: 'Grok 4.5' },
-    { id: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
   ],
   // agentapi --model= only accepts flash_lite|flash|pro; named models below are
   // normalized onto one of those execution tiers.
