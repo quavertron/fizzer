@@ -82,6 +82,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
   notes: NoteSummary[];
   mentionableAliases: string[];
   registeredAgents: ChatAgentRegistration[];
+  draft: string;
+  draftKey?: string;
+  onDraftChange: (draft: string) => void;
   onSendMessage: (channelId: string, body: string, media?: ChatMediaAttachment[], replyTo?: ChatReplyRef) => void;
 }>(function ChatComposer({
   channelId,
@@ -90,9 +93,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
   notes,
   mentionableAliases,
   registeredAgents,
+  draft,
+  draftKey,
+  onDraftChange,
   onSendMessage,
 }, ref) {
-  const [draft, setDraft] = useState('');
+  const setDraft = onDraftChange;
   const [replyTarget, setReplyTarget] = useState<ChatReplyRef | null>(null);
   const [replyNotifiesAgent, setReplyNotifiesAgent] = useState(true);
   const [pendingMedia, setPendingMedia] = useState<ChatMediaAttachment[]>([]);
@@ -213,7 +219,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
       const cursor = start + emoji.length;
       textarea.setSelectionRange(cursor, cursor);
     });
-  }, [draft]);
+  }, [draft, setDraft]);
 
   const insertEmbedInDraft = useCallback((noteId: string, textarea: HTMLTextAreaElement) => {
     const embedded = notes.find((note) => note.id === noteId);
@@ -231,7 +237,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
       textarea.setSelectionRange(cursor, cursor);
     });
     return true;
-  }, [draft, notes]);
+  }, [draft, notes, setDraft]);
 
   function submit() {
     const body = draft.trim();
@@ -327,10 +333,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     }, 350);
   }, [commitHistory]);
 
-  const resetHistory = useCallback(() => {
+  const resetHistory = useCallback((initialDraft = '') => {
     if (historyTimerRef.current) { window.clearTimeout(historyTimerRef.current); historyTimerRef.current = null; }
-    historyRef.current = { stack: [{ v: '', s: 0, e: 0 }], index: 0 };
+    historyRef.current = { stack: [{ v: initialDraft, s: initialDraft.length, e: initialDraft.length }], index: 0 };
   }, []);
+
+  useEffect(() => {
+    resetHistory(draft);
+  }, [draftKey, resetHistory]);
 
   const stepHistory = useCallback((dir: -1 | 1) => {
     if (historyTimerRef.current) { window.clearTimeout(historyTimerRef.current); historyTimerRef.current = null; }
@@ -342,7 +352,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     const entry = history.stack[target];
     historySelRef.current = { s: entry.s, e: entry.e };
     setDraft(entry.v);
-  }, [commitHistory]);
+  }, [commitHistory, setDraft]);
 
   // Restore the caret after an undo/redo swap re-renders the textarea.
   useLayoutEffect(() => {

@@ -189,6 +189,7 @@ export default function App() {
   const [folders, setFolders] = useState<Folder[]>(initialVaultListing?.folders ?? []);
   const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [chatState, setChatState] = useState<ChatState>(loadChatState);
+  const [chatDraftsByVault, setChatDraftsByVault] = useState<Record<string, string>>({});
   const [loadingChatChannels, setLoadingChatChannels] = useState<Record<string, boolean>>({});
   const [chatPresenceByChannel, setChatPresenceByChannel] = useState<Record<string, ChatChannelPresence>>({});
   const [channelVaultIds, setChannelVaultIds] = useState<Record<string, string>>({});
@@ -252,6 +253,13 @@ export default function App() {
   // Refs mirror the latest state so event handlers stay stable (no dep churn)
   // and never read a stale closure during drags / async work.
   const activeVaultIdRef = useMemo(() => ({ get current() { return workspaceStore.activeVaultId; } }), [workspaceStore]);
+  const handleChatDraftChange = useCallback((draft: string) => {
+    const vaultId = activeVaultIdRef.current;
+    if (!vaultId) return;
+    setChatDraftsByVault((previous) => (
+      previous[vaultId] === draft ? previous : { ...previous, [vaultId]: draft }
+    ));
+  }, []);
   const notesRef = useRef(notes); notesRef.current = notes;
   const chatStateRef = useRef(chatState); chatStateRef.current = chatState;
   const vaultSocketRef = useRef<ReturnType<typeof connectVaultSocket> | null>(null);
@@ -2415,6 +2423,9 @@ export default function App() {
             onRemoveParticipant={handleRemoveChatParticipant}
             onLeaveChannel={handleLeaveChatChannel}
             onSendMessage={handleSendChatMessage}
+            draft={activeVaultId ? chatDraftsByVault[activeVaultId] ?? '' : ''}
+            draftKey={activeVaultId || undefined}
+            onDraftChange={handleChatDraftChange}
             onDeleteMessage={handleDeleteChatMessage}
             onForwardMessage={handleForwardChatMessage}
             onCancelRun={handleCancelChatRun}
@@ -2450,7 +2461,7 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled]);
+  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, chatDraftsByVault, handleChatDraftChange, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled]);
 
   if (!authReady) return <main className="auth-shell" id="auth-pending" />;
 
@@ -2822,6 +2833,9 @@ export default function App() {
                 onRemoveParticipant={handleRemoveChatParticipant}
                 onLeaveChannel={handleLeaveChatChannel}
                 onSendMessage={handleSendChatMessage}
+                draft={activeVaultId ? chatDraftsByVault[activeVaultId] ?? '' : ''}
+                draftKey={activeVaultId || undefined}
+                onDraftChange={handleChatDraftChange}
                 onCancelRun={handleCancelChatRun}
                 notes={notes}
                 onOpenNote={openNote}

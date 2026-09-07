@@ -113,6 +113,9 @@ interface ChatViewProps {
   membersOpen?: boolean;
   onMembersOpenChange?: (open: boolean) => void;
   vaultId?: string;
+  draft: string;
+  draftKey?: string;
+  onDraftChange: (draft: string) => void;
   /** Merge a full message (e.g. harness log) after expand-fetch. */
   onHydrateMessage?: (message: ChatMessage) => void;
   /** When set, scroll to and highlight this message once it's in the list (e.g. from search). */
@@ -186,6 +189,9 @@ export const ChatView = memo(function ChatView({
   membersOpen: membersOpenProp,
   onMembersOpenChange,
   vaultId,
+  draft,
+  draftKey,
+  onDraftChange,
   onHydrateMessage,
   jumpToMessageId,
   onJumpHandled,
@@ -1097,6 +1103,9 @@ export const ChatView = memo(function ChatView({
           notes={notes}
           mentionableAliases={mentionableAliases}
           registeredAgents={registeredAgents}
+          draft={draft}
+          draftKey={draftKey}
+          onDraftChange={onDraftChange}
           onSendMessage={sendMessage}
         />
       </div>}
