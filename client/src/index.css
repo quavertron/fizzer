@@ -4511,24 +4511,6 @@ button.chat-avatar.is-clickable:focus-visible {
   object-fit: cover;
   pointer-events: none;
 }
-[data-agent-ownership="owned"] {
-  --agent-color: var(--accent-hover);
-}
-[data-agent-ownership="other"] {
-  --agent-color: var(--decal-2);
-}
-.chat-avatar-agent[data-agent-ownership="owned"],
-.chat-avatar-agent[data-agent-ownership="other"] {
-  color: var(--agent-color);
-  background: color-mix(in srgb, var(--agent-color) 18%, var(--bg-surface));
-  border: 2px solid var(--agent-color);
-  box-sizing: border-box;
-}
-[data-agent-ownership] > .chat-agent-edit-btn .chat-user-copy strong,
-.chat-vault-pick-btn[data-agent-ownership] .chat-user-copy strong,
-.chat-message-group[data-agent-ownership] > .chat-message-body > .chat-message-meta > strong {
-  color: var(--agent-color, inherit);
-}
 .chat-message-body {
   min-width: 0;
   flex: 1;
