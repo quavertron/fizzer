@@ -273,7 +273,7 @@ Publishing is for sharing a finished or intentionally public document. It is not
 3. Press Enter to send; use Shift+Enter for a new line.
 4. Use the emoji action or upload action when needed.
 
-A channel transcript is persistent and realtime. Use ordinary messages for context, questions, decisions, and progress. Chat attachments support images, audio, video, PDFs, and text or Markdown files up to 64 MB each.
+A channel transcript is persistent and realtime. Use ordinary messages for context, questions, decisions, and progress. Chat attachments support images, audio, video, PDFs, and text or Markdown files up to 64 MB each. Fizzer keeps one unsent composer draft per vault for the current app session: it survives switching channels or vaults and returns when you come back. Sending clears the draft; it is not added to the transcript.
 
 ### Reply, quote, and forward
 
@@ -326,7 +326,11 @@ The desktop runner is required for normal local agent execution. If the runner i
 7. Add standing persona/context instructions if useful.
 8. Save the registration.
 
-An agent identity can be reused across channels in the vault. Channel membership controls how that identity behaves in a particular conversation.
+The model picker uses a desktop local catalog for **Codex** and **Antigravity** when available. If the local catalog is unavailable, empty, malformed, or times out—or if you are using the browser or an older desktop shell—the picker uses built-in models instead. **Claude** currently has the built-in rows Claude Fable 5.1, Claude Opus 5, Claude Sonnet 5, and Claude Haiku 4.5; **Grok** has Grok 4.6 and Grok 4.5. Select **Custom model ID…** to enter the exact provider model ID.
+
+The agent identity is a vault-wide resource: its display name, `@` handle, backend, model, and runtime defaults are available from any channel in that vault. Adding the identity to a channel creates channel-local membership settings; the channel transcript and the agent’s provider conversation history stay separate per channel and are not merged when you reuse the identity.
+
+In the picker, **My Agents** lists your active identities from other vaults. Importing one creates a separate identity in the current vault and seats it in the current channel; it copies only the provider, display name, and model, with a fresh non-conflicting handle, and does not copy the source `Cwd`, persona/context, avatar, membership settings, or channel history. **Create new…** creates a new vault identity and adds it to the current channel.
 
 ### Mention behavior
 
@@ -342,11 +346,15 @@ The channel settings include:
 
 Keep **Full host access** off unless you understand the local-machine consequences. The recommended execution mode keeps the agent inside its owner’s workspace and uses the owner’s local CLI account.
 
+Ownership cues use color: yellow marks an agent owned by you (the current user), while pink/red marks an agent owned by another user. The cue appears in agent lists and agent activity; ownership also controls who can edit an identity and whose local runner executes it.
+
 ### Choose a project folder
 
-Open channel settings and set **Project folder** to the directory where the agent should work. Agents can also use a vault-relative path in their registration.
+Open channel settings and set **Project folder** to the directory where every agent in this channel should work. This shared channel setting overrides each agent identity’s own `Cwd`. Agents can also use a vault-relative path in their registration.
 
-Set a project folder when you want an agent to edit a repository or inspect a defined project. Leave it unset for general conversation or note-oriented work.
+In the desktop app, **Browse** opens a native folder picker; selecting a directory saves it. You can enter a path manually and save it on blur or by pressing Enter. Canceling the picker, or a picker failure, leaves the current value unchanged. Browser/headless mode has no native picker, so enter the path manually.
+
+Set a project folder when you want an agent to edit a repository or inspect a defined project. Leave it unset for general conversation or note-oriented work. Only the channel owner can change this shared setting.
 
 ### Maintain account-wide agent guidance
 

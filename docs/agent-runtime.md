@@ -18,11 +18,34 @@ Revision conflicts retain `revision_conflict` and all recovery fields in
 
 The shared agent adapter is `cli-agents/cli-agent.ts`. Current agent IDs include
 Claude Code, Codex, Grok, Antigravity, Copilot, Hermes, Akron Grok, OMP, and Pi.
-Available models may be supplemented by a live capability probe from the
-desktop.
+
+Model selection uses the local desktop catalog for Codex and Antigravity when
+the corresponding CLI responds with a valid list. Empty, malformed, unavailable,
+or timed-out catalogs fall back to the built-in client presets; browser mode and
+older desktop shells use that fallback directly. Claude and Grok currently use
+their built-in pinned rows: Claude `claude-fable-5-1`, `claude-opus-5`,
+`claude-sonnet-5`, and `claude-haiku-4-5-20251001`; Grok `grok-4.6` and
+`grok-4.5`. The picker also accepts a custom model ID.
 
 Provider credentials are not stored on the Cascade server. Authentication is
 owned by the local CLI or provider SDK on the desktop that executes the run.
+
+## Vault identities and channel membership
+
+Within a vault, a persistent agent identity is a vault-wide resource. Its
+backend, display name, `@` handle, model, and runtime defaults can be listed
+from any channel and seated into individual channels. The channel membership
+(`chat_agent_members`) owns conversation behavior such as mention permissions,
+coordination, reply policy, and channel-local runtime overrides. Each
+membership has channel-local transcript/history and provider conversation state;
+reusing an identity in another channel does not merge those histories.
+
+The `My Agents` list contains the current user's active identities from other
+vaults. Import creates a separate identity in the target vault with only the
+provider, display name, and model; it starts with a non-conflicting handle and
+does not carry the source `Cwd`, persona/context, avatar, membership settings,
+or channel history. The client then seats the imported identity in the selected
+channel.
 
 ## Chat run lifecycle
 
