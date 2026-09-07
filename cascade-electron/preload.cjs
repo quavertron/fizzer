@@ -14,6 +14,14 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+const MODEL_CATALOG_AGENT_IDS = new Set([
+  'claude-code',
+  'codex',
+  'grok',
+  'antigravity',
+]);
+
+
 // Expose safe IPC methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
   // ── Windows ─────────────────────────────────────────────────
@@ -99,7 +107,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 });
 
 // Keep the small, renderer-facing picker API separate from the legacy desktop
-// surface so browser and hosted renderers can safely omit it.
 contextBridge.exposeInMainWorld('cascade', {
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+  getAgentModels: (agentId) => {
+    if (typeof agentId !== 'string' || !MODEL_CATALOG_AGENT_IDS.has(agentId)) {
+      return Promise.resolve({
+        models: [],
+        source: 'fallback',
+        error: 'Agent local model catalog is unsupported.',
+      });
+    }
+    return ipcRenderer.invoke('agent:getModels', agentId);
+  },
 });

@@ -48,6 +48,8 @@ const { AgentRunState, settleCancelAcknowledgement } = require('./agent-run-stat
 const { collectLocalAgents } = require('./local-agents.cjs');
 const worktrees = require('./worktrees.cjs');
 const { createFizzerIssue } = require('./github-issues.cjs');
+const { getAgentModels } = require('./model-catalog.cjs');
+
 const APP_NAME = 'Fizzer';
 const USE_EMBEDDED_BACKEND = shouldUseEmbeddedBackend({ packaged: app.isPackaged });
 let INSTANCE_ORIGIN = USE_EMBEDDED_BACKEND ? null : resolveInstanceOrigin({ packaged: app.isPackaged });
@@ -516,6 +518,18 @@ ipcMain.handle('window:mergeTab', async (event, { tab, screenX, screenY }) => {
   } catch (error) {
     console.error('[IPC] Failed to merge tab:', error);
     return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('agent:getModels', async (_event, agentId) => {
+  try {
+    return await getAgentModels(agentId);
+  } catch {
+    return {
+      models: [],
+      source: 'fallback',
+      error: 'Local model catalog is unavailable.',
+    };
   }
 });
 
