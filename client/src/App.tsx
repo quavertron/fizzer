@@ -1904,6 +1904,12 @@ export default function App() {
       ])));
     };
 
+    const handleVaultMembersChanged = (data: { vaultId: string }) => {
+      if (data.vaultId !== activeVaultId) return;
+      void loadVaultAgents(activeVaultId);
+      void loadChatAgentMembers(activeVaultId, [], { channelIds: openChatTabIds() });
+    };
+
     const handleCommunityChanged = () => scheduleCommunityRefresh();
 
     // Another member renamed the vault we are in; update the label in place.
@@ -1916,6 +1922,7 @@ export default function App() {
 
     socket.on('community:changed', handleCommunityChanged);
     socket.on('vault:renamed', handleVaultRenamed);
+    socket.on('vault:membersChanged', handleVaultMembersChanged);
     socket.on('vault:noteChanged', handleNoteChanged);
     socket.on('vault:noteCreated', handleNoteCreated);
     socket.on('vault:noteDeleted', handleNoteDeleted);
@@ -1943,6 +1950,7 @@ export default function App() {
       vaultSocketRef.current = null;
       socket.off('community:changed', handleCommunityChanged);
       socket.off('vault:renamed', handleVaultRenamed);
+      socket.off('vault:membersChanged', handleVaultMembersChanged);
       socket.off('vault:noteChanged', handleNoteChanged);
       socket.off('vault:noteCreated', handleNoteCreated);
       socket.off('vault:noteDeleted', handleNoteDeleted);
@@ -1957,7 +1965,7 @@ export default function App() {
       socket.off('vault:userProfileUpdated', handleUserProfileUpdated);
       socket.disconnect();
     };
-  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadChatAgentMembers, loadChatMessages, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
+  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
 
   useEffect(() => {
     const socket = vaultSocketRef.current;

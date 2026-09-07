@@ -25,6 +25,7 @@ type ServerEvents = {
   /** A relevant terminal message, note mutation, deletion, or read-state change occurred. */
   'community:changed': (data: Record<string, never>) => void;
   /** The vault's label changed; everyone in it should update the switcher. */
+  'vault:membersChanged': (data: { vaultId: string }) => void;
   'vault:renamed': (data: { vaultId: string; name: string }) => void;
   'vault:noteChanged': (data: { noteId: string; vaultId: string; title?: string }) => void;
   'vault:noteCreated': (data: { noteId: string; vaultId: string; title?: string }) => void;

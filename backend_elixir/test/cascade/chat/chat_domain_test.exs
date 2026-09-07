@@ -163,6 +163,67 @@ defmodule Cascade.ChatDomainTest do
     assert {:error, "Participant not found"} = Channel.remove_participant(channel.id, 1, "bob")
   end
 
+  test "leaving or kicking a member detaches their agents only from that vault" do
+    for actor <- [1, 2] do
+      {vault, first} = chat_vault(1, "Departures #{actor}", "First")
+      {other, other_channel} = chat_vault(2, "Personal #{actor}", "Other")
+      {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+
+      second =
+        Store.create_note(vault.id, 1, %{title: "Second", content: "cascade://chat-channel"})
+
+      {:ok, identity} =
+        Agents.upsert_identity(2, vault.id, %{agentId: "codex", mention: "guest#{actor}"})
+
+      {:ok, _} = Agents.add_to_channel(2, vault.id, first.id, identity.id)
+      {:ok, [_]} = Agents.ensure_vault_wide(1, vault.id, second.id)
+      {:ok, elsewhere} = Agents.add_to_channel(2, other.id, other_channel.id, identity.id)
+
+      {:ok, message} =
+        Messages.create(%{id: 2, username: "bob"}, vault.id, first.id, %{body: "Keep this"})
+
+      assert :ok = VaultMembers.remove(vault.id, actor, 2)
+      assert [0] = SQL.one("SELECT count(*) FROM chat_agent_members WHERE vault_id=?", [vault.id])
+      assert {:ok, []} = Agents.list_vault(1, vault.id)
+      assert {:ok, []} = Agents.ensure_vault_wide(1, vault.id, first.id)
+      assert {:ok, [^elsewhere]} = Agents.list_members(other_channel.id, 2)
+      assert ["Keep this"] = SQL.one("SELECT body FROM chat_messages WHERE id=?", [message.id])
+      assert {:ok, _} = Agents.get(2, other.id, identity.id)
+
+      # Rejoining does not silently reactivate the old registrations.
+      assert {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+      assert {:ok, []} = Agents.ensure_vault_wide(1, vault.id, first.id)
+      assert {:ok, _} = Agents.add_to_channel(2, vault.id, first.id, identity.id, %{}, true)
+    end
+  end
+
+  test "banning a member detaches their agents" do
+    {vault, channel} = chat_vault(1, "Ban cleanup", "Room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    {:ok, identity} = Agents.upsert_identity(2, vault.id, %{agentId: "codex", mention: "banned"})
+    {:ok, _} = Agents.add_to_channel(2, vault.id, channel.id, identity.id)
+    assert {:ok, _} = Cascade.Accounts.Moderation.ban(vault.id, 1, 2)
+    assert {:ok, []} = Agents.ensure_vault_wide(1, vault.id, channel.id)
+    assert [identity.id] == SQL.one("SELECT id FROM vault_agents WHERE id=?", [identity.id])
+  end
+
+  test "roster hydration repairs agents left by past departures" do
+    {vault, channel} = chat_vault(1, "Old departure", "Room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+
+    {:ok, identity} =
+      Agents.upsert_identity(2, vault.id, %{agentId: "codex", mention: "departed"})
+
+    {:ok, registration} = Agents.add_to_channel(2, vault.id, channel.id, identity.id)
+    SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=2", [vault.id])
+
+    assert {:ok, []} = Agents.list_members(channel.id, 1)
+    assert {:ok, []} = Agents.list_vault(1, vault.id)
+    assert {:ok, []} = Agents.ensure_vault_wide(1, vault.id, channel.id)
+    assert {:error, _} = Agents.resolve_owner_projection(1, channel.id, registration.id)
+    assert [identity.id] == SQL.one("SELECT id FROM vault_agents WHERE id=?", [identity.id])
+  end
+
   test "kick denies non-owner, owner self-removal, unknown users and agent credentials" do
     {vault, channel} = chat_vault(1, "Authorization", "Room")
     {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")

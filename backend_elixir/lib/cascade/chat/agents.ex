@@ -11,6 +11,7 @@ defmodule Cascade.Chat.Agents do
   def list_vault(user_id, vault_id) do
     if VaultMembers.role(vault_id, user_id) do
       purge_expired_sessions!()
+      remove_departed_owners(vault_id)
 
       agents =
         SQL.all(
@@ -83,6 +84,34 @@ defmodule Cascade.Chat.Agents do
     error in Exqlite.Error -> {:error, Exception.message(error)}
   end
 
+  @doc "Detach profiles whose owners have left this vault, including historical leftovers."
+  def remove_departed_owners(vault_id) do
+    SQL.transaction(fn ->
+      SQL.exec(
+        """
+        INSERT OR IGNORE INTO vault_agent_exclusions(vault_id,vault_agent_id)
+        SELECT ?,va.id FROM vault_agents va
+        WHERE va.owner_user_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM vault_members vm WHERE vm.vault_id=? AND vm.user_id=va.owner_user_id)
+          AND (va.vault_id=? OR EXISTS(
+            SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=va.id AND m.vault_id=?
+          ))
+        """,
+        [vault_id, vault_id, vault_id, vault_id]
+      )
+
+      SQL.exec(
+        """
+        DELETE FROM chat_agent_members WHERE vault_id=? AND vault_agent_id IN (
+          SELECT va.id FROM vault_agents va WHERE va.owner_user_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM vault_members vm WHERE vm.vault_id=? AND vm.user_id=va.owner_user_id)
+        )
+        """,
+        [vault_id, vault_id]
+      )
+    end)
+  end
+
   @doc "Unlinks an agent from one vault; the owner-scoped profile and other vault memberships survive."
   def unlink_from_vault(user_id, vault_id, identity_id) do
     with true <- not is_nil(VaultMembers.role(vault_id, user_id)),
@@ -134,6 +163,8 @@ defmodule Cascade.Chat.Agents do
     purge_expired_sessions!()
 
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
+      remove_departed_owners(route.sourceVaultId)
+
       members =
         SQL.all(
           """
