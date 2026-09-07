@@ -327,9 +327,9 @@ defmodule Cascade.Chat.Agents do
               m.taggable_by_agents,m.reply_to_every_message,m.orchestrator,m.pingable_by_others,
               m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode,m.next_step_suggestions FROM chat_agent_members m
             JOIN vault_agents va ON va.id=m.vault_agent_id
-            WHERE m.channel_id=? AND m.vault_id=? ORDER BY m.created_at,m.rowid
+            WHERE m.channel_id=? ORDER BY m.created_at,m.rowid
           """,
-          [route.sourceChannelId, route.localVaultId]
+          [route.sourceChannelId]
         )
         |> Enum.map(&member/1)
 
@@ -366,8 +366,8 @@ defmodule Cascade.Chat.Agents do
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
          existing <-
            SQL.one(
-             "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions,mention,model,cwd,context_prompt FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? AND vault_id=? ORDER BY rowid LIMIT 1",
-             [identity_id, route.sourceChannelId, route.localVaultId]
+             "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions,mention,model,cwd,context_prompt FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? ORDER BY rowid LIMIT 1",
+             [identity_id, route.sourceChannelId]
            ),
          mention <-
            Schema.normalize_mention(
@@ -386,13 +386,7 @@ defmodule Cascade.Chat.Agents do
          prompt <-
            value(flags, "contextPrompt", existing_value(existing, 15, default_prompt))
            |> to_string(),
-         :ok <-
-           member_handle_available(
-             route.sourceChannelId,
-             route.localVaultId,
-             identity_id,
-             mention
-           ) do
+         :ok <- member_handle_available(route.sourceChannelId, identity_id, mention) do
       registration_id = if existing, do: hd(existing), else: Ecto.UUID.generate()
 
       effort =
@@ -432,7 +426,6 @@ defmodule Cascade.Chat.Agents do
       with :ok <-
              coordinator_available(
                route.sourceChannelId,
-               route.localVaultId,
                registration_id,
                owner_id,
                orchestrator
@@ -440,10 +433,9 @@ defmodule Cascade.Chat.Agents do
         SQL.transaction(fn ->
           was_enabled =
             SQL.one(
-              "SELECT next_step_suggestions FROM chat_agent_members WHERE channel_id=? AND vault_id=? AND id=?",
-              [route.sourceChannelId, route.localVaultId, registration_id]
+              "SELECT next_step_suggestions FROM chat_agent_members WHERE channel_id=? AND id=?",
+              [route.sourceChannelId, registration_id]
             ) == [1]
-
           if restore_excluded do
             clear_vault_exclusions(route.localVaultId, identity_id)
           end
@@ -454,7 +446,7 @@ defmodule Cascade.Chat.Agents do
               mention,model,reasoning_effort,priority_service_tier,cwd,context_prompt,taggable_by_agents,
               reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(vault_id,channel_id,vault_agent_id) DO UPDATE SET
+            ON CONFLICT(channel_id,vault_agent_id) DO UPDATE SET
               agent_id=excluded.agent_id,display_name=excluded.display_name,avatar_url=excluded.avatar_url,
               mention=excluded.mention,model=excluded.model,reasoning_effort=excluded.reasoning_effort,
               priority_service_tier=excluded.priority_service_tier,cwd=excluded.cwd,
@@ -515,19 +507,17 @@ defmodule Cascade.Chat.Agents do
 
         [saved_registration_id] =
           SQL.one(
-            "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? AND vault_id=?",
-            [identity_id, route.sourceChannelId, route.localVaultId]
+            "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=?",
+            [identity_id, route.sourceChannelId]
           )
 
-        if route.localVaultId == route.sourceVaultId do
-          backfill_legacy_messages(
-            route.sourceChannelId,
-            saved_registration_id,
-            agent_id,
-            mention,
-            display_name
-          )
-        end
+        backfill_legacy_messages(
+          route.sourceChannelId,
+          saved_registration_id,
+          agent_id,
+          mention,
+          display_name
+        )
 
         list_members(channel_id, user_id) |> map_ok_find(saved_registration_id)
       end
@@ -607,9 +597,9 @@ defmodule Cascade.Chat.Agents do
            SQL.one(
              """
                SELECT m.vault_agent_id,va.owner_user_id FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id
-               WHERE m.id=? AND m.channel_id=? AND m.vault_id=?
+               WHERE m.id=? AND m.channel_id=?
              """,
-             [registration_id, route.sourceChannelId, route.localVaultId]
+             [registration_id, route.sourceChannelId]
            ),
          :ok <- manage_identity(owner_id, user_id) do
       unlink_from_vault(user_id, route.localVaultId, identity_id)
@@ -630,9 +620,9 @@ defmodule Cascade.Chat.Agents do
            SQL.one(
              """
                SELECT m.vault_agent_id,va.owner_user_id FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id
-               WHERE m.id=? AND m.channel_id=? AND m.vault_id=?
+               WHERE m.id=? AND m.channel_id=?
              """,
-             [registration_id, route.sourceChannelId, route.localVaultId]
+             [registration_id, route.sourceChannelId]
            ),
          {:ok, stored_url} <- Avatars.persist(user_id, identity_id, url) do
       SQL.transaction(fn ->
@@ -698,10 +688,10 @@ defmodule Cascade.Chat.Agents do
            SQL.one(
              """
                SELECT m.id,m.vault_agent_id,va.owner_user_id FROM chat_agent_members m
-               JOIN vault_agents va ON va.id=m.vault_agent_id WHERE m.id=? AND m.channel_id=? AND m.vault_id=?
+               JOIN vault_agents va ON va.id=m.vault_agent_id WHERE m.id=? AND m.channel_id=?
                AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
              """,
-             [registration_id, route.sourceChannelId, route.localVaultId]
+             [registration_id, route.sourceChannelId]
            ) do
       [_registration, _identity, owner_id] = row
 
@@ -967,12 +957,12 @@ defmodule Cascade.Chat.Agents do
     Enum.each(expired, &Avatars.purge/1)
   end
 
-  defp member_handle_available(channel_id, vault_id, identity_id, mention),
+  defp member_handle_available(channel_id, identity_id, mention),
     do:
       if(
         SQL.one(
-          "SELECT 1 FROM chat_agent_members WHERE channel_id=? AND vault_id=? AND mention=? COLLATE NOCASE AND vault_agent_id!=?",
-          [channel_id, vault_id, mention, identity_id]
+          "SELECT 1 FROM chat_agent_members WHERE channel_id=? AND mention=? COLLATE NOCASE AND vault_agent_id!=?",
+          [channel_id, mention, identity_id]
         ),
         do: {:error, "@#{mention} is already used by another agent in this channel"},
         else: :ok
@@ -985,15 +975,15 @@ defmodule Cascade.Chat.Agents do
         else: {:error, "You can only manage assistants in your own roster"}
       )
 
-  defp coordinator_available(_channel, _vault_id, _registration, _owner, false), do: :ok
+  defp coordinator_available(_channel, _registration, _owner, false), do: :ok
 
-  defp coordinator_available(channel, vault_id, registration, owner, true) do
+  defp coordinator_available(channel, registration, owner, true) do
     case SQL.one(
            """
              SELECT m.display_name,m.mention FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id
-             WHERE m.channel_id=? AND m.vault_id=? AND m.orchestrator!=0 AND m.id!=? AND va.owner_user_id=? LIMIT 1
+             WHERE m.channel_id=? AND m.orchestrator!=0 AND m.id!=? AND va.owner_user_id=? LIMIT 1
            """,
-           [channel, vault_id, registration, owner]
+           [channel, registration, owner]
          ) do
       [name, mention] ->
         {:error, "#{nonblank(name || "", "@#{mention}")} already coordinates this channel"}

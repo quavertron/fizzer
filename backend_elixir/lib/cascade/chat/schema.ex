@@ -407,7 +407,7 @@ defmodule Cascade.Chat.Schema do
       "CREATE INDEX IF NOT EXISTS chat_messages_run_idx ON chat_messages(run_id)",
       "CREATE INDEX IF NOT EXISTS chat_agent_members_channel_idx ON chat_agent_members(channel_id)",
       "DROP INDEX IF EXISTS chat_agent_members_identity_idx",
-      "CREATE UNIQUE INDEX chat_agent_members_identity_idx ON chat_agent_members(vault_id,channel_id,vault_agent_id)",
+      "CREATE UNIQUE INDEX chat_agent_members_identity_idx ON chat_agent_members(channel_id,vault_agent_id)",
       "CREATE INDEX IF NOT EXISTS vault_agents_vault_idx ON vault_agents(vault_id)",
       "CREATE UNIQUE INDEX IF NOT EXISTS vault_agents_import_source_idx ON vault_agents(vault_id,imported_from_agent_id) WHERE imported_from_agent_id IS NOT NULL",
       "CREATE INDEX IF NOT EXISTS vault_agents_owner_idx ON vault_agents(owner_user_id)",
@@ -519,11 +519,11 @@ defmodule Cascade.Chat.Schema do
           "SELECT id,vault_id,channel_id FROM chat_agent_members WHERE vault_agent_id=?",
           [loser]
         )
-        |> Enum.each(fn [loser_registration, member_vault, member_channel] ->
+        |> Enum.each(fn [loser_registration, _member_vault, member_channel] ->
           winner_registration =
             SQL.one(
-              "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND vault_id=? AND channel_id=?",
-              [winner, member_vault, member_channel]
+              "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=?",
+              [winner, member_channel]
             )
 
           case winner_registration do
@@ -613,16 +613,19 @@ defmodule Cascade.Chat.Schema do
       SELECT loser.id,winner.id
       FROM chat_agent_members loser
       JOIN chat_agent_members winner
-        ON winner.vault_id=loser.vault_id
-       AND winner.channel_id=loser.channel_id
+        ON winner.channel_id=loser.channel_id
        AND winner.vault_agent_id=loser.vault_agent_id
        AND winner.rowid=(
-         SELECT MIN(candidate.rowid) FROM chat_agent_members candidate
-         WHERE candidate.vault_id=loser.vault_id
-           AND candidate.channel_id=loser.channel_id
+         SELECT candidate.rowid
+         FROM chat_agent_members candidate
+         LEFT JOIN notes source
+           ON source.id=candidate.channel_id AND source.vault_id=candidate.vault_id
+         WHERE candidate.channel_id=loser.channel_id
            AND candidate.vault_agent_id=loser.vault_agent_id
+         ORDER BY CASE WHEN source.id IS NOT NULL THEN 0 ELSE 1 END,candidate.rowid
+         LIMIT 1
        )
-      WHERE loser.rowid>winner.rowid
+      WHERE loser.rowid!=winner.rowid
       """)
       |> Enum.each(fn [loser, winner] ->
         remap_registration!(loser, winner)
