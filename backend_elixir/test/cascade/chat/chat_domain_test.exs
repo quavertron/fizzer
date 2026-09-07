@@ -158,7 +158,6 @@ defmodule Cascade.ChatDomainTest do
 
     for table <- Map.keys(@node_column_signatures), do: assert_node_columns(table)
 
-    refute SQL.table_sql("chat_agent_members") =~ "UNIQUE(channel_id,vault_agent_id)"
     assert SQL.table_sql("chat_channel_links") =~ "UNIQUE(local_vault_id,source_channel_id)"
     assert SQL.table_sql("chat_messages") =~ "REFERENCES users(id)"
     assert SQL.table_sql("chat_note_grants") =~ "PRIMARY KEY(message_id,note_id)"
@@ -597,31 +596,41 @@ defmodule Cascade.ChatDomainTest do
              Agents.upsert_identity(1, first_vault.id, %{
                agentId: "codex",
                displayName: "Sol",
-               mention: "sol"
+               mention: "sol",
+               model: "gpt-5.6-sol",
+               cwd: "/source/private",
+               contextPrompt: "private source guidance",
+               avatarUrl: "https://example.test/source-avatar.png"
              })
 
-    assert {:ok, first_member} =
+    assert {:ok, _} =
              Agents.add_to_channel(1, first_vault.id, first_channel.id, identity.id)
 
-    assert {:ok, available} = Agents.list_vault(1, test_vault.id)
-    assert Enum.any?(available, &(&1.id == identity.id))
-
+    assert {:ok, %{myAgents: my_agents}} = Agents.list_for_vault(1, test_vault.id)
+    assert Enum.any?(my_agents, &(&1.id == identity.id))
     assert {:ok, []} = Agents.list_members(test_channel.id, 1)
 
-    assert SQL.one(
-             "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND vault_id=?",
-             [identity.id, test_vault.id]
-           ) == nil
+    assert {:ok, imported} =
+             Agents.upsert_identity(1, test_vault.id, %{sourceAgentId: identity.id})
+
+    assert imported.id != identity.id
+    assert imported.vaultId == test_vault.id
+    assert imported.agentId == identity.agentId
+    assert imported.displayName == identity.displayName
+    assert imported.model == identity.model
+    assert imported.cwd == ""
+    assert imported.contextPrompt == ""
+    assert imported.avatarUrl == ""
 
     assert {:ok, second_member} =
-             Agents.add_to_channel(1, test_vault.id, test_channel.id, identity.id)
+             Agents.add_to_channel(1, test_vault.id, test_channel.id, imported.id)
 
-    assert second_member.vaultAgentId == identity.id
+    assert second_member.vaultAgentId == imported.id
 
     assert {:ok, [projected_member]} =
              Agents.ensure_vault_wide(1, test_vault.id, test_channel_two.id)
 
-    assert projected_member.vaultAgentId == identity.id
+    assert projected_member.vaultAgentId == imported.id
 
     assert {:ok, true} =
              Agents.remove_member(1, test_vault.id, test_channel_two.id, projected_member.id)
@@ -632,8 +641,7 @@ defmodule Cascade.ChatDomainTest do
     assert {:ok, true} = Agents.unlink_from_vault(1, first_vault.id, identity.id)
     assert {:ok, reusable_profile} = Agents.get(1, first_vault.id, identity.id)
     assert reusable_profile.id == identity.id
-
-    assert SQL.one("SELECT id FROM chat_agent_members WHERE id=?", [first_member.id]) == nil
+    assert {:ok, []} = Agents.list_members(first_channel.id, 1)
 
     assert {:error, "Agent was removed from this vault"} =
              Agents.add_to_channel(1, first_vault.id, first_channel.id, identity.id)
@@ -643,16 +651,11 @@ defmodule Cascade.ChatDomainTest do
 
     assert restored_member.vaultAgentId == identity.id
 
-    assert SQL.one("SELECT id FROM chat_agent_members WHERE channel_id=?", [test_channel.id]) ==
-             nil
-
-    assert SQL.one("SELECT id FROM vault_agents WHERE id=?", [identity.id]) == [identity.id]
-
     assert {:ok, true} = Agents.delete_profile(1, first_vault.id, identity.id)
-    assert SQL.one("SELECT id FROM vault_agents WHERE id=?", [identity.id]) == nil
-
-    assert SQL.one("SELECT id FROM chat_agent_members WHERE vault_agent_id=?", [identity.id]) ==
-             nil
+    assert {:error, "Vault agent not found"} = Agents.get(1, first_vault.id, identity.id)
+    assert {:ok, imported_profile} = Agents.get(1, test_vault.id, imported.id)
+    assert imported_profile.id == imported.id
+    assert {:ok, []} = Agents.list_members(first_channel.id, 1)
   end
 
   test "vault agents separate local aliases, leases, and invocation policy" do
@@ -688,7 +691,7 @@ defmodule Cascade.ChatDomainTest do
                finalReplyOnly: true
              })
 
-    assert member.mention == "sol"
+    assert member.mention == "room-sol"
     refute member.pingableByOthers
     assert member.finalReplyOnly
 
@@ -731,7 +734,7 @@ defmodule Cascade.ChatDomainTest do
     assert {:ok, session_member} =
              Agents.add_to_channel(1, home.id, channel.id, session.id, %{mention: "temp-local"})
 
-    assert session_member.mention == "temporary"
+    assert session_member.mention == "temp-local"
 
     SQL.exec("UPDATE vault_agents SET expires_at='2000-01-01T00:00:00Z' WHERE id=?", [session.id])
     assert {:ok, active_members} = Agents.list_members(channel.id, 1)
@@ -782,11 +785,6 @@ defmodule Cascade.ChatDomainTest do
       |> Enum.map(fn {:ok, {:ok, registration}} -> registration.id end)
 
     assert length(Enum.uniq(registrations)) == 1
-
-    assert SQL.one(
-             "SELECT COUNT(*) FROM chat_agent_members WHERE channel_id=? AND vault_agent_id=?",
-             [channel.id, identity.id]
-           ) == [1]
   end
 
   test "terminal projection preserves mission artifacts and publishes one durable outcome" do
