@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState, type ReactNode } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight, X } from 'lucide-react';
 import { formatChatTime } from '../chat/time';
 import { createChatAgentRegistrationId } from '../chat/shared';
@@ -294,6 +294,13 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     hermesSafeMode: false,
     conversationId: '',
   }));
+  const [modelChoiceExplicit, setModelChoiceExplicit] = useState(false);
+  const modelCatalogRequestSequence = useRef<Record<CatalogAgentId, number>>({
+    'claude-code': 0,
+    codex: 0,
+    grok: 0,
+    antigravity: 0,
+  });
   const [modelCatalogs, setModelCatalogs] = useState<Record<CatalogAgentId, AgentModelCatalog>>(() => ({
     'claude-code': fallbackAgentModelCatalog('claude-code'),
     codex: fallbackAgentModelCatalog('codex'),
@@ -313,7 +320,10 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     : undefined;
   const refreshModelCatalog = useCallback(async (agentId: string) => {
     if (!isCatalogAgentId(agentId)) return;
+    const requestId = modelCatalogRequestSequence.current[agentId] + 1;
+    modelCatalogRequestSequence.current[agentId] = requestId;
     const catalog = await loadAgentModels(agentId);
+    if (modelCatalogRequestSequence.current[agentId] !== requestId) return;
     setModelCatalogs((previous) => ({ ...previous, [agentId]: catalog }));
   }, []);
   const channelVaultAgentIds = useMemo(
@@ -348,11 +358,21 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   }, [agentMenuOpen]);
   useEffect(() => {
     if (!agentMenuOpen || !isCatalogAgentId(agentForm.agentId)) return;
-    void refreshModelCatalog(agentForm.agentId);
+    const catalogAgentId = agentForm.agentId;
+    void refreshModelCatalog(catalogAgentId);
+    return () => {
+      modelCatalogRequestSequence.current[catalogAgentId] += 1;
+    };
   }, [agentForm.agentId, agentMenuOpen, refreshModelCatalog]);
 
   useEffect(() => {
-    if (!agentMenuOpen || !agentForm.agentId || !activeFormAgent || modelChoice === CUSTOM_MODEL_VALUE) return;
+    if (
+      !agentMenuOpen
+      || !agentForm.agentId
+      || !activeFormAgent
+      || modelChoice === CUSTOM_MODEL_VALUE
+      || modelChoiceExplicit
+    ) return;
     const currentModel = agentForm.model.trim();
     if (currentModel && activeFormAgent.models.some((model) => model.id === currentModel)) return;
     const firstModel = activeFormAgent.models[0]?.id;
@@ -365,7 +385,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     setModelChoice(firstModel);
     setCustomModel('');
     setAgentForm((value) => value.model === firstModel ? value : { ...value, model: firstModel });
-  }, [activeFormAgent, agentForm.agentId, agentForm.model, agentMenuOpen, modelChoice]);
+  }, [activeFormAgent, agentForm.agentId, agentForm.model, agentMenuOpen, modelChoice, modelChoiceExplicit]);
 
   function openAgentEditor(registration?: ChatAgentRegistration) {
     setAgentFormError('');
@@ -374,6 +394,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       const { choice, custom } = resolveModelPicker(agent, registration.model);
       setModelChoice(choice);
       setCustomModel(custom);
+      setModelChoiceExplicit(Boolean(registration.model.trim()));
       setAgentForm({ ...registration, model: modelFromPicker(choice, custom) });
       setEditingRegistrationId(registration.id);
     } else {
@@ -384,6 +405,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       const { choice, custom } = resolveModelPicker(agent, form.model);
       setModelChoice(choice);
       setCustomModel(custom);
+      setModelChoiceExplicit(false);
       setAgentForm(form);
       setEditingRegistrationId(null);
     }
@@ -423,6 +445,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     const { choice, custom } = resolveModelPicker(agent, registration.model);
     setModelChoice(choice);
     setCustomModel(custom);
+    setModelChoiceExplicit(Boolean(registration.model.trim()));
     setAgentForm({ ...registration, model: modelFromPicker(choice, custom) });
     setEditingRegistrationId(registration.id);
     setAgentPanelMode('edit-member');
@@ -922,6 +945,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                   const { choice, custom } = resolveModelPicker(agent, nextPreset);
                   setModelChoice(choice);
                   setCustomModel(custom);
+                  setModelChoiceExplicit(false);
                   setAgentForm((value) => ({
                     ...value,
                     agentId: event.target.value,
@@ -1013,6 +1037,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                     onChange={(event) => {
                       const choice = event.target.value;
                       setModelChoice(choice);
+                      setModelChoiceExplicit(true);
                       if (choice !== CUSTOM_MODEL_VALUE) setCustomModel('');
                       setAgentForm((value) => ({
                         ...value,
@@ -1020,6 +1045,10 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                       }));
                     }}
                   >
+                    {modelChoice !== CUSTOM_MODEL_VALUE
+                      && modelChoice
+                      && !activeFormAgent.models.some((model) => model.id === modelChoice)
+                      && <option value={modelChoice}>{modelChoice} (saved selection)</option>}
                     {activeFormAgent.models.map((model) => (
                       <option key={model.id} value={model.id}>{model.label}</option>
                     ))}
@@ -1034,6 +1063,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                       onChange={(event) => {
                         const next = event.target.value;
                         setCustomModel(next);
+                        setModelChoiceExplicit(true);
                         setAgentForm((value) => ({ ...value, model: next.trim() }));
                       }}
                     />
@@ -1048,6 +1078,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                     const next = event.target.value;
                     setCustomModel(next);
                     setModelChoice(CUSTOM_MODEL_VALUE);
+                    setModelChoiceExplicit(true);
                     setAgentForm((value) => ({ ...value, model: next.trim() }));
                   }}
                 />

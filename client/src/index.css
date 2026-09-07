@@ -10237,3 +10237,60 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
     opacity: 0.9;
   }
 }
+.chat-user.chat-agent-user.is-owner-unknown {
+  background: var(--bg-raised);
+}
+.chat-user.chat-agent-user.is-owner-unknown:hover,
+.chat-user.chat-agent-user.is-owner-unknown.is-editing {
+  background: color-mix(in srgb, var(--bg-surface) 72%, var(--bg-raised));
+  color: var(--text-primary);
+}
+.chat-user.chat-agent-user.is-owner-unknown.is-editing {
+  box-shadow: inset 2px 0 0 var(--text-tertiary);
+}
+.chat-user.chat-agent-user.is-owner-unknown .chat-user-role {
+  color: var(--text-tertiary);
+}
+.chat-user.chat-agent-user.is-owner-unknown.is-supervisor .chat-avatar {
+  box-shadow:
+    inset 0 0 0 1px hsla(220, 30%, 82%, 0.08),
+    0 0 0 1.5px var(--text-tertiary);
+}
+.chat-vault-pick-row.is-owner-unknown {
+  border-radius: var(--radius-md);
+  background: transparent;
+  box-shadow: inset 2px 0 0 var(--text-tertiary);
+}
+.chat-vault-pick-row.is-owner-unknown .chat-vault-pick-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-tertiary) 12%, var(--bg-raised));
+}
+.chat-message-group.is-owner-unknown::before {
+  background: color-mix(in srgb, var(--text-tertiary) 12%, var(--bg-raised));
+  opacity: 0.7;
+}
+.chat-message-group.is-owner-unknown .chat-avatar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-tertiary) 58%, transparent);
+}
+.chat-message-group.is-owner-unknown .chat-message-chunk.selected {
+  background: color-mix(in srgb, var(--text-tertiary) 14%, var(--bg-raised));
+}
+.chat-work-line.is-owner-unknown .chat-work-line-fold,
+.chat-work-line.is-owner-unknown.is-selected .chat-work-line-fold,
+.chat-work-line.is-owner-unknown.is-open .chat-work-line-fold {
+  background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
+}
+.chat-work-line.is-owner-unknown .chat-work-author {
+  color: var(--text-secondary);
+}
+.chat-work-trace .chat-work-trace-summary {
+  color: hsl(222, 13%, 72%);
+}
+@media (hover: hover) and (pointer: fine) {
+  .chat-work-line.is-owner-unknown .chat-work-line-fold:hover {
+    background: color-mix(in srgb, var(--text-tertiary) 16%, var(--bg-raised));
+  }
+  .chat-message-group.is-owner-unknown:hover::before {
+    background: color-mix(in srgb, var(--text-tertiary) 18%, var(--bg-raised));
+    opacity: 0.9;
+  }
+}
