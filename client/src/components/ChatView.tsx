@@ -16,7 +16,7 @@ import type {
   SharedChatNote,
   VaultAgent,
 } from '../chat/types';
-import { ChatAgentPanel, type ChatAgentPanelHandle, planUsageProviderId } from './ChatAgentPanel';
+import { ChatAgentPanel, type ChatAgentPanelHandle, type ChatAgentOwnershipResolver, type ChatMessageOwnershipResolver, planUsageProviderId } from './ChatAgentPanel';
 import { ChatAvatar } from './ChatAvatar';
 import { ChatChannelSettings } from './ChatChannelSettings';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
@@ -427,14 +427,30 @@ export const ChatView = memo(function ChatView({
     for (const agent of vaultAgents) map.set(agent.id, agent);
     return map;
   }, [vaultAgents]);
+  const currentUserId = presence.profiles?.[currentUser]?.id;
+  const resolveAgentOwnership: ChatAgentOwnershipResolver = useCallback((registration, vaultAgent) => {
+    const ownerUserId = registration?.ownerUserId ?? vaultAgent?.ownerUserId;
+    if (ownerUserId != null && currentUserId != null) {
+      return ownerUserId === currentUserId ? 'current-user' : 'other-user';
+    }
+    const ownerUsername = vaultAgent?.ownerUsername;
+    if (ownerUsername) return ownerUsername === currentUser ? 'current-user' : 'other-user';
+    return 'unknown';
+  }, [currentUser, currentUserId]);
   const canManageRegistration = useCallback((registration: ChatAgentRegistration) => {
     const identity = registration.vaultAgentId ? vaultAgentById.get(registration.vaultAgentId) : undefined;
     return Boolean(identity && identity.ownerUsername === currentUser);
   }, [currentUser, vaultAgentById]);
-  const resolveMessageRegistration = (message: ChatMessage) =>
+  const resolveMessageRegistration = useCallback((message: ChatMessage) => (
     message.registrationId
       ? registrationById.byId.get(message.registrationId)
-      : registrationById.byAgentOrName.get(message.agentId ?? '') ?? registrationById.byAgentOrName.get(message.author);
+      : registrationById.byAgentOrName.get(message.agentId ?? '') ?? registrationById.byAgentOrName.get(message.author)
+  ), [registrationById]);
+  const resolveMessageOwnership: ChatMessageOwnershipResolver = useCallback((message) => {
+    const registration = resolveMessageRegistration(message);
+    const identity = registration?.vaultAgentId ? vaultAgentById.get(registration.vaultAgentId) : undefined;
+    return resolveAgentOwnership(registration, identity);
+  }, [resolveAgentOwnership, resolveMessageRegistration, vaultAgentById]);
   const getMessageAvatarKind = (message: ChatMessage): 'agent' | 'human' =>
     message.agentId || agentAuthors.has(message.author) ? 'agent' : 'human';
   const resolveHumanProfile = (author: string) => {
@@ -1006,6 +1022,7 @@ export const ChatView = memo(function ChatView({
                     loadedMessageIds={loadedMessageIds}
                     onLightbox={openLightbox}
                     onImageLoad={scrollToBottomIfSticky}
+                    resolveMessageOwnership={resolveMessageOwnership}
                     onAgentAvatarClick={
                       resolveMessageRegistration(head)
                         ? (event) => openAgentSettingsFromMessage(head, event)
@@ -1058,6 +1075,7 @@ export const ChatView = memo(function ChatView({
                       onCancelRun={onCancelRun}
                       onContextMenu={openMessageContextMenu}
                       onReply={startReply}
+                      resolveMessageOwnership={resolveMessageOwnership}
                       vaultId={vaultId}
                       onHydrateMessage={onHydrateMessage}
                       runningMessageState={runningMessageState}
@@ -1267,6 +1285,7 @@ export const ChatView = memo(function ChatView({
           registeredAgentRows={registeredAgentRows}
           vaultAgents={vaultAgents}
           myAgents={myAgents}
+          resolveAgentOwnership={resolveAgentOwnership}
           runnerHealth={runnerHealth}
           onRegisterAgent={onRegisterAgent}
           onRemoveAgent={onRemoveAgent}

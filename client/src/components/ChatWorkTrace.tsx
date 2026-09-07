@@ -19,6 +19,7 @@ import {
 } from '../chat/workTrace';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { CascadeRunPanel } from './CascadeRunPanel';
+import { ownershipClass, type ChatAgentOwnership, type ChatMessageOwnershipResolver } from './ChatAgentPanel';
 import { shouldRenderRunPanel } from './ChatGroupRow';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
 import { SafeMarkdownImage } from './ChatMarkdown';
@@ -67,6 +68,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
   onContextMenu,
   onReply,
   selected,
+  ownership,
   vaultId,
   onHydrateMessage,
   latestRunningMessageId,
@@ -78,6 +80,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
   selected: boolean;
+  ownership: ChatAgentOwnership;
   vaultId?: string;
   onHydrateMessage?: (message: ChatMessage) => void;
   latestRunningMessageId?: string;
@@ -96,7 +99,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
       allowSwipeFrom=".chat-work-line-fold"
     >
       <div
-        className={`chat-work-line ${open ? 'is-open' : ''} ${selected ? 'is-selected' : ''} status-${message.status || 'done'}`}
+        className={`chat-work-line ${ownershipClass(ownership)} ${open ? 'is-open' : ''} ${selected ? 'is-selected' : ''} status-${message.status || 'done'}`}
         data-message-id={message.id}
         onContextMenu={(event) => onContextMenu(event, message)}
       >
@@ -149,6 +152,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   onCancelRun,
   onContextMenu,
   onReply,
+  resolveMessageOwnership,
   vaultId,
   onHydrateMessage,
   runningMessageState,
@@ -163,6 +167,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   onCancelRun: (runId: number) => void;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
+  resolveMessageOwnership: ChatMessageOwnershipResolver;
   vaultId?: string;
   onHydrateMessage?: (message: ChatMessage) => void;
   runningMessageState: ReadonlyMap<string, { latestId: string; count: number }>;
@@ -277,6 +282,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
                   onCancelRun={onCancelRun}
                   onContextMenu={onContextMenu}
                   onReply={onReply}
+                  ownership={resolveMessageOwnership(message)}
                   selected={selectedMessageId === message.id}
                   vaultId={vaultId}
                   onHydrateMessage={onHydrateMessage}

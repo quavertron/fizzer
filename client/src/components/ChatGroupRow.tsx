@@ -16,7 +16,7 @@ import { isMp4Attachment } from './ChatComposer';
 import { ChatMessageText } from './ChatMarkdown';
 import { ChatMissionCard } from './ChatMissionCard';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
-import { PlanUsageMeters } from './ChatAgentPanel';
+import { PlanUsageMeters, ownershipClass, type ChatMessageOwnershipResolver } from './ChatAgentPanel';
 import { SwipeToReply, swipeGestureActive } from './SwipeToReply';
 
 export function getRunningMessageState(messages: ChatMessage[]) {
@@ -78,6 +78,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   loadedMessageIds,
   onLightbox,
   onImageLoad,
+  resolveMessageOwnership,
   onAgentAvatarClick,
   scrollRootRef,
   vaultId,
@@ -114,7 +115,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   loadedMessageIds: ReadonlySet<string>;
   onLightbox: (src: string) => void;
   onImageLoad: () => void;
-  /** Open channel membership settings for this agent (message avatar click). */
+  /** Resolve ownership only for individual agent message rows. */
+  resolveMessageOwnership: ChatMessageOwnershipResolver;
   onAgentAvatarClick?: (event: React.MouseEvent) => void;
   /** Chat scroller element — used as IntersectionObserver root. */
   scrollRootRef: RefObject<HTMLDivElement | null>;
@@ -132,6 +134,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   const groupHasRunWidget = Boolean(traceContent)
     || group.messages.some((message) => message.status === 'running' || hasExpandableTrace(message));
   const groupSelected = group.messages.some((message) => message.id === selectedMessageId);
+  const ownership = avatarKind === 'agent' ? resolveMessageOwnership(head) : 'unknown';
   const articleRef = useRef<HTMLElement | null>(null);
   const heightRef = useRef(0);
   // Start mounted so first paint / stick-to-bottom has real content; IO then unmounts offscreen.
@@ -176,11 +179,10 @@ export const ChatGroupRow = memo(function ChatGroupRow({
 
   const showBody = inView || forceMounted;
   const placeholderH = heightRef.current || (groupHasRunWidget ? 120 : 72);
-
   return (
     <article
       ref={articleRef}
-      className={`chat-message-group ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
+      className={`chat-message-group ${avatarKind === 'agent' ? ownershipClass(ownership) : ''} ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
       style={showBody ? undefined : { height: placeholderH, minHeight: placeholderH }}
       aria-hidden={showBody ? undefined : true}
       onContextMenu={contextMenuMessage
@@ -393,8 +395,9 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.onToggleSelect === next.onToggleSelect
   && prev.onContextMenu === next.onContextMenu
   && prev.onReply === next.onReply
-  && prev.onLightbox === next.onLightbox
   && prev.onImageLoad === next.onImageLoad
+  && prev.onLightbox === next.onLightbox
+  && prev.resolveMessageOwnership === next.resolveMessageOwnership
   && prev.onAgentAvatarClick === next.onAgentAvatarClick
   && prev.scrollRootRef === next.scrollRootRef
   && prev.vaultId === next.vaultId

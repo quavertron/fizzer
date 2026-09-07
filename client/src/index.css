@@ -10149,3 +10149,91 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .chat-mission-peek { align-items: start; }
 .chat-work-trace:not(.is-open) { max-width: min(100%, 44rem); }
 .chat-work-trace:not(.is-open) .chat-work-trace-toggle { align-items: start; }
+.chat-user.chat-agent-user.is-owner-current-user {
+  background: color-mix(in srgb, var(--decal-1) 12%, var(--bg-raised));
+}
+.chat-user.chat-agent-user.is-owner-other-user {
+  background: color-mix(in srgb, var(--decal-2) 12%, var(--bg-raised));
+}
+.chat-user.chat-agent-user.is-owner-current-user:hover,
+.chat-user.chat-agent-user.is-owner-current-user.is-editing {
+  background: color-mix(in srgb, var(--decal-1) 22%, var(--bg-raised));
+}
+.chat-user.chat-agent-user.is-owner-other-user:hover,
+.chat-user.chat-agent-user.is-owner-other-user.is-editing {
+  background: color-mix(in srgb, var(--decal-2) 22%, var(--bg-raised));
+}
+.chat-user.chat-agent-user.is-owner-current-user.is-editing {
+  box-shadow: inset 2px 0 0 var(--decal-1);
+}
+.chat-user.chat-agent-user.is-owner-other-user.is-editing {
+  box-shadow: inset 2px 0 0 var(--decal-2);
+}
+.chat-vault-pick-row.is-owner-current-user {
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--decal-1) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--decal-1);
+}
+.chat-vault-pick-row.is-owner-other-user {
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--decal-2) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--decal-2);
+}
+.chat-vault-pick-row.is-owner-current-user .chat-vault-pick-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--decal-1) 18%, var(--bg-raised));
+}
+.chat-vault-pick-row.is-owner-other-user .chat-vault-pick-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--decal-2) 18%, var(--bg-raised));
+}
+.chat-message-group.is-owner-current-user::before {
+  background: color-mix(in srgb, var(--decal-1) 18%, var(--bg-raised));
+  opacity: 0.7;
+}
+.chat-message-group.is-owner-other-user::before {
+  background: color-mix(in srgb, var(--decal-2) 18%, var(--bg-raised));
+  opacity: 0.7;
+}
+.chat-message-group.is-owner-current-user .chat-avatar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--decal-1) 72%, transparent);
+}
+.chat-message-group.is-owner-other-user .chat-avatar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--decal-2) 72%, transparent);
+}
+.chat-message-group.is-owner-current-user .chat-message-chunk.selected {
+  background: color-mix(in srgb, var(--decal-1) 20%, var(--bg-raised));
+}
+.chat-message-group.is-owner-other-user .chat-message-chunk.selected {
+  background: color-mix(in srgb, var(--decal-2) 20%, var(--bg-raised));
+}
+.chat-work-line.is-owner-current-user .chat-work-line-fold,
+.chat-work-line.is-owner-current-user.is-selected .chat-work-line-fold,
+.chat-work-line.is-owner-current-user.is-open .chat-work-line-fold {
+  background: color-mix(in srgb, var(--decal-1) 16%, transparent);
+}
+.chat-work-line.is-owner-other-user .chat-work-line-fold,
+.chat-work-line.is-owner-other-user.is-selected .chat-work-line-fold,
+.chat-work-line.is-owner-other-user.is-open .chat-work-line-fold {
+  background: color-mix(in srgb, var(--decal-2) 16%, transparent);
+}
+.chat-work-line.is-owner-current-user .chat-work-author {
+  color: var(--decal-1);
+}
+.chat-work-line.is-owner-other-user .chat-work-author {
+  color: var(--decal-2);
+}
+@media (hover: hover) and (pointer: fine) {
+  .chat-work-line.is-owner-current-user .chat-work-line-fold:hover {
+    background: color-mix(in srgb, var(--decal-1) 25%, var(--bg-raised));
+  }
+  .chat-work-line.is-owner-other-user .chat-work-line-fold:hover {
+    background: color-mix(in srgb, var(--decal-2) 25%, var(--bg-raised));
+  }
+  .chat-message-group.is-owner-current-user:hover::before {
+    background: color-mix(in srgb, var(--decal-1) 25%, var(--bg-raised));
+    opacity: 0.9;
+  }
+  .chat-message-group.is-owner-other-user:hover::before {
+    background: color-mix(in srgb, var(--decal-2) 25%, var(--bg-raised));
+    opacity: 0.9;
+  }
+}

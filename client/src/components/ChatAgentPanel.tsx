@@ -14,6 +14,7 @@ import { normalizeMention } from '../chat/mentions';
 import type {
   ChatAgentOption,
   ChatAgentRegistration,
+  ChatMessage,
   DesktopRunnerHealth,
   PlanUsage,
   PlanUsageWindow,
@@ -172,6 +173,18 @@ export type ChatAgentPanelHandle = {
 
 export type ChatAgentRow = ChatAgentOption & { registration: ChatAgentRegistration };
 
+export type ChatAgentOwnership = 'current-user' | 'other-user' | 'unknown';
+export type ChatAgentOwnershipResolver = (
+  registration?: ChatAgentRegistration,
+  vaultAgent?: VaultAgent,
+) => ChatAgentOwnership;
+export type ChatMessageOwnershipResolver = (message: ChatMessage) => ChatAgentOwnership;
+
+export function ownershipClass(ownership: ChatAgentOwnership) {
+  return `is-owner-${ownership}`;
+}
+
+
 export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   channelId: string;
   currentUser: string;
@@ -180,6 +193,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   registeredAgentRows: ChatAgentRow[];
   myAgents: VaultAgent[];
   vaultAgents: VaultAgent[];
+  resolveAgentOwnership: ChatAgentOwnershipResolver;
   runnerHealth?: DesktopRunnerHealth | null;
   onRegisterAgent: (channelId: string, registration: ChatAgentRegistration) => void;
   onRemoveAgent: (channelId: string, registrationId: string) => void;
@@ -204,6 +218,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   registeredAgents,
   registeredAgentRows,
   vaultAgents,
+  resolveAgentOwnership,
   myAgents,
   runnerHealth = null,
   onRegisterAgent,
@@ -304,6 +319,10 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   const channelVaultAgentIds = useMemo(
     () => new Set(registeredAgents.map((r) => r.vaultAgentId).filter(Boolean) as string[]),
     [registeredAgents],
+  );
+  const vaultAgentById = useMemo(
+    () => new Map(vaultAgents.map((agent) => [agent.id, agent])),
+    [vaultAgents],
   );
 
   useEffect(() => {
@@ -692,9 +711,13 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           const planUsage = canManage
             ? runnerHealth?.planUsage?.[planUsageProviderId(agent.registration.agentId)] || null
             : null;
+          const ownership = resolveAgentOwnership(
+            agent.registration,
+            agent.registration.vaultAgentId ? vaultAgentById.get(agent.registration.vaultAgentId) : undefined,
+          );
           return (
             <div
-              className={`chat-user chat-agent-user${agent.registration.orchestrator ? ' is-supervisor' : ''}${isEditing ? ' is-editing' : ''}`}
+              className={`chat-user chat-agent-user ${ownershipClass(ownership)}${agent.registration.orchestrator ? ' is-supervisor' : ''}${isEditing ? ' is-editing' : ''}`}
               key={agent.registration.id}
             >
               <button
@@ -743,8 +766,9 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 {vaultAgents.map((va) => {
                   const inChannel = channelVaultAgentIds.has(va.id);
                   const canManage = va.ownerUsername === currentUser;
+                  const ownership = resolveAgentOwnership(undefined, va);
                   return (
-                    <div key={va.id} className={`chat-vault-pick-row${inChannel ? ' is-in-channel' : ''}`}>
+                    <div key={va.id} className={`chat-vault-pick-row ${ownershipClass(ownership)}${inChannel ? ' is-in-channel' : ''}`}>
                       <button
                         type="button"
                         className="chat-vault-pick-btn"
@@ -804,23 +828,26 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               <div className="chat-runs-empty">No owned agents from other vaults</div>
             ) : (
               <div className="chat-agent-picker-list">
-                {myAgents.map((agent) => (
-                  <div key={agent.id} className="chat-vault-pick-row">
-                    <button
-                      type="button"
-                      className="chat-vault-pick-btn"
-                      disabled={!onImportMyAgentToChannel}
-                      onClick={() => void importMyAgentFromPicker(agent.id)}
-                      title="Copy this safe agent identity into the current vault"
-                    >
-                      <ChatAvatar name={agent.displayName || agent.mention} kind="agent" avatarUrl={agent.avatarUrl} size="sm" />
-                      <span className="chat-user-copy">
-                        <strong>{agent.displayName || agent.mention}</strong>
-                        <span>@{agent.mention} · {agent.model || agent.agentId} · from another vault</span>
-                      </span>
-                    </button>
-                  </div>
-                ))}
+                {myAgents.map((agent) => {
+                  const ownership = resolveAgentOwnership(undefined, agent);
+                  return (
+                    <div key={agent.id} className={`chat-vault-pick-row ${ownershipClass(ownership)}`}>
+                      <button
+                        type="button"
+                        className="chat-vault-pick-btn"
+                        disabled={!onImportMyAgentToChannel}
+                        onClick={() => void importMyAgentFromPicker(agent.id)}
+                        title="Copy this safe agent identity into the current vault"
+                      >
+                        <ChatAvatar name={agent.displayName || agent.mention} kind="agent" avatarUrl={agent.avatarUrl} size="sm" />
+                        <span className="chat-user-copy">
+                          <strong>{agent.displayName || agent.mention}</strong>
+                          <span>@{agent.mention} · {agent.model || agent.agentId} · from another vault</span>
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
             {agentFormError && <div className="chat-agent-form-error">{agentFormError}</div>}
