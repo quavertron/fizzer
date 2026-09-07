@@ -1,4 +1,5 @@
-import { AtSign, CheckCheck, FileText, LoaderCircle, MessageCircle, Reply, X } from 'lucide-react';
+import { LoadingIndicator } from './LoadingIndicator';
+import { AtSign, CheckCheck, FileText, MessageCircle, Reply, X } from 'lucide-react';
 import { formatRelativeDate, type CommunityUpdateItem, type CommunityUpdates } from '../api';
 import { ModalShell } from './ModalShell';
 
@@ -67,7 +68,7 @@ export function UpdatesModal({
 
         <div className="updates-body">
           {loading && updates.groups.length === 0 && (
-            <div className="updates-empty"><LoaderCircle className="spin" size={18} /> Loading updates…</div>
+            <div className="updates-empty"><LoadingIndicator label="Loading updates" /></div>
           )}
           {!loading && error && (
             <div className="updates-empty updates-error">

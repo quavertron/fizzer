@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { agentOwnership, eligibleAgentProfiles } from '../chat/agents';
+import { agentOwnerStyle, agentOwnership, eligibleAgentProfiles } from '../chat/agents';
 import type { ChatAgentRegistration, VaultAgent } from '../chat/types';
 import { ChatAvatar } from '../components/ChatAvatar';
 import { ChatAgentPanel } from '../components/ChatAgentPanel';
@@ -37,6 +37,16 @@ describe('My Agents eligibility', () => {
 });
 
 describe('agent ownership presentation', () => {
+  it('gives owners consistent distinct tints independent of viewing permissions', () => {
+    expect(agentOwnerStyle('alice')).toEqual(agentOwnerStyle('alice'));
+    expect(agentOwnerStyle('alice')).not.toEqual(agentOwnerStyle('bob'));
+    expect(agentOwnerStyle('bob')).not.toEqual(agentOwnerStyle('carol'));
+    expect(agentOwnerStyle('')).toBeUndefined();
+    const avatar = (ownership: 'owned' | 'other') => renderToStaticMarkup(<ChatAvatar name="Agent" kind="agent" ownerLabel="alice" ownership={ownership} />).match(/style="([^"]+)"/)?.[1];
+    expect(avatar('owned')).toBeTruthy();
+    expect(avatar('owned')).toBe(avatar('other'));
+  });
+
   it('prefers owner ids, falls back to usernames, and leaves missing metadata unknown', () => {
     expect(agentOwnership({ ownerUserId: 1, ownerUsername: 'old-name' }, 'alice', 1)).toBe('owned');
     expect(agentOwnership({ ownerUserId: 2, ownerUsername: 'alice' }, 'alice', 1)).toBe('other');
@@ -67,7 +77,7 @@ describe('agent ownership presentation', () => {
   });
 
   it('colors agent rows by owner independently of management and invocation permissions', () => {
-    const profiles = [profile('mine'), profile('theirs', { ownerUserId: 2, ownerUsername: 'bob' })];
+    const profiles = [profile('theirs', { ownerUserId: 2, ownerUsername: 'bob' }), profile('mine'), profile('mine-too')];
     const members = profiles.map(registration);
     const html = renderToStaticMarkup(createElement(ChatAgentPanel, {
       channelId: 'chat', currentUser: 'alice', currentUserId: 1, vaultAgents: profiles,
@@ -80,7 +90,11 @@ describe('agent ownership presentation', () => {
     expect(html).toContain('data-agent-ownership="other"');
     expect(html).toContain('alice’s agent');
     expect(html).toContain('bob’s agent');
-    expect(html.match(/class="chat-agent-edit-btn" disabled=""/g)).toHaveLength(2);
+    expect(html.match(/class="chat-agent-edit-btn" disabled=""/g)).toHaveLength(3);
+    expect(html.indexOf('>mine</strong>')).toBeLessThan(html.indexOf('>mine-too</strong>'));
+    expect(html.indexOf('>mine-too</strong>')).toBeLessThan(html.indexOf('>theirs</strong>'));
+    expect(members.map((member) => member.displayName)).toEqual(['theirs', 'mine', 'mine-too']);
+    expect(html.match(/--agent-tint:hsl/g)).toHaveLength(6);
     expect(members.every((member) => member.pingableByOthers)).toBe(true);
   });
 });

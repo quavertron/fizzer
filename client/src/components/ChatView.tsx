@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { agentOwnership } from '../chat/agents';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
@@ -924,15 +925,15 @@ export const ChatView = memo(function ChatView({
         >
           <div ref={messagesContentRef} className="chat-messages-content">
           {vaultId && <div ref={historySentinelRef} className="chat-history-sentinel">
-            {hasOlderHistory && <button type="button" disabled={loadingHistory || isLoadingMessages}
-              onClick={() => void loadOlderHistory()}>{loadingHistory ? 'Loading older messages…' : historyError ? 'Retry older messages' : 'Load older messages'}</button>}
+            {!isLoadingMessages && hasOlderHistory && (loadingHistory
+              ? <LoadingIndicator label="Loading older messages" />
+              : <button type="button" onClick={() => void loadOlderHistory()}>{historyError ? 'Retry older messages' : 'Load older messages'}</button>)}
             {historyError && <span role="alert">{historyError}</span>}
           </div>}
           {/* Never blank an already-loaded transcript for a background refresh. */}
           {isLoadingMessages && sortedMessages.length === 0 ? (
-            <div className="chat-empty" aria-live="polite">
-              <span className="chat-loading-dot" aria-hidden="true" />
-              <strong>Loading messages…</strong>
+            <div className="chat-empty">
+              <LoadingIndicator label="Loading messages" />
             </div>
           ) : sortedMessages.length === 0 ? (
             <div className="chat-empty">
@@ -1324,7 +1325,7 @@ export const ChatView = memo(function ChatView({
               </div>
             </header>
             <div className="chat-mission-archive-list">
-              {missionArchiveBusy && missionArchive.length === 0 && <div className="chat-mission-archive-empty">Loading missions…</div>}
+              {missionArchiveBusy && missionArchive.length === 0 && <div className="chat-mission-archive-empty"><LoadingIndicator label="Loading missions" /></div>}
               {missionArchiveError && <div className="chat-mission-archive-empty is-error">{missionArchiveError}</div>}
               {!missionArchiveBusy && !missionArchiveError && missionArchive.length === 0 && (
                 <div className="chat-mission-archive-empty">No missions in this channel yet.</div>

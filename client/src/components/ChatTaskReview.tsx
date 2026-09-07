@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useCallback, useMemo, useState } from 'react';
 import { FileCode2, MessageSquareText, RefreshCw } from 'lucide-react';
 import { createWorkItemReview, fetchWorkItem, type WorkItemReview } from '../chat/workItems';
@@ -116,7 +117,7 @@ export function ChatTaskReview({ workItemId, worktreePath }: Props) {
               {evidence.summary ? ` · ${evidence.summary}` : ''}
             </span>
           ) : (
-            <span>{bridge?.getWorktreeDiff ? 'Loading local evidence…' : 'Update the desktop app to inspect local changes.'}</span>
+            <span>{bridge?.getWorktreeDiff ? <LoadingIndicator label="Loading local evidence" /> : 'Update the desktop app to inspect local changes.'}</span>
           )}
           <button type="button" onClick={() => void refresh()} disabled={busy === 'refresh'} aria-label="Refresh task review">
             <RefreshCw size={10} />
@@ -138,7 +139,7 @@ export function ChatTaskReview({ workItemId, worktreePath }: Props) {
             ))}
           </div>
         )}
-        {busy === 'file' && <p>Loading file diff…</p>}
+        {busy === 'file' && <LoadingIndicator label="Loading file diff" />}
         {fileDiff && (
           <div className="chat-task-review-patch">
             <div>{fileDiff.path}{fileDiff.truncated ? ' · truncated' : ''}</div>

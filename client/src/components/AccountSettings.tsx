@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useEffect, useRef, useState } from 'react';
 import { Ban, Bot, Camera, Flag, Globe2, KeyRound, Link as LinkIcon, LogOut, SlidersHorizontal, Trash2, Users, X } from 'lucide-react';
 import { api, type User, type VaultMember, type VaultRole } from '../api';
@@ -583,7 +584,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
           <div className="account-settings-section" id="account-vault" role="tabpanel" hidden={activeSection !== 'vault'}>
             <div className="account-section-title"><Users size={15} /><strong>Manage vault</strong></div>
             <p className="account-settings-lede"><strong>{vaultName || 'This vault'}</strong></p>
-            {membersLoading ? <p role="status">Loading vault settings…</p> : membersError ? <p role="alert">{membersError} <button type="button" onClick={() => void loadMembers()}>Retry</button></p> : (
+            {membersLoading ? <LoadingIndicator label="Loading vault settings" /> : membersError ? <p role="alert">{membersError} <button type="button" onClick={() => void loadMembers()}>Retry</button></p> : (
               <p>{vaultVisibility === 'public' ? 'Public' : 'Private'} · {members.length} {members.length === 1 ? 'member' : 'members'} · {myRole || 'Role unknown'}</p>
             )}
             {canManageMembers && onRenameVault && <form onSubmit={async (event) => {

@@ -1,5 +1,6 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ArrowLeft, Ban, BookOpen, ChevronDown, Clock3, Flag, LoaderCircle, Search, ShieldCheck, UserPlus, X } from 'lucide-react';
+import { ArrowLeft, Ban, BookOpen, ChevronDown, Clock3, Flag, Search, ShieldCheck, UserPlus, X } from 'lucide-react';
 import { FizzerMark } from './FizzerMark';
 import { api, formatRelativeDate, type CommunityUpdates, type User } from '../api';
 import { ReportDialog } from './ReportDialog';
@@ -298,7 +299,7 @@ export function DiscoveryDmsModal({
                     <input autoFocus value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search name, owner, purpose, or topic" aria-label="Search public vaults" />
                   </label>
                   <div className="discovery-list public-vault-list" aria-label="Public vaults">
-                    {loading && <div className="discovery-empty"><LoaderCircle className="spin" size={17} /> Loading public vaults…</div>}
+                    {loading && <div className="discovery-empty"><LoadingIndicator label="Loading public vaults" /></div>}
                     {!loading && publicVaults.map((vault) => (
                       <article className="discovery-row public-vault-card" key={vault.id}>
                         <span className="discovery-avatar discovery-vault-avatar" aria-hidden="true"><FizzerMark size={17} /></span>
@@ -336,7 +337,7 @@ export function DiscoveryDmsModal({
                 <section className="dm-section dm-conversations" aria-labelledby="dm-conversations-title">
                   <h3 id="dm-conversations-title">Conversations</h3>
                   <div className="discovery-list">
-                    {loading && <div className="discovery-empty"><LoaderCircle className="spin" size={17} /> Loading messages…</div>}
+                    {loading && <div className="discovery-empty"><LoadingIndicator label="Loading messages" /></div>}
                     {!loading && dms.map((dm) => {
                       const unreadCount = updateCounts.byTarget[dm.channelId] || 0;
                       const selected = selectedDm?.channelId === dm.channelId;

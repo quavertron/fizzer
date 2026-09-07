@@ -3,6 +3,7 @@
  * Keep in sync with server AgentId / CLI agent lists where applicable.
  */
 
+import type { CSSProperties } from 'react';
 import type { ChatAgentRegistration, VaultAgent } from './types';
 
 export type AgentOwnership = 'owned' | 'other' | 'unknown';
@@ -16,6 +17,14 @@ export function agentOwnership(
   if (owner?.ownerUserId && currentUserId) return owner.ownerUserId === currentUserId ? 'owned' : 'other';
   if (owner?.ownerUsername && currentUser) return owner.ownerUsername === currentUser ? 'owned' : 'other';
   return 'unknown';
+}
+
+/** A viewer-independent tint shared by every agent belonging to this owner. */
+export function agentOwnerStyle(ownerUsername?: string): CSSProperties | undefined {
+  if (!ownerUsername) return undefined;
+  let hash = 0;
+  for (const char of ownerUsername) hash = (Math.imul(hash, 31) + char.codePointAt(0)!) >>> 0;
+  return { '--agent-tint': `hsl(${hash % 360} 48% 62%)` } as CSSProperties;
 }
 
 export function eligibleAgentProfiles(

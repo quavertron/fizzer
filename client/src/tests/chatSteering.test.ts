@@ -478,3 +478,21 @@ describe('adjacent displayed author grouping', () => {
     expect(headers(renderChat([{ ...mission, createdAt: '2026-09-05T23:59:50' }, { ...outcome, createdAt: '2026-09-06T00:00:10' }]))).toBe(2);
   });
 });
+
+
+describe('quiet channel loading', () => {
+  it('shows one accessible indicator without a loading heading or premature history button', () => {
+    chatMessageStore.set('unloaded-channel', []);
+    const html = renderToStaticMarkup(createElement(ChatView, {
+      channelId: 'unloaded-channel', channelName: 'unloaded', vaultId: 'vault', currentUser: 'owner',
+      isLoadingMessages: true, presence: { participants: [], online: [] },
+      availableAgents: [], registeredAgents: [],
+      onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+    }));
+    expect(html).toContain('role="status" aria-label="Loading messages"');
+    expect(html).not.toContain('Load older messages');
+    expect(html).not.toContain('Loading older messages');
+    expect(html).not.toContain('<strong>Loading');
+    expect(html.match(/class="loading-indicator"/g)).toHaveLength(1);
+  });
+});

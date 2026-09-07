@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode, type CSSProperties } from 'react';
 import { ChevronRight, History, Loader2, Square } from 'lucide-react';
 import { api } from '../api';
@@ -324,7 +325,7 @@ export function ChatMissionCard({
               </button>
               {timelineOpen && (
                 <div className="chat-mission-timeline">
-                  {events === null && !historyError && <span>Loading history…</span>}
+                  {events === null && !historyError && <LoadingIndicator label="Loading history" />}
                   {historyError && <span className="is-error">{historyError}</span>}
                   {events?.length === 0 && <span>No recorded events.</span>}
                   {events?.map((event) => (

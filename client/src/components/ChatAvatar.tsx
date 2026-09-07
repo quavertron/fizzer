@@ -1,4 +1,4 @@
-import type { AgentOwnership } from '../chat/agents';
+import { agentOwnerStyle, type AgentOwnership } from '../chat/agents';
 import { Bot } from 'lucide-react';
 
 function initialFor(name: string) {
@@ -40,6 +40,7 @@ export function ChatAvatar({
         className={className}
         onClick={onClick}
         data-agent-ownership={kind === 'agent' ? ownership : undefined}
+        style={kind === 'agent' ? agentOwnerStyle(ownerLabel) : undefined}
         title={avatarTitle}
         aria-label={avatarTitle || `Open settings for ${name}`}
       >
@@ -51,6 +52,7 @@ export function ChatAvatar({
     <div
       className={className}
       data-agent-ownership={kind === 'agent' ? ownership : undefined}
+        style={kind === 'agent' ? agentOwnerStyle(ownerLabel) : undefined}
       title={avatarTitle || undefined}
       role={kind === 'agent' ? 'img' : undefined}
       aria-label={kind === 'agent' ? `${name} · ${ownerTitle}` : undefined}

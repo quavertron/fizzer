@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Capacitor } from '@capacitor/core';
@@ -146,7 +147,7 @@ function LinkedNotePreview({ messageId, target, loadSharedNote, onOpenNote, onCl
           img: SafeMarkdownImage,
           a: ({ href, children }) => <a href={href} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">{children}</a>,
         }}>{note.content || '*This note is empty.*'}</ReactMarkdown>
-          : <p role="status">{error || 'Loading note…'}</p>}
+          : error ? <p role="alert">{error}</p> : <LoadingIndicator label="Loading note" />}
       </div>
     </section>
   );

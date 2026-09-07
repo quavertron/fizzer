@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import type { AgentOwnership } from '../chat/agents';
 import { isLiveAgentStatus } from '../chat/runBlocks';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
@@ -259,7 +260,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   )}
                   {message.hasImages && !message.images?.length && (
                     <div className="chat-msg-media-loading" role="status">
-                      Loading media…
+                      <LoadingIndicator label="Loading media" />
                     </div>
                   )}
                   {message.attachments && message.attachments.length > 0 && (

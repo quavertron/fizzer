@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import { ChevronRight, X } from 'lucide-react';
 import { formatChatTime } from '../chat/time';
 import { createChatAgentRegistrationId } from '../chat/shared';
-import { agentOwnership, eligibleAgentProfiles, vaultAgentMembershipPayload } from '../chat/agents';
+import { agentOwnerStyle, agentOwnership, eligibleAgentProfiles, vaultAgentMembershipPayload } from '../chat/agents';
 import { normalizeMention } from '../chat/mentions';
 import type {
   ChatAgentOption,
@@ -601,12 +601,13 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
             <div className="chat-runs-empty">No agents in this vault yet</div>
           )}
           {registeredAgentRows.map((agent) => {
+            const identity = vaultAgents.find((profile) => profile.id === agent.registration.vaultAgentId);
+            const ownership = agentOwnership(identity || agent.registration, currentUser, currentUserId);
+            return { agent, ownership, ownerLabel: identity?.ownerUsername || (ownership === 'owned' ? currentUser : '') };
+          }).sort((a, b) => Number(b.ownership === 'owned') - Number(a.ownership === 'owned')).map(({ agent, ownership, ownerLabel }) => {
           const selectedModel = agent.registration.model || agent.models[0]?.id || '';
           const isEditing = editingRegistrationId === agent.registration.id && agentMenuOpen;
           const canManage = canManageRegistration(agent.registration);
-          const identity = vaultAgents.find((profile) => profile.id === agent.registration.vaultAgentId);
-          const ownership = agentOwnership(identity || agent.registration, currentUser, currentUserId);
-          const ownerLabel = identity?.ownerUsername || (ownership === 'owned' ? currentUser : '');
           const planUsage = canManage
             ? runnerHealth?.planUsage?.[planUsageProviderId(agent.registration.agentId)] || null
             : null;
@@ -614,6 +615,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
             <div
               className={`chat-user chat-agent-user${agent.registration.orchestrator ? ' is-supervisor' : ''}${isEditing ? ' is-editing' : ''}`}
               data-agent-ownership={ownership}
+              style={agentOwnerStyle(ownerLabel)}
               key={agent.registration.id}
             >
               <button

@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import {
   useCallback,
   useEffect,
@@ -675,7 +676,7 @@ export function SessionManager({
                   >
                     {traceError && <div className="session-manager-trace-error">{traceError}</div>}
                     {traceLoading && events.length === 0 && (
-                      <TraceEmpty icon={<Loader2 className="is-spinning" size={16} />}>Loading trace…</TraceEmpty>
+                      <div className="session-manager-trace-empty"><LoadingIndicator label="Loading trace" /></div>
                     )}
                     {!traceLoading && view === 'activity' && timeline.length === 0 && (
                       <TraceEmpty icon={<Activity size={17} />}>Waiting for the first activity…</TraceEmpty>

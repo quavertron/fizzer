@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 /**
  * @file Sidebar.tsx — Folder tree navigation and vault controls
  *
@@ -976,7 +977,7 @@ export const Sidebar = memo(function Sidebar({
 
             <section className="vault-manager-section" aria-labelledby="vault-manager-your-vaults">
               <h2 className="vault-manager-section-title" id="vault-manager-your-vaults">Your vaults</h2>
-              {vaultListLoading ? <p role="status">Loading vaults…</p> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
+              {vaultListLoading ? <LoadingIndicator label="Loading vaults" /> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
               {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry</button></p>}
               <div className="vault-manager-grid" aria-label="Your vaults">
                 {vaults.map((vault) => (
