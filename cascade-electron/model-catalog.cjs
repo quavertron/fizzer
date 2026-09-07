@@ -144,8 +144,17 @@ function collectCodexModels({ spawnImpl = defaultSpawn, timeoutMs = CODEX_TIMEOU
         return;
       }
       if (phase === 'initialize' && message.id === 1) {
-        if (message.error || !Object.prototype.hasOwnProperty.call(message, 'result')) {
+        if (message.error) {
           fail('unavailable');
+          return;
+        }
+        if (
+          !Object.prototype.hasOwnProperty.call(message, 'result')
+          || !message.result
+          || typeof message.result !== 'object'
+          || Array.isArray(message.result)
+        ) {
+          fail('malformed');
           return;
         }
         phase = 'initialized';

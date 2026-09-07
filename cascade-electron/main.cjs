@@ -521,15 +521,26 @@ ipcMain.handle('window:mergeTab', async (event, { tab, screenX, screenY }) => {
   }
 });
 
+const modelCatalogInFlight = new Map();
 ipcMain.handle('agent:getModels', async (_event, agentId) => {
+  let pending = modelCatalogInFlight.get(agentId);
+  if (!pending) {
+    pending = getAgentModels(agentId);
+    modelCatalogInFlight.set(agentId, pending);
+  }
+
   try {
-    return await getAgentModels(agentId);
+    return await pending;
   } catch {
     return {
       models: [],
       source: 'fallback',
       error: 'Local model catalog is unavailable.',
     };
+  } finally {
+    if (modelCatalogInFlight.get(agentId) === pending) {
+      modelCatalogInFlight.delete(agentId);
+    }
   }
 });
 
