@@ -6,6 +6,31 @@
 import type { ChatAgentRegistration } from './types';
 
 export type AgentId = 'claude-code' | 'codex' | 'grok' | 'antigravity' | 'copilot' | 'hermes' | 'akron-grok' | 'omp' | 'pi';
+export type AgentModel = { id: string; label: string };
+
+/** Providers whose local desktop login can expose a runtime model catalog. */
+export type CatalogAgentId = 'claude-code' | 'codex' | 'grok' | 'antigravity';
+
+export type AgentModelCatalog = {
+  models: AgentModel[];
+  source: 'live' | 'fallback';
+  /** Deliberately generic; raw desktop/CLI errors never reach the renderer UI. */
+  error?: string;
+};
+
+const CATALOG_AGENT_IDS: readonly CatalogAgentId[] = [
+  'claude-code',
+  'codex',
+  'grok',
+  'antigravity',
+];
+
+const MODEL_CATALOG_FALLBACK_MESSAGE = 'Using built-in models';
+const MODEL_CATALOG_TIMEOUT_MS = 8_000;
+
+export function isCatalogAgentId(agentId: string): agentId is CatalogAgentId {
+  return CATALOG_AGENT_IDS.includes(agentId as CatalogAgentId);
+}
 
 export const CHAT_AGENTS: Array<{ id: AgentId; label: string }> = [
   { id: 'claude-code', label: 'Claude' },
@@ -126,7 +151,61 @@ export const CHAT_AGENT_MODEL_PRESETS: Record<AgentId, { id: string; label: stri
   ],
   pi: [],
 };
+/**
+ * Built-in choices remain the safe browser/unsupported-provider path.
+ * Return a fresh array so a picker cannot mutate the shared preset table.
+ */
+export function fallbackAgentModelCatalog(agentId: CatalogAgentId): AgentModelCatalog {
+  return {
+    models: CHAT_AGENT_MODEL_PRESETS[agentId].map((model) => ({ ...model })),
+    source: 'fallback',
+    error: MODEL_CATALOG_FALLBACK_MESSAGE,
+  };
+}
 
+/**
+ * Read the optional Electron catalog bridge and accept only a non-empty,
+ * well-formed live list. Browser mode and older shells deliberately resolve to
+ * the same built-in fallback instead of surfacing bridge/CLI details.
+ */
+export async function loadAgentModels(agentId: CatalogAgentId): Promise<AgentModelCatalog> {
+  const fallback = fallbackAgentModelCatalog(agentId);
+  const cascadeBridge = typeof window === 'undefined' ? undefined : Reflect.get(window, 'cascade');
+  const getAgentModels = cascadeBridge && typeof cascadeBridge === 'object'
+    ? Reflect.get(cascadeBridge, 'getAgentModels')
+    : undefined;
+  if (typeof getAgentModels !== 'function') return fallback;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('catalog timeout')), MODEL_CATALOG_TIMEOUT_MS);
+    });
+    const response = await Promise.race([getAgentModels(agentId), timeout]);
+    if (!response || typeof response !== 'object') return fallback;
+    const source = Reflect.get(response, 'source');
+    const rawModels = Reflect.get(response, 'models');
+    if (source !== 'live' || !Array.isArray(rawModels)) return fallback;
+
+    const seen = new Set<string>();
+    const models: AgentModel[] = [];
+    for (const entry of rawModels) {
+      if (!entry || typeof entry !== 'object') continue;
+      const id = Reflect.get(entry, 'id');
+      const label = Reflect.get(entry, 'label');
+      if (typeof id !== 'string' || id.trim().length === 0) continue;
+      if (typeof label !== 'string' || label.trim().length === 0) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      models.push({ id, label });
+    }
+    if (models.length === 0) return fallback;
+    return { models, source: 'live' };
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 export function agentLabel(agentId: string) {
   return CHAT_AGENTS.find((agent) => agent.id === agentId)?.label ?? agentId;
 }

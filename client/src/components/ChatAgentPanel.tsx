@@ -2,7 +2,14 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import { ChevronRight, X } from 'lucide-react';
 import { formatChatTime } from '../chat/time';
 import { createChatAgentRegistrationId } from '../chat/shared';
-import { vaultAgentMembershipPayload } from '../chat/agents';
+import {
+  fallbackAgentModelCatalog,
+  isCatalogAgentId,
+  loadAgentModels,
+  vaultAgentMembershipPayload,
+  type AgentModelCatalog,
+  type CatalogAgentId,
+} from '../chat/agents';
 import { normalizeMention } from '../chat/mentions';
 import type {
   ChatAgentOption,
@@ -272,7 +279,28 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     hermesSafeMode: false,
     conversationId: '',
   }));
-  const activeFormAgent = availableAgents.find((agent) => agent.id === agentForm.agentId);
+  const [modelCatalogs, setModelCatalogs] = useState<Record<CatalogAgentId, AgentModelCatalog>>(() => ({
+    'claude-code': fallbackAgentModelCatalog('claude-code'),
+    codex: fallbackAgentModelCatalog('codex'),
+    grok: fallbackAgentModelCatalog('grok'),
+    antigravity: fallbackAgentModelCatalog('antigravity'),
+  }));
+  const effectiveAvailableAgents = useMemo(
+    () => availableAgents.map((agent) => {
+      if (!isCatalogAgentId(agent.id)) return agent;
+      return { ...agent, models: modelCatalogs[agent.id].models };
+    }),
+    [availableAgents, modelCatalogs],
+  );
+  const activeFormAgent = effectiveAvailableAgents.find((agent) => agent.id === agentForm.agentId);
+  const activeModelCatalog = isCatalogAgentId(agentForm.agentId)
+    ? modelCatalogs[agentForm.agentId]
+    : undefined;
+  const refreshModelCatalog = useCallback(async (agentId: string) => {
+    if (!isCatalogAgentId(agentId)) return;
+    const catalog = await loadAgentModels(agentId);
+    setModelCatalogs((previous) => ({ ...previous, [agentId]: catalog }));
+  }, []);
   const channelVaultAgentIds = useMemo(
     () => new Set(registeredAgents.map((r) => r.vaultAgentId).filter(Boolean) as string[]),
     [registeredAgents],
@@ -299,11 +327,31 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [agentMenuOpen]);
+  useEffect(() => {
+    if (!agentMenuOpen || !isCatalogAgentId(agentForm.agentId)) return;
+    void refreshModelCatalog(agentForm.agentId);
+  }, [agentForm.agentId, agentMenuOpen, refreshModelCatalog]);
+
+  useEffect(() => {
+    if (!agentMenuOpen || !agentForm.agentId || !activeFormAgent || modelChoice === CUSTOM_MODEL_VALUE) return;
+    const currentModel = agentForm.model.trim();
+    if (currentModel && activeFormAgent.models.some((model) => model.id === currentModel)) return;
+    const firstModel = activeFormAgent.models[0]?.id;
+    if (!firstModel) {
+      setModelChoice(CUSTOM_MODEL_VALUE);
+      setCustomModel(currentModel);
+      return;
+    }
+    if (modelChoice === firstModel && agentForm.model === firstModel) return;
+    setModelChoice(firstModel);
+    setCustomModel('');
+    setAgentForm((value) => value.model === firstModel ? value : { ...value, model: firstModel });
+  }, [activeFormAgent, agentForm.agentId, agentForm.model, agentMenuOpen, modelChoice]);
 
   function openAgentEditor(registration?: ChatAgentRegistration) {
     setAgentFormError('');
     if (registration) {
-      const agent = availableAgents.find((option) => option.id === registration.agentId);
+      const agent = effectiveAvailableAgents.find((option) => option.id === registration.agentId);
       const { choice, custom } = resolveModelPicker(agent, registration.model);
       setModelChoice(choice);
       setCustomModel(custom);
@@ -313,7 +361,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       setIdentityScope('vault');
       setSessionLeaseMinutes(60);
       const form = createDefaultAgentForm();
-      const agent = availableAgents.find((option) => option.id === form.agentId);
+      const agent = effectiveAvailableAgents.find((option) => option.id === form.agentId);
       const { choice, custom } = resolveModelPicker(agent, form.model);
       setModelChoice(choice);
       setCustomModel(custom);
@@ -352,7 +400,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   function openMemberSettings(registration: ChatAgentRegistration) {
     onExpandRail();
     setAgentFormError('');
-    const agent = availableAgents.find((option) => option.id === registration.agentId);
+    const agent = effectiveAvailableAgents.find((option) => option.id === registration.agentId);
     const { choice, custom } = resolveModelPicker(agent, registration.model);
     setModelChoice(choice);
     setCustomModel(custom);
@@ -412,7 +460,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     toggleInvite,
     openMemberSettings,
     closeChrome,
-  }), [agentMenuOpen, availableAgents, createDefaultAgentForm, onAddVaultAgentToChannel, onExpandRail, vaultAgents.length]);
+  }), [agentMenuOpen, effectiveAvailableAgents, createDefaultAgentForm, onAddVaultAgentToChannel, onExpandRail, vaultAgents.length]);
 
   async function addVaultAgentFromPicker(vaultAgentId: string) {
     setAgentFormError('');
@@ -841,7 +889,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               <select
                 value={agentForm.agentId}
                 onChange={(event) => {
-                  const agent = availableAgents.find((option) => option.id === event.target.value);
+                  const agent = effectiveAvailableAgents.find((option) => option.id === event.target.value);
                   setAgentFormError('');
                   const nextPreset = agent?.models[0]?.id ?? '';
                   const { choice, custom } = resolveModelPicker(agent, nextPreset);
@@ -856,7 +904,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 }}
               >
                 <option value="" disabled>Choose a backend…</option>
-                {availableAgents.map((agent) => (
+                {effectiveAvailableAgents.map((agent) => (
                   <option key={agent.id} value={agent.id}>{agent.label}</option>
                 ))}
               </select>
@@ -928,6 +976,9 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               {agentPanelMode === 'edit-member' && <div className="chat-agent-group-title">Runtime</div>}
             <label>
               Model
+              {activeModelCatalog?.source === 'fallback' && (
+                <span className="chat-agent-field-hint" role="status">Using built-in models</span>
+              )}
               {activeFormAgent && activeFormAgent.models.length > 0 ? (
                 <>
                   <select
