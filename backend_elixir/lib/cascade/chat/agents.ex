@@ -436,6 +436,7 @@ defmodule Cascade.Chat.Agents do
               "SELECT next_step_suggestions FROM chat_agent_members WHERE channel_id=? AND id=?",
               [route.sourceChannelId, registration_id]
             ) == [1]
+
           if restore_excluded do
             clear_vault_exclusions(route.localVaultId, identity_id)
           end
