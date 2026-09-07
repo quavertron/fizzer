@@ -896,6 +896,8 @@ defmodule Cascade.ChatDomainTest do
     assert session_member.mention == "temporary"
 
     SQL.exec("UPDATE vault_agents SET expires_at='2000-01-01T00:00:00Z' WHERE id=?", [session.id])
+    assert {:ok, materialized} = Agents.ensure_vault_wide(1, home.id, channel.id)
+    refute Enum.any?(materialized, &(&1.id == session_member.id))
     assert {:ok, active_members} = Agents.list_members(channel.id, 1)
     refute Enum.any?(active_members, &(&1.id == session_member.id))
     assert {:ok, home_agents} = Agents.list_vault(1, home.id)
