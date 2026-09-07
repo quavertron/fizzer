@@ -226,20 +226,36 @@ export const ChatView = memo(function ChatView({
   }, []);
   // Channel-wide working directory: when set, every agent in the channel runs
   // from here (overrides each agent's own cwd, enforced server-side).
-  const [channelCwd, setChannelCwd] = useState('');
+  const channelContextKey = `${vaultId ?? ''}\u0000${channelId}`;
+  const channelContextKeyRef = useRef(channelContextKey);
+  channelContextKeyRef.current = channelContextKey;
+  const channelCwdLoadSequenceRef = useRef(0);
+  const [channelCwdState, setChannelCwdState] = useState(() => ({
+    key: channelContextKey,
+    value: '',
+  }));
+  // Keying the value means a vault/channel switch renders a blank CWD before
+  // the replacement settings request resolves.
+  const channelCwd = channelCwdState.key === channelContextKey ? channelCwdState.value : '';
+  const setChannelCwd = useCallback((cwd: string) => {
+    if (channelContextKeyRef.current !== channelContextKey) return;
+    ++channelCwdLoadSequenceRef.current;
+    setChannelCwdState({ key: channelContextKey, value: cwd });
+  }, [channelContextKey]);
   const [channelSettingsOpen, setChannelSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (!vaultId || !channelId) return;
-    let alive = true;
+    const requestKey = channelContextKey;
+    const requestSequence = ++channelCwdLoadSequenceRef.current;
     api<{ settings: { cwd: string; kanbanNoteId?: string } }>(`/api/vaults/${vaultId}/channels/${channelId}/settings`)
       .then((d) => {
-        if (!alive) return;
-        setChannelCwd(d.settings?.cwd ?? '');
+        if (channelCwdLoadSequenceRef.current !== requestSequence
+          || channelContextKeyRef.current !== requestKey) return;
+        setChannelCwdState({ key: requestKey, value: d.settings?.cwd ?? '' });
       })
       .catch(() => { /* keep current value */ });
-    return () => { alive = false; };
-  }, [vaultId, channelId]);
+  }, [vaultId, channelId, channelContextKey]);
 
   // `override` lets the workspace panel repoint the channel at a worktree path
   // without waiting for the input's state round-trip.

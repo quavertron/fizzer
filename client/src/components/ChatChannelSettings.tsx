@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
 import { ChatWorkspacePanel } from './ChatWorkspacePanel';
@@ -23,13 +23,31 @@ export function ChatChannelSettings({
   const [channelCwd, setChannelCwd] = useState('');
   const [channelCwdSaved, setChannelCwdSaved] = useState(false);
   const [channelKanbanNoteId, setChannelKanbanNoteId] = useState('');
+  const contextKey = `${vaultId ?? ''}\u0000${channelId}`;
+  const contextKeyRef = useRef(contextKey);
+  contextKeyRef.current = contextKey;
+  const contextGenerationRef = useRef(0);
+  const mutationVersionRef = useRef(0);
+  const cwdSaveSequenceRef = useRef(0);
+  const kanbanSaveSequenceRef = useRef(0);
 
   useEffect(() => {
+    const generation = ++contextGenerationRef.current;
+    mutationVersionRef.current = 0;
+    cwdSaveSequenceRef.current = 0;
+    kanbanSaveSequenceRef.current = 0;
+    setChannelCwd('');
+    setChannelKanbanNoteId('');
+    setChannelCwdSaved(false);
     if (!vaultId || !channelId) return;
     let alive = true;
+    const initialMutationVersion = mutationVersionRef.current;
     api<{ settings: { cwd: string; kanbanNoteId?: string } }>(`/api/vaults/${vaultId}/channels/${channelId}/settings`)
       .then((d) => {
-        if (!alive) return;
+        if (!alive
+          || contextGenerationRef.current !== generation
+          || contextKeyRef.current !== contextKey
+          || mutationVersionRef.current !== initialMutationVersion) return;
         const cwd = d.settings?.cwd ?? '';
         setChannelCwd(cwd);
         setChannelKanbanNoteId(d.settings?.kanbanNoteId ?? '');
@@ -37,10 +55,19 @@ export function ChatChannelSettings({
       })
       .catch(() => { /* keep current value */ });
     return () => { alive = false; };
-  }, [vaultId, channelId, onCwdChange]);
+  }, [vaultId, channelId, contextKey, onCwdChange]);
+  const updateChannelCwd = useCallback((next: string) => {
+    if (contextKeyRef.current !== contextKey) return;
+    ++mutationVersionRef.current;
+    setChannelCwd(next);
+  }, [contextKey]);
 
   const saveChannelCwd = useCallback(async (override?: string) => {
-    if (!vaultId) return;
+    if (!vaultId || contextKeyRef.current !== contextKey) return;
+    const requestContextKey = contextKey;
+    const requestGeneration = contextGenerationRef.current;
+    const requestSequence = ++cwdSaveSequenceRef.current;
+    ++mutationVersionRef.current;
     const next = (override ?? channelCwd).trim();
     if (override !== undefined) setChannelCwd(next);
     try {
@@ -48,14 +75,20 @@ export function ChatChannelSettings({
         `/api/vaults/${vaultId}/channels/${channelId}/settings`,
         { method: 'PUT', body: JSON.stringify({ cwd: next }) },
       );
+      if (contextGenerationRef.current !== requestGeneration
+        || contextKeyRef.current !== requestContextKey
+        || cwdSaveSequenceRef.current !== requestSequence) return;
       const cwd = d.settings?.cwd ?? '';
       setChannelCwd(cwd);
-      setChannelKanbanNoteId(d.settings?.kanbanNoteId ?? '');
       onCwdChange(cwd);
       setChannelCwdSaved(true);
-      window.setTimeout(() => setChannelCwdSaved(false), 1500);
+      window.setTimeout(() => {
+        if (contextGenerationRef.current === requestGeneration && contextKeyRef.current === requestContextKey) {
+          setChannelCwdSaved(false);
+        }
+      }, 1500);
     } catch { /* ignore — transient save failure */ }
-  }, [vaultId, channelId, channelCwd, onCwdChange]);
+  }, [vaultId, channelId, channelCwd, contextKey, onCwdChange]);
 
   const cascadeBridge = Reflect.get(window, 'cascade');
   const selectDirectory = cascadeBridge && typeof cascadeBridge === 'object'
@@ -68,7 +101,6 @@ export function ChatChannelSettings({
     try {
       const selected = await selectDirectory();
       if (typeof selected !== 'string' || !selected) return;
-      setChannelCwd(selected);
       await saveChannelCwd(selected);
     } catch {
       // Keep the current input when the native dialog is unavailable or fails.
@@ -86,7 +118,7 @@ export function ChatChannelSettings({
         <input
           id={`chat-cwd-${channelId}`}
           value={channelCwd}
-          onChange={(e) => setChannelCwd(e.target.value)}
+          onChange={(e) => updateChannelCwd(e.target.value)}
           onBlur={() => void saveChannelCwd()}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
           placeholder="~/project"
@@ -116,12 +148,19 @@ export function ChatChannelSettings({
             value={channelKanbanNoteId}
             onChange={(event) => {
               const next = event.target.value;
+              const requestContextKey = contextKey;
+              const requestGeneration = contextGenerationRef.current;
+              const requestSequence = ++kanbanSaveSequenceRef.current;
+              ++mutationVersionRef.current;
               setChannelKanbanNoteId(next);
               if (!vaultId) return;
               void api<{ settings?: { kanbanNoteId?: string } }>(`/api/vaults/${vaultId}/channels/${channelId}/settings`, {
                 method: 'PUT',
                 body: JSON.stringify({ kanbanNoteId: next || null }),
               }).then((d) => {
+                if (contextGenerationRef.current !== requestGeneration
+                  || contextKeyRef.current !== requestContextKey
+                  || kanbanSaveSequenceRef.current !== requestSequence) return;
                 setChannelKanbanNoteId(d.settings?.kanbanNoteId ?? '');
               }).catch(() => { /* keep local */ });
             }}

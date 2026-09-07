@@ -758,7 +758,7 @@ export default function App() {
       }
     }));
 
-    if (workspaceStore.epoch !== epoch) return;
+    if (workspaceStore.epoch !== epoch || activeVaultIdRef.current !== vaultId) return;
     setChatState((prev) => {
       const registeredAgentsByChannel = { ...prev.registeredAgentsByChannel };
       for (const { channelId, agents } of results) {
@@ -900,7 +900,13 @@ export default function App() {
     await loadChannels(ordered);
   }, [resolveChatChannelIds]);
 
-  const persistChatAgentMemberToServer = useCallback(async (vaultId: string, channelId: string, registration: ChatAgentRegistration) => {
+  const persistChatAgentMemberToServer = useCallback(async (
+    vaultId: string,
+    workspaceEpoch: number,
+    vaultEpoch: number,
+    channelId: string,
+    registration: ChatAgentRegistration,
+  ) => {
     try {
       const fromVault = Boolean(registration.vaultAgentId);
       const endpoint = fromVault
@@ -910,24 +916,41 @@ export default function App() {
         method: fromVault ? 'POST' : 'PUT',
         body: JSON.stringify(registration),
       });
+      if (workspaceStore.epoch !== workspaceEpoch
+        || workspaceEpochRef.current !== vaultEpoch
+        || activeVaultIdRef.current !== vaultId) return null;
       return data.registration;
     } catch (error) {
-      console.error('Failed to persist chat agent member:', error);
-      setNotice(error instanceof Error ? error.message : 'Could not save agent member');
+      if (workspaceStore.epoch === workspaceEpoch
+        && workspaceEpochRef.current === vaultEpoch
+        && activeVaultIdRef.current === vaultId) {
+        console.error('Failed to persist chat agent member:', error);
+        setNotice(error instanceof Error ? error.message : 'Could not save agent member');
+      }
       return null;
     }
-  }, []);
+  }, [workspaceStore]);
 
-  const removeChatAgentMemberOnServer = useCallback(async (vaultId: string, channelId: string, registrationId: string) => {
+  const removeChatAgentMemberOnServer = useCallback(async (
+    vaultId: string,
+    workspaceEpoch: number,
+    vaultEpoch: number,
+    channelId: string,
+    registrationId: string,
+  ) => {
     try {
       await api(`/api/vaults/${vaultId}/channels/${channelId}/agents/${registrationId}`, {
         method: 'DELETE',
       });
     } catch (error) {
-      console.error('Failed to remove chat agent member:', error);
-      setNotice(error instanceof Error ? error.message : 'Could not remove agent member');
+      if (workspaceStore.epoch === workspaceEpoch
+        && workspaceEpochRef.current === vaultEpoch
+        && activeVaultIdRef.current === vaultId) {
+        console.error('Failed to remove chat agent member:', error);
+        setNotice(error instanceof Error ? error.message : 'Could not remove agent member');
+      }
     }
-  }, []);
+  }, [workspaceStore]);
 
   const loadVaultAgents = useCallback(async (vaultId: string) => {
     const epoch = workspaceStore.epoch;
@@ -1285,6 +1308,9 @@ export default function App() {
   }, [loadVaultData, openChatChannel]);
 
   const handleRegisterChatAgent = useCallback((channelId: string, registration: ChatAgentRegistration, sourceVaultId?: string) => {
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
+    const vaultId = sourceVaultId || activeVaultIdRef.current;
     const normalized = {
       ...registration,
       id: registration.id || createChatAgentRegistrationId(),
@@ -1309,9 +1335,11 @@ export default function App() {
     // A run may finish after the user has switched vaults. Persist session
     // adoption back to the vault that launched it, never whichever vault is
     // currently visible.
-    const vaultId = sourceVaultId || activeVaultIdRef.current;
     if (vaultId) {
-      void persistChatAgentMemberToServer(vaultId, channelId, normalized).then((saved) => {
+      void persistChatAgentMemberToServer(vaultId, workspaceEpoch, vaultEpoch, channelId, normalized).then((saved) => {
+        if (workspaceStore.epoch !== workspaceEpoch
+          || workspaceEpochRef.current !== vaultEpoch
+          || activeVaultIdRef.current !== vaultId) return;
         if (saved) {
           setChatState((prev) => ({
             ...prev,
@@ -1333,9 +1361,12 @@ export default function App() {
         void loadChatAgentMembers(vaultId, notesRef.current);
       });
     }
-  }, [persistChatAgentMemberToServer, loadVaultAgents, loadChatAgentMembers]);
+  }, [persistChatAgentMemberToServer, loadVaultAgents, loadChatAgentMembers, workspaceStore]);
 
   const handleRemoveChatAgent = useCallback((channelId: string, registrationId: string) => {
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
+    const vaultId = activeVaultIdRef.current;
     setChatState((prev) => ({
       ...prev,
       registeredAgentsByChannel: {
@@ -1343,21 +1374,28 @@ export default function App() {
         [channelId]: (prev.registeredAgentsByChannel[channelId] ?? []).filter((item) => item.id !== registrationId),
       },
     }));
-    const vaultId = activeVaultIdRef.current;
     if (vaultId) {
-      void removeChatAgentMemberOnServer(vaultId, channelId, registrationId).then(() => {
+      void removeChatAgentMemberOnServer(vaultId, workspaceEpoch, vaultEpoch, channelId, registrationId).then(() => {
+        if (workspaceStore.epoch !== workspaceEpoch
+          || workspaceEpochRef.current !== vaultEpoch
+          || activeVaultIdRef.current !== vaultId) return;
         void loadVaultAgents(vaultId);
       });
     }
-  }, [removeChatAgentMemberOnServer, loadVaultAgents]);
+  }, [removeChatAgentMemberOnServer, loadVaultAgents, workspaceStore]);
 
   const handleUpsertVaultAgent = useCallback(async (input: Partial<VaultAgent> & { agentId: string }) => {
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) throw new Error('No active vault');
     const data = await api<{ agent: VaultAgent }>(`/api/vaults/${vaultId}/vault-agents`, {
       method: 'PUT',
       body: JSON.stringify(input),
     });
+    if (workspaceStore.epoch !== workspaceEpoch
+      || workspaceEpochRef.current !== vaultEpoch
+      || activeVaultIdRef.current !== vaultId) return;
     const agent = data.agent;
     setVaultAgents((prev) => {
       const rest = prev.filter((a) => a.id !== agent.id);
@@ -1383,14 +1421,23 @@ export default function App() {
     });
     // PUT vault-agents projects into every channel server-side; refresh client
     // maps so no room keeps a stale shorter roster.
-    void loadChatAgentMembers(vaultId, notesRef.current);
+    if (workspaceStore.epoch === workspaceEpoch
+      && workspaceEpochRef.current === vaultEpoch
+      && activeVaultIdRef.current === vaultId) {
+      void loadChatAgentMembers(vaultId, notesRef.current);
+    }
     return agent;
-  }, [loadChatAgentMembers]);
+  }, [loadChatAgentMembers, workspaceStore]);
 
   const handleDeleteVaultAgent = useCallback(async (vaultAgentId: string) => {
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return;
     await api(`/api/vaults/${vaultId}/vault-agents/${vaultAgentId}`, { method: 'DELETE' });
+    if (workspaceStore.epoch !== workspaceEpoch
+      || workspaceEpochRef.current !== vaultEpoch
+      || activeVaultIdRef.current !== vaultId) return;
     setChatState((prev) => {
       const next: Record<string, ChatAgentRegistration[]> = {};
       for (const [chId, regs] of Object.entries(prev.registeredAgentsByChannel)) {
@@ -1398,12 +1445,17 @@ export default function App() {
       }
       return { ...prev, registeredAgentsByChannel: next };
     });
-  }, []);
+  }, [workspaceStore]);
 
   const handleDeleteAgentProfile = useCallback(async (vaultAgentId: string) => {
+    const workspaceEpoch = workspaceStore.epoch;
+    const vaultEpoch = workspaceEpochRef.current;
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return;
     await api(`/api/vaults/${vaultId}/vault-agents/${vaultAgentId}/profile`, { method: 'DELETE' });
+    if (workspaceStore.epoch !== workspaceEpoch
+      || workspaceEpochRef.current !== vaultEpoch
+      || activeVaultIdRef.current !== vaultId) return;
     setVaultAgents((prev) => prev.filter((a) => a.id !== vaultAgentId));
     setChatState((prev) => {
       const next: Record<string, ChatAgentRegistration[]> = {};
@@ -1412,7 +1464,8 @@ export default function App() {
       }
       return { ...prev, registeredAgentsByChannel: next };
     });
-  }, []);
+  }, [workspaceStore]);
+
 
   const addVaultAgentToChannelForContext = useCallback(async (
     vaultId: string,
