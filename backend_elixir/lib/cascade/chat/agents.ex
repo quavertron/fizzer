@@ -100,6 +100,7 @@ defmodule Cascade.Chat.Agents do
       end
     end
   end
+
   def upsert_identity(user_id, vault_id, input) do
     source_id = value(input, "sourceAgentId", "") |> to_string() |> String.trim()
 
@@ -110,7 +111,11 @@ defmodule Cascade.Chat.Agents do
         agent_id = input |> value("agentId", "") |> to_string() |> String.trim()
 
         id =
-          input |> value("id", "") |> to_string() |> String.trim() |> nonblank(Ecto.UUID.generate())
+          input
+          |> value("id", "")
+          |> to_string()
+          |> String.trim()
+          |> nonblank(Ecto.UUID.generate())
 
         mention = Schema.normalize_mention(value(input, "mention", ""), agent_id)
 
@@ -278,7 +283,6 @@ defmodule Cascade.Chat.Agents do
     end
   end
 
-
   @doc "Explicitly retires an owner-scoped profile and every membership."
   def delete_profile(user_id, vault_id, identity_id) do
     with true <- not is_nil(VaultMembers.role(vault_id, user_id)),
@@ -332,6 +336,7 @@ defmodule Cascade.Chat.Agents do
       {:ok, members}
     end
   end
+
   def add_to_channel(
         user_id,
         vault_id,
@@ -354,9 +359,9 @@ defmodule Cascade.Chat.Agents do
            owner_id | _
          ] <-
            SQL.one(
-            "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
-            [identity_id, route.localVaultId, route.localVaultId]
-          ),
+             "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
+             [identity_id, route.localVaultId, route.localVaultId]
+           ),
          :ok <- manage_identity(owner_id, user_id),
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
          existing <-
@@ -381,8 +386,13 @@ defmodule Cascade.Chat.Agents do
          prompt <-
            value(flags, "contextPrompt", existing_value(existing, 15, default_prompt))
            |> to_string(),
-         :ok <- member_handle_available(route.sourceChannelId, route.localVaultId, identity_id, mention) do
-
+         :ok <-
+           member_handle_available(
+             route.sourceChannelId,
+             route.localVaultId,
+             identity_id,
+             mention
+           ) do
       registration_id = if existing, do: hd(existing), else: Ecto.UUID.generate()
 
       effort =
@@ -501,7 +511,6 @@ defmodule Cascade.Chat.Agents do
               [registration_id, route.sourceChannelId, registration_id]
             )
           end
-
         end)
 
         [saved_registration_id] =
@@ -509,6 +518,7 @@ defmodule Cascade.Chat.Agents do
             "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? AND vault_id=?",
             [identity_id, route.sourceChannelId, route.localVaultId]
           )
+
         if route.localVaultId == route.sourceVaultId do
           backfill_legacy_messages(
             route.sourceChannelId,
@@ -913,7 +923,6 @@ defmodule Cascade.Chat.Agents do
       mention
     end
   end
-
 
   defp identity_scope(value) do
     normalized = value |> to_string() |> String.trim() |> String.downcase()

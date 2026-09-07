@@ -467,7 +467,10 @@ defmodule Cascade.Chat.Schema do
 
               exclusions =
                 if SQL.table_exists?("vault_agent_exclusions"),
-                  do: SQL.all("SELECT vault_id,vault_agent_id,created_at FROM vault_agent_exclusions"),
+                  do:
+                    SQL.all(
+                      "SELECT vault_id,vault_agent_id,created_at FROM vault_agent_exclusions"
+                    ),
                   else: []
 
               SQL.exec("DROP TABLE IF EXISTS vault_agent_exclusions")
@@ -551,17 +554,20 @@ defmodule Cascade.Chat.Schema do
   end
 
   defp remap_registration!(loser, winner) do
-    SQL.exec("""
-    DELETE FROM chat_next_step_checks
-    WHERE registration_id=?
-      AND EXISTS (
-        SELECT 1
-        FROM chat_next_step_checks AS winner_check
-        WHERE winner_check.channel_id=chat_next_step_checks.channel_id
-          AND winner_check.source_id=chat_next_step_checks.source_id
-          AND winner_check.registration_id=?
-      )
-    """, [loser, winner])
+    SQL.exec(
+      """
+      DELETE FROM chat_next_step_checks
+      WHERE registration_id=?
+        AND EXISTS (
+          SELECT 1
+          FROM chat_next_step_checks AS winner_check
+          WHERE winner_check.channel_id=chat_next_step_checks.channel_id
+            AND winner_check.source_id=chat_next_step_checks.source_id
+            AND winner_check.registration_id=?
+        )
+      """,
+      [loser, winner]
+    )
 
     SQL.exec("UPDATE chat_next_step_checks SET registration_id=? WHERE registration_id=?", [
       winner,
