@@ -611,8 +611,9 @@ defmodule CascadeWeb.ChatRouter do
 
               case Messages.get(channel_id, user.id, notice_id) do
                 {:ok, notice} ->
-                  {:ok, agents} = Agents.list_members(channel_id, user.id)
-                  {:ok, %{message: message, agents: agents, dispatches: [], notice: notice}}
+                  with {:ok, agents} <- Agents.list_members(channel_id, user.id) do
+                    {:ok, %{message: message, agents: agents, dispatches: [], notice: notice}}
+                  end
 
                 {:error, _} ->
                   cleared =

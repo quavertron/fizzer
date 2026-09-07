@@ -406,7 +406,8 @@ defmodule Cascade.Chat.Schema do
       "CREATE INDEX IF NOT EXISTS chat_messages_activity_idx ON chat_messages(channel_id,activity_at)",
       "CREATE INDEX IF NOT EXISTS chat_messages_run_idx ON chat_messages(run_id)",
       "CREATE INDEX IF NOT EXISTS chat_agent_members_channel_idx ON chat_agent_members(channel_id)",
-      "CREATE UNIQUE INDEX IF NOT EXISTS chat_agent_members_identity_idx ON chat_agent_members(channel_id,vault_agent_id)",
+      "DROP INDEX IF EXISTS chat_agent_members_identity_idx",
+      "CREATE UNIQUE INDEX chat_agent_members_identity_idx ON chat_agent_members(vault_id,channel_id,vault_agent_id)",
       "CREATE INDEX IF NOT EXISTS vault_agents_vault_idx ON vault_agents(vault_id)",
       "CREATE UNIQUE INDEX IF NOT EXISTS vault_agents_import_source_idx ON vault_agents(vault_id,imported_from_agent_id) WHERE imported_from_agent_id IS NOT NULL",
       "CREATE INDEX IF NOT EXISTS vault_agents_owner_idx ON vault_agents(owner_user_id)",
@@ -448,19 +449,27 @@ defmodule Cascade.Chat.Schema do
     schema = SQL.table_sql("vault_agents") || ""
 
     unless Regex.match?(~r/UNIQUE\s*\(\s*owner_user_id\s*,\s*mention\s*\)/i, schema) do
-      merge_duplicate_identities!()
-
-      exclusions =
-        if SQL.table_exists?("vault_agent_exclusions"),
-          do: SQL.all("SELECT vault_id,vault_agent_id,created_at FROM vault_agent_exclusions"),
-          else: []
-
       Repo.checkout(
         fn ->
           SQL.exec("PRAGMA foreign_keys=OFF")
 
           try do
             SQL.transaction(fn ->
+              if Regex.match?(
+                   ~r/UNIQUE\s*\(\s*channel_id\s*,\s*vault_agent_id\s*\)/i,
+                   SQL.table_sql("chat_agent_members") || ""
+                 ) do
+                rebuild_node_table!("chat_agent_members")
+              end
+
+              SQL.exec("DROP INDEX IF EXISTS chat_agent_members_identity_idx")
+              merge_duplicate_identities!()
+
+              exclusions =
+                if SQL.table_exists?("vault_agent_exclusions"),
+                  do: SQL.all("SELECT vault_id,vault_agent_id,created_at FROM vault_agent_exclusions"),
+                  else: []
+
               SQL.exec("DROP TABLE IF EXISTS vault_agent_exclusions")
 
               SQL.exec(create_table_sql("vault_agents", "vault_agents_owner_scoped"))
@@ -503,26 +512,46 @@ defmodule Cascade.Chat.Schema do
         )
 
       Enum.each(losers, fn [loser | _] ->
-        SQL.exec(
-          "DELETE FROM chat_agent_members WHERE vault_agent_id=? AND channel_id IN (SELECT channel_id FROM chat_agent_members WHERE vault_agent_id=?)",
-          [loser, winner]
+        SQL.all(
+          "SELECT id,vault_id,channel_id FROM chat_agent_members WHERE vault_agent_id=?",
+          [loser]
         )
-
-        SQL.exec("UPDATE chat_agent_members SET vault_agent_id=? WHERE vault_agent_id=?", [
-          winner,
-          loser
-        ])
-
-        if SQL.table_exists?("vault_agent_exclusions"),
-          do:
-            SQL.exec(
-              "UPDATE OR IGNORE vault_agent_exclusions SET vault_agent_id=? WHERE vault_agent_id=?",
-              [winner, loser]
+        |> Enum.each(fn [loser_registration, member_vault, member_channel] ->
+          winner_registration =
+            SQL.one(
+              "SELECT id FROM chat_agent_members WHERE vault_agent_id=? AND vault_id=? AND channel_id=?",
+              [winner, member_vault, member_channel]
             )
+
+          case winner_registration do
+            [registration] ->
+              remap_registration!(loser_registration, registration)
+              SQL.exec("DELETE FROM chat_agent_members WHERE id=?", [loser_registration])
+
+            nil ->
+              SQL.exec("UPDATE chat_agent_members SET vault_agent_id=? WHERE id=?", [
+                winner,
+                loser_registration
+              ])
+          end
+        end)
+
+        if SQL.table_exists?("vault_agent_exclusions") do
+          SQL.exec(
+            "INSERT OR IGNORE INTO vault_agent_exclusions(vault_id,vault_agent_id,created_at) SELECT vault_id,?,created_at FROM vault_agent_exclusions WHERE vault_agent_id=?",
+            [winner, loser]
+          )
+
+          SQL.exec("DELETE FROM vault_agent_exclusions WHERE vault_agent_id=?", [loser])
+        end
 
         SQL.exec("DELETE FROM vault_agents WHERE id=?", [loser])
       end)
     end)
+  end
+
+  defp remap_registration!(loser, winner) do
+    SQL.exec("UPDATE chat_messages SET registration_id=? WHERE registration_id=?", [winner, loser])
   end
 
   defp backfill_member_identities! do
@@ -556,11 +585,27 @@ defmodule Cascade.Chat.Schema do
   end
 
   defp reconcile_member_uniqueness! do
-    SQL.exec("""
-    DELETE FROM chat_agent_members WHERE rowid NOT IN (
-      SELECT MIN(rowid) FROM chat_agent_members GROUP BY channel_id,vault_agent_id
-    )
-    """)
+    SQL.transaction(fn ->
+      SQL.all("""
+      SELECT loser.id,winner.id
+      FROM chat_agent_members loser
+      JOIN chat_agent_members winner
+        ON winner.vault_id=loser.vault_id
+       AND winner.channel_id=loser.channel_id
+       AND winner.vault_agent_id=loser.vault_agent_id
+       AND winner.rowid=(
+         SELECT MIN(candidate.rowid) FROM chat_agent_members candidate
+         WHERE candidate.vault_id=loser.vault_id
+           AND candidate.channel_id=loser.channel_id
+           AND candidate.vault_agent_id=loser.vault_agent_id
+       )
+      WHERE loser.rowid>winner.rowid
+      """)
+      |> Enum.each(fn [loser, winner] ->
+        remap_registration!(loser, winner)
+        SQL.exec("DELETE FROM chat_agent_members WHERE id=?", [loser])
+      end)
+    end)
   end
 
   defp begin_identity(vault_id, owner, agent_id, name, avatar, mention, model, cwd, prompt) do
