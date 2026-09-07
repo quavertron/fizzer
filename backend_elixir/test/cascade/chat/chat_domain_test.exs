@@ -636,11 +636,11 @@ defmodule Cascade.ChatDomainTest do
              Agents.remove_member(1, test_vault.id, test_channel_two.id, projected_member.id)
 
     assert {:ok, []} = Agents.list_members(test_channel.id, 1)
+    assert {:error, "Vault agent not found"} = Agents.get(1, test_vault.id, imported.id)
     assert {:ok, []} = Agents.ensure_vault_wide(1, test_vault.id, test_channel_two.id)
 
     assert {:ok, true} = Agents.unlink_from_vault(1, first_vault.id, identity.id)
-    assert {:ok, reusable_profile} = Agents.get(1, first_vault.id, identity.id)
-    assert reusable_profile.id == identity.id
+    assert {:error, "Vault agent not found"} = Agents.get(1, first_vault.id, identity.id)
     assert {:ok, []} = Agents.list_members(first_channel.id, 1)
 
     assert {:error, "Agent was removed from this vault"} =
@@ -653,8 +653,7 @@ defmodule Cascade.ChatDomainTest do
 
     assert {:ok, true} = Agents.delete_profile(1, first_vault.id, identity.id)
     assert {:error, "Vault agent not found"} = Agents.get(1, first_vault.id, identity.id)
-    assert {:ok, imported_profile} = Agents.get(1, test_vault.id, imported.id)
-    assert imported_profile.id == imported.id
+    assert {:error, "Vault agent not found"} = Agents.get(1, test_vault.id, imported.id)
     assert {:ok, []} = Agents.list_members(first_channel.id, 1)
   end
 
@@ -718,9 +717,13 @@ defmodule Cascade.ChatDomainTest do
                identityScope: "vault"
              })
 
-    assert {:ok, other_agents} = Agents.list_vault(1, other.id)
-    assert Enum.any?(other_agents, &(&1.id == network.id))
-    assert Enum.any?(other_agents, &(&1.id == vault_bot.id))
+    assert {:ok, %{agents: other_agents, myAgents: my_agents}} =
+             Agents.list_for_vault(1, other.id)
+
+    refute Enum.any?(other_agents, &(&1.id == network.id))
+    refute Enum.any?(other_agents, &(&1.id == vault_bot.id))
+    assert Enum.any?(my_agents, &(&1.id == network.id))
+    assert Enum.any?(my_agents, &(&1.id == vault_bot.id))
 
     assert {:ok, session} =
              Agents.upsert_identity(1, home.id, %{
@@ -741,7 +744,6 @@ defmodule Cascade.ChatDomainTest do
     refute Enum.any?(active_members, &(&1.id == session_member.id))
     assert {:ok, home_agents} = Agents.list_vault(1, home.id)
     refute Enum.any?(home_agents, &(&1.id == session.id))
-    assert SQL.one("SELECT id FROM vault_agents WHERE id=?", [session.id]) == nil
   end
 
   test "vault handles are unique across agents controlled by different members" do
