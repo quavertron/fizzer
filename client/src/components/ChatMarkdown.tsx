@@ -166,7 +166,6 @@ const STREAM_BODY_PAINT_MS = 120;
 
 export function ChatMediaEmbed({ href, label }: { href: string; label: ReactNode }) {
   const media = chatMediaLink(href);
-  const [embedLoaded, setEmbedLoaded] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const youtubeInfoRef = useRef({ currentTime: 0, title: 'YouTube video' });
   const [twitterHeight, setTwitterHeight] = useState<number | null>(null);
@@ -221,14 +220,6 @@ export function ChatMediaEmbed({ href, label }: { href: string; label: ReactNode
     return () => window.removeEventListener('message', onMessage);
   }, [href, media?.provider]);
   if (!media) return <a href={href} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">{label}</a>;
-  if (!embedLoaded) {
-    return (
-      <span className={`chat-media-embed is-${media.aspect} is-${media.provider}`}>
-        <a href={href} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">{label}</a>
-        <button type="button" onClick={() => setEmbedLoaded(true)}>Load external embed</button>
-      </span>
-    );
-  }
   return (
     <span className={`chat-media-embed is-${media.aspect} is-${media.provider}`}>
       <a href={href} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">{label}</a>

@@ -76,11 +76,12 @@ describe('ChatMediaEmbed', () => {
     { provider: 'youtube', href: 'https://youtu.be/jK-tt-3XJ7c', embed: 'youtube.com/embed/jK-tt-3XJ7c' },
     { provider: 'spotify', href: 'https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy', embed: 'open.spotify.com/embed/album/' },
     { provider: 'twitter', href: 'https://x.com/user/status/123456789', embed: 'platform.twitter.com/embed/Tweet.html' },
-  ])('requires opt-in before loading $provider embeds', ({ provider, href, embed }) => {
+  ])('loads $provider embeds without an extra click', ({ provider, href, embed }) => {
     const markup = renderToStaticMarkup(createElement(ChatMediaEmbed, { href, label: 'Media' }));
     expect(markup).toContain(`is-${provider}`);
-    expect(markup).toContain('Load external embed');
-    expect(markup).not.toContain('<iframe');
-    expect(markup).not.toContain(embed);
+    expect(markup).not.toContain('Load external embed');
+    expect(markup).toContain('<iframe');
+    expect(markup).toContain('loading="lazy"');
+    expect(markup).toContain(embed);
   });
 });
