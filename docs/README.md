@@ -15,6 +15,8 @@ reviewed with the code they describe.
   shell, persistence, and realtime boundaries.
 - [Agent runtime](agent-runtime.md) — understand local agent execution,
   sessions, streaming, helpers, and security boundaries.
+- [App context](app-context.md) — maintain bounded account-wide behavioral guidance for agent runs.
+- [Terminal client](../tui/README.md) — connect the Rust TUI to an authenticated Fizzer instance.
 - [Development and testing](development.md) — make and verify changes.
 - [Self-hosting](self-hosting.md) — run a loopback-only private instance and
   connect a pinned desktop identity.
@@ -30,6 +32,7 @@ reviewed with the code they describe.
 | `cascade-electron/` | Electron main process, preload bridge, and local runner |
 | `cli-agents/` | Agent adapters and the `cascade-*` helper commands |
 | `android/` | Capacitor Android wrapper |
+| `tui/` | Rust terminal client for authenticated notes, chat, and agents |
 | `deploy/` | Production host command, snapshot-safe cutover, locking, and nginx configuration |
 | `scripts/` | Verification, development instances, and integration utilities |
 

@@ -32,7 +32,7 @@ A **channel** is a persistent conversation inside a vault. Use a channel for que
 
 ### Agents are local workers
 
-An agent registration connects a channel to a locally authenticated CLI such as Claude Code, Codex, Grok, Copilot, Hermes, Antigravity, Akron Grok, OMP, or Pi. The agent process and provider credentials stay on the owner’s desktop. Fizzer stores the workspace conversation, run events, and results—not the provider’s secret credentials.
+An agent registration connects a channel to a locally authenticated CLI such as Claude Code, Codex, Grok, Copilot, Hermes, Antigravity, Akron `--grok`, OMP, or Pi. The agent process and provider credentials stay on the owner’s desktop. Fizzer stores the workspace conversation, run events, and results—not the provider’s secret credentials.
 
 ## Ways to use Fizzer
 
@@ -66,7 +66,7 @@ For ordinary note and chat work, the browser/headless mode is enough. Agent exec
 
 Prerequisites:
 
-- Node.js 20 or newer;
+- Node.js 24 or newer;
 - npm and Git;
 - Elixir 1.17+ and Erlang/OTP for the local API;
 - an Electron-capable desktop session for local agent execution.
@@ -88,6 +88,17 @@ For browser-only work:
 npm run dev-headless
 ```
 
+### Option 3: use the terminal client
+
+The Rust TUI provides authenticated access to vault channels, chat, agents, and notes from a terminal. Initialize its pinned submodule, start the local API, then run:
+
+```bash
+git submodule update --init --recursive tui/vendor/ratatui
+npm run tui
+```
+
+The TUI reads `CASCADE_NOTE_TOKEN`, then `CASCADE_TOKEN`, then `~/.cascade/token`; it does not provide an interactive login. Set `CASCADE_URL` for a non-default API and `CASCADE_NOTE_VAULT` to select a vault. See the [TUI guide](../tui/README.md) for controls and offline behavior.
+
 Local runtime data is stored outside the checkout by default:
 
 - database: `~/.cascade/docs.db`;
@@ -97,14 +108,13 @@ Local runtime data is stored outside the checkout by default:
 
 ### Sidebar
 
-The left sidebar contains:
+The left sidebar combines:
 
-- the current vault and vault switcher;
+- a far-left vault rail for instant vault switching, vault management, creation, and public discovery;
 - quick actions for a new note, folder, channel, and search;
-- the folder and note tree;
-- unread activity badges;
-- access to public vault discovery and direct messages;
-- account and vault management actions.
+- the active vault’s folder, note, and channel tree;
+- unread and agent-activity indicators;
+- direct messages plus account and vault management actions.
 
 Right-click a note or folder for rename, delete, move, and creation actions. Drag notes and folders to reorder them or move them into another folder. The `Notes` heading is the drop target for moving an item back to the vault root.
 
@@ -124,23 +134,22 @@ This is useful when comparing a specification with a note, keeping chat beside a
 
 The top toolbar provides:
 
-- **Orbit** — a live view of currently running agents;
+- **Graph** — the active vault’s linked notes and referenced chats;
 - **Updates** — unread mentions, replies, note changes, and other activity;
 - **Sessions** — active AI runs, model, elapsed time, and controls;
-- **Members** — open the current vault’s people and agent panel when available.
+- **Members** — open the people and agent panel while a channel is active.
 
 ## Vaults, folders, and sharing
 
 ### Create and switch vaults
 
-1. Open the vault name at the top of the sidebar.
-2. Choose **New vault**.
-3. Enter a name and create it.
-4. Switch between vaults from the same menu.
+1. Choose **Create vault** (`+`) in the far-left vault rail, or open **Manage vaults** from the rail.
+2. Enter a name and create the vault.
+3. Select a vault’s initials in the rail to switch instantly.
 
-Use a separate vault when you need a clean context boundary, different collaborators, or different access rules.
+The management dialog also lists every available vault and provides public discovery and invite-link joining. Use a separate vault when you need a clean context boundary, different collaborators, or different access rules.
 
-The vault menu also lets you rename or delete vaults when your role permits it. Deleting a vault is permanent and removes its notes.
+Right-click a vault in the rail or choose **Manage** in the dialog to open its settings. Rename or delete it when your role permits it. Deleting a vault is permanent and removes its notes.
 
 ### Organize notes
 
@@ -150,7 +159,7 @@ Rename a note inline from the note title or via its context menu. Move notes by 
 
 ### Invite and manage people
 
-Open account settings and choose **Current vault**, or use the member controls in a channel.
+Open account settings and choose **Manage vault**, use **Manage vaults** from the far-left rail, or open the member controls in a channel.
 
 Owners can:
 
@@ -206,7 +215,7 @@ The editor supports:
 - public publishing;
 - an editor view and a Kanban view.
 
-Uploaded images, audio, video, PDFs, and text files are limited to 64 MB each. Images can also be resized in the editor.
+Uploaded images, MP3 audio, and MP4 video are limited to 64 MB each. Images can also be resized in the editor.
 
 ### Link notes together
 
@@ -264,7 +273,7 @@ Publishing is for sharing a finished or intentionally public document. It is not
 3. Press Enter to send; use Shift+Enter for a new line.
 4. Use the emoji action or upload action when needed.
 
-A channel transcript is persistent and realtime. Use ordinary messages for context, questions, decisions, and progress. Attach images or other supported media when visual context matters.
+A channel transcript is persistent and realtime. Use ordinary messages for context, questions, decisions, and progress. Chat attachments support images, audio, video, PDFs, and text or Markdown files up to 64 MB each.
 
 ### Reply, quote, and forward
 
@@ -339,6 +348,12 @@ Open channel settings and set **Project folder** to the directory where the agen
 
 Set a project folder when you want an agent to edit a repository or inspect a defined project. Leave it unset for general conversation or note-oriented work.
 
+### Maintain account-wide agent guidance
+
+Fizzer adds one bounded **app context** document to every agent run and continued turn for the signed-in account. It is for reusable behavioral guidance across vaults, not secrets or private vault facts, and it cannot override current instructions or permissions.
+
+There is currently no editing UI. Agents can read and conditionally replace it with `cascade-chat context get` and `cascade-chat context set`; conflicting revisions must be reread and merged deliberately. See [App context](app-context.md) for the exact commands and limits.
+
 ### Coordinate multiple agents
 
 A channel may designate one agent as its coordinator. The coordinator can answer simple questions directly and create a mission for non-trivial work. It can delegate tasks to other registered agents or to isolated anonymous worker sessions. Those workers execute a single assigned task; they do not become extra coordinators.
@@ -361,7 +376,7 @@ Typical mission states are:
 
 Open **Missions** in a channel to inspect mission history. Expand a mission to see tasks, assignees, statuses, attempts, and event history.
 
-A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](https://github.com/quavertron/fizzer/blob/master/docs/agent-runtime.md#chat-first-orchestration) for completion and recovery details.
+A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](https://github.com/grm4871/fizzer/blob/master/docs/agent-runtime.md#chat-first-orchestration) for completion and recovery details.
 
 Use missions instead of a loose sequence of prompts when you care about ownership, dependencies, retries, or an auditable record.
 
@@ -438,11 +453,11 @@ Open **Updates** from the toolbar to see new activity across vaults and conversa
 
 Open an item to jump to its note or message, or choose **Mark all read**. This is the best place to recover context after being away.
 
-### Orbit and sessions
+### Graph and sessions
 
-**Orbit** shows running agents at a glance. **Sessions** is the operational view: inspect active runs, model, elapsed time, and detailed output, and cancel a run when necessary.
+**Graph** opens the active vault’s **Vault atlas**: a navigable constellation of notes, chats, wikilinks, and chat references. Search by title, filter to notes or chats, pan and zoom, or choose **Frame vault** to fit the graph. Selecting a note or chat opens it in the workspace.
 
-Use Sessions when an agent appears stuck, when you need to distinguish queued work from running work, or when the chat transcript is intentionally keeping the final answer compact.
+**Sessions** is the operational view for active agent work: inspect queued and running sessions, model, elapsed time, activity, and detailed output, or cancel a run when necessary. Use Sessions when an agent appears stuck or when the chat transcript intentionally keeps the final answer compact.
 
 ## Account and device settings
 
@@ -452,7 +467,7 @@ Open account settings from the user/profile control.
 - **Preferences** — show or hide agent-memory folders and their updates.
 - **Security** — change the account password.
 - **Local Codex** — on supported Android builds, authenticate the bundled Codex runtime and optionally switch execution to the phone while Fizzer is open.
-- **Current vault** — manage members, roles, invitations, public discovery, join requests, reports, bans, and leaving the vault.
+- **Manage vault** — manage members, roles, invitations, public discovery, join requests, reports, bans, and leaving the selected vault.
 
 Provider credentials normally remain in the provider’s native local CLI store. Do not put API keys in `.env` committed to the repository or in ordinary notes.
 
@@ -485,7 +500,7 @@ On macOS, use `Cmd`; on Windows and Linux, use `Ctrl`.
 4. Set the project folder in channel settings.
 5. Create or bind an isolated workspace.
 6. Mention an agent with explicit acceptance criteria.
-7. Watch the run in Sessions or Orbit.
+7. Watch the run in Sessions.
 8. Review the diff and request changes if needed.
 9. Open a draft pull request and finish the work item after approval.
 
@@ -519,7 +534,7 @@ On macOS, use `Cmd`; on Windows and Linux, use `Ctrl`.
 
 ## Fizzer Guide conversations and reporting
 
-The floating help button opens the **Fizzer Guide**, which answers questions from this manual through a connected local runner. The Fizzer Guide cannot answer while the runner is offline.
+The floating help button opens the **Fizzer Guide**, which answers questions from this manual through a connected Codex-capable local runner. The Fizzer Guide cannot answer while Local Codex is offline.
 
 ### Keep and revisit Guide conversations
 
@@ -542,14 +557,14 @@ Choose **Discard** to close the preview without publishing. After a successful c
 ### Choose the correct reporting path
 
 - **Fizzer tracker issue** — public. Use the issue preview and **Create issue** for a Fizzer bug or enhancement that you want to publish at `grm4871/fizzer`.
-- **Product feedback** — private. Choose **Feedback**, review the privacy notice, and explicitly send the message to the Fizzer server owner. Only the feedback text and your username are sent; the Guide conversation, notes, chats, files, traces, and attachments are not included.
+- **Product feedback** — private. Choose **Feedback**, review the privacy notice, and explicitly send the message to the Fizzer server owner. Fizzer sends the feedback text, your account identity, and source/surface labels; it does not include the Guide conversation, notes, chats, files, traces, or attachments.
 - **Trust-and-safety report** — moderation. Use the normal **Report** action for a vault, note, message, or member that may violate community rules.
 
 These paths are separate. **Product feedback** does not create a public issue, a **Fizzer tracker** issue is not a private feedback message, and neither replaces a **Trust-and-safety report**.
 
 ## Boundaries and troubleshooting
 
-- **Notes/chat work but agents do not start:** open the desktop app or reconnect the compatible runner; verify the provider CLI is installed and authenticated on that machine.
+- **Notes/chat work but agents do not start:** open the desktop app or reconnect the compatible runner; verify the selected provider CLI is installed and authenticated on that machine. The Fizzer Guide specifically requires a Codex-capable runner.
 - **A note looks edited but is still marked dirty:** save it with `Cmd/Ctrl+Shift+S` or the mobile Save button.
 - **A board is empty:** open the note’s Kanban view and choose **Create board**, or ensure the Markdown has the expected Kanban frontmatter and `##` list headings.
 - **A worktree action says Desktop only:** use the Electron desktop app; the browser client cannot access local Git worktrees.

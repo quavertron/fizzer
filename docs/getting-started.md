@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 20 or newer
+- Node.js 24 or newer
 - Elixir 1.17+ and Erlang/OTP (for the local API)
 - npm
 - Git
