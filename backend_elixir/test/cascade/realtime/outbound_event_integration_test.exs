@@ -128,6 +128,25 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     refute Enum.any?(queries, &String.contains?(&1, "sqlite_master"))
   end
 
+  test "HTTP presence gives both linked-channel users each other's photo", %{target: target} do
+    {source, source_channel, local, local_channel} = linked_chat()
+    avatar = "data:image/png;base64,alice-photo"
+    SQL.exec("UPDATE users SET avatar_url=? WHERE id=1", [avatar])
+
+    for {vault, channel, id, username} <- [
+          {source, source_channel, 1, "alice"},
+          {local, local_channel, 2, "bob"}
+        ] do
+      url = "#{target}/api/vaults/#{vault.id}/channels/#{channel.id}/presence"
+      assert {200, payload} = http_json(:get, url, "Bearer #{token(id, username)}")
+      assert payload["profiles"]["alice"]["avatarUrl"] == avatar
+      assert payload["profiles"]["bob"]["avatarUrl"] == "bob.png"
+
+      assert {404, %{"error" => "Chat channel not found"}} =
+               http_json(:get, url, "Bearer #{token(3, "eve")}")
+    end
+  end
+
   test "presence never embeds profile avatars" do
     {source, source_channel, _local, _local_channel} = linked_chat()
     inline_avatar = "data:image/jpeg;base64," <> String.duplicate("A", 300_000)

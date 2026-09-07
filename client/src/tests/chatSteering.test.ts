@@ -238,6 +238,23 @@ describe('mergeChatPresence', () => {
     expect(merged.profiles).toEqual({ alice, bob });
   });
 
+  it('preserves both users HTTP photos through lean realtime updates and accepts explicit clearing', () => {
+    const bob = { id: 2, username: 'bob', displayName: 'Bob', avatarUrl: 'bob.png' };
+    const loaded = mergeChatPresence(undefined, {
+      participants: ['alice', 'bob'], profiles: { alice, bob },
+    });
+    const merged = mergeChatPresence(loaded, {
+      profiles: { alice: { id: 1, username: 'alice', displayName: 'Alice Updated' } },
+    });
+    const rendered = applyLocalUserProfile(merged, bob);
+    expect(rendered.profiles?.alice.avatarUrl).toBe(alice.avatarUrl);
+    expect(rendered.profiles?.alice.displayName).toBe('Alice Updated');
+    expect(rendered.profiles?.bob.avatarUrl).toBe(bob.avatarUrl);
+    expect(mergeChatPresence(merged, {
+      profiles: { alice: { ...alice, avatarUrl: '' } },
+    }).profiles?.alice.avatarUrl).toBe('');
+  });
+
   it('starts from the incoming payload when there is no cache yet', () => {
     const merged = mergeChatPresence(undefined, { participants: ['alice'], online: ['alice'], owner: 'alice', profiles: { alice } });
     expect(merged).toEqual({ participants: ['alice'], online: ['alice'], owner: 'alice', profiles: { alice } });
