@@ -929,9 +929,8 @@ export const ChatView = memo(function ChatView({
         >
           <div ref={messagesContentRef} className="chat-messages-content">
           {vaultId && <div ref={historySentinelRef} className="chat-history-sentinel">
-            {hasOlderHistory ? <button type="button" disabled={loadingHistory || isLoadingMessages}
-              onClick={() => void loadOlderHistory()}>{loadingHistory ? 'Loading older messages…' : historyError ? 'Retry older messages' : 'Load older messages'}</button>
-              : <span>Beginning of conversation</span>}
+            {hasOlderHistory && <button type="button" disabled={loadingHistory || isLoadingMessages}
+              onClick={() => void loadOlderHistory()}>{loadingHistory ? 'Loading older messages…' : historyError ? 'Retry older messages' : 'Load older messages'}</button>}
             {historyError && <span role="alert">{historyError}</span>}
           </div>}
           {/* Never blank an already-loaded transcript for a background refresh. */}

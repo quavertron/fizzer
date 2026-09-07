@@ -163,7 +163,7 @@ try {
   await page.waitForTimeout(300);
   assert.deepEqual(cursors, [361, 241, 121], 'exhausted history stays exhausted across recent refresh');
   assert.equal(refreshCount, 2);
-  assert.ok(await page.getByText('Beginning of conversation').isVisible());
+  assert.equal(await page.getByText('Beginning of conversation').count(), 0);
   assert.deepEqual(errors, [], 'chat fixture has no runtime errors');
   console.log('Chat scrolling browser regression passed');
 } finally {
