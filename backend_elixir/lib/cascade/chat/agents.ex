@@ -160,6 +160,27 @@ defmodule Cascade.Chat.Agents do
         flags \\ %{},
         restore_excluded \\ false
       ) do
+    put_channel_member(
+      user_id,
+      vault_id,
+      channel_id,
+      identity_id,
+      flags,
+      restore_excluded,
+      :owner
+    )
+  end
+
+  # Only ensure_vault_wide may materialize the already-authorized vault roster.
+  defp put_channel_member(
+         user_id,
+         vault_id,
+         channel_id,
+         identity_id,
+         flags,
+         restore_excluded,
+         access
+       ) do
     with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),
          [
            id,
@@ -177,7 +198,7 @@ defmodule Cascade.Chat.Agents do
              "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
              [identity_id, user_id, route.localVaultId, route.localVaultId]
            ),
-         :ok <- manage_identity(owner_id, user_id),
+         :ok <- authorize_channel_member(access, owner_id, user_id),
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
          mention <- Schema.normalize_mention(default_mention, agent_id),
          model <- value(flags, "model", default_model) |> to_string() |> String.trim(),
@@ -330,6 +351,9 @@ defmodule Cascade.Chat.Agents do
     end
   end
 
+  defp authorize_channel_member(:owner, owner_id, user_id), do: manage_identity(owner_id, user_id)
+  defp authorize_channel_member(:vault_roster, _owner_id, _user_id), do: :ok
+
   defp allow_vault_link(_vault_id, _identity_id, true), do: :ok
 
   defp allow_vault_link(vault_id, identity_id, false) do
@@ -423,20 +447,33 @@ defmodule Cascade.Chat.Agents do
   end
 
   def ensure_vault_wide(user_id, vault_id, channel_id) do
-    with {:ok, available} <- list_vault(user_id, vault_id) do
-      linked = linked_identity_ids(vault_id)
+    SQL.transaction(fn ->
+      with {:ok, _route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),
+           {:ok, members} <- list_members(channel_id, user_id) do
+        existing = MapSet.new(members, & &1.vaultAgentId)
 
-      Enum.each(available, fn identity ->
-        if MapSet.member?(linked, identity.id) do
-          case add_to_channel(user_id, vault_id, channel_id, identity.id) do
-            {:ok, _} -> :ok
-            _ -> :ok
+        linked_identity_ids(vault_id)
+        |> MapSet.difference(existing)
+        |> Enum.reduce_while(:ok, fn identity_id, :ok ->
+          case put_channel_member(
+                 user_id,
+                 vault_id,
+                 channel_id,
+                 identity_id,
+                 %{},
+                 false,
+                 :vault_roster
+               ) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, _} = error -> {:halt, error}
           end
+        end)
+        |> case do
+          :ok -> list_members(channel_id, user_id)
+          {:error, _} = error -> error
         end
-      end)
-
-      list_members(channel_id, user_id)
-    end
+      end
+    end)
   end
 
   defp linked_identity_ids(vault_id) do

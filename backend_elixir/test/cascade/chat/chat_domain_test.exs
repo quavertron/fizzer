@@ -586,6 +586,75 @@ defmodule Cascade.ChatDomainTest do
              Messages.create(alice, source.id, source_channel.id, system, access: :system)
   end
 
+  test "another vault member materializes the roster without changing channel settings" do
+    {vault, first} = chat_vault(1, "Shared", "First")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    second = Store.create_note(vault.id, 2, %{title: "Second", content: "cascade://chat-channel"})
+    {:ok, identity} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "sol"})
+
+    {:ok, original} =
+      Agents.add_to_channel(1, vault.id, first.id, identity.id, %{
+        replyToEveryMessage: true,
+        model: "channel-model",
+        cwd: "/channel",
+        contextPrompt: "local"
+      })
+
+    assert {:ok, [materialized]} = Agents.ensure_vault_wide(2, vault.id, second.id)
+    assert materialized.vaultAgentId == identity.id
+    refute materialized.conversationId == original.conversationId
+    refute materialized.replyToEveryMessage
+    assert {:ok, [^materialized]} = Agents.ensure_vault_wide(1, vault.id, second.id)
+    assert {:ok, [^original]} = Agents.ensure_vault_wide(2, vault.id, first.id)
+
+    assert {:error, _} =
+             Agents.add_to_channel(2, vault.id, first.id, identity.id, %{
+               replyToEveryMessage: false
+             })
+
+    assert {:error, _} =
+             Agents.upsert_identity(2, vault.id, %{
+               id: identity.id,
+               agentId: "codex",
+               displayName: "Stolen"
+             })
+
+    assert {:error, _} = Agents.remove_member(2, vault.id, first.id, original.id)
+
+    assert {:error, _} =
+             Agents.set_avatar(
+               2,
+               vault.id,
+               first.id,
+               original.id,
+               "https://example.com/avatar.png"
+             )
+
+    assert {:ok, [^original]} = Agents.list_members(first.id, 1)
+
+    {private, private_channel} = chat_vault(1, "Private", "Private")
+
+    {:ok, unrelated} =
+      Agents.upsert_identity(1, private.id, %{agentId: "codex", mention: "private"})
+
+    assert {:error, _} = Agents.ensure_vault_wide(2, private.id, private_channel.id)
+    assert {:error, _} = Agents.ensure_vault_wide(2, vault.id, private_channel.id)
+    assert {:error, _} = Agents.add_to_channel(2, vault.id, second.id, unrelated.id)
+    assert {:ok, [^materialized]} = Agents.ensure_vault_wide(1, vault.id, second.id)
+    assert {:ok, []} = Agents.list_members(private_channel.id, 1)
+
+    assert {:ok, true} = Agents.unlink_from_vault(1, vault.id, identity.id)
+    assert {:ok, []} = Agents.ensure_vault_wide(2, vault.id, second.id)
+    assert {:ok, []} = Agents.ensure_vault_wide(1, vault.id, first.id)
+    assert {:error, _} = Agents.add_to_channel(2, vault.id, second.id, identity.id, %{}, true)
+
+    # An owner can explicitly attach a profile from another vault; other members can then
+    # materialize that authorized membership, but cannot attach it themselves.
+    assert {:ok, _} = Agents.add_to_channel(1, vault.id, first.id, unrelated.id)
+    assert {:ok, [reused]} = Agents.ensure_vault_wide(2, vault.id, second.id)
+    assert reused.vaultAgentId == unrelated.id
+  end
+
   test "owned agent profiles can be reused across vaults and profile deletion is explicit" do
     {first_vault, first_channel} = chat_vault(1, "One", "A")
     {test_vault, test_channel} = chat_vault(1, "Test", "B")
