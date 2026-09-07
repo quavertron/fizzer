@@ -10,17 +10,25 @@ defmodule Cascade.Missions.Scheduler do
   def maintenance_missions do
     SQL.all("""
     SELECT id,created_by FROM chat_missions m
-    WHERE m.status NOT IN ('completed','canceled') OR (m.status='completed' AND EXISTS (
-      SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=0
-        AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL
-          OR json_extract(i.state_json,'$.executionCompleted') IS NOT 1
-          OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
-            WHERE json_extract(c.value,'$.status')='open' AND json_extract(c.value,'$.accepted') IS NOT 0)
-          OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.questions') q
-            WHERE COALESCE(json_extract(q.value,'$.status'),'open') NOT IN ('answered','fulfilled','canceled','stopped','declined')
-              AND TRIM(COALESCE(json_extract(q.value,'$.answer'),''))='')))) OR EXISTS (
-      SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
-      WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running'))
+    WHERE (
+      (
+        m.phase IN ('planning','executing') AND (
+          m.status NOT IN ('completed','canceled') OR EXISTS (
+            SELECT 1 FROM chat_mission_interpretations i
+            WHERE i.mission_id=m.id AND i.stopped=0
+              AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL)
+          ) OR EXISTS (
+            SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
+            WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running')
+          )
+        )
+      ) OR EXISTS (
+        SELECT 1
+        FROM chat_mission_cancellation_replays c
+        JOIN runs r ON r.id=c.run_id
+        WHERE c.mission_id=m.id AND r.status IN ('queued','running')
+      )
+    )
     """)
   end
 

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { WorkspaceStore } from '../workspace';
+import { WorkspaceStore, reconcileWorkspaceNoteContent } from '../workspace';
 import { emptySession, restorePersistedSession, workspaceSession } from '../chat/session';
 import * as Layout from '../layout/tree';
 import type { Note } from '../api';
 
 const note = (content: string): Note => ({ id: 'note', title: 'Note', content } as Note);
 const tab = (id: string, type: 'note' | 'chat' = 'note') => ({ id, title: id, type, dirty: false });
+const revisedNote = (content: string, revision: string): Note & { revision: string } => ({ ...note(content), revision });
 function fixture() {
   const store = new WorkspaceStore(emptySession());
   store.switchVault('a');
@@ -27,6 +28,42 @@ describe('workspace authority', () => {
     expect(store.active.openTabs[0].dirty).toBe(true);
     store.completeSave('a', 'note', 'newer', note('newer'), store.epoch);
     expect(store.active.openTabs[0].dirty).toBe(false);
+  });
+
+  it('keeps dirty drafts anchored to their original revision during refresh', () => {
+    const previous = {
+      note: revisedNote('saved', 'note-v1:1'),
+      draft: 'local draft',
+      baseRevision: 'note-v1:1',
+    };
+    const reconciled = reconcileWorkspaceNoteContent(previous, revisedNote('remote', 'note-v1:2'));
+    expect(reconciled).toEqual({
+      note: revisedNote('remote', 'note-v1:2'),
+      draft: 'local draft',
+      baseRevision: 'note-v1:1',
+    });
+  });
+
+  it('advances the saved baseline without erasing typing during an in-flight save', () => {
+    const store = fixture();
+    store.set('noteContents', {
+      note: {
+        note: revisedNote('saved', 'note-v1:1'),
+        draft: 'submitted',
+        baseRevision: 'note-v1:1',
+      },
+    });
+    store.set('noteContents', (previous) => ({
+      ...previous,
+      note: { ...previous.note, draft: 'typed while saving' },
+    }));
+    store.completeSave('a', 'note', 'submitted', revisedNote('submitted', 'note-v1:2'), store.epoch);
+    expect(store.active.noteContents.note).toEqual({
+      note: revisedNote('submitted', 'note-v1:2'),
+      draft: 'typed while saving',
+      baseRevision: 'note-v1:2',
+    });
+    expect(store.active.openTabs[0].dirty).toBe(true);
   });
 
   it('does not resurrect closed tabs, removed vaults, or logged-out drafts', () => {

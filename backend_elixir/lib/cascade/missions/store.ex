@@ -4,27 +4,33 @@ defmodule Cascade.Missions.Store do
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Messages}
   alias Cascade.WorkItems
+  alias Cascade.Content.Store, as: ContentStore
 
   @mission_statuses ~w(active reviewing attention blocked completed canceled)
   @task_statuses ~w(pending running completed failed blocked canceled)
   @terminal_task_statuses ~w(completed failed blocked canceled)
+  @task_purposes ~w(research implementation review fix integration verification)
 
   @mission_select """
   id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,objective,
-  status,summary,wake_sent,created_by,created_at,updated_at
+  status,summary,wake_sent,created_by,created_at,updated_at,phase,approved_at,approved_by,
+  approved_revisions_json,creation_fingerprint
   """
 
   @task_select """
   id,mission_id,title,assignee_registration_id,status,summary,prompt,depends_on_json,
   priority,reasoning_effort,anonymous,workspace_mode,dispatch_id,run_id,attempt,work_item_id,
-  created_at,updated_at
+  created_at,updated_at,purpose,brief_note_id,brief_revisions_json,review_outcome,verification_passed
   """
 
   @qualified_task_select """
   t.id,t.mission_id,t.title,t.assignee_registration_id,t.status,t.summary,t.prompt,
   t.depends_on_json,t.priority,t.reasoning_effort,t.anonymous,t.workspace_mode,t.dispatch_id,t.run_id,
-  t.attempt,t.work_item_id,t.created_at,t.updated_at
+  t.attempt,t.work_item_id,t.created_at,t.updated_at,t.purpose,t.brief_note_id,t.brief_revisions_json,
+  t.review_outcome,t.verification_passed
   """
+
+  @task_field_count 23
 
   @event_select """
   id,mission_id,task_id,kind,title,from_status,to_status,summary,run_id,attempt,created_at
@@ -81,10 +87,6 @@ defmodule Cascade.Missions.Store do
                 ]
               )
 
-              if Keyword.get(opts, :control_plane, false) and
-                   field(input, :reviewRequested) != true do
-                record_event(mission_id, %{kind: "auto_completion_requested"})
-              end
 
               authority =
                 Cascade.Missions.Authority.capture!(
@@ -127,6 +129,221 @@ defmodule Cascade.Missions.Store do
     end
   rescue
     error -> {:error, Exception.message(error)}
+  end
+
+  @doc "Creates one vault-scoped mission workspace and its durable brief."
+  def create_workspace(user_id, vault_id, input, opts \\ []) do
+    with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
+         {:ok, mission_id} <- workspace_id(field(input, :id)),
+         title when title != "" <- clean(field(input, :title), 180),
+         identity_id when identity_id != "" <-
+           clean(field(input, :coordinatorIdentityId), 120),
+         brief when brief != "" <-
+           clean(nonblank(field(input, :briefContent), title), 12_000) do
+      fingerprint = mission_id
+      resources_key = {__MODULE__, :workspace_resources}
+      Process.put(resources_key, %{})
+
+      try do
+        SQL.transaction(fn ->
+          if is_nil(ContentStore.get_writable_vault(vault_id, user_id)),
+            do: raise("Vault not found")
+
+          existing =
+            SQL.one(
+              """
+              SELECT m.id,m.vault_id,m.coordinator_registration_id,m.title,m.objective,
+                     c.vault_agent_id
+              FROM chat_missions m
+              LEFT JOIN chat_agent_members c
+                ON c.channel_id=m.channel_id AND c.id=m.coordinator_registration_id
+              WHERE m.id=? OR m.creation_fingerprint=?
+              ORDER BY CASE WHEN m.id=? THEN 0 ELSE 1 END,m.rowid
+              LIMIT 1
+              """,
+              [mission_id, fingerprint, mission_id]
+            )
+
+          result =
+            case existing do
+              [^mission_id, ^vault_id, _registration_id, existing_title, existing_brief,
+               ^identity_id] ->
+                if existing_title == title and existing_brief == brief do
+                  get_workspace(user_id, vault_id, mission_id)
+                else
+                  {:error, "Mission retry has different creation options"}
+                end
+
+              [_existing_id, _other_vault, _registration_id, _title, _brief, _identity_id] ->
+                {:error, "Mission id is already in use"}
+              nil ->
+                create_workspace_attempt(
+                  user_id,
+                  vault_id,
+                  mission_id,
+                  fingerprint,
+                  title,
+                  identity_id,
+                  brief,
+                  opts
+                )
+            end
+
+          case result do
+            {:ok, _workspace} = ok ->
+              ok
+
+            {:error, reason} ->
+              cleanup_workspace_resources(Process.get(resources_key, %{}), vault_id)
+              {:error, reason}
+
+            other ->
+              cleanup_workspace_resources(Process.get(resources_key, %{}), vault_id)
+              {:error, other}
+          end
+        end)
+      rescue
+        error ->
+          cleanup_workspace_resources(Process.get(resources_key, %{}), vault_id)
+          {:error, Exception.message(error)}
+      after
+        Process.delete(resources_key)
+      end
+    else
+      nil -> {:error, "Vault not found"}
+      "" -> {:error, "Mission title, coordinator identity, and brief are required"}
+      {:error, _} = error -> error
+    end
+  end
+
+  def list_workspace(user_id, vault_id) do
+    case ContentStore.get_vault(vault_id, user_id) do
+      nil ->
+        {:error, "Vault not found"}
+
+      _vault ->
+        SQL.all(
+          "SELECT #{@mission_select} FROM chat_missions WHERE vault_id=? ORDER BY updated_at DESC,rowid DESC",
+          [vault_id]
+        )
+        |> Enum.map(&mission_from_row/1)
+        |> Enum.map(&refresh(&1.id))
+        |> Enum.reduce_while({:ok, []}, fn
+          {:ok, mission}, {:ok, missions} -> {:cont, {:ok, missions ++ [mission]}}
+          {:error, reason}, _ -> {:halt, {:error, reason}}
+        end)
+    end
+  end
+
+  def get_workspace(user_id, vault_id, mission_id) do
+    with vault when not is_nil(vault) <- ContentStore.get_vault(vault_id, user_id),
+         mission when not is_nil(mission) <- mission_row(mission_id),
+         true <- mission.vault_id == vault.id do
+      refresh(mission.id)
+    else
+      nil -> {:error, "Vault not found"}
+      false -> {:error, "Mission not found"}
+      _ -> {:error, "Mission not found"}
+    end
+  end
+
+  def create_workspace_note(user_id, vault_id, mission_id, input, _opts \\ []) do
+    with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
+         mission when not is_nil(mission) <- mission_row(mission_id),
+         true <- mission.vault_id == vault.id,
+         kind when kind in ~w(milestone feature) <- clean(field(input, :kind), 20),
+         title when title != "" <- clean(field(input, :title), 180),
+         content <- clean(field(input, :content), 20_000),
+         {:ok, parent} <- workspace_note_parent(mission.id, kind, field(input, :parentNoteId)),
+         {:ok, note} <-
+           workspace_note(
+             vault_id,
+             user_id,
+             %{
+               id: clean(field(input, :id), 120),
+               title: title,
+               content: content,
+               is_listed: true
+             }
+           ) do
+      revision = Cascade.Content.Privacy.note_revision(note)
+      position = next_note_position(mission.id, parent)
+
+      SQL.transaction(fn ->
+        SQL.exec(
+          """
+          INSERT INTO chat_mission_notes
+            (mission_id,note_id,kind,parent_note_id,position,revision)
+          VALUES (?,?,?,?,?,?)
+          """,
+          [mission.id, note.id, kind, parent, position, revision]
+        )
+
+        SQL.exec("UPDATE chat_missions SET updated_at=datetime('now') WHERE id=?", [mission.id])
+      end)
+
+      note_changed(note.id, user_id, :create)
+      {:ok, %{note: workspace_note_projection(mission.id, note.id), mission: refresh!(mission.id).mission}}
+    else
+      nil -> {:error, "Vault or mission not found"}
+      false -> {:error, "Mission does not belong to this vault"}
+      "" -> {:error, "Mission note title is required"}
+      kind when is_binary(kind) -> {:error, "Mission note kind must be milestone or feature"}
+      {:error, _} = error -> error
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  def approve_workspace(user_id, vault_id, mission_id, expected_revisions, _opts \\ []) do
+    with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
+         mission when not is_nil(mission) <- mission_row(mission_id),
+         true <- mission.vault_id == vault.id,
+         :ok <- ensure_workspace_brief(mission.id),
+         revisions <- workspace_revisions(mission.id),
+         :ok <- ensure_expected_revisions(revisions, expected_revisions) do
+      approved_at = DateTime.utc_now() |> DateTime.to_iso8601()
+
+      SQL.transaction(fn ->
+        SQL.exec(
+          """
+          UPDATE chat_missions
+          SET phase='executing',status='active',approved_at=?,approved_by=?,
+              approved_revisions_json=?,wake_sent=0,updated_at=datetime('now')
+          WHERE id=? AND phase<>'closed'
+          """,
+          [approved_at, user_id, Jason.encode!(revisions), mission.id]
+        )
+
+        record_event(mission.id, %{
+          kind: "mission_approved",
+          title: mission.title,
+          to_status: "active",
+          summary: Jason.encode!(%{approvedBy: user_id, revisions: revisions})
+        })
+
+        Cascade.Missions.Interpretation.initialize(mission.id)
+      end)
+      _ = Cascade.Missions.Scheduler.schedule(mission.id)
+
+      {:ok, refresh!(mission.id).mission}
+    else
+      nil -> {:error, "Vault or mission not found"}
+      false -> {:error, "Mission does not belong to this vault"}
+      {:error, _} = error -> error
+      _ -> {:error, "Mission approval failed"}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+  @doc "Records a successful linked-note mutation and coalesces coordinator awareness."
+  def note_changed(note_id, actor_id, kind, opts \\ []) do
+    Cascade.Missions.Interpretation.note_changed(note_id, actor_id, kind, opts)
+  rescue
+    error ->
+      if Keyword.get(opts, :in_transaction, false),
+        do: reraise(error, __STACKTRACE__),
+        else: :ok
   end
 
   def get(user_id, channel_id, mission_ref, coordinator_registration_id \\ nil) do
@@ -308,6 +525,9 @@ defmodule Cascade.Missions.Store do
     with {:ok, update} <- get(user_id, channel_id, mission_id, coordinator_id),
          mission <- mission_row(update.mission.id),
          :ok <- ensure_mission_open(mission.status),
+         purpose when purpose in @task_purposes <-
+           clean(nonblank(field(input, :purpose), "implementation"), 30),
+         :ok <- validate_task_purpose(mission, purpose),
          {:ok, coordinator} <- assert_coordinator(user_id, channel_id, coordinator_id),
          true <- mission.coordinator_registration_id == coordinator.id,
          :ok <- reject_worker_control(opts, :delegate),
@@ -317,6 +537,7 @@ defmodule Cascade.Missions.Store do
          title when title != "" <- clean(field(input, :title), 240),
          dependencies <- clean_ids(field(input, :dependsOn)),
          :ok <- validate_dependencies(mission.id, dependencies),
+         :ok <- validate_reviewer_distinct(mission.id, purpose, assignee.id, dependencies),
          {:ok, effort} <- validate_effort(assignee, field(input, :reasoningEffort)),
          workspace_mode when workspace_mode in ~w(shared isolated) <-
            clean(nonblank(field(input, :workspaceMode), "shared"), 20) do
@@ -338,84 +559,107 @@ defmodule Cascade.Missions.Store do
             )
             |> task_from_nullable_row()
 
-          validate_idempotent_task!(
-            existing,
-            prompt,
-            dependency_json,
-            priority,
-            effort,
-            anonymous,
-            workspace_mode
-          )
-
-          task_id = if existing, do: existing.id, else: Ecto.UUID.generate()
-
-          if is_nil(existing) do
-            SQL.exec(
-              """
-              INSERT INTO chat_mission_tasks
-                (id,mission_id,title,assignee_registration_id,prompt,depends_on_json,
-                 priority,reasoning_effort,anonymous,workspace_mode,parent_task_id)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?)
-              """,
-              [
-                task_id,
-                mission.id,
-                title,
-                assignee.id,
+          case task_brief(
+                 mission.id,
+                 field(input, :briefNoteId),
+                 field(input, :briefRevisions),
+                 existing
+               ) do
+            {:ok, brief_note_id, brief_revisions} ->
+              brief_revision_json = Jason.encode!(brief_revisions)
+              validate_idempotent_task!(
+                existing,
                 prompt,
                 dependency_json,
                 priority,
                 effort,
-                anonymous_int,
+                anonymous,
                 workspace_mode,
-                Keyword.get(opts, :parent_task_id)
-              ]
-            )
+                purpose,
+                brief_note_id,
+                brief_revisions
+              )
 
-            SQL.exec(
-              "UPDATE chat_missions SET status='active',wake_sent=0,updated_at=datetime('now') WHERE id=?",
-              [mission.id]
-            )
+              task_id = if existing, do: existing.id, else: Ecto.UUID.generate()
 
-            if mission.status != "active" do
-              record_event(mission.id, %{
-                kind: "mission_status_changed",
-                title: mission.title,
-                from_status: mission.status,
-                to_status: "active",
-                summary: "Follow-up work added."
-              })
-            end
+              if is_nil(existing) do
+                SQL.exec(
+                  """
+                  INSERT INTO chat_mission_tasks
+                    (id,mission_id,title,assignee_registration_id,prompt,depends_on_json,
+                     priority,reasoning_effort,anonymous,workspace_mode,parent_task_id,purpose,
+                     brief_note_id,brief_revisions_json)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  """,
+                  [
+                    task_id,
+                    mission.id,
+                    title,
+                    assignee.id,
+                    prompt,
+                    dependency_json,
+                    priority,
+                    effort,
+                    anonymous_int,
+                    workspace_mode,
+                    Keyword.get(opts, :parent_task_id),
+                    purpose,
+                    brief_note_id,
+                    brief_revision_json
+                  ]
+                )
 
-            task = task_row(task_id)
-            ensure_work_item(user_id, mission, task)
+                SQL.exec(
+                  "UPDATE chat_missions SET status='active',wake_sent=0,updated_at=datetime('now') WHERE id=?",
+                  [mission.id]
+                )
 
-            record_event(mission.id, %{
-              task_id: task_id,
-              kind: "task_added",
-              title: title,
-              to_status: "pending",
-              summary: prompt,
-              attempt: 0
-            })
-          else
-            if is_nil(existing.work_item_id), do: ensure_work_item(user_id, mission, existing)
+                if mission.status != "active" do
+                  record_event(mission.id, %{
+                    kind: "mission_status_changed",
+                    title: mission.title,
+                    from_status: mission.status,
+                    to_status: "active",
+                    summary: "Follow-up work added."
+                  })
+                end
+
+                task = task_row(task_id)
+                ensure_work_item(user_id, mission, task)
+
+                record_event(mission.id, %{
+                  task_id: task_id,
+                  kind: "task_added",
+                  title: title,
+                  to_status: "pending",
+                  summary: prompt,
+                  attempt: 0
+                })
+              else
+                if is_nil(existing.work_item_id), do: ensure_work_item(user_id, mission, existing)
+              end
+
+              refreshed = refresh!(mission.id)
+
+              %{
+                update: refreshed,
+                task: Enum.find(refreshed.mission.tasks, &(&1.id == task_id)),
+                assignee: assignee
+              }
+
+            {:error, reason} ->
+              {:error, reason}
           end
-
-          refreshed = refresh!(mission.id)
-
-          %{
-            update: refreshed,
-            task: Enum.find(refreshed.mission.tasks, &(&1.id == task_id)),
-            assignee: assignee
-          }
         end)
 
-      {:ok, result}
+      case result do
+        {:error, reason} -> {:error, reason}
+        result -> {:ok, result}
+      end
     else
       false -> {:error, "Mission belongs to another coordinator"}
       "" -> {:error, "Task title is required"}
+      purpose when is_binary(purpose) -> {:error, "Invalid mission task purpose"}
       {:error, _} = error -> error
     end
   rescue
@@ -429,7 +673,8 @@ defmodule Cascade.Missions.Store do
       SQL.all(
         """
         SELECT #{@mission_select} FROM chat_missions
-        WHERE status IN ('active','reviewing','attention','blocked') #{filter}
+        WHERE phase IN ('planning','executing')
+          AND status IN ('active','reviewing','attention','blocked') #{filter}
         ORDER BY created_at ASC,rowid ASC
         """,
         params
@@ -445,7 +690,8 @@ defmodule Cascade.Missions.Store do
             """
             SELECT DISTINCT t.assignee_registration_id
             FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
-            WHERE m.channel_id=? AND m.status IN ('active','reviewing','attention','blocked')
+            WHERE m.channel_id=? AND m.phase IN ('planning','executing')
+              AND m.status IN ('active','reviewing','attention','blocked')
               AND COALESCE(t.anonymous,0)=0
               AND (t.status='running' OR (t.status='pending' AND t.dispatch_id IS NOT NULL))
             """,
@@ -461,8 +707,8 @@ defmodule Cascade.Missions.Store do
           |> Enum.with_index()
           |> Enum.filter(fn {task, _index} ->
             task.status == "pending" and is_nil(task.dispatch_id) and
-              not Cascade.Missions.Children.joining?(task.id) and
-              Enum.all?(dependencies(task), &(by_id[&1] && by_id[&1].status == "completed"))
+              task_schedulable?(mission, task, by_id) and
+              not Cascade.Missions.Children.joining?(task.id)
           end)
           |> Enum.sort_by(fn {task, index} -> {-task.priority, index} end)
 
@@ -487,7 +733,10 @@ defmodule Cascade.Missions.Store do
               prompt: nonblank(task.prompt, task.title),
               reasoningEffort: task.reasoning_effort || "",
               anonymous: anonymous,
-              attempt: task.attempt || 0
+              attempt: task.attempt || 0,
+              purpose: task.purpose,
+              briefNoteId: task.brief_note_id,
+              briefRevisions: decode_json_map(task.brief_revisions_json),
             }
 
             {items ++ [candidate], if(anonymous, do: held, else: MapSet.put(held, key))}
@@ -651,8 +900,11 @@ defmodule Cascade.Missions.Store do
          row when not is_nil(row) <- task_with_mission(task_id),
          :ok <- authorize_task_row(row, route, user_id),
          :ok <- ensure_mission_open(row.mission_status),
-         status when status in @task_statuses <- clean(field(input, :status), 40) do
+         status when status in @task_statuses <- clean(field(input, :status), 40),
+         :ok <- validate_task_outcome(row, status, input) do
       summary = clean(field(input, :summary), 4_000)
+      review_outcome = normalized_review_outcome(row, input)
+      verification_passed = normalized_verification(row, input)
       retrying = status == "pending" and row.status in @terminal_task_statuses
 
       cond do
@@ -688,7 +940,7 @@ defmodule Cascade.Missions.Store do
                   """
                   UPDATE chat_mission_tasks
                   SET status='pending',summary=?,prompt=?,dispatch_id=NULL,run_id=NULL,child_result_delivered=0,joining_children=0,
-                    attempt=attempt+1,updated_at=datetime('now') WHERE id=?
+                    review_outcome=NULL,verification_passed=NULL,attempt=attempt+1,updated_at=datetime('now') WHERE id=?
                   """,
                   [summary, prompt, task_id]
                 )
@@ -719,8 +971,8 @@ defmodule Cascade.Missions.Store do
                 })
               else
                 SQL.exec(
-                  "UPDATE chat_mission_tasks SET status=?,summary=?,updated_at=datetime('now') WHERE id=?",
-                  [status, summary, task_id]
+                  "UPDATE chat_mission_tasks SET status=?,summary=?,review_outcome=?,verification_passed=?,updated_at=datetime('now') WHERE id=?",
+                  [status, summary, review_outcome, verification_passed, task_id]
                 )
 
                 if row.status != status or row.summary != summary or
@@ -820,6 +1072,10 @@ defmodule Cascade.Missions.Store do
                  do: "canceled",
                  else: status
 
+            if final_status == "completed" do
+              ensure_delivery_ready!(mission, tasks)
+            end
+
             if final_status == "completed" and
                  Enum.any?(tasks, fn task ->
                    task.status in ~w(pending running blocked) or
@@ -842,8 +1098,8 @@ defmodule Cascade.Missions.Store do
             record_event(mission.id, %{kind: "coordinator_verification", summary: verification})
 
             SQL.exec(
-              "UPDATE chat_missions SET status=?,summary=?,wake_sent=1,updated_at=datetime('now') WHERE id=?",
-              [final_status, summary, mission.id]
+              "UPDATE chat_missions SET phase=CASE WHEN ? IN ('completed','canceled') THEN 'closed' ELSE phase END,status=?,summary=?,wake_sent=1,updated_at=datetime('now') WHERE id=?",
+              [final_status, final_status, summary, mission.id]
             )
 
             record_event(mission.id, %{
@@ -960,34 +1216,10 @@ defmodule Cascade.Missions.Store do
             )
 
             update = refresh!(task.mission_id)
-            tasks = task_rows(task.mission_id)
+            _tasks = task_rows(task.mission_id)
 
-            if mission.status not in ~w(completed canceled) and
-                 Enum.any?(tasks, &(&1.status == "completed")) and
-                 Enum.all?(tasks, &(&1.status in ~w(completed canceled))) and
-                 SQL.one(
-                   "SELECT 1 FROM chat_mission_events WHERE mission_id=? AND kind='auto_completion_requested' LIMIT 1",
-                   [mission.id]
-                 ) == [1] do
-              {:ok, route} = owner_route(mission.created_by, mission.vault_id, mission.channel_id)
-
-              {:ok, completed} =
-                finish(mission.created_by, route.localChannelId, mission.id, %{
-                  coordinatorRegistrationId: mission.coordinator_registration_id,
-                  status: "completed",
-                  summary:
-                    Enum.map_join(
-                      Enum.filter(tasks, &(&1.status == "completed")),
-                      "\n",
-                      & &1.summary
-                    )
-                })
-
-              %{update: completed, wake: nil}
-            else
-              {:ok, wake} = claim_wake(task.mission_id)
-              %{update: wake || update, wake: wake}
-            end
+            {:ok, wake} = claim_wake(task.mission_id)
+            %{update: wake || update, wake: wake}
           end)
 
         {:ok, result}
@@ -1239,6 +1471,11 @@ defmodule Cascade.Missions.Store do
           reasoningEffort: task.reasoning_effort || "",
           anonymous: anonymous,
           attempt: task.attempt || 0,
+          purpose: task.purpose,
+          briefNoteId: task.brief_note_id,
+          briefRevisions: decode_json_map(task.brief_revisions_json),
+          reviewOutcome: task.review_outcome,
+          verificationPassed: task.verification_passed,
           recoveryEvidence:
             case SQL.one(
                    "SELECT source_task_id,verification FROM chat_mission_recovery_evidence WHERE task_id=?",
@@ -1266,9 +1503,12 @@ defmodule Cascade.Missions.Store do
 
     %{
       id: mission.id,
+      vaultId: mission.vault_id,
+      channelId: mission.channel_id,
       rootMessageId: mission.root_message_id,
       title: mission.title,
       objective: mission.objective,
+      phase: mission.phase,
       authority:
         SQL.one("SELECT authority_json FROM chat_missions WHERE id=?", [mission.id])
         |> hd()
@@ -1278,7 +1518,12 @@ defmodule Cascade.Missions.Store do
       status: derive_status(mission, tasks),
       coordinator: if(coordinator, do: agent_name(coordinator), else: "Coordinator"),
       coordinatorMention: if(coordinator, do: coordinator.mention || "", else: ""),
+      coordinatorRegistrationId: mission.coordinator_registration_id,
       tasks: projected_tasks,
+      notes: workspace_note_projections(mission.id),
+      approvedAt: mission.approved_at,
+      approvedBy: mission.approved_by,
+      approvedRevisions: decode_json_map(mission.approved_revisions_json),
       summary: mission.summary || "",
       createdAt: mission.created_at,
       updatedAt: mission.updated_at
@@ -1697,6 +1942,7 @@ defmodule Cascade.Missions.Store do
                 %{
                   coordinatorRegistrationId: mission.coordinator_registration_id,
                   title: "Primary task",
+                  purpose: if(mission.phase == "planning", do: "research", else: "implementation"),
                   assignee: mission.coordinator_registration_id,
                   prompt: update.mission.objective
                 },
@@ -1758,6 +2004,113 @@ defmodule Cascade.Missions.Store do
   end
 
   defp maybe_finish_primary(_mission, tasks, _status, _run_id, _summary), do: tasks
+
+  defp ensure_delivery_ready!(_mission, tasks) do
+    if Enum.any?(tasks, &(&1.status in ~w(pending running failed blocked canceled))) do
+      raise "Mission has unfinished or failed work"
+    end
+
+    delivered = Enum.filter(tasks, &(&1.purpose in ~w(implementation fix)))
+
+    if delivered == [] do
+      raise "Mission has no delivered implementation work"
+    end
+
+    by_id = Map.new(tasks, &{&1.id, &1})
+    accepted_reviews = Enum.filter(tasks, &accepted_review?/1)
+    integrations = Enum.filter(tasks, &(&1.purpose == "integration" and &1.status == "completed"))
+    passed_verifications = Enum.filter(tasks, &passed_verification?/1)
+
+    unless Enum.all?(delivered, &delivery_covered?(&1, accepted_reviews, integrations, passed_verifications, by_id)) do
+      raise "Every delivered implementation or fix must have an accepted review, integration, and passed verification"
+    end
+
+    unless Enum.all?(
+               Enum.filter(tasks, &negative_review?/1),
+               &negative_review_resolved?(&1, accepted_reviews, by_id)
+             ) do
+      raise "Every changes-requested review must be resolved by a fix and re-review"
+    end
+
+    unless Enum.all?(
+               Enum.filter(tasks, &negative_verification?/1),
+               &negative_verification_resolved?(&1, passed_verifications, by_id)
+             ) do
+      raise "Every failed verification must be resolved by a subsequent passed verification"
+    end
+
+    :ok
+  end
+
+  defp accepted_review?(task) do
+    task.purpose == "review" and task.status == "completed" and
+      task.review_outcome == "accepted"
+  end
+
+  defp passed_verification?(task) do
+    task.purpose == "verification" and task.status == "completed" and
+      task.verification_passed == true
+  end
+
+  defp negative_review?(task) do
+    task.purpose == "review" and task.status == "completed" and
+      task.review_outcome == "changes_requested"
+  end
+
+  defp negative_verification?(task) do
+    task.purpose == "verification" and task.status == "completed" and
+      task.verification_passed == false
+  end
+
+  defp delivery_covered?(work, accepted_reviews, integrations, passed_verifications, by_id) do
+    Enum.any?(accepted_reviews, fn review ->
+      work.id in dependency_closure(dependencies(review), by_id) and
+        Enum.any?(integrations, fn integration ->
+          review.id in dependencies(integration) and
+            Enum.any?(passed_verifications, fn verification ->
+              integration.id in dependencies(verification)
+            end)
+        end)
+    end)
+  end
+
+  defp negative_review_resolved?(negative, accepted_reviews, by_id) do
+    Enum.any?(accepted_reviews, fn review ->
+      closure = dependency_closure(dependencies(review), by_id)
+
+      negative.id in closure and
+        Enum.any?(closure, fn id ->
+          case by_id[id] do
+            %{purpose: "fix"} = fix ->
+              negative.id in dependency_closure(dependencies(fix), by_id)
+
+            _ ->
+              false
+          end
+        end)
+    end)
+  end
+
+  defp negative_verification_resolved?(negative, passed_verifications, by_id) do
+    Enum.any?(passed_verifications, fn verification ->
+      negative.id in dependency_closure(dependencies(verification), by_id)
+    end)
+  end
+
+  defp dependency_closure(ids, by_id, seen \\ MapSet.new()) do
+    Enum.reduce(ids, seen, fn id, acc ->
+      if MapSet.member?(acc, id) do
+        acc
+      else
+        acc = MapSet.put(acc, id)
+
+        case by_id[id] do
+          nil -> acc
+          task -> dependency_closure(dependencies(task), by_id, acc)
+        end
+      end
+    end)
+  end
 
   defp cancel_open_tasks(mission, tasks) do
     SQL.exec(
@@ -1904,6 +2257,106 @@ defmodule Cascade.Missions.Store do
 
   defp ensure_mission_open(_status), do: :ok
 
+  defp validate_task_purpose(%{phase: "planning"}, "research"), do: :ok
+  defp validate_task_purpose(%{phase: "planning"}, _), do: {:error, "Planning missions may schedule research tasks only"}
+  defp validate_task_purpose(%{phase: "executing"}, "research"), do: {:error, "Research tasks must be scheduled during planning"}
+  defp validate_task_purpose(%{phase: "executing"}, _), do: :ok
+  defp validate_task_purpose(%{phase: "closed"}, _), do: {:error, "Mission is already closed"}
+  defp validate_task_purpose(_, _), do: {:error, "Mission phase is invalid"}
+
+  defp validate_reviewer_distinct(_mission_id, purpose, _assignee, _dependencies)
+       when purpose != "review",
+       do: :ok
+
+  defp validate_reviewer_distinct(mission_id, "review", assignee, dependencies) do
+    if dependencies == [] do
+      :ok
+    else
+      placeholders = Enum.map_join(dependencies, ",", fn _ -> "?" end)
+
+      case SQL.one(
+             "SELECT 1 FROM chat_mission_tasks WHERE mission_id=? AND id IN (#{placeholders}) AND assignee_registration_id=? AND purpose IN ('implementation','fix') LIMIT 1",
+             [mission_id | dependencies] ++ [assignee]
+           ) do
+        [1] -> {:error, "Review assignee must be independent from implementation and fix workers"}
+        _ -> :ok
+      end
+    end
+  end
+
+  defp task_brief(mission_id, note_id, expected),
+    do: task_brief(mission_id, note_id, expected, nil)
+
+  defp task_brief(_mission_id, nil, expected, _existing) do
+    normalized = normalize_revisions(expected)
+
+    if expected in [nil, ""] or normalized == %{},
+      do: {:ok, nil, %{}},
+      else: {:error, {:revision_conflict, %{}}}
+  end
+
+  defp task_brief(_mission_id, "", expected, _existing) do
+    normalized = normalize_revisions(expected)
+
+    if expected in [nil, ""] or normalized == %{},
+      do: {:ok, nil, %{}},
+      else: {:error, {:revision_conflict, %{}}}
+  end
+
+  defp task_brief(mission_id, note_id, expected, existing) do
+    case SQL.one(
+           """
+           SELECT mn.note_id,n.revision_counter
+           FROM chat_mission_notes mn
+           JOIN notes n ON n.id=mn.note_id
+           WHERE mn.mission_id=? AND mn.note_id=?
+           """,
+           [mission_id, clean(note_id, 120)]
+         ) do
+      [id, revision_counter] ->
+        current =
+          if expected in [nil, ""] and existing && existing.brief_note_id == id,
+            do: decode_json_map(existing.brief_revisions_json),
+            else: %{id => Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter})}
+
+        if expected in [nil, ""] or normalize_revisions(expected) == current,
+          do: {:ok, id, current},
+          else: {:error, {:revision_conflict, current}}
+
+      _ ->
+        {:error, "Task brief note is not linked to this mission"}
+    end
+  end
+  defp validate_task_outcome(%{purpose: "review"}, "completed", input) do
+    case clean(field(input, :reviewOutcome), 30) do
+      outcome when outcome in ~w(accepted changes_requested) -> :ok
+      _ -> {:error, "Review completion requires reviewOutcome accepted or changes_requested"}
+    end
+  end
+
+  defp validate_task_outcome(%{purpose: "verification"}, "completed", input) do
+    case field(input, :verificationPassed) do
+      value when value in [true, false, 1, 0, "true", "false", "1", "0"] -> :ok
+      _ -> {:error, "Verification completion requires verificationPassed true or false"}
+    end
+  end
+
+  defp validate_task_outcome(_row, _status, _input), do: :ok
+
+  defp normalized_review_outcome(%{review_outcome: current}, input) do
+    value = field(input, :reviewOutcome)
+    if is_nil(value), do: current, else: clean(value, 30)
+  end
+
+  defp normalized_verification(%{verification_passed: current}, input) do
+    case field(input, :verificationPassed) do
+      nil -> current
+      value when value in [true, 1, "true", "1"] -> true
+      value when value in [false, 0, "false", "0"] -> false
+      _ -> current
+    end
+  end
+
   defp authorize_task_row(row, route, user_id) do
     if row.owner_channel_id == route.sourceChannelId and row.created_by == user_id,
       do: :ok,
@@ -1978,13 +2431,101 @@ defmodule Cascade.Missions.Store do
       _ -> []
     end
   end
+  defp task_schedulable?(%{phase: "planning"}, %{purpose: purpose}, _by_id)
+       when purpose != "research",
+       do: false
+
+  defp task_schedulable?(%{phase: "executing"}, %{purpose: "research"}, _by_id), do: false
+
+  defp task_schedulable?(mission, task, by_id) do
+    dependencies = dependencies(task)
+
+    mission.phase in ~w(planning executing) and
+      required_stage_dependency?(task, dependencies, by_id) and
+      Enum.all?(dependencies, fn id ->
+        case by_id[id] do
+          nil -> false
+          dependency -> dependency_ready_for?(task, dependency)
+        end
+      end)
+  end
+
+  defp required_stage_dependency?(%{purpose: "integration"}, dependencies, by_id) do
+    Enum.any?(dependencies, fn id ->
+      case by_id[id] do
+        %{purpose: "review", status: "completed", review_outcome: "accepted"} = review ->
+          Enum.any?(dependency_closure(dependencies(review), by_id), fn dependency_id ->
+            case by_id[dependency_id] do
+              %{purpose: purpose} when purpose in ~w(implementation fix) -> true
+              _ -> false
+            end
+          end)
+
+        _ ->
+          false
+      end
+    end)
+  end
+
+  defp required_stage_dependency?(%{purpose: "verification"}, dependencies, by_id) do
+    Enum.any?(dependencies, fn id ->
+      case by_id[id] do
+        %{purpose: "integration", status: "completed"} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp required_stage_dependency?(_task, _dependencies, _by_id), do: true
+
+  defp dependency_ready_for?(%{purpose: "integration"}, %{purpose: "review"} = dependency),
+    do: dependency.status == "completed" and dependency.review_outcome == "accepted"
+
+  defp dependency_ready_for?(%{purpose: "verification"}, %{purpose: "integration"} = dependency),
+    do: dependency.status == "completed"
+
+  defp dependency_ready_for?(_task, dependency), do: dependency.status == "completed"
+
+  defp validate_idempotent_task!(
+         nil,
+         _prompt,
+         _deps,
+         _priority,
+         _effort,
+         _anonymous,
+         _workspace,
+         _purpose,
+         _brief_note_id,
+         _brief_revisions
+       ),
+       do: :ok
+
+  defp validate_idempotent_task!(
+         task,
+         prompt,
+         deps,
+         priority,
+         effort,
+         anonymous,
+         workspace,
+         purpose,
+         brief_note_id,
+         brief_revisions
+       ) do
+    if task.prompt != prompt or task.depends_on_json != deps or task.priority != priority or
+         task.reasoning_effort != effort or task.anonymous != 0 != anonymous or
+         task.workspace_mode != workspace or task.purpose != purpose or
+         task.brief_note_id != brief_note_id or
+         decode_json_map(task.brief_revisions_json) != brief_revisions do
+      raise "A task with this title already exists with different scheduling options; use a distinct title"
+    end
+  end
 
   defp queue_reason(%{status: status}, _waiting, _attention) when status != "pending", do: ""
   defp queue_reason(_task, waiting, true) when waiting != [], do: "dependency-attention"
   defp queue_reason(_task, waiting, _attention) when waiting != [], do: "dependency"
   defp queue_reason(%{dispatch_id: id}, _waiting, _attention) when not is_nil(id), do: "queued"
   defp queue_reason(_task, _waiting, _attention), do: "agent-busy"
-
   defp record_event(mission_id, input) do
     SQL.exec(
       """
@@ -2046,7 +2587,8 @@ defmodule Cascade.Missions.Store do
         nil
 
       row ->
-        {task_values, [channel_id, created_by, mission_status]} = Enum.split(row, 18)
+        {task_values, [channel_id, created_by, mission_status]} =
+          Enum.split(row, @task_field_count)
 
         task_values
         |> task_from_row()
@@ -2074,7 +2616,12 @@ defmodule Cascade.Missions.Store do
          wake_sent,
          created_by,
          created_at,
-         updated_at
+         updated_at,
+         phase,
+         approved_at,
+         approved_by,
+         approved_revisions_json,
+         creation_fingerprint
        ]) do
     %{
       id: id,
@@ -2089,7 +2636,12 @@ defmodule Cascade.Missions.Store do
       wake_sent: wake_sent || 0,
       created_by: created_by,
       created_at: created_at,
-      updated_at: updated_at
+      updated_at: updated_at,
+      phase: if(phase in ~w(planning executing closed), do: phase, else: "planning"),
+      approved_at: approved_at,
+      approved_by: approved_by,
+      approved_revisions_json: approved_revisions_json || "{}",
+      creation_fingerprint: creation_fingerprint
     }
   end
 
@@ -2114,7 +2666,12 @@ defmodule Cascade.Missions.Store do
          attempt,
          work_item_id,
          created_at,
-         updated_at
+         updated_at,
+         purpose,
+         brief_note_id,
+         brief_revisions_json,
+         review_outcome,
+         verification_passed
        ]) do
     %{
       id: id,
@@ -2134,7 +2691,12 @@ defmodule Cascade.Missions.Store do
       attempt: attempt || 0,
       work_item_id: work_item_id,
       created_at: created_at,
-      updated_at: updated_at
+      updated_at: updated_at,
+      purpose: if(purpose in @task_purposes, do: purpose, else: "implementation"),
+      brief_note_id: brief_note_id,
+      brief_revisions_json: brief_revisions_json || "{}",
+      review_outcome: review_outcome,
+      verification_passed: decode_bool(verification_passed)
     }
   end
 
@@ -2166,6 +2728,420 @@ defmodule Cascade.Missions.Store do
     |> maybe_put(:runId, run_id)
   end
 
+  defp workspace_id(nil), do: {:ok, Ecto.UUID.generate()}
+  defp workspace_id(""), do: {:ok, Ecto.UUID.generate()}
+
+  defp workspace_id(value) do
+    case Ecto.UUID.cast(clean(value, 80)) do
+      {:ok, id} -> {:ok, id}
+      :error -> {:error, "Mission id must be a UUID"}
+    end
+  end
+
+  defp workspace_note(vault_id, user_id, opts) do
+    case workspace_note_with_creation(vault_id, user_id, opts) do
+      {:ok, note, _created?} -> {:ok, note}
+      other -> other
+    end
+  end
+
+  defp workspace_note_with_creation(vault_id, user_id, opts) do
+    requested_id = clean(opts[:id], 120)
+
+    case requested_id != "" && ContentStore.get_note(requested_id) do
+      note when is_map(note) ->
+        if note[:vault_id] == vault_id or note["vault_id"] == vault_id,
+          do: {:ok, note, false},
+          else: {:error, "Mission note belongs to another vault"}
+
+      _ ->
+        created = ContentStore.create_note(vault_id, user_id, opts)
+
+        case created do
+          {:ok, note} -> {:ok, note, true}
+          note when is_map(note) -> {:ok, note, true}
+          _ -> {:error, "Could not create mission note"}
+        end
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+
+  defp workspace_root_message_with_creation(
+         user,
+         vault_id,
+         channel_id,
+         message_id,
+         body,
+         _registration_id
+       ) do
+    case Messages.get(channel_id, user.id, message_id) do
+      {:ok, message} ->
+        {:ok, message, false}
+
+      _ ->
+        case Messages.create(
+               user,
+               vault_id,
+               channel_id,
+               %{
+                 id: message_id,
+                 body: body,
+                 createdAt: DateTime.utc_now() |> DateTime.to_iso8601()
+               }
+             ) do
+          {:ok, message} -> {:ok, message, true}
+          other -> other
+        end
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  defp create_workspace_attempt(
+         user_id,
+         vault_id,
+         mission_id,
+         fingerprint,
+         title,
+         identity_id,
+         brief,
+         opts
+       ) do
+    channel_id = "mission-channel-#{mission_id}"
+    root_id = "mission-root-#{mission_id}"
+    brief_id = "mission-brief-#{mission_id}"
+    user = user!(user_id)
+    track_workspace_resource(:mission_id, mission_id, true)
+
+    with {:ok, channel, channel_created?} <-
+           workspace_note_with_creation(
+             vault_id,
+             user_id,
+             %{
+               id: channel_id,
+               title: title,
+               content: "cascade://chat-channel\nmission_id=#{mission_id}",
+               is_listed: true
+             }
+           ),
+         :ok <- track_workspace_resource(:channel_id, channel.id, channel_created?),
+         {:ok, coordinator, member_created?} <-
+           workspace_coordinator(user_id, vault_id, channel.id, identity_id),
+         :ok <- track_workspace_resource(:member_id, coordinator.id, member_created?),
+         {:ok, root, root_created?} <-
+           workspace_root_message_with_creation(
+             user,
+             vault_id,
+             channel.id,
+             root_id,
+             brief,
+             coordinator.id
+           ),
+         :ok <- track_workspace_resource(:root_id, root.id, root_created?),
+         {:ok, brief_note, brief_created?} <-
+           workspace_note_with_creation(
+             vault_id,
+             user_id,
+             %{
+               id: brief_id,
+               title: "#{title} brief",
+               content: brief,
+               is_listed: true
+             }
+           ),
+         :ok <- track_workspace_resource(:brief_id, brief_note.id, brief_created?),
+         {:ok, _persisted} <-
+           persist_workspace(
+             user_id,
+             vault_id,
+             mission_id,
+             fingerprint,
+             channel,
+             root,
+             coordinator,
+             title,
+             brief_note,
+             opts
+           ) do
+
+      case Cascade.Missions.Dispatches.create(
+             user_id,
+             channel.id,
+             root,
+             coordinator.id
+           ) do
+        {:ok, _dispatch} ->
+          get_workspace(user_id, vault_id, mission_id)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  rescue
+      error ->
+        cleanup_workspace_resources(
+          Process.get({__MODULE__, :workspace_resources}, %{}),
+          vault_id
+        )
+
+        {:error, Exception.message(error)}
+  end
+
+  defp workspace_coordinator(user_id, vault_id, channel_id, identity_id) do
+    existing =
+      SQL.one(
+        "SELECT id FROM chat_agent_members WHERE channel_id=? AND vault_agent_id=?",
+        [channel_id, identity_id]
+      )
+
+    case Agents.add_to_channel(
+           user_id,
+           vault_id,
+           channel_id,
+           identity_id,
+           %{"orchestrator" => true, "ambientGroupChat" => true}
+         ) do
+      {:ok, coordinator} -> {:ok, coordinator, is_nil(existing)}
+      other -> other
+    end
+  end
+  defp ensure_workspace_brief(mission_id) do
+    case SQL.one(
+           """
+           SELECT 1
+           FROM chat_mission_notes mn
+           JOIN chat_missions m ON m.id=mn.mission_id
+           JOIN notes n ON n.id=mn.note_id AND n.vault_id=m.vault_id
+           WHERE mn.mission_id=? AND mn.kind='mission'
+           LIMIT 1
+           """,
+           [mission_id]
+         ) do
+      [1] -> :ok
+      _ -> {:error, "Mission brief is missing"}
+    end
+  end
+
+  defp track_workspace_resource(_key, _id, false), do: :ok
+
+  defp track_workspace_resource(key, id, true) when is_binary(id) do
+    resource_key = {__MODULE__, :workspace_resources}
+    resources = Process.get(resource_key, %{})
+    Process.put(resource_key, Map.put(resources, key, id))
+    :ok
+  end
+
+  defp track_workspace_resource(_key, _id, _created), do: :ok
+
+  defp persist_workspace(
+         user_id,
+         vault_id,
+         mission_id,
+         fingerprint,
+         channel,
+         root,
+         coordinator,
+         title,
+         brief_note,
+         _opts
+       ) do
+    revision = Cascade.Content.Privacy.note_revision(brief_note)
+
+    SQL.exec(
+      """
+      INSERT INTO chat_missions
+        (id,vault_id,channel_id,root_message_id,coordinator_registration_id,
+         title,objective,status,phase,created_by,creation_fingerprint)
+      VALUES (?,?,?,?,?,?,?,'active','planning',?,?)
+      """,
+      [
+        mission_id,
+        vault_id,
+        channel.id,
+        root.id,
+        coordinator.id,
+        title,
+        brief_note[:content] || brief_note["content"] || "",
+        user_id,
+        fingerprint
+      ]
+    )
+
+    SQL.exec(
+      """
+      INSERT INTO chat_mission_notes
+        (mission_id,note_id,kind,parent_note_id,position,revision)
+      VALUES (?,?, 'mission',NULL,0,?)
+      """,
+      [mission_id, brief_note.id, revision]
+    )
+
+    record_event(mission_id, %{
+      kind: "mission_created",
+      title: title,
+      to_status: "active",
+      summary: brief_note[:content] || brief_note["content"] || ""
+    })
+
+    Cascade.Missions.Interpretation.initialize(mission_id)
+    {:ok, refresh!(mission_id)}
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  defp cleanup_workspace_resources(resources, vault_id) when is_map(resources) do
+    if mission_id = resources[:mission_id] do
+      SQL.exec("DELETE FROM chat_missions WHERE id=? AND vault_id=?", [mission_id, vault_id])
+    end
+
+    if member_id = resources[:member_id] do
+      SQL.exec("DELETE FROM chat_agent_members WHERE id=?", [member_id])
+    end
+
+    if not Map.has_key?(resources, :channel_id) and not is_nil(resources[:root_id]) do
+      SQL.exec("DELETE FROM chat_messages WHERE id=?", [resources[:root_id]])
+    end
+
+    if channel_id = resources[:channel_id], do: delete_created_note(channel_id, vault_id)
+    if brief_id = resources[:brief_id], do: delete_created_note(brief_id, vault_id)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp cleanup_workspace_resources(_resources, _vault_id), do: :ok
+
+  defp delete_created_note(note_id, vault_id) do
+    case ContentStore.get_note(note_id) do
+      %{vault_id: ^vault_id} -> ContentStore.delete_note(note_id)
+      %{"vault_id" => ^vault_id} -> ContentStore.delete_note(note_id)
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp workspace_note_parent(mission_id, "milestone", parent_id) do
+    parent = clean(parent_id, 120)
+
+    if parent == "" do
+      case SQL.one(
+             "SELECT note_id FROM chat_mission_notes WHERE mission_id=? AND kind='mission' LIMIT 1",
+             [mission_id]
+           ) do
+        [brief_id] -> {:ok, brief_id}
+        _ -> {:error, "Mission brief is missing"}
+      end
+    else
+      case SQL.one(
+             "SELECT note_id FROM chat_mission_notes WHERE mission_id=? AND note_id=? AND kind='mission'",
+             [mission_id, parent]
+           ) do
+        [^parent] -> {:ok, parent}
+        _ -> {:error, "Milestones must be linked to the mission brief"}
+      end
+    end
+  end
+
+  defp workspace_note_parent(mission_id, "feature", parent_id) do
+    parent = clean(parent_id, 120)
+
+    case SQL.one(
+           "SELECT note_id FROM chat_mission_notes WHERE mission_id=? AND note_id=? AND kind='milestone'",
+           [mission_id, parent]
+         ) do
+      [^parent] -> {:ok, parent}
+      _ -> {:error, "Features must be linked to a mission milestone"}
+    end
+  end
+
+  defp next_note_position(mission_id, parent_id) do
+    SQL.one(
+      "SELECT COALESCE(MAX(position),-1)+1 FROM chat_mission_notes WHERE mission_id=? AND parent_note_id IS ?",
+      [mission_id, parent_id]
+    )
+    |> hd()
+  end
+
+  defp workspace_note_projection(mission_id, note_id) do
+    SQL.one(
+      """
+      SELECT n.id,m.kind,m.parent_note_id,n.title,n.revision_counter,n.updated_at
+      FROM chat_mission_notes m JOIN notes n ON n.id=m.note_id
+      WHERE m.mission_id=? AND m.note_id=?
+      """,
+      [mission_id, note_id]
+    )
+    |> case do
+      [id, kind, parent, title, revision_counter, updated_at] ->
+        %{noteId: id, kind: kind, parentNoteId: parent, title: title, revision: Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter}), updatedAt: updated_at}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp workspace_note_projections(mission_id) do
+    SQL.all(
+      """
+      SELECT n.id,m.kind,m.parent_note_id,n.title,n.revision_counter,n.updated_at
+      FROM chat_mission_notes m JOIN notes n ON n.id=m.note_id
+      WHERE m.mission_id=? ORDER BY m.position,m.created_at,m.note_id
+      """,
+      [mission_id]
+    )
+    |> Enum.map(fn [id, kind, parent, title, revision_counter, updated_at] ->
+      %{noteId: id, kind: kind, parentNoteId: parent, title: title, revision: Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter}), updatedAt: updated_at}
+    end)
+  end
+
+  defp workspace_revisions(mission_id) do
+    SQL.all(
+      "SELECT m.note_id,n.revision_counter FROM chat_mission_notes m JOIN notes n ON n.id=m.note_id WHERE m.mission_id=? ORDER BY m.note_id",
+      [mission_id]
+    )
+    |> Map.new(fn [id, revision_counter] ->
+      {id, Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter})}
+    end)
+  end
+
+  defp ensure_expected_revisions(current, expected) do
+    if current == normalize_revisions(expected),
+      do: :ok,
+      else: {:error, {:revision_conflict, current}}
+  end
+
+  defp normalize_revisions(value) when is_map(value) do
+    Map.new(value, fn {key, revision} -> {to_string(key), to_string(revision || "")} end)
+  end
+
+  defp normalize_revisions(_), do: %{}
+
+
+  defp decode_json_map(value) when is_map(value), do: value
+
+  defp decode_json_map(value) when is_binary(value) do
+    case Jason.decode(value) do
+      {:ok, map} when is_map(map) -> map
+      _ -> %{}
+    end
+  end
+
+  defp decode_json_map(_), do: %{}
+
+  defp decode_bool(value) when value in [1, true, "1", "true"], do: true
+  defp decode_bool(value) when value in [0, false, "0", "false"], do: false
+  defp decode_bool(_), do: nil
+
+  defp user!(user_id) do
+    case SQL.one("SELECT username FROM users WHERE id=?", [user_id]) do
+      [username] -> %{id: user_id, username: username}
+      _ -> raise "Mission owner not found"
+    end
+  end
+
   defp work_item_branch(mission_id, task_id, title) do
     slug =
       title
@@ -2187,14 +3163,14 @@ defmodule Cascade.Missions.Store do
     |> Enum.uniq()
   end
 
+  defp clean(nil, _max), do: ""
+  defp clean(value, max), do: value |> to_string() |> String.trim() |> String.slice(0, max)
+
   defp field(nil, _key), do: nil
 
   defp field(map, key) do
     Map.get(map, key, Map.get(map, Atom.to_string(key)))
   end
-
-  defp clean(nil, _max), do: ""
-  defp clean(value, max), do: value |> to_string() |> String.trim() |> String.slice(0, max)
   defp integer(value, _fallback) when is_integer(value), do: value
   defp integer(value, _fallback) when is_float(value), do: value |> Float.floor() |> trunc()
 

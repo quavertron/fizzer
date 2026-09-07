@@ -29,10 +29,16 @@ interface NoteEditorProps {
   onContentChange: (content: string) => void;
   onSave: () => void | Promise<unknown>;
   onRename?: (title: string) => Promise<void>;
+  /** Mission embeds keep titles readonly unless a CAS-safe rename is wired. */
+  titleEditable?: boolean;
   onExecuteDirective?: (prompt: string) => void;
   onOpenWikilink?: (title: string) => void;
   notes?: NoteSummary[];
   onOpenNote?: (id: string) => void;
+  /** Resolve mission-only @worker mentions without changing ordinary notes. */
+  resolveWorkerMention?: (mention: string) => 'known' | 'ambiguous' | 'unknown';
+  /** Called only for a decorated, known or ambiguous worker mention. */
+  onWorkerMention?: (mention: string) => void;
 }
 
 /* ─── Custom Dark Theme ──────────────────────────────────── */
@@ -874,6 +880,7 @@ class DocEmbedWidget extends WidgetType {
 export function buildDecorations(
   state: EditorState,
   notes: NoteSummary[] = [],
+  resolveWorkerMention?: (mention: string) => 'known' | 'ambiguous' | 'unknown',
 ): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const doc = state.doc;
@@ -886,6 +893,15 @@ export function buildDecorations(
   const codeDeco = Decoration.mark({ class: 'cm-md-inline-code' });
   const wikilinkDeco = Decoration.mark({ class: 'cm-wikilink' });
   const directiveDeco = Decoration.mark({ class: 'cm-directive' });
+  const workerMentionDecoration = (mention: string, kind: 'known' | 'ambiguous') => Decoration.mark({
+    class: `cm-worker-mention cm-worker-mention-${kind}`,
+    attributes: {
+      'data-worker-mention': mention,
+      role: 'button',
+      tabindex: '0',
+      'aria-label': `Open worker trace for @${mention}`,
+    },
+  });
 
   // Flat list to collect all decoration ranges
   const decos: { from: number; to: number; deco: Decoration }[] = [];
@@ -1044,6 +1060,18 @@ export function buildDecorations(
       }
     }
 
+    if (resolveWorkerMention) {
+      const mentionPattern = /(^|[^\w\\])@([A-Za-z][A-Za-z0-9_-]*)/g;
+      let mentionMatch: RegExpExecArray | null;
+      while ((mentionMatch = mentionPattern.exec(text))) {
+        const mention = mentionMatch[2];
+        const kind = resolveWorkerMention(mention);
+        if (kind === 'unknown') continue;
+        const from = line.from + mentionMatch.index + mentionMatch[1].length;
+        collectDeco(from, from + mention.length + 1, workerMentionDecoration(mention, kind));
+      }
+    }
+
     if (isActive) continue; // Don't hide/decorate formatting markers on the active line
 
     const imageMatch = text.match(IMAGE_LINE_RE);
@@ -1194,10 +1222,11 @@ export function buildDecorations(
 function createWysiwygDecorations(
   /** Live notes list via getter so vault soft-refreshes don't reconfigure CM. */
   getNotes: () => NoteSummary[] = () => [],
+  resolveWorkerMention?: (mention: string) => 'known' | 'ambiguous' | 'unknown',
 ) {
   const field = StateField.define<DecorationSet>({
     create(state) {
-      return buildDecorations(state, getNotes());
+      return buildDecorations(state, getNotes(), resolveWorkerMention);
     },
     update(decorations, transaction) {
       // Full rebuild is O(doc). Only do it when the doc changed, or when the
@@ -1208,6 +1237,7 @@ function createWysiwygDecorations(
         return buildDecorations(
           transaction.state,
           getNotes(),
+          resolveWorkerMention,
         );
       }
       if (transaction.selection) {
@@ -1218,6 +1248,7 @@ function createWysiwygDecorations(
           return buildDecorations(
             transaction.state,
             getNotes(),
+            resolveWorkerMention,
           );
         }
       }
@@ -1262,8 +1293,7 @@ export function filterLinkableNotes(notes: NoteSummary[], currentNoteId: string 
     .filter((candidate) => !needle || candidate.title.toLocaleLowerCase().includes(needle))
     .sort((a, b) => a.title.localeCompare(b.title));
 }
-
-export const NoteEditor = memo(function NoteEditor({ note, content, onContentChange, onSave, onRename, onExecuteDirective, onOpenWikilink, notes = [], onOpenNote }: NoteEditorProps) {
+export const NoteEditor = memo(function NoteEditor({ note, content, onContentChange, onSave, onRename, titleEditable = true, onExecuteDirective, onOpenWikilink, notes = [], onOpenNote, resolveWorkerMention, onWorkerMention }: NoteEditorProps) {
   const [publishInfo, setPublishInfo] = useState<NotePublishInfo>({ published: false });
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishNotice, setPublishNotice] = useState('');
@@ -1279,6 +1309,8 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
   const onExecuteDirectiveRef = useRef(onExecuteDirective);
   const onOpenWikilinkRef = useRef(onOpenWikilink);
   const onOpenNoteRef = useRef(onOpenNote);
+  const resolveWorkerMentionRef = useRef(resolveWorkerMention);
+  const onWorkerMentionRef = useRef(onWorkerMention);
   const insertImageFromFileRef = useRef<(file: File, view?: EditorView, coords?: { x: number; y: number }) => Promise<boolean>>(async () => false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const saveFeedbackTimerRef = useRef<number | null>(null);
@@ -1325,13 +1357,17 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
   }, [note?.id]);
 
   const commitTitle = useCallback(() => {
+    if (!titleEditable) {
+      setTitleDraft(note?.title ?? '');
+      return;
+    }
     const next = titleDraft.trim();
     if (!note || !next || next === note.title) {
       setTitleDraft(note?.title ?? '');
       return;
     }
     onRename?.(next)?.catch(() => setTitleDraft(note.title));
-  }, [titleDraft, note, onRename]);
+  }, [titleDraft, note, onRename, titleEditable]);
 
   useEffect(() => {
     if (!note?.id) {
@@ -1516,6 +1552,8 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
   onExecuteDirectiveRef.current = onExecuteDirective;
   onOpenWikilinkRef.current = onOpenWikilink;
   onOpenNoteRef.current = onOpenNote;
+  resolveWorkerMentionRef.current = resolveWorkerMention;
+  onWorkerMentionRef.current = onWorkerMention;
 
   // Word count and stats
   const stats = useMemo(() => {
@@ -1545,6 +1583,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
       cmPlaceholder('Start writing...'),
       createWysiwygDecorations(
         () => notesRef.current,
+        (mention) => resolveWorkerMentionRef.current?.(mention) ?? 'unknown',
       ),
       checkboxClickHandler,
       EditorView.domEventHandlers({
@@ -1594,6 +1633,15 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
               return true;
             }
           }
+          const workerMention = target.closest('.cm-worker-mention') as HTMLElement | null;
+          if (workerMention) {
+            const mention = workerMention.dataset.workerMention;
+            if (mention) {
+              event.preventDefault();
+              onWorkerMentionRef.current?.(mention);
+              return true;
+            }
+          }
           const docEmbed = target.closest('.cm-doc-embed');
           if (docEmbed) {
             const noteId = docEmbed.getAttribute('data-note-id');
@@ -1622,6 +1670,16 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
             }
           }
           return false;
+        },
+        keydown(event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return false;
+          const target = event.target as HTMLElement;
+          const workerMention = target.closest('.cm-worker-mention') as HTMLElement | null;
+          const mention = workerMention?.dataset.workerMention;
+          if (!mention) return false;
+          event.preventDefault();
+          onWorkerMentionRef.current?.(mention);
+          return true;
         },
       }),
       keymap.of([
@@ -1915,13 +1973,15 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
         </div>
       </div>
 
-      {/* Inline editable title */}
+      {/* Inline title; mission embeds may explicitly render it readonly. */}
       <input
         id="editor-title"
         className="editor-title"
         value={titleDraft}
         spellCheck={false}
         placeholder="Untitled"
+        readOnly={!titleEditable}
+        aria-readonly={!titleEditable}
         onChange={(e) => setTitleDraft(e.target.value)}
         onBlur={commitTitle}
         onKeyDown={(e) => {

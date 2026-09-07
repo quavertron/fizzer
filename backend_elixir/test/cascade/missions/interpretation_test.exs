@@ -48,9 +48,10 @@ defmodule Cascade.Missions.InterpretationTest do
 
     {:ok, task} =
       Store.add_task(user.id, channel.id, update.mission.id, %{
-        title: "Implementation",
+        title: "Research",
         assignee: worker.id,
-        coordinatorRegistrationId: coordinator.id
+        coordinatorRegistrationId: coordinator.id,
+        purpose: "research"
       })
 
     %{
@@ -174,9 +175,9 @@ defmodule Cascade.Missions.InterpretationTest do
     assert {:ok, _} = Dispatches.create(c.user.id, c.channel, newer, c.coordinator.id)
   end
 
-  test "completed execution with an unanswered question stays in the shared maintenance selection",
+  test "completed research stays in planning while an unanswered question remains in maintenance",
        c do
-    finding(c, "Delivery evidence")
+    finding(c, "Research evidence")
     [wake] = Scheduler.schedule(c.mission).wakeDispatches
     review = run(c, wake.dispatch)
 
@@ -189,12 +190,12 @@ defmodule Cascade.Missions.InterpretationTest do
       })
 
     :ok = Runs.finish(review.id, "completed", "Recorded")
-    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
-
-    SQL.exec(
-      "UPDATE chat_mission_interpretations SET state_json=json_set(state_json,'$.executionCompleted',json('true')) WHERE mission_id=?",
-      [c.mission]
-    )
+    {:ok, update} =
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: "completed",
+        summary: "Research evidence recorded."
+      })
+    assert update.mission.phase == "planning"
 
     assert [c.mission, c.user.id] in Scheduler.maintenance_missions()
 
@@ -205,7 +206,6 @@ defmodule Cascade.Missions.InterpretationTest do
     assert Interpretation.dispatch_prompt(next.dispatch.id) =~ "Which condition permits resuming?"
     assert Scheduler.schedule(c.mission).wakeDispatches == []
     next_run = run(c, next.dispatch)
-
     {{:ok, _}, _} =
       record(c, next_run, %{
         "noMaterialChange" => true,
@@ -218,9 +218,10 @@ defmodule Cascade.Missions.InterpretationTest do
         ]
       })
 
-    :ok = Runs.finish(next_run.id, "completed", "Answered")
-    refute [c.mission, c.user.id] in Scheduler.maintenance_missions()
+    assert [c.mission, c.user.id] in Scheduler.maintenance_missions()
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
   end
+
 
   test "prompt evidence references are lossless and full retrieval remains unchanged", c do
     evidence =
@@ -295,7 +296,8 @@ defmodule Cascade.Missions.InterpretationTest do
       })
 
     :ok = Runs.finish(review.id, "completed", "Saved")
-    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
+    {:ok, update} = Store.get(c.user.id, c.channel, c.mission)
+    assert update.mission.phase == "planning"
     [next] = Scheduler.schedule(c.mission).wakeDispatches
 
     for prompt <- [
@@ -324,7 +326,8 @@ defmodule Cascade.Missions.InterpretationTest do
       Store.add_task(c.user.id, c.channel, c.mission, %{
         title: "Owned dependency",
         assignee: c.worker.id,
-        coordinatorRegistrationId: c.coordinator.id
+        coordinatorRegistrationId: c.coordinator.id,
+        purpose: "research"
       })
 
     SQL.exec("UPDATE chat_mission_tasks SET depends_on_json=? WHERE id=?", [
@@ -392,6 +395,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
   test "ordinary implementation and verification stay with the worker without coordinator bookkeeping",
        c do
+    c = approved_implementation(c)
     [worker] = Scheduler.schedule(c.mission).dispatches
     worker_run = run(c, worker.dispatch)
     {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
@@ -445,13 +449,12 @@ defmodule Cascade.Missions.InterpretationTest do
     [worker] = Scheduler.schedule(c.mission).dispatches
     worker_run = run(c, worker.dispatch)
     {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
-
     {:ok, child} =
       Cascade.Missions.Children.add(
         c.user.id,
         c.channel,
         c.mission,
-        %{title: "Independent piece"},
+        %{title: "Independent piece", purpose: "research"},
         worker_run.id
       )
 
@@ -904,6 +907,7 @@ defmodule Cascade.Missions.InterpretationTest do
         title: "Anonymous coordinator worker",
         assignee: c.coordinator.id,
         coordinatorRegistrationId: c.coordinator.id,
+        purpose: "research",
         anonymous: true
       })
 
@@ -958,7 +962,7 @@ defmodule Cascade.Missions.InterpretationTest do
     assert state(c).understanding["commitments"] |> Enum.any?(&(&1["id"] == "recover"))
   end
 
-  test "an unanswered direct question alone wakes after execution completion and Stop prevents revival",
+  test "an unanswered direct question wakes during planning and Stop prevents revival",
        c do
     finding(c, "Initial checkpoint")
     [wake] = Scheduler.schedule(c.mission).wakeDispatches
@@ -970,8 +974,9 @@ defmodule Cascade.Missions.InterpretationTest do
         "questions" => [%{"id" => "direct", "question" => "What did the checks demonstrate?"}]
       })
 
-    SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
-    :ok = Runs.finish(review.id, "completed", "Execution done; answer still owed")
+    :ok = Runs.finish(review.id, "completed", "Research complete; answer still owed")
+    {:ok, update} = Store.get(c.user.id, c.channel, c.mission)
+    assert update.mission.phase == "planning"
     [next] = Scheduler.schedule(c.mission).wakeDispatches
     assert Interpretation.dispatch_prompt(next.dispatch.id) =~ "What did the checks demonstrate?"
     stopped = run(c, next.dispatch)
@@ -1141,5 +1146,56 @@ defmodule Cascade.Missions.InterpretationTest do
     refute prompt =~ "private-intent"
     refute prompt =~ "private-evidence"
     assert prompt =~ "Private block hidden from agents"
+  end
+
+  defp approved_implementation(c) do
+    brief =
+      Cascade.Content.Store.create_note(c.vault, c.user.id, %{
+        id: "mission-brief-#{c.mission}",
+        title: "Implementation brief",
+        content: "Implement and verify the approved behavior.",
+        is_listed: true
+      })
+
+    brief_revision = Cascade.Content.Privacy.note_revision(brief)
+
+    SQL.exec(
+      """
+      INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision)
+      VALUES(?,?, 'mission',NULL,0,?)
+      """,
+      [c.mission, brief.id, brief_revision]
+    )
+
+    {:ok, _} =
+      Store.approve_workspace(c.user.id, c.vault, c.mission, %{
+        brief.id => brief_revision
+      })
+
+    [approval_dispatch_id] =
+      SQL.one(
+        "SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?",
+        [c.mission]
+      )
+
+    assert is_binary(approval_dispatch_id)
+    {:ok, approval_wake} = Dispatches.get(c.user.id, c.channel, approval_dispatch_id)
+
+    approval_run = run(c, approval_wake)
+
+    {{:ok, _}, _} =
+      record(c, approval_run, %{"noMaterialChange" => true})
+
+    :ok = Runs.finish(approval_run.id, "completed", "Approval acknowledged")
+
+    {:ok, task} =
+      Store.add_task(c.user.id, c.channel, c.mission, %{
+        title: "Implementation execution",
+        assignee: c.worker.id,
+        coordinatorRegistrationId: c.coordinator.id,
+        purpose: "implementation"
+      })
+
+    %{c | task: task.task.id}
   end
 end

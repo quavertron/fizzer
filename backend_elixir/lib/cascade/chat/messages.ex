@@ -1038,7 +1038,8 @@ defmodule Cascade.Chat.Messages do
           id: note.id,
           title: note.title,
           content: note.content || "",
-          content_preview: note.content_preview || ""
+          content_preview: note.content_preview || "",
+          revision_counter: note.revision_counter
         }
     end
   end

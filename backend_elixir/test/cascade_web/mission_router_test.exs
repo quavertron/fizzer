@@ -8,6 +8,7 @@ defmodule CascadeWeb.MissionRouterTest do
   alias Cascade.Accounts.SQL
   alias Cascade.Auth.Token
   alias Cascade.Chat.{Agents, Messages}
+  alias Cascade.Content.Privacy
   alias Cascade.Content.Store, as: ContentStore
   alias Cascade.Missions.{Dispatches, Scheduler, Store}
   alias Cascade.Runs.Store, as: RunStore
@@ -76,6 +77,7 @@ defmodule CascadeWeb.MissionRouterTest do
       vault: vault,
       channel: channel,
       root: root,
+      coordinator_identity: coordinator_identity,
       coordinator: coordinator,
       worker: worker,
       token: Token.sign_user(user)
@@ -94,7 +96,8 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Worker",
-        assignee: ctx.worker.id
+        assignee: ctx.worker.id,
+        purpose: "research"
       })
 
     {:ok, run} = RunStore.start(ctx.vault.id, nil, "Worker", "codex", owner_user_id: ctx.user.id)
@@ -131,14 +134,16 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Deliver",
-        assignee: ctx.worker.id
+        assignee: ctx.worker.id,
+        purpose: "research"
       })
 
     {:ok, second} =
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Historical",
-        assignee: ctx.worker.id
+        assignee: ctx.worker.id,
+        purpose: "research"
       })
 
     SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary=? WHERE id=?", [
@@ -190,7 +195,7 @@ defmodule CascadeWeb.MissionRouterTest do
     assert request(stranger, :get, base <> "?view=compact").status in [401, 403, 404]
   end
 
-  test "worker HTTP progress stays quiet and explicit findings use the same authorized update",
+  test "worker HTTP research progress stays quiet and explicit findings use the same authorized update",
        ctx do
     {:ok, created} =
       Store.create(
@@ -208,8 +213,9 @@ defmodule CascadeWeb.MissionRouterTest do
     {:ok, added} =
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
-        title: "Implement and ship",
-        assignee: ctx.worker.id
+        title: "Research and report",
+        assignee: ctx.worker.id,
+        purpose: "research"
       })
 
     [worker] = Scheduler.schedule(created.mission.id).dispatches
@@ -255,105 +261,213 @@ defmodule CascadeWeb.MissionRouterTest do
            ) == ["Scope decision needed"]
   end
 
-  test "route catalog exposes the complete Node contract" do
-    assert CascadeWeb.MissionRoutes.catalog() == [
-             {"GET", "/api/vaults/:vault_id/channels/:channel_id/agent-dispatches/pending"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions"},
-             {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions"},
-             {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/history"},
-             {"GET", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id"},
-             {"GET", "/api/vaults/:vault_id/channels/:channel_id/continuation"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/continuation"},
-             {"GET",
-              "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation"},
-             {"POST",
-              "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/tasks"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/children"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/children/join"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/tasks/:task_id/steer"},
-             {"PATCH", "/api/vaults/:vault_id/channels/:channel_id/missions/tasks/:task_id"},
-             {"POST",
-              "/api/vaults/:vault_id/channels/:channel_id/missions/tasks/:task_id/recovery-evidence"},
-             {"POST", "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/finish"}
-           ]
-  end
 
-  test "create, list, get, delegate, pending dispatch, update, history, and finish preserve response shapes",
-       ctx do
-    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
+  test "vault workspace routes create, link notes, list, fetch, and require human approval", ctx do
+    workspace_id = Ecto.UUID.generate()
+    workspace_path = "/api/vaults/#{ctx.vault.id}/missions"
 
     created =
-      request(ctx, :post, base <> "/missions", %{
+      request(ctx, :post, workspace_path, %{
+        id: workspace_id,
+        title: "Workspace route mission",
+        coordinatorIdentityId: ctx.coordinator_identity.id,
+        briefContent: "# Brief\n\nOpen questions:\n\n- Which surface ships first?"
+      })
+
+    assert created.status == 201
+    mission = json(created)["mission"]
+    assert mission["id"] == workspace_id
+    assert mission["vaultId"] == ctx.vault.id
+    assert mission["phase"] == "planning"
+    assert is_binary(mission["channelId"])
+    assert [%{"kind" => "mission", "noteId" => brief_id}] = mission["notes"]
+
+    listed = request(ctx, :get, workspace_path)
+    assert listed.status == 200
+    assert Enum.any?(json(listed)["missions"], &(&1["id"] == workspace_id))
+
+    fetched = request(ctx, :get, workspace_path <> "/#{workspace_id}")
+    assert fetched.status == 200
+    assert json(fetched)["mission"]["id"] == workspace_id
+
+    note_id = Ecto.UUID.generate()
+
+    with_note =
+      request(ctx, :post, workspace_path <> "/#{workspace_id}/notes", %{
+        id: note_id,
+        kind: "milestone",
+        parentNoteId: brief_id,
+        title: "First milestone",
+        content: "Implement the route contract."
+      })
+
+    assert with_note.status == 201
+    updated = json(with_note)["mission"]
+    assert Enum.any?(updated["notes"], &(&1["noteId"] == note_id and &1["kind"] == "milestone"))
+
+    expected_revisions =
+      Map.new(updated["notes"], fn note -> {note["noteId"], note["revision"]} end)
+
+    changed =
+      request(ctx, :post, workspace_path <> "/#{workspace_id}/notes", %{
+        id: Ecto.UUID.generate(),
+        kind: "feature",
+        parentNoteId: note_id,
+        title: "Route implementation",
+        content: "Add the workspace endpoint."
+      })
+
+    assert changed.status == 201
+
+    conflict =
+      request(ctx, :post, workspace_path <> "/#{workspace_id}/approve", %{
+        expectedRevisions: expected_revisions
+      })
+
+    assert conflict.status == 409
+    assert json(conflict)["error"] == "revision_conflict"
+    assert json(conflict)["mission"]["id"] == workspace_id
+
+    expected_revisions =
+      Map.new(json(changed)["mission"]["notes"], fn note ->
+        {note["noteId"], note["revision"]}
+      end)
+
+    approved =
+      request(ctx, :post, workspace_path <> "/#{workspace_id}/approve", %{
+        expectedRevisions: expected_revisions
+      })
+
+    assert approved.status == 200
+    assert json(approved)["mission"]["phase"] == "executing"
+    assert json(approved)["mission"]["approvedBy"] == ctx.user.id
+    assert is_binary(json(approved)["mission"]["approvedAt"])
+
+    agent_ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+    assert request(agent_ctx, :post, workspace_path <> "/#{workspace_id}/approve", %{
+             expectedRevisions: expected_revisions
+           }).status == 403
+  end
+  test "channel task lifecycle enforces research, approval, and implementation phases", ctx do
+    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
+
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
         rootMessageId: ctx.root.id,
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "HTTP mission",
         objective: "Port the complete contract."
       })
 
-    assert created.status == 201
-    %{"mission" => mission} = json(created)
-    assert mission["status"] == "active"
-    assert mission["tasks"] == []
+    mission_id = created.mission.id
+    brief =
+      ContentStore.create_note(ctx.vault.id, ctx.user.id, %{
+        title: "HTTP mission brief",
+        content: "Port the complete contract."
+      })
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,position,revision) VALUES(?,?,?,?,?)",
+      [mission_id, brief.id, "mission", 0, Privacy.note_revision(brief)]
+    )
+
+    assert created.mission.status == "active"
+    assert created.mission.phase == "planning"
+    assert created.mission.tasks == []
 
     listed = request(ctx, :get, base <> "/missions")
     assert listed.status == 200
     assert [listed_mission] = json(listed)["missions"]
-    assert listed_mission["id"] == mission["id"]
+    assert listed_mission["id"] == mission_id
 
     fetched = request(ctx, :get, base <> "/missions/current?coordinator=#{ctx.coordinator.id}")
     assert fetched.status == 200
-    assert json(fetched)["mission"]["id"] == mission["id"]
+    assert json(fetched)["mission"]["id"] == mission_id
 
-    delegated =
-      request(ctx, :post, base <> "/missions/#{mission["id"]}/tasks", %{
+    research =
+      request(ctx, :post, base <> "/missions/#{mission_id}/tasks", %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Research HTTP parity",
+        assignee: ctx.worker.id,
+        prompt: "Research the implementation contract.",
+        purpose: "research",
+        reasoningEffort: "high"
+      })
+
+    assert research.status == 201
+    research_body = json(research)
+    assert research_body["task"]["purpose"] == "research"
+    assert research_body["scheduled"] == true
+    assert research_body["message"]["missionTaskId"] == research_body["task"]["id"]
+
+    pending = request(ctx, :get, base <> "/agent-dispatches/pending")
+    assert pending.status == 200
+    dispatches = json(pending)["dispatches"]
+    [dispatch] = Enum.filter(dispatches, &(&1["messageId"] == research_body["message"]["id"]))
+    assert Enum.count(dispatches, &(&1["message"]["missionTaskId"] == research_body["task"]["id"])) == 1
+    assert dispatch["reasoningEffort"] == "high"
+
+    completed_research =
+      request(
+        ctx,
+        :patch,
+        base <> "/missions/tasks/#{research_body["task"]["id"]}",
+        %{status: "completed", summary: "Research evidence recorded."}
+      )
+
+    assert completed_research.status == 200
+    assert json(completed_research)["mission"]["phase"] == "planning"
+
+    approved =
+      request(ctx, :post, "/api/vaults/#{ctx.vault.id}/missions/#{mission_id}/approve", %{
+        expectedRevisions: %{brief.id => Privacy.note_revision(brief)}
+      })
+
+    assert approved.status == 200
+    assert json(approved)["mission"]["phase"] == "executing"
+    assert is_binary(json(approved)["mission"]["approvedAt"])
+
+    implementation =
+      request(ctx, :post, base <> "/missions/#{mission_id}/tasks", %{
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Implement HTTP parity",
         assignee: ctx.worker.id,
         prompt: "Implement and report evidence.",
-        reasoningEffort: "high"
+        reasoningEffort: "high",
+        purpose: "implementation"
       })
 
-    assert delegated.status == 201
-    delegated_body = json(delegated)
-    assert delegated_body["scheduled"] == true
-    assert delegated_body["message"]["missionTaskId"] == delegated_body["task"]["id"]
+    assert implementation.status == 201
+    implementation_body = json(implementation)
+    assert implementation_body["task"]["purpose"] == "implementation"
+    assert implementation_body["scheduled"] == true
 
-    pending = request(ctx, :get, base <> "/agent-dispatches/pending")
-    assert pending.status == 200
-    assert [dispatch] = json(pending)["dispatches"]
-    assert dispatch["messageId"] == delegated_body["message"]["id"]
-    assert dispatch["reasoningEffort"] == "high"
-
-    assert Enum.any?(Cascade.Missions.Dispatches.pending(), &(&1.id == dispatch["id"]))
-
-    completed =
+    completed_implementation =
       request(
         ctx,
         :patch,
-        base <> "/missions/tasks/#{delegated_body["task"]["id"]}",
-        %{status: "completed", summary: "Evidence recorded."}
+        base <> "/missions/tasks/#{implementation_body["task"]["id"]}",
+        %{status: "completed", summary: "Implementation evidence recorded."}
       )
 
-    assert completed.status == 200
-    assert json(completed)["mission"]["status"] == "attention"
+    assert completed_implementation.status == 200
+    assert json(completed_implementation)["mission"]["phase"] == "executing"
 
-    history = request(ctx, :get, base <> "/missions/#{mission["id"]}/history")
+    history = request(ctx, :get, base <> "/missions/#{mission_id}/history")
     assert history.status == 200
     kinds = Enum.map(json(history)["events"], & &1["kind"])
+    assert Enum.count(kinds, &(&1 == "task_added")) == 2
+    assert "mission_approved" in kinds
+    assert "task_status_changed" in kinds
 
-    assert kinds ==
-             ~w(mission_created task_added task_dispatched task_status_changed mission_status_changed)
-
-    finished =
-      request(ctx, :post, base <> "/missions/#{mission["id"]}/finish", %{
+    blocked_finish =
+      request(ctx, :post, base <> "/missions/#{mission_id}/finish", %{
         coordinatorRegistrationId: ctx.coordinator.id,
         status: "completed",
         summary: "Integrated and verified."
       })
 
-    assert finished.status == 200
-    assert json(finished)["mission"]["status"] == "completed"
+    assert blocked_finish.status == 400
   end
 
   test "authentication, channel privacy, and mutation errors fail closed", ctx do
@@ -371,39 +485,47 @@ defmodule CascadeWeb.MissionRouterTest do
 
     assert missing_channel.status == 404
     assert json(missing_channel) == %{"error" => "Chat channel not found"}
-
     invalid =
-      request(ctx, :post, base <> "/missions", %{
-        rootMessageId: ctx.root.id,
-        coordinatorRegistrationId: ctx.coordinator.id,
-        title: ""
+      request(ctx, :post, "/api/vaults/#{ctx.vault.id}/missions", %{
+        id: Ecto.UUID.generate(),
+        title: "",
+        coordinatorIdentityId: ctx.coordinator_identity.id,
+        briefContent: "A brief"
       })
 
     assert invalid.status == 400
-    assert json(invalid) == %{"error" => "Mission title is required"}
+    assert json(invalid)["error"] =~ "required"
+
+    superseded =
+      request(ctx, :post, base <> "/missions", %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Old channel creation"
+      })
+
+    assert superseded.status == 404
   end
 
-  test "a worker run cannot start or delegate nested missions", ctx do
-    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
-    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
-
-    created =
-      request(ctx, :post, base <> "/missions", %{
+  test "a worker run cannot delegate nested missions", ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
         rootMessageId: ctx.root.id,
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Parent mission",
         controlPlane: true
       })
 
-    assert created.status == 201
-    mission_id = json(created)["mission"]["id"]
+    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
+    base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
+    mission_id = created.mission.id
 
     delegated =
       request(ctx, :post, base <> "/missions/#{mission_id}/tasks", %{
         coordinatorRegistrationId: ctx.coordinator.id,
-        title: "Execute parent work",
+        title: "Research parent work",
         assignee: ctx.coordinator.id,
-        anonymous: true
+        anonymous: true,
+        purpose: "research"
       })
 
     assert delegated.status == 201
@@ -421,23 +543,6 @@ defmodule CascadeWeb.MissionRouterTest do
     :ok = Dispatches.attach_run(dispatch.id, worker_run.id)
     {:ok, _} = Store.attach_run(dispatch.id, worker_run.id)
 
-    nested =
-      request(
-        ctx,
-        :post,
-        base <> "/missions",
-        %{
-          rootMessageId: ctx.root.id,
-          coordinatorRegistrationId: ctx.coordinator.id,
-          title: "Worker clone",
-          controlPlane: true
-        },
-        worker_run.id
-      )
-
-    assert nested.status == 400
-    assert json(nested) == %{"error" => "Mission workers cannot start or delegate missions"}
-
     nested_task =
       request(
         ctx,
@@ -447,7 +552,8 @@ defmodule CascadeWeb.MissionRouterTest do
           coordinatorRegistrationId: ctx.coordinator.id,
           title: "Another clone",
           assignee: ctx.coordinator.id,
-          anonymous: true
+          anonymous: true,
+          purpose: "research"
         },
         worker_run.id
       )
@@ -488,7 +594,8 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         assignee: ctx.worker.id,
-        title: "Parent"
+        title: "Parent",
+        purpose: "research"
       })
 
     [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
@@ -508,7 +615,8 @@ defmodule CascadeWeb.MissionRouterTest do
           title: "HTTP child",
           prompt: "Bounded work",
           assignee: ctx.coordinator.id,
-          workspaceMode: "shared"
+          workspaceMode: "shared",
+          purpose: "research"
         },
         run.id
       )
@@ -627,7 +735,8 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         assignee: ctx.worker.id,
-        title: "Other task"
+        title: "Other task",
+        purpose: "research"
       })
 
     assert request(
@@ -672,7 +781,8 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, mission.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         assignee: ctx.worker.id,
-        title: "Queued work"
+        title: "Queued work",
+        purpose: "research"
       })
 
     path =
@@ -712,7 +822,8 @@ defmodule CascadeWeb.MissionRouterTest do
       Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Worker",
-        assignee: ctx.worker.id
+        assignee: ctx.worker.id,
+        purpose: "research"
       })
 
     {:ok, _} =
