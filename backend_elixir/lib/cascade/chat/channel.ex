@@ -148,7 +148,11 @@ defmodule Cascade.Chat.Channel do
     participant_snapshot(source_vault_id, source_channel_id).participants
   end
 
-  def participant_snapshot(source_vault_id, source_channel_id) do
+  def participant_snapshot(source_vault_id, source_channel_id, opts \\ []) do
+    # Inline photos belong in the HTTP response, never in realtime presence events.
+    include_avatars = Keyword.get(opts, :include_avatars, false)
+    avatar_column = if include_avatars, do: "u.avatar_url", else: "NULL"
+
     rows =
       SQL.all(
         """
@@ -188,7 +192,7 @@ defmodule Cascade.Chat.Channel do
           )
         )
         SELECT u.id,n.username,u.username,
-          COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username
+          COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username,#{avatar_column}
         FROM participant_names n CROSS JOIN source s
         LEFT JOIN users u ON u.username=n.username
         WHERE n.username IS NOT NULL AND n.username != ''
@@ -206,7 +210,7 @@ defmodule Cascade.Chat.Channel do
 
     users =
       Enum.flat_map(rows, fn
-        [id, participant_username, username, display_name, _owner]
+        [id, participant_username, username, display_name, _owner, avatar_url]
         when is_integer(id) and is_binary(username) ->
           [
             %{
@@ -215,6 +219,7 @@ defmodule Cascade.Chat.Channel do
               username: username,
               displayName: display_name || username
             }
+            |> then(&if(include_avatars, do: Map.put(&1, :avatarUrl, avatar_url || ""), else: &1))
           ]
 
         _ ->
@@ -226,12 +231,7 @@ defmodule Cascade.Chat.Channel do
       owner: rows |> List.first() |> then(&if(&1, do: Enum.at(&1, 4), else: "")),
       profiles:
         Map.new(users, fn user ->
-          {user.username,
-           %{
-             id: user.id,
-             username: user.username,
-             displayName: user.displayName
-           }}
+          {user.username, Map.drop(user, [:participantUsername])}
         end),
       users: users
     }
@@ -241,7 +241,8 @@ defmodule Cascade.Chat.Channel do
 
   def presence(channel_id, user_id, callback \\ Cascade.Chat.Events.Noop) do
     with {:ok, route} <- assert_channel(channel_id, user_id) do
-      snapshot = participant_snapshot(route.sourceVaultId, route.sourceChannelId)
+      snapshot =
+        participant_snapshot(route.sourceVaultId, route.sourceChannelId, include_avatars: true)
 
       online =
         Events.online(callback, snapshot.participants)

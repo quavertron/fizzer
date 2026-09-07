@@ -10,14 +10,15 @@ export function createChatAgentRegistrationId() {
   return `reg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Preserve cached profiles when lean presence events omit that heavier map. */
+/** Preserve cached photos when realtime presence omits avatars or entire profiles. */
 export function mergeChatPresence(
   prior: ChatChannelPresence | undefined,
   incoming: Partial<ChatChannelPresence>,
 ): ChatChannelPresence {
-  const nextProfiles = incoming.profiles && Object.keys(incoming.profiles).length > 0
-    ? { ...(prior?.profiles || {}), ...incoming.profiles }
-    : (prior?.profiles || incoming.profiles || {});
+  const nextProfiles = { ...prior?.profiles };
+  for (const [username, profile] of Object.entries(incoming.profiles || {})) {
+    nextProfiles[username] = { ...nextProfiles[username], ...profile };
+  }
   return {
     participants: incoming.participants ?? prior?.participants ?? [],
     online: incoming.online ?? prior?.online ?? [],
@@ -34,7 +35,7 @@ type LocalUserProfile = {
 };
 
 /**
- * Presence snapshots omit avatarUrl on purpose (inline photos are huge).
+ * Realtime presence omits avatarUrl on purpose (inline photos are huge).
  * Paint the signed-in user's session photo onto every channel profile map.
  */
 export function applyLocalUserProfile(
