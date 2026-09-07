@@ -4511,6 +4511,16 @@ button.chat-avatar.is-clickable:focus-visible {
   object-fit: cover;
   pointer-events: none;
 }
+[data-agent-ownership="owned"] {
+  --agent-tint: var(--accent);
+}
+[data-agent-ownership="other"] {
+  --agent-tint: var(--decal-2);
+}
+.chat-avatar-agent[data-agent-ownership="owned"],
+.chat-avatar-agent[data-agent-ownership="other"] {
+  background: color-mix(in srgb, var(--agent-tint) 8%, var(--bg-raised));
+}
 .chat-message-body {
   min-width: 0;
   flex: 1;
@@ -6256,15 +6266,15 @@ button.chat-avatar.is-clickable:focus-visible {
   background: color-mix(in srgb, var(--bg-raised) 40%, transparent);
 }
 .chat-user.chat-agent-user {
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raised));
+  background: color-mix(in srgb, var(--agent-tint, var(--accent)) 8%, var(--bg-raised));
 }
 .chat-user.chat-agent-user:hover,
 .chat-user.chat-agent-user.is-editing {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-raised));
+  background: color-mix(in srgb, var(--agent-tint, var(--accent)) 14%, var(--bg-raised));
   color: var(--text-primary);
 }
 .chat-user.chat-agent-user.is-editing {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--agent-tint, var(--accent)) 35%, transparent);
 }
 .chat-user-row {
   display: flex;
