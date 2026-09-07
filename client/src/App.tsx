@@ -1380,7 +1380,8 @@ export default function App() {
       }
       return { ...prev, registeredAgentsByChannel: next };
     });
-  }, []);
+    void loadVaultAgents(vaultId);
+  }, [loadVaultAgents]);
 
   const handleDeleteAgentProfile = useCallback(async (vaultAgentId: string) => {
     const vaultId = activeVaultIdRef.current;
@@ -2400,6 +2401,7 @@ export default function App() {
             channelName={channel?.title || tab.title}
             isLoadingMessages={loadingChatChannels[tab.id] === true}
             currentUser={currentUsername}
+            currentUserId={user?.id}
             presence={applyLocalUserProfile(chatPresenceByChannel[tab.id] ?? EMPTY_CHAT_PRESENCE, user)}
             availableAgents={AVAILABLE_CHAT_AGENTS}
             registeredAgents={chatState.registeredAgentsByChannel[tab.id] ?? EMPTY_CHAT_AGENTS}
@@ -2807,6 +2809,7 @@ export default function App() {
                 channelId={vaultSidebarChannel}
                 channelName={notes.find((note) => note.id === vaultSidebarChannel)?.title || 'Vault'}
                 currentUser={currentUsername}
+                currentUserId={user?.id}
                 presence={applyLocalUserProfile(chatPresenceByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_PRESENCE, user)}
                 availableAgents={AVAILABLE_CHAT_AGENTS}
                 registeredAgents={chatState.registeredAgentsByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_AGENTS}

@@ -1,3 +1,4 @@
+import type { AgentOwnership } from '../chat/agents';
 import { Bot } from 'lucide-react';
 
 function initialFor(name: string) {
@@ -11,6 +12,8 @@ export function ChatAvatar({
   size = 'md',
   onClick,
   title,
+  ownership = 'unknown',
+  ownerLabel,
 }: {
   name: string;
   kind: 'agent' | 'human';
@@ -19,8 +22,12 @@ export function ChatAvatar({
   /** When set, the avatar is a button (e.g. open agent settings from a message). */
   onClick?: (event: React.MouseEvent) => void;
   title?: string;
+  ownership?: AgentOwnership;
+  ownerLabel?: string;
 }) {
   const className = `chat-avatar chat-avatar-${size} chat-avatar-${kind}${onClick ? ' is-clickable' : ''}`;
+  const ownerTitle = kind === 'agent' ? (ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown') : '';
+  const avatarTitle = [title || (onClick ? `Open settings for ${name}` : ''), ownerTitle].filter(Boolean).join(' · ');
   const content = avatarUrl
     ? <img src={avatarUrl} alt="" />
     : kind === 'agent'
@@ -32,15 +39,23 @@ export function ChatAvatar({
         type="button"
         className={className}
         onClick={onClick}
-        title={title}
-        aria-label={title || `Open settings for ${name}`}
+        data-agent-ownership={kind === 'agent' ? ownership : undefined}
+        title={avatarTitle}
+        aria-label={avatarTitle || `Open settings for ${name}`}
       >
         {content}
       </button>
     );
   }
   return (
-    <div className={className} aria-hidden="true">
+    <div
+      className={className}
+      data-agent-ownership={kind === 'agent' ? ownership : undefined}
+      title={avatarTitle || undefined}
+      role={kind === 'agent' ? 'img' : undefined}
+      aria-label={kind === 'agent' ? `${name} · ${ownerTitle}` : undefined}
+      aria-hidden={kind === 'human' ? true : undefined}
+    >
       {content}
     </div>
   );

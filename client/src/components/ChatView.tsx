@@ -1,3 +1,4 @@
+import { agentOwnership } from '../chat/agents';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -82,6 +83,7 @@ interface ChatViewProps {
   channelName: string;
   isLoadingMessages?: boolean;
   currentUser: string;
+  currentUserId?: number;
   presence: ChatChannelPresence;
   availableAgents: ChatAgentOption[];
   registeredAgents: ChatAgentRegistration[];
@@ -162,6 +164,7 @@ export const ChatView = memo(function ChatView({
   channelName,
   isLoadingMessages = false,
   currentUser,
+  currentUserId,
   presence,
   availableAgents,
   registeredAgents,
@@ -442,10 +445,14 @@ export const ChatView = memo(function ChatView({
     resolveMessageRegistration(message)?.displayName
       || resolveHumanProfile(message.author)?.displayName
       || message.author;
-  const getMessageOwnerLabel = (message: ChatMessage) => {
+  const getMessageOwner = (message: ChatMessage) => {
     const registration = resolveMessageRegistration(message);
-    const identity = registration?.vaultAgentId ? vaultAgentById.get(registration.vaultAgentId) : undefined;
-    return identity?.ownerUsername || '';
+    return (registration?.vaultAgentId ? vaultAgentById.get(registration.vaultAgentId) : undefined) || registration;
+  };
+  const getMessageOwnerLabel = (message: ChatMessage) => {
+    const owner = getMessageOwner(message);
+    return (owner && 'ownerUsername' in owner ? owner.ownerUsername : '')
+      || (agentOwnership(owner, currentUser, currentUserId) === 'owned' ? currentUser : '');
   };
   const getMessagePlanUsage = (message: ChatMessage) => {
     const registration = resolveMessageRegistration(message);
@@ -979,6 +986,7 @@ export const ChatView = memo(function ChatView({
                     avatarUrl={getMessageAvatarUrl(head)}
                     authorLabel={getMessageAuthorLabel(head)}
                     ownerLabel={getMessageOwnerLabel(head)}
+                    ownership={agentOwnership(getMessageOwner(head), currentUser, currentUserId)}
                     planUsage={getMessagePlanUsage(head)}
                     latestRunningMessageId={runState?.latestId}
                     runningSiblingCount={runState?.count || 0}
@@ -1248,6 +1256,8 @@ export const ChatView = memo(function ChatView({
           ref={agentPanelRef}
           channelId={channelId}
           currentUser={currentUser}
+          currentUserId={currentUserId}
+          vaultChannelIds={notes.map((note) => note.id)}
           availableAgents={availableAgents}
           registeredAgents={registeredAgents}
           registeredAgentRows={registeredAgentRows}

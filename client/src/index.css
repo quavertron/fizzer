@@ -4511,6 +4511,24 @@ button.chat-avatar.is-clickable:focus-visible {
   object-fit: cover;
   pointer-events: none;
 }
+[data-agent-ownership="owned"] {
+  --agent-color: var(--accent-hover);
+}
+[data-agent-ownership="other"] {
+  --agent-color: var(--decal-2);
+}
+.chat-avatar-agent[data-agent-ownership="owned"],
+.chat-avatar-agent[data-agent-ownership="other"] {
+  color: var(--agent-color);
+  background: color-mix(in srgb, var(--agent-color) 18%, var(--bg-surface));
+  border: 2px solid var(--agent-color);
+  box-sizing: border-box;
+}
+[data-agent-ownership] > .chat-agent-edit-btn .chat-user-copy strong,
+.chat-vault-pick-btn[data-agent-ownership] .chat-user-copy strong,
+.chat-message-group[data-agent-ownership] > .chat-message-body > .chat-message-meta > strong {
+  color: var(--agent-color, inherit);
+}
 .chat-message-body {
   min-width: 0;
   flex: 1;
@@ -6428,13 +6446,6 @@ button.chat-avatar.is-clickable:focus-visible {
   font-weight: 400;
   color: var(--text-secondary);
 }
-.chat-vault-pick-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 4px;
-}
 .chat-agent-picker-list {
   display: flex;
   flex-direction: column;
@@ -6442,10 +6453,6 @@ button.chat-avatar.is-clickable:focus-visible {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-}
-.chat-vault-pick-row.is-in-channel .chat-vault-pick-btn {
-  opacity: 0.55;
-  cursor: default;
 }
 .chat-vault-pick-btn {
   display: flex;
@@ -6464,18 +6471,6 @@ button.chat-avatar.is-clickable:focus-visible {
 }
 .chat-vault-pick-btn:disabled {
   cursor: default;
-}
-.chat-vault-edit-agent {
-  flex: 0 0 auto;
-  padding: 5px 7px;
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  font-size: 0.625rem;
-  white-space: nowrap;
-}
-.chat-vault-edit-agent:hover {
-  background: hsla(226, 12%, 17%, 0.75);
-  color: var(--text-primary);
 }
 .chat-agent-identity-link {
   display: flex;
@@ -6522,9 +6517,6 @@ button.chat-avatar.is-clickable:focus-visible {
 .chat-remove-agent:hover {
   background: var(--danger-subtle);
   color: var(--danger);
-}
-.chat-vault-pick-row .chat-remove-agent {
-  opacity: 1;
 }
 .chat-agent-menu,
 .chat-invite-menu {
@@ -6860,13 +6852,6 @@ button.chat-avatar.is-clickable:focus-visible {
   cursor: default;
 }
 @media (max-width: 700px) {
-  .chat-vault-pick-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .chat-vault-pick-row .chat-vault-edit-agent {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
   .chat-agent-editor {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;

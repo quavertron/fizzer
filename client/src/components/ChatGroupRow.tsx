@@ -1,3 +1,4 @@
+import type { AgentOwnership } from '../chat/agents';
 import { isLiveAgentStatus } from '../chat/runBlocks';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Paperclip } from 'lucide-react';
@@ -64,6 +65,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl,
   authorLabel,
   ownerLabel,
+  ownership = 'unknown',
   planUsage,
   latestRunningMessageId,
   mentionableAliases,
@@ -97,6 +99,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl?: string;
   authorLabel?: string;
   ownerLabel?: string;
+  ownership?: AgentOwnership;
   planUsage?: PlanUsage | null;
   latestRunningMessageId?: string;
   runningSiblingCount: number;
@@ -180,6 +183,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   return (
     <article
       ref={articleRef}
+      data-agent-ownership={avatarKind === 'agent' ? ownership : undefined}
       className={`chat-message-group ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
       style={showBody ? undefined : { height: placeholderH, minHeight: placeholderH }}
       aria-hidden={showBody ? undefined : true}
@@ -192,6 +196,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
           {continuesPrevious ? <span className="chat-avatar chat-avatar-spacer" aria-hidden="true" /> : <ChatAvatar
             name={authorLabel || head.author}
             kind={avatarKind}
+            ownership={ownership}
+            ownerLabel={ownerLabel}
             avatarUrl={avatarUrl}
             onClick={avatarKind === 'agent' ? onAgentAvatarClick : undefined}
             title={avatarKind === 'agent' && onAgentAvatarClick
@@ -202,7 +208,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
             {!continuesPrevious && <div className="chat-message-meta">
               <strong>{authorLabel || head.author}</strong>
               {avatarKind === 'agent' && planUsage && <PlanUsageMeters usage={planUsage} />}
-              {avatarKind === 'agent' && ownerLabel && <span className="chat-agent-owner">{ownerLabel}'s agent</span>}
+              {avatarKind === 'agent' && <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
             </div>}
