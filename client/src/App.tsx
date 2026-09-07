@@ -2405,12 +2405,14 @@ export default function App() {
           </div>
         </div>
       );
+    }
     if (tab.type === 'superkanban') {
       return (
         <Suspense fallback={<div className="pane-empty">Loading board…</div>}>
           <SuperkanbanView
             notes={superkanbanNotes}
             loading={superkanbanLoading}
+            error={superkanbanError}
             onOpenNote={openNote}
             liveWorkItems={superkanbanLiveWork}
           />
@@ -2815,12 +2817,14 @@ export default function App() {
             openTabs={openTabs}
             focusedPaneId={focusedPaneId}
             onFocusPane={setFocusedPaneId}
+            onSelectTab={selectTabInPane}
             onCloseTab={closeTab}
             onCloseOtherTabs={closeOtherTabs}
             onDropTab={handleDropTab}
             onDropNote={handleDropNote}
             onResize={handleResizeSplit}
             onCreateNote={handleCreateNoteInPane}
+            onCreateTab={handleCreateTabInPane}
             onCreateChat={handleCreateChatInPane}
             onOpenSuperkanban={openSuperkanban}
             onDetachTab={handleDetachTab}
