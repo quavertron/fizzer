@@ -106,6 +106,7 @@ pub fn agent_model_presets(agent_id: &str) -> &'static [ModelPreset] {
 pub struct AgentSettingsState {
     pub agent_idx: usize,
     pub agent: AgentItem,
+    pub is_new: bool,
     pub selected_field: AgentSettingsField,
     pub model_choice_idx: usize,
     pub editing_custom_model: bool,
@@ -129,12 +130,19 @@ impl AgentSettingsState {
         Self {
             agent_idx,
             agent,
+            is_new: false,
             selected_field: AgentSettingsField::Model,
             model_choice_idx,
             editing_custom_model: false,
             custom_model_input,
             error_message: None,
         }
+    }
+
+    pub fn new_agent(agent_idx: usize, agent: AgentItem) -> Self {
+        let mut state = Self::new(agent_idx, agent);
+        state.is_new = true;
+        state
     }
 
     pub fn is_custom_selected(&self) -> bool {
@@ -494,6 +502,41 @@ impl App {
         if let Some(agent) = self.agents.get(self.selected_agent_idx).cloned() {
             self.agent_settings_modal = Some(AgentSettingsState::new(self.selected_agent_idx, agent));
         }
+    }
+
+    pub fn open_new_agent_settings(&mut self) {
+        let agent_id = self
+            .agents
+            .get(self.selected_agent_idx)
+            .map(|agent| agent.agent_id.clone())
+            .unwrap_or_else(|| "codex".to_string());
+        let mut suffix = self.agents.len() + 1;
+        let mention = loop {
+            let candidate = format!("new-agent-{}", suffix);
+            if !self.agents.iter().all(|agent| agent.mention != candidate) {
+                suffix += 1;
+            } else {
+                break candidate;
+            }
+        };
+        let agent = AgentItem {
+            id: format!("tui-new-agent-{}", suffix),
+            display_name: format!("New Agent {}", suffix),
+            mention,
+            agent_id,
+            model: String::new(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: String::new(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+        };
+        self.agent_settings_modal = Some(AgentSettingsState::new_agent(self.agents.len(), agent));
     }
 
     /// Fold a fresh active-sessions snapshot into the active set (keyed on the

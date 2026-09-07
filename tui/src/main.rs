@@ -49,6 +49,7 @@ enum BackendEvent {
         agent_id: String,
         display_name: String,
         mention: String,
+        is_new: bool,
         result: Result<AgentItem, String>,
     },
 }
@@ -305,10 +306,13 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 app.status_message = format!("Send error: {}", err);
             }
         },
-        BackendEvent::AgentSaved { agent_idx, agent_id, display_name, mention, result } => {
+        BackendEvent::AgentSaved { agent_idx, agent_id, display_name, mention, is_new, result } => {
             match result {
                 Ok(saved_agent) => {
-                    if let Some(agent) = app.agents.get_mut(agent_idx) {
+                    if is_new {
+                        app.agents.push(saved_agent);
+                        app.selected_agent_idx = app.agents.len().saturating_sub(1);
+                    } else if let Some(agent) = app.agents.get_mut(agent_idx) {
                         *agent = saved_agent;
                     } else if let Some(agent) = app.agents.iter_mut().find(|a| a.id == agent_id) {
                         *agent = saved_agent;
@@ -788,6 +792,7 @@ async fn run_app(
                                 match key.code {
                                     KeyCode::Up | KeyCode::Char('k') => app.prev_agent(),
                                     KeyCode::Down | KeyCode::Char('j') => app.next_agent(),
+                                    KeyCode::Char('n') => app.open_new_agent_settings(),
                                     KeyCode::Enter => {
                                         app.insert_agent_mention();
                                     }
@@ -1290,7 +1295,7 @@ fn chat_offset_at_position(
 fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     // Pull the data we need out of the modal, then drop the borrow so we can call
     // whole-`App` methods (close_agent_settings) below.
-    let (agent_idx, agent_to_save) = {
+    let (agent_idx, agent_to_save, is_new) = {
         let Some(modal) = app.agent_settings_modal.as_mut() else {
             return;
         };
@@ -1299,19 +1304,26 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
             modal.sync_model_from_choice();
         }
         modal.error_message = None;
-        (modal.agent_idx, modal.agent.clone())
+        (modal.agent_idx, modal.agent.clone(), modal.is_new)
     };
     let display_name = agent_to_save.display_name.clone();
     let mention = agent_to_save.mention.clone();
 
     let (Some(vault_id), Some(channel_id)) = (app.vault_id.clone(), app.active_channel_id.clone())
     else {
-        if let Some(agent) = app.agents.get_mut(agent_idx) {
+        if is_new {
+            app.agents.push(agent_to_save);
+            app.selected_agent_idx = app.agents.len().saturating_sub(1);
+        } else if let Some(agent) = app.agents.get_mut(agent_idx) {
             *agent = agent_to_save;
         } else if let Some(agent) = app.agents.iter_mut().find(|a| a.id == agent_to_save.id) {
             *agent = agent_to_save;
         }
-        app.status_message = format!("Settings saved for @{}", mention);
+        app.status_message = if is_new {
+            format!("Added agent @{}", mention)
+        } else {
+            format!("Settings saved for @{}", mention)
+        };
         app.close_agent_settings();
         return;
     };
@@ -1327,6 +1339,7 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
             agent_id,
             display_name,
             mention,
+            is_new,
             result,
         });
     });

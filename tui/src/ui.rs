@@ -897,11 +897,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Left side: Global controls (Cyan)
     let global_spans = hint_spans(
         &[
-            (" [Tab] ", " Pane  "),
-            (" [F1] ", " Chats  "),
-            (" [F2] ", " Agents  "),
-            (" [F3] ", " Notes  "),
-            (" [Esc] ", " Quit "),
+            ("[Tab]", " Pane "),
+            ("[F1]", " Chats "),
+            ("[F2]", " Agents "),
+            ("[F3]", " Notes "),
+            ("[Esc]", " Quit "),
         ],
         global_badge_style,
         global_text_style,
@@ -910,28 +910,29 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Right side: Box-specific controls (Yellow)
     let box_hints: &[(&str, &str)] = match app.active_pane {
         ActivePane::ChatInput => &[
-            (" [Alt+e] ", " Expand  "),
-            (" [Enter] ", " Send  "),
-            (" [Shift+Enter] ", " Newline "),
+            ("[Alt+e]", " Expand "),
+            ("[Enter]", " Send "),
+            ("[Shift+Enter]", " Newline "),
         ],
         ActivePane::ChatSelector => &[
-            (" [↑/↓] ", " Select  "),
-            (" [Enter] ", " Open  "),
-            (" [n] ", " New  "),
-            (" [Shift+r] ", " Rename  "),
-            (" [r] ", " Refresh "),
+            ("[↑/↓]", " Select "),
+            ("[Enter]", " Open "),
+            ("[n]", " New "),
+            ("[Shift+r]", " Rename "),
+            ("[r]", " Refresh "),
         ],
         ActivePane::ChatMessages => &[
-            (" [↑/↓] ", " Scroll  "),
-            (" [Type] ", " Message "),
+            ("[↑/↓]", " Scroll "),
+            ("[Type]", " Message "),
         ],
         ActivePane::Agents => &[
-            (" [↑/↓] ", " Select  "),
-            (" [Enter] ", " Mention  "),
-            (" [s] ", " Settings "),
+            ("[↑/↓]", " Select "),
+            ("[Enter]", " Mention "),
+            ("[n]", " New "),
+            ("[s]", " Settings "),
         ],
         ActivePane::Notes => &[
-            (" [↑/↓] ", " Select  "),
+            ("[↑/↓]", " Select "),
         ],
     };
     let box_spans = hint_spans(box_hints, box_badge_style, box_text_style);
