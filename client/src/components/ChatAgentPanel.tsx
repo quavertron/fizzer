@@ -212,6 +212,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   onChromeChange,
   children,
 }, ref) {
+  const ownerNames = useMemo(() => vaultAgents.map((agent) => agent.ownerUsername).filter(Boolean), [vaultAgents]);
   const [agentPanelMode, setAgentPanelMode] = useState<'picker' | 'create' | 'edit-member' | 'edit-identity'>('picker');
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -615,7 +616,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
             <div
               className={`chat-user chat-agent-user${agent.registration.orchestrator ? ' is-supervisor' : ''}${isEditing ? ' is-editing' : ''}`}
               data-agent-ownership={ownership}
-              style={agentOwnerStyle(ownerLabel)}
+              style={agentOwnerStyle(ownerLabel, ownerNames)}
               key={agent.registration.id}
             >
               <button
@@ -625,7 +626,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 onClick={canManage ? (event) => editRegisteredAgent(event, agent.registration) : undefined}
                 title={canManage ? 'Channel settings for this agent' : 'Only the agent owner can edit its settings'}
               >
-                <ChatAvatar name={agent.registration.displayName || agent.label} kind="agent" ownership={ownership} ownerLabel={ownerLabel} avatarUrl={agent.registration.avatarUrl} size="sm" />
+                <ChatAvatar name={agent.registration.displayName || agent.label} kind="agent" ownership={ownership} ownerLabel={ownerLabel} ownerNames={ownerNames} avatarUrl={agent.registration.avatarUrl} size="sm" />
                 {/* Supervisor reads as a hairline ring on the avatar (see .is-supervisor);
                     the rank still needs a name for screen readers. */}
                 {agent.registration.orchestrator && <span className="sr-only">Channel supervisor</span>}
@@ -670,7 +671,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                   onClick={() => void addVaultAgentFromPicker(profile.id)}
                   title={`Add @${profile.mention} to this vault · ${profile.ownerUsername || currentUser}’s agent`}
                 >
-                  <ChatAvatar name={profile.displayName || profile.mention} kind="agent" ownership="owned" ownerLabel={profile.ownerUsername || currentUser} avatarUrl={profile.avatarUrl} size="sm" />
+                  <ChatAvatar name={profile.displayName || profile.mention} kind="agent" ownership="owned" ownerLabel={profile.ownerUsername || currentUser} ownerNames={ownerNames} avatarUrl={profile.avatarUrl} size="sm" />
                   <span className="chat-user-copy">
                     <strong>{profile.displayName || profile.mention}</strong>
                     <span>@{profile.mention} · {profile.model || profile.agentId}</span>

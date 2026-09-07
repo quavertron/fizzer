@@ -393,6 +393,7 @@ export const ChatView = memo(function ChatView({
   const runningMessageState = useMemo(() => {
     return getRunningMessageState(sortedMessages);
   }, [sortedMessages]);
+  const ownerNames = useMemo(() => vaultAgents.map((agent) => agent.ownerUsername).filter(Boolean), [vaultAgents]);
   const registeredAgentRows = useMemo(() => registeredAgents.map((registration) => {
     const agent = availableAgents.find((option) => option.id === registration.agentId);
     return agent ? { ...agent, registration } : null;
@@ -975,6 +976,7 @@ export const ChatView = memo(function ChatView({
                     avatarUrl={getMessageAvatarUrl(head)}
                     authorLabel={getMessageAuthorLabel(head)}
                     ownerLabel={getMessageOwnerLabel(head)}
+                    ownerNames={ownerNames}
                     ownership={agentOwnership(getMessageOwner(head), currentUser, currentUserId)}
                     planUsage={getMessagePlanUsage(head)}
                     latestRunningMessageId={runState?.latestId}

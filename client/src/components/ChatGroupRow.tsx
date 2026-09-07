@@ -66,6 +66,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl,
   authorLabel,
   ownerLabel,
+  ownerNames,
   ownership = 'unknown',
   planUsage,
   latestRunningMessageId,
@@ -100,6 +101,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl?: string;
   authorLabel?: string;
   ownerLabel?: string;
+  ownerNames?: string[];
   ownership?: AgentOwnership;
   planUsage?: PlanUsage | null;
   latestRunningMessageId?: string;
@@ -199,6 +201,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
             kind={avatarKind}
             ownership={ownership}
             ownerLabel={ownerLabel}
+            ownerNames={ownerNames}
             avatarUrl={avatarUrl}
             onClick={avatarKind === 'agent' ? onAgentAvatarClick : undefined}
             title={avatarKind === 'agent' && onAgentAvatarClick
@@ -385,6 +388,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.avatarUrl === next.avatarUrl
   && prev.authorLabel === next.authorLabel
   && prev.ownerLabel === next.ownerLabel
+  && prev.ownerNames === next.ownerNames
   && prev.planUsage === next.planUsage
   && prev.latestRunningMessageId === next.latestRunningMessageId
   && prev.runningSiblingCount === next.runningSiblingCount

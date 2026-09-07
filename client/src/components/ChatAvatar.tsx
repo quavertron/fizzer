@@ -14,6 +14,7 @@ export function ChatAvatar({
   title,
   ownership = 'unknown',
   ownerLabel,
+  ownerNames,
 }: {
   name: string;
   kind: 'agent' | 'human';
@@ -24,6 +25,7 @@ export function ChatAvatar({
   title?: string;
   ownership?: AgentOwnership;
   ownerLabel?: string;
+  ownerNames?: string[];
 }) {
   const className = `chat-avatar chat-avatar-${size} chat-avatar-${kind}${onClick ? ' is-clickable' : ''}`;
   const ownerTitle = kind === 'agent' ? (ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown') : '';
@@ -40,7 +42,7 @@ export function ChatAvatar({
         className={className}
         onClick={onClick}
         data-agent-ownership={kind === 'agent' ? ownership : undefined}
-        style={kind === 'agent' ? agentOwnerStyle(ownerLabel) : undefined}
+        style={kind === 'agent' ? agentOwnerStyle(ownerLabel, ownerNames) : undefined}
         title={avatarTitle}
         aria-label={avatarTitle || `Open settings for ${name}`}
       >
@@ -52,7 +54,7 @@ export function ChatAvatar({
     <div
       className={className}
       data-agent-ownership={kind === 'agent' ? ownership : undefined}
-        style={kind === 'agent' ? agentOwnerStyle(ownerLabel) : undefined}
+        style={kind === 'agent' ? agentOwnerStyle(ownerLabel, ownerNames) : undefined}
       title={avatarTitle || undefined}
       role={kind === 'agent' ? 'img' : undefined}
       aria-label={kind === 'agent' ? `${name} · ${ownerTitle}` : undefined}

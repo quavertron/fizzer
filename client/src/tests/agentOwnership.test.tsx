@@ -38,13 +38,25 @@ describe('My Agents eligibility', () => {
 
 describe('agent ownership presentation', () => {
   it('gives owners consistent distinct tints independent of viewing permissions', () => {
-    expect(agentOwnerStyle('alice')).toEqual(agentOwnerStyle('alice'));
-    expect(agentOwnerStyle('alice')).not.toEqual(agentOwnerStyle('bob'));
-    expect(agentOwnerStyle('bob')).not.toEqual(agentOwnerStyle('carol'));
+    expect(agentOwnerStyle('alice', ['alice', 'bob', 'carol'])).toEqual(agentOwnerStyle('alice', ['alice', 'bob', 'carol']));
+    expect(agentOwnerStyle('alice', ['alice', 'bob', 'carol'])).not.toEqual(agentOwnerStyle('bob', ['alice', 'bob', 'carol']));
+    expect(agentOwnerStyle('bob', ['alice', 'bob', 'carol'])).not.toEqual(agentOwnerStyle('carol', ['alice', 'bob', 'carol']));
     expect(agentOwnerStyle('')).toBeUndefined();
     const avatar = (ownership: 'owned' | 'other') => renderToStaticMarkup(<ChatAvatar name="Agent" kind="agent" ownerLabel="alice" ownership={ownership} />).match(/style="([^"]+)"/)?.[1];
     expect(avatar('owned')).toBeTruthy();
     expect(avatar('owned')).toBe(avatar('other'));
+  });
+
+  it('separates the actual colliding owners and ignores roster order and repeated agents', () => {
+    const owners = ['asdfasdf', 'lightyear', 'yourmomisgay'];
+    const hue = (owner: string) => Number(String((agentOwnerStyle(owner, owners) as Record<string, string>)['--agent-tint']).match(/hsl\(([^ ]+)/)![1]);
+    for (const a of owners) {
+      expect(agentOwnerStyle(a, owners)).toEqual(agentOwnerStyle(a, [...owners].reverse().concat(a)));
+      for (const b of owners.filter((name) => name !== a)) {
+        const delta = Math.abs(hue(a) - hue(b));
+        expect(Math.min(delta, 360 - delta)).toBeGreaterThanOrEqual(120);
+      }
+    }
   });
 
   it('prefers owner ids, falls back to usernames, and leaves missing metadata unknown', () => {

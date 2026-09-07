@@ -19,12 +19,12 @@ export function agentOwnership(
   return 'unknown';
 }
 
-/** A viewer-independent tint shared by every agent belonging to this owner. */
-export function agentOwnerStyle(ownerUsername?: string): CSSProperties | undefined {
+/** Space the vault's owners evenly around the hue wheel, independent of viewer and row order. */
+export function agentOwnerStyle(ownerUsername?: string, ownerNames: string[] = []): CSSProperties | undefined {
   if (!ownerUsername) return undefined;
-  let hash = 0;
-  for (const char of ownerUsername) hash = (Math.imul(hash, 31) + char.codePointAt(0)!) >>> 0;
-  return { '--agent-tint': `hsl(${hash % 360} 48% 62%)` } as CSSProperties;
+  const owners = [...new Set([...ownerNames, ownerUsername].filter(Boolean))].sort();
+  const hue = (48 + owners.indexOf(ownerUsername) * 360 / owners.length) % 360;
+  return { '--agent-tint': `hsl(${hue} 48% 62%)` } as CSSProperties;
 }
 
 export function eligibleAgentProfiles(
