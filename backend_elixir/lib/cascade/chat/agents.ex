@@ -146,7 +146,6 @@ defmodule Cascade.Chat.Agents do
     error in Exqlite.Error -> {:error, Exception.message(error)}
   end
 
-  @doc "Copies an owned identity into a different vault without carrying private or channel state."
   defp import_identity(user_id, vault_id, source_id) do
     with true <- not is_nil(VaultMembers.role(vault_id, user_id)),
          {:ok, id} <-
