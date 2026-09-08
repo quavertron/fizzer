@@ -892,13 +892,13 @@ defmodule Cascade.Missions.InterpretationTest do
 
     prompt = Interpretation.dispatch_prompt(wake.dispatch.id)
     assert prompt =~ "Task completion is distinct from objective fulfillment"
-    assert state(c).evidence["delivery"]["status"] == "reviewing"
+    assert state(c).evidence["delivery"] == nil
     review = run(c, wake.dispatch)
 
     {{:ok, published}, _} =
       record(c, review, %{
-        "assessment" => "Objective delivered with the stated limitation",
-        "body" => "Delivered. Optional desktop QA was waived."
+        "assessment" => "Research is complete; implementation still needs approval",
+        "body" => "Research complete. Ready to agree on implementation."
       })
 
     assert published.messageId != nil
@@ -1186,6 +1186,12 @@ defmodule Cascade.Missions.InterpretationTest do
   end
 
   defp approved_implementation(c) do
+    {:ok, _} =
+      Store.update_task(c.user.id, c.channel, c.task, %{
+        status: "completed",
+        summary: "Planning research finished."
+      })
+
     brief =
       Cascade.Content.Store.create_note(c.vault, c.user.id, %{
         id: "mission-brief-#{c.mission}",

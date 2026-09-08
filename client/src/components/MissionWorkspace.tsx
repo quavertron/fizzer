@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import {
   useCallback,
   useEffect,
@@ -6,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { AlertTriangle, ChevronRight, Clock3, Expand, History, MessageCircle, Plus, RefreshCw, Save, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Clock3, Expand, History, MessageCircle, Plus, Save, X } from 'lucide-react';
 import type { User } from '../api';
 import { ApiError } from '../api';
 import type { ChatMessage } from '../chat/types';
@@ -600,7 +601,7 @@ export function MissionWorkspace({
       if (noteErrors[reference.noteId]) {
         return <div className="mission-note-loading mission-note-load-error"><AlertTriangle size={15} /><span>{noteErrors[reference.noteId]}</span><button type="button" onClick={() => void loadMission(true)}>Retry</button></div>;
       }
-      return <div className="mission-note-loading">Loading note…</div>;
+      return <div className="mission-note-loading"><LoadingIndicator label="Loading note" /></div>;
     }
     return (
       <div className={`mission-note-editor${compact ? ' mission-note-editor-compact' : ''}`}>
@@ -673,7 +674,7 @@ export function MissionWorkspace({
     );
   };
 
-  if (loading && !mission) return <section className="mission-workspace mission-state"><RefreshCw className="mission-spin" size={18} /> Loading mission…</section>;
+  if (loading && !mission) return <section className="mission-workspace mission-state"><LoadingIndicator label="Loading mission" /></section>;
   if (!mission) {
     return <section className="mission-workspace mission-state mission-state-error"><AlertTriangle size={18} /><strong>{error || 'Mission unavailable'}</strong><button type="button" onClick={() => void loadMission()}>Retry</button></section>;
   }
@@ -723,7 +724,7 @@ export function MissionWorkspace({
               })}
             </section>
           )}
-          {view === 'history' && <section className="mission-view mission-history-view" aria-label="Mission history"><div className="mission-view-heading"><div><span className="mission-eyebrow">Recorded decisions &amp; evidence</span><p>Prior planning evidence, separate from live worker activity.</p></div><button type="button" onClick={() => setView('work')}>Back to work</button></div>{historyLoading && <div className="mission-empty">Loading history…</div>}{history && history.length === 0 && <div className="mission-empty">No recorded history yet.</div>}{history && history.length > 0 && <div className="mission-history-list">{history.map((event) => <div className="mission-history-event" key={event.id}><time>{eventDate(event.createdAt)}</time><div><strong>{event.title || event.kind}</strong><span>{event.summary}</span>{event.taskId && <code>task {event.taskId.slice(0, 8)}{event.runId != null ? ` · run ${event.runId}` : ''}</code>}</div></div>)}</div>}</section>}
+          {view === 'history' && <section className="mission-view mission-history-view" aria-label="Mission history"><div className="mission-view-heading"><div><span className="mission-eyebrow">Recorded decisions &amp; evidence</span><p>Prior planning evidence, separate from live worker activity.</p></div><button type="button" onClick={() => setView('work')}>Back to work</button></div>{historyLoading && <div className="mission-empty"><LoadingIndicator label="Loading history" /></div>}{history && history.length === 0 && <div className="mission-empty">No recorded history yet.</div>}{history && history.length > 0 && <div className="mission-history-list">{history.map((event) => <div className="mission-history-event" key={event.id}><time>{eventDate(event.createdAt)}</time><div><strong>{event.title || event.kind}</strong><span>{event.summary}</span>{event.taskId && <code>task {event.taskId.slice(0, 8)}{event.runId != null ? ` · run ${event.runId}` : ''}</code>}</div></div>)}</div>}</section>}
         </main>
         {chatOpen && <aside className="mission-chat" aria-label="Mission conversation"><div className="mission-chat-header"><strong>Mission conversation</strong><button type="button" className="mission-icon-button" title="Hide conversation" onClick={() => setChatOpen(false)}><MessageCircle size={15} /></button></div><div className="mission-chat-body">{renderChat(mission.channelId, `${mission.title} conversation`)}</div></aside>}
       </div>
@@ -737,7 +738,7 @@ export function MissionWorkspace({
           </div>
         </header>
         <div className="mission-trace-body" role="log">
-          {traceLoading[missionTraceKey(activeTraceTask)] && <div className="mission-empty">Loading stored task trace…</div>}
+          {traceLoading[missionTraceKey(activeTraceTask)] && <div className="mission-empty"><LoadingIndicator label="Loading stored task trace" /></div>}
           {!traceLoading[missionTraceKey(activeTraceTask)] && activeTraceMessages.length === 0 && <div className="mission-empty">No stored trace messages for this task yet.</div>}
           {activeTraceMessages.map((message) => (
             <article key={message.id}>
