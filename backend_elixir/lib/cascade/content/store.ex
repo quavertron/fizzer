@@ -1810,8 +1810,6 @@ defmodule Cascade.Content.Store do
     end
   end
 
-  defp restore_note_file({nil, _snapshot}), do: :ok
-
   defp restore_note_file({path, {:present, content}}) do
     try do
       File.mkdir_p!(Path.dirname(path))

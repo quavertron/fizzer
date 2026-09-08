@@ -243,7 +243,6 @@ defmodule Cascade.Missions.Store do
     else
       nil -> {:error, "Vault not found"}
       false -> {:error, "Mission not found"}
-      _ -> {:error, "Mission not found"}
     end
   end
 
@@ -2287,9 +2286,6 @@ defmodule Cascade.Missions.Store do
     end
   end
 
-  defp task_brief(mission_id, note_id, expected),
-    do: task_brief(mission_id, note_id, expected, nil)
-
   defp task_brief(_mission_id, nil, expected, _existing) do
     normalized = normalize_revisions(expected)
 
@@ -2398,17 +2394,6 @@ defmodule Cascade.Missions.Store do
       else:
         {:error,
          "#{nonblank(effort, "Reasoning effort")} is not supported by @#{assignee.mention}"}
-  end
-
-  defp validate_idempotent_task!(nil, _prompt, _deps, _priority, _effort, _anonymous, _workspace),
-    do: :ok
-
-  defp validate_idempotent_task!(task, prompt, deps, priority, effort, anonymous, workspace) do
-    if task.prompt != prompt or task.depends_on_json != deps or task.priority != priority or
-         task.reasoning_effort != effort or task.anonymous != 0 != anonymous or
-         task.workspace_mode != workspace do
-      raise "A task with this title already exists with different scheduling options; use a distinct title"
-    end
   end
 
   defp dependency_attention?(task, by_id, seen \\ MapSet.new()) do
@@ -2760,7 +2745,6 @@ defmodule Cascade.Missions.Store do
         created = ContentStore.create_note(vault_id, user_id, opts)
 
         case created do
-          {:ok, note} -> {:ok, note, true}
           note when is_map(note) -> {:ok, note, true}
           _ -> {:error, "Could not create mission note"}
         end
