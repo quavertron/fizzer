@@ -349,6 +349,55 @@ button:focus-visible,
   background: var(--accent);
   flex-shrink: 0;
 }
+.desktop-chooser-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-base);
+}
+.desktop-chooser-panel {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: clamp(24px, 5vw, 48px);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
+}
+.desktop-chooser-intro { display: grid; gap: 7px; }
+.desktop-chooser-intro h2 { margin: 0; color: var(--text-primary); font-size: 1.55rem; }
+.desktop-chooser-intro p { margin: 0; color: var(--text-secondary); }
+.desktop-chooser-vaults { display: grid; gap: 9px; max-height: 260px; overflow: auto; }
+.desktop-chooser-vaults button,
+.desktop-chooser-actions > button {
+  appearance: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.desktop-chooser-vaults button:hover,
+.desktop-chooser-vaults button.is-active { border-color: var(--accent); }
+.desktop-chooser-vaults small { color: var(--text-tertiary); }
+.desktop-chooser-empty { margin: 0; color: var(--text-tertiary); }
+.desktop-chooser-actions { display: grid; gap: 10px; }
+.desktop-chooser-form { display: grid; gap: 9px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); }
+.desktop-chooser-form label { color: var(--text-secondary); font-size: .78rem; }
+.desktop-chooser-form input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-deep); color: var(--text-primary); }
+.desktop-chooser-form div { display: flex; gap: 8px; margin-top: 4px; }
+.desktop-chooser-form button,
+.desktop-chooser-continue { padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--accent); color: var(--bg-deep); font-weight: 700; cursor: pointer; }
+.desktop-chooser-form button + button { background: transparent; color: var(--text-secondary); }
+.desktop-chooser-continue { justify-self: end; }
 .auth-shell {
   min-height: 100vh;
   display: grid;

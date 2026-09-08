@@ -5,8 +5,8 @@ mod emacs;
 
 use std::fs;
 use std::io::{self, stdout};
-use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -24,10 +24,11 @@ use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
+use serde::{Deserialize, Serialize};
 
 use tokio::sync::mpsc;
 
-use crate::api::{ActiveSession, AgentItem, CascadeClient, ChannelItem, ChatMessage};
+use crate::api::{ActiveSession, AgentItem, CascadeClient, ChannelItem, ChatMessage, Vault};
 use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
 
 /// Results from background network tasks, folded back into `App` on the event loop.
@@ -36,6 +37,7 @@ enum BackendEvent {
     Agents { channel_id: String, agents: Vec<AgentItem> },
     ActiveSessions { sessions: Vec<ActiveSession> },
     Notes(Result<Vec<crate::api::NoteSummary>, String>),
+    Vaults(Result<Vec<Vault>, String>),
     Channels(Result<Vec<ChannelItem>, String>),
     /// Whether the backend responded to a lightweight health ping.
     Connectivity(bool),
@@ -102,6 +104,14 @@ fn spawn_notes_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     });
 }
 
+fn spawn_vault_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let _ = tx.send(BackendEvent::Vaults(client.fetch_vaults().await));
+    });
+}
+
 /// Spawn a message send; the result comes back as a `BackendEvent`.
 fn spawn_send_message(app: &App, text: String, images: Vec<String>, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let (Some(vault_id), Some(channel_id)) = (app.vault_id.clone(), app.active_channel_id.clone())
@@ -161,6 +171,44 @@ fn spawn_runner_check(tx: &mpsc::UnboundedSender<BackendEvent>) {
             .unwrap_or(false);
         let _ = tx.send(BackendEvent::RunnerStatus(running));
     });
+}
+
+/// Start the existing headless runner when the TUI is the native desktop
+/// surface. Electron uses the same daemon through its main process, but the
+/// terminal app must not require an Electron window just to execute agents.
+async fn start_native_runner(base_url: &str, token: Option<&str>) -> Option<tokio::process::Child> {
+    if std::env::var("CASCADE_TUI_RUNNER")
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+    {
+        return None;
+    }
+    let token = token.filter(|value| !value.trim().is_empty())?;
+    let already_running = tokio::process::Command::new("pgrep")
+        .args(["-f", "desktop-runner-daemon"])
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if already_running {
+        return None;
+    }
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
+    let script = repo_root.join("scripts").join("desktop-runner-daemon.cjs");
+    if !script.is_file() {
+        return None;
+    }
+    tokio::process::Command::new("node")
+        .arg(script)
+        .env("API_URL", base_url)
+        .env("CASCADE_TOKEN", token)
+        // The daemon is a child service, not a second terminal UI. Letting
+        // its logs inherit stdout paints directly over the chat composer.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
 }
 
 /// Spawn creation of a new chat channel; the result comes back as a `BackendEvent`.
@@ -235,6 +283,14 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 app.clamp_note_selection();
             }
         }
+        BackendEvent::Vaults(result) => match result {
+            Ok(vaults) => {
+                app.backend_online = true;
+                app.vaults = vaults;
+                app.clamp_vault_selection();
+            }
+            Err(err) => app.status_message = format!("Vault refresh error: {}", err),
+        },
         BackendEvent::Connectivity(reachable) => {
             app.backend_online = reachable;
         }
@@ -335,12 +391,18 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let base_url = std::env::var("CASCADE_URL")
-        .or_else(|_| std::env::var("CASCADE_NOTE_URL"))
-        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let saved_state = load_tui_state();
+    let base_url = configured_instance_url(&saved_state);
 
     let token = resolve_token();
-    let explicit_vault = std::env::var("CASCADE_NOTE_VAULT").ok();
+    let explicit_vault = std::env::var("CASCADE_NOTE_VAULT")
+        .ok()
+        .or(saved_state.vault_id.clone());
+
+    // Keep the TUI's agent execution path independent of Electron. If a
+    // runner already exists, the helper leaves it alone; otherwise it starts
+    // the repository's shared headless runner with this TUI's credentials.
+    let mut native_runner = start_native_runner(&base_url, token.as_deref()).await;
 
     let client = CascadeClient::new(base_url.clone(), token);
     let mut app = App::new(client);
@@ -355,18 +417,23 @@ async fn main() -> Result<()> {
 
     if let Some(vault_id) = explicit_vault {
         app.vault_id = Some(vault_id.clone());
+        if saved_state.vault_id.as_deref() == Some(vault_id.as_str()) {
+            if let Some(name) = saved_state.vault_name.clone() {
+                app.vault_name = name;
+            }
+        }
         refresh_channels_and_messages(&mut app).await;
     } else {
         match app.client.fetch_vaults().await {
             Ok(vaults) if !vaults.is_empty() => {
-                let first = &vaults[0];
-                app.vault_id = Some(first.id.clone());
-                app.vault_name = if first.name.is_empty() {
-                    first.id.clone()
-                } else {
-                    first.name.clone()
-                };
-                refresh_channels_and_messages(&mut app).await;
+                // No saved/explicit vault: let the user pick instead of silently
+                // defaulting to the first one. Opens the vaults chooser; the vault
+                // is only activated (and channels loaded) on the user's Enter.
+                app.vaults = vaults;
+                app.selected_vault_idx = 0;
+                app.show_vaults = true;
+                app.active_pane = ActivePane::Vaults;
+                app.status_message = "Select a vault to open (↑/↓, Enter)".to_string();
             }
             Ok(_) => {
                 app.status_message = "No vaults found on server.".to_string();
@@ -416,7 +483,73 @@ async fn main() -> Result<()> {
         eprintln!("Application error: {:#}", err);
     }
 
+    if let Err(err) = save_tui_state(&base_url, &app) {
+        eprintln!("Could not save TUI state: {}", err);
+    }
+
+    if let Some(child) = native_runner.as_mut() {
+        let _ = child.kill().await;
+    }
+
     Ok(())
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TuiSaveState {
+    #[serde(default)]
+    instance_url: Option<String>,
+    #[serde(default)]
+    vault_id: Option<String>,
+    #[serde(default)]
+    vault_name: Option<String>,
+}
+
+fn tui_state_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".fizzer").join("tui.json"))
+}
+
+fn load_tui_state() -> TuiSaveState {
+    let Some(path) = tui_state_path() else {
+        return TuiSaveState::default();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+fn configured_instance_url(saved: &TuiSaveState) -> String {
+    std::env::var("CASCADE_URL")
+        .or_else(|_| std::env::var("CASCADE_NOTE_URL"))
+        .or_else(|_| std::env::var("CASCADE_APP_URL"))
+        .or_else(|_| std::env::var("FIZZER_INSTANCE_URL"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| saved.instance_url.clone().filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(|| "http://localhost:3000".to_string())
+}
+
+fn save_tui_state(base_url: &str, app: &App) -> Result<(), String> {
+    let Some(path) = tui_state_path() else {
+        return Ok(());
+    };
+    let Some(vault_id) = app.vault_id.clone() else {
+        return Ok(());
+    };
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "TUI state path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let state = TuiSaveState {
+        instance_url: Some(base_url.trim_end_matches('/').to_string()),
+        vault_id: Some(vault_id),
+        vault_name: Some(app.vault_name.clone()),
+    };
+    let content = serde_json::to_vec_pretty(&state).map_err(|err| err.to_string())?;
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, content).map_err(|err| err.to_string())?;
+    fs::rename(temp_path, path).map_err(|err| err.to_string())
 }
 
 async fn run_app(
@@ -662,6 +795,13 @@ async fn run_app(
                             app.toggle_notes();
                             continue;
                         }
+                        if key.code == KeyCode::F(4) {
+                            app.toggle_vaults();
+                            if app.show_vaults && app.vaults.is_empty() {
+                                spawn_vault_sync(app, &tx);
+                            }
+                            continue;
+                        }
 
                         // Input composer height toggle (Alt+E, or Ctrl+E when not typing) and adjustment (Ctrl/Alt+Up/Down)
                         if (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::ALT))
@@ -771,6 +911,29 @@ async fn run_app(
                         }
 
                         match app.active_pane {
+                            ActivePane::Vaults => {
+                                match key.code {
+                                    KeyCode::Up | KeyCode::Char('k') => app.prev_vault(),
+                                    KeyCode::Down | KeyCode::Char('j') => app.next_vault(),
+                                    KeyCode::Char('r') => spawn_vault_sync(app, &tx),
+                                    KeyCode::Enter => {
+                                        let had_active_vault = app.vault_id.is_some();
+                                        app.show_vaults = false;
+                                        if app.activate_selected_vault() || !had_active_vault {
+                                            refresh_channels_and_messages(app).await;
+                                            spawn_notes_sync(app, &tx);
+                                            spawn_active_sessions(app, &tx);
+                                        }
+                                    }
+                                    KeyCode::Esc => {
+                                        if app.vault_id.is_some() {
+                                            app.show_vaults = false;
+                                            app.active_pane = ActivePane::ChatInput;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             ActivePane::ChatSelector => {
                                 match key.code {
                                     KeyCode::Up | KeyCode::Char('k') => app.prev_channel(),
@@ -1373,21 +1536,27 @@ fn resolve_token() -> Option<String> {
     }
 
     if let Ok(home) = std::env::var("HOME") {
-        let token_path = std::path::Path::new(&home).join(".cascade").join("token");
-        if let Ok(content) = std::fs::read_to_string(token_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
+        // Prefer the current `~/.fizzer` data dir, falling back to the deprecated
+        // `~/.cascade` so existing installs keep working.
+        for dir in [".fizzer", ".cascade"] {
+            let base = std::path::Path::new(&home).join(dir);
 
-        let ctx_path = std::path::Path::new(&home).join(".cascade").join("agent-helper-context.json");
-        if let Ok(content) = std::fs::read_to_string(ctx_path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(t) = val.get("token").and_then(|t| t.as_str()) {
-                    let trimmed = t.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_string());
+            let token_path = base.join("token");
+            if let Ok(content) = std::fs::read_to_string(token_path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+
+            let ctx_path = base.join("agent-helper-context.json");
+            if let Ok(content) = std::fs::read_to_string(ctx_path) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(t) = val.get("token").and_then(|t| t.as_str()) {
+                        let trimmed = t.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
                     }
                 }
             }

@@ -24,6 +24,7 @@ const {
   isSameOrigin,
   rendererUrlForOrigin,
   resolveInstanceOrigin,
+  parseInstanceOrigin,
   shouldUseEmbeddedBackend,
 } = require('./instance-origin.cjs');
 const { startEmbeddedBackend } = require('./embedded-backend.cjs');
@@ -245,6 +246,35 @@ function isSafeExternalUrl(url) {
     return ['http:', 'https:', 'mailto:'].includes(new URL(url).protocol);
   } catch {
     return false;
+  }
+}
+
+async function loginToRemoteInstance(origin, username, password) {
+  const response = await fetch(`${origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-cascade-browser': '1' },
+    body: JSON.stringify({ username, password }),
+    redirect: 'manual',
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof body.error === 'string' ? body.error : `Remote login failed (${response.status})`);
+  }
+
+  const setCookies = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : (response.headers.get('set-cookie') || '').split(/,(?=[^;]+?=)/u).filter(Boolean);
+  for (const setCookie of setCookies) {
+    const first = setCookie.split(';', 1)[0];
+    const separator = first.indexOf('=');
+    if (separator < 1) continue;
+    await session.defaultSession.cookies.set({
+      url: `${origin}/`,
+      name: first.slice(0, separator),
+      value: decodeURIComponent(first.slice(separator + 1)),
+      path: '/',
+      secure: origin.startsWith('https://'),
+    });
   }
 }
 

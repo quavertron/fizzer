@@ -1,0 +1,67 @@
+name: Publish TUI
+
+on:
+  push:
+    tags:
+      - 'tui-v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Pack only, do not publish'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            pkg: fizzer-darwin-arm64
+            os: macos-14
+          - target: x86_64-unknown-linux-gnu
+            pkg: fizzer-linux-x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Build binary
+        run: node scripts/build-tui-binaries.mjs ${{ matrix.target }}
+      - name: Publish platform package
+        working-directory: npm/${{ matrix.pkg }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm pack
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-root:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish root package
+        run: |
+          rm -f bin/cascade-tui bin/cascade-tui.exe
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm pack
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

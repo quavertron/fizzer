@@ -23,7 +23,7 @@ the repository.
 
 ## Compatibility names
 
-The `CASCADE_*` environment variables, `~/.cascade` data directory, Elixir
+The `CASCADE_*` environment variables, `~/.fizzer` data directory, Elixir
 `Cascade` modules, `cascade-*` helper commands, and some internal paths are
 retained for compatibility. New user-facing text should use the Fizzer name;
 do not mechanically rename compatibility identifiers without a migration plan.

@@ -30,10 +30,26 @@ defmodule Cascade.Config do
       Cascade.DB.Repo.config() |> Keyword.fetch!(:database) |> Path.dirname()
   end
 
+  @doc """
+  Resolve a path under the Fizzer home dir, preferring `~/.fizzer` but falling
+  back to the legacy `~/.cascade` when the specific target only exists there.
+  With no `sub`, returns the base directory (preferring whichever exists).
+  """
+  def dotdir(sub \\ nil) do
+    home = System.user_home!()
+    primary = if sub, do: Path.join([home, ".fizzer", sub]), else: Path.join(home, ".fizzer")
+    legacy = if sub, do: Path.join([home, ".cascade", sub]), else: Path.join(home, ".cascade")
+
+    cond do
+      File.exists?(primary) -> primary
+      File.exists?(legacy) -> legacy
+      true -> primary
+    end
+  end
+
   defp persisted_secret!(name) do
-    directory = Path.join(System.user_home!(), ".cascade")
-    path = Path.join(directory, name)
-    File.mkdir_p!(directory)
+    path = dotdir(name)
+    File.mkdir_p!(Path.dirname(path))
 
     case read_nonempty(path) do
       {:ok, secret} -> secret

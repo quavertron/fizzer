@@ -221,7 +221,7 @@ defmodule Cascade.Search.QMD do
   end
 
   defp root_dir,
-    do: System.get_env("CASCADE_QMD_DIR") || Path.join([System.user_home!(), ".cascade", "qmd"])
+    do: System.get_env("CASCADE_QMD_DIR") || Cascade.Config.dotdir("qmd")
 
   defp safe_segment(value), do: value |> to_string() |> Base.url_encode64(padding: false)
 

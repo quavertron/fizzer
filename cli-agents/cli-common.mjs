@@ -2,6 +2,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+export function fizzerDir() {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
+
 // Keep the helpers' permissive flag/value rules and command-specific aliases.
 export function parseArgs(argv, aliases = {}) {
   const flags = { json: ['json', true], help: ['help', true], ...aliases };
@@ -69,7 +79,7 @@ export function isExpiredJwt(token) {
 export function readDiskToken() {
   if (process.env.CASCADE_NOTE_TOKEN === '') return '';
   try {
-    const p = path.join(os.homedir(), '.cascade', 'token');
+    const p = path.join(fizzerDir(), 'token');
     if (fs.existsSync(p)) {
       const t = fs.readFileSync(p, 'utf8').trim();
       if (t && !isExpiredJwt(t)) return t;
@@ -83,16 +93,16 @@ export function helperConfigPath() {
   if (fromEnv) return fromEnv;
   const runId = String(process.env.CASCADE_RUN_ID || '').trim();
   if (runId) {
-    return path.join(os.homedir(), '.cascade', 'run-contexts', `${runId}.json`);
+    return path.join(fizzerDir(), 'run-contexts', `${runId}.json`);
   }
   const convId = String(process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim();
   if (convId) {
-    const convPath = path.join(os.homedir(), '.cascade', 'conversations', `${convId}.json`);
+    const convPath = path.join(fizzerDir(), 'conversations', `${convId}.json`);
     if (fs.existsSync(convPath)) return convPath;
   }
-  const defaultPath = path.join(os.homedir(), '.cascade', 'agent-helper-context.json');
+  const defaultPath = path.join(fizzerDir(), 'agent-helper-context.json');
   try {
-    const runDir = path.join(os.homedir(), '.cascade', 'run-contexts');
+    const runDir = path.join(fizzerDir(), 'run-contexts');
     if (fs.existsSync(runDir)) {
       const files = fs.readdirSync(runDir).filter((f) => f.endsWith('.json'));
       let newestFile = '';

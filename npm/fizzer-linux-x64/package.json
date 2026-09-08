@@ -1,0 +1,13 @@
+{
+  "name": "fizzer-linux-x64",
+  "version": "0.2.0",
+  "description": "Prebuilt fizzer TUI binary for Linux (x86_64).",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": [
+    "bin/cascade-tui",
+    "LICENSE",
+    "README.md"
+  ]
+}

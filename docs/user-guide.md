@@ -90,8 +90,8 @@ npm run dev-headless
 
 Local runtime data is stored outside the checkout by default:
 
-- database: `~/.cascade/docs.db`;
-- vault files and assets: `~/.cascade/vaults/`.
+- database: `~/.fizzer/docs.db`;
+- vault files and assets: `~/.fizzer/vaults/`.
 
 ## The main workspace
 

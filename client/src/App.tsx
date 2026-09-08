@@ -107,6 +107,7 @@ import {
 import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './chat/messageStore';
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
+import { DesktopVaultChooser } from './components/DesktopVaultChooser';
 
 /**
  * @file App.tsx — Root component for Cascade
@@ -176,6 +177,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
+  const [desktopChooserOpen, setDesktopChooserOpen] = useState(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI));
 
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
@@ -2535,6 +2537,18 @@ export default function App() {
 
   const inDesktopApp = Boolean((window as unknown as { electronAPI?: unknown }).electronAPI);
   const showDesktopDownload = !inDesktopApp && runnerHealth != null && !runnerHealth.online;
+
+  if (inDesktopApp && desktopChooserOpen) {
+    return (
+      <DesktopVaultChooser
+        vaults={vaults}
+        activeVaultId={activeVaultId}
+        onSelect={switchVaultWorkspace}
+        onCreate={handleCreateVault}
+        onContinue={() => setDesktopChooserOpen(false)}
+      />
+    );
+  }
 
   return (
     <main

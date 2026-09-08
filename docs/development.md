@@ -63,7 +63,7 @@ both source and `client/dist` for stale references after rebuilding.
 ## Data safety
 
 Use an isolated `DOCS_DB_PATH` for tests that write application state. Do not
-point experiments at the user's normal `~/.cascade/docs.db`.
+point experiments at the user's normal `~/.fizzer/docs.db`.
 
 Do not commit:
 

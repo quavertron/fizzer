@@ -24,8 +24,8 @@ function parseInstanceOrigin(value, label = 'instance URL') {
   if (parsed.pathname !== '/' && parsed.pathname !== '') {
     throw new Error(`${label} must be an origin without a path`);
   }
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname))) {
-    throw new Error(`${label} must use HTTPS (plain HTTP is allowed only for loopback)`);
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`${label} must use HTTPS or HTTP`);
   }
   return parsed.origin;
 }

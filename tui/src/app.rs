@@ -1,4 +1,4 @@
-use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage, NoteSummary};
+use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage, NoteSummary, Vault};
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -30,6 +30,7 @@ pub enum ActivePane {
     ChatInput,
     Agents,
     Notes,
+    Vaults,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,6 +626,8 @@ pub struct App {
     pub active_pane: ActivePane,
     pub vault_id: Option<String>,
     pub vault_name: String,
+    pub vaults: Vec<Vault>,
+    pub selected_vault_idx: usize,
     pub channels: Vec<ChannelItem>,
     pub selected_channel_idx: usize,
     pub active_channel_id: Option<String>,
@@ -646,6 +649,7 @@ pub struct App {
     pub show_channels: bool,
     pub show_agents: bool,
     pub show_notes: bool,
+    pub show_vaults: bool,
     pub notes: Vec<NoteSummary>,
     pub selected_note_idx: usize,
     pub input: String,
@@ -687,6 +691,8 @@ impl App {
             active_pane: ActivePane::ChatInput,
             vault_id: None,
             vault_name: "Default Vault".to_string(),
+            vaults: Vec::new(),
+            selected_vault_idx: 0,
             channels: Vec::new(),
             selected_channel_idx: 0,
             active_channel_id: None,
@@ -702,6 +708,7 @@ impl App {
             show_channels: true,
             show_agents: true,
             show_notes: false,
+            show_vaults: false,
             notes: Vec::new(),
             selected_note_idx: 0,
             input: String::new(),
@@ -854,6 +861,16 @@ impl App {
         self.status_message = format!("Notes panel {}", if self.show_notes { "visible" } else { "collapsed" });
     }
 
+    pub fn toggle_vaults(&mut self) {
+        self.show_vaults = !self.show_vaults;
+        if self.show_vaults {
+            self.active_pane = ActivePane::Vaults;
+        } else if self.active_pane == ActivePane::Vaults {
+            self.active_pane = ActivePane::ChatInput;
+        }
+        self.status_message = format!("Vaults panel {}", if self.show_vaults { "visible" } else { "collapsed" });
+    }
+
     pub fn switch_pane(&mut self, is_wide: bool) {
         self.switch_pane_by(is_wide, false);
     }
@@ -867,6 +884,9 @@ impl App {
         let mut order: Vec<ActivePane> = Vec::new();
         if self.show_channels {
             order.push(ActivePane::ChatSelector);
+        }
+        if self.show_vaults {
+            order.push(ActivePane::Vaults);
         }
         order.push(ActivePane::ChatMessages);
         order.push(ActivePane::ChatInput);
@@ -914,6 +934,46 @@ impl App {
                 self.selected_channel_idx -= 1;
             }
         }
+    }
+
+    pub fn next_vault(&mut self) {
+        if !self.vaults.is_empty() {
+            self.selected_vault_idx = (self.selected_vault_idx + 1) % self.vaults.len();
+        }
+    }
+
+    pub fn prev_vault(&mut self) {
+        if !self.vaults.is_empty() {
+            if self.selected_vault_idx == 0 {
+                self.selected_vault_idx = self.vaults.len() - 1;
+            } else {
+                self.selected_vault_idx -= 1;
+            }
+        }
+    }
+
+    pub fn clamp_vault_selection(&mut self) {
+        self.selected_vault_idx = self.selected_vault_idx.min(self.vaults.len().saturating_sub(1));
+    }
+
+    pub fn activate_selected_vault(&mut self) -> bool {
+        let Some(vault) = self.vaults.get(self.selected_vault_idx) else { return false; };
+        let changed = self.vault_id.as_deref() != Some(vault.id.as_str());
+        self.vault_id = Some(vault.id.clone());
+        self.vault_name = if vault.name.is_empty() { vault.id.clone() } else { vault.name.clone() };
+        if changed {
+            self.active_channel_id = None;
+            self.channels.clear();
+            self.messages.clear();
+            self.agents.clear();
+            self.notes.clear();
+            self.reset_agent_activity();
+            self.scroll_offset = 0;
+        }
+        self.show_vaults = false;
+        self.active_pane = ActivePane::ChatInput;
+        self.status_message = format!("Switched to vault {}", self.vault_name);
+        changed
     }
 
     pub fn activate_selected_channel(&mut self) {

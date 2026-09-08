@@ -1,0 +1,12 @@
+# configuration for https://github.com/crate-ci/typos
+
+[default.extend-words]
+ratatui = "ratatui"
+sectore = "sectore"  # https://github.com/sectore
+licker = "licker"  # https://github.com/floor-licker
+consts = "consts"  # consts module
+
+[type.md]
+extend-ignore-re = [
+  "\\[[[:xdigit:]]{7}\\]\\(https://github.com/ratatui/ratatui/commit/[[:xdigit:]]{40}\\)",
+]

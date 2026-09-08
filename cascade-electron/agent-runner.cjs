@@ -39,9 +39,20 @@ const CHAT_CONTEXT_TOOL_CONTEXT = 'Your channel transcript is append-only. A con
 // Children inherit these via process.env, so the wrapper authenticates against
 // the same local or remote instance the desktop is connected to.
 const noteApi = { url: '', token: '', configured: false };
+
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir() {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
+
 const AGENT_STATE_DIR = process.env.CASCADE_AGENT_STATE_DIR
   || process.env.CASCADE_USER_DATA_DIR
-  || path.join(os.homedir(), '.cascade');
+  || path.join(fizzerDir());
 const HELPER_CONFIG_PATH = path.join(AGENT_STATE_DIR, 'agent-helper-context.json');
 const RUN_CONTEXT_DIR = path.join(AGENT_STATE_DIR, 'run-contexts');
 const USER_BIN_DIR = process.env.CASCADE_AGENT_BIN_DIR || path.join(os.homedir(), '.local', 'bin');
@@ -215,7 +226,7 @@ function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMes
   let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
   if (!token || isExpiredJwt(token)) {
     try {
-      const diskTokenPath = path.join(os.homedir(), '.cascade', 'token');
+      const diskTokenPath = path.join(fizzerDir(), 'token');
       if (fs.existsSync(diskTokenPath)) {
         const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
         if (dt && !isExpiredJwt(dt)) token = dt;
@@ -282,7 +293,7 @@ function buildRunHelperEnv(opts) {
   let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
   if (process.env.CASCADE_NOTE_TOKEN !== '' && (!token || isExpiredJwt(token))) {
     try {
-      const diskTokenPath = path.join(os.homedir(), '.cascade', 'token');
+      const diskTokenPath = path.join(fizzerDir(), 'token');
       if (fs.existsSync(diskTokenPath)) {
         const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
         if (dt && !isExpiredJwt(dt)) token = dt;

@@ -39,7 +39,7 @@ defmodule Cascade.Content.Store do
 
   def vaults_base_dir do
     case System.get_env("CASCADE_VAULTS_BASE_DIR", "") |> String.trim() do
-      "" -> Path.join([System.user_home!(), ".cascade", "vaults"])
+      "" -> Cascade.Config.dotdir("vaults")
       configured -> Path.expand(configured)
     end
   end

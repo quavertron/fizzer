@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Configure main-process helper env (token/url) after login. */
   setRunnerToken: ({ token, apiUrl }) => ipcRenderer.invoke('runner:setToken', { token, apiUrl }),
   clearRunnerToken: () => ipcRenderer.invoke('runner:clearToken'),
+  connectRemoteInstance: ({ origin, username, password }) => ipcRenderer.invoke('desktop:connectRemote', { origin, username, password }),
+  getDesktopInstance: () => ipcRenderer.invoke('desktop:instance'),
   getRunnerStatus: () => ipcRenderer.invoke('runner:status'),
   /** Read locally authenticated Claude, Codex, and Grok plan usage. */
   getRunnerPlanUsage: () => ipcRenderer.invoke('runner:planUsage'),
