@@ -58,66 +58,6 @@ defmodule Cascade.Chat.DispatchPromptTest do
     refute continued.prompt =~ "Keep progress in the run trace"
   end
 
-  test "worker role overrides coordinator and ambient roles while delivery remains final-only",
-       c do
-    trigger = message(c, "@builder Verify reload", %{missionTaskId: "task-1"})
-    settings = %{orchestrator: true, ambientGroupChat: true, finalReplyOnly: true}
-
-    for resume <- [nil, "session-id"] do
-      worker = build(c, trigger, settings, resume)
-      assert worker.prompt =~ "mission worker, not the channel control plane"
-      assert worker.prompt =~ "--task task-1 --status blocked"
-      assert worker.prompt =~ "add `--finding`"
-      assert worker.prompt =~ "without waking the coordinator"
-      assert worker.prompt =~ "do not repeat the outcome"
-      assert worker.prompt =~ "do not start a mission or spawn provider subagents"
-      assert worker.prompt =~ "output exactly [no-reply]"
-      refute worker.prompt =~ "mission start --control-plane"
-      refute worker.prompt =~ "persistent participant"
-    end
-
-    trigger = message(c, "@builder Implement the release")
-
-    for resume <- [nil, "session-id"] do
-      coordinator = build(c, trigger, %{orchestrator: true}, resume)
-      assert coordinator.prompt =~ "mission start --control-plane"
-      assert coordinator.prompt =~ "mission delegate --anonymous"
-      assert coordinator.prompt =~ "handle bookkeeping directly"
-      assert coordinator.prompt =~ "Keep one worker responsible"
-      assert coordinator.prompt =~ "Do not split these milestones"
-
-      assert coordinator.prompt =~
-               "Successful background work completes the mission automatically"
-
-      assert coordinator.prompt =~ "Reuse a mission only for the same concrete outcome"
-      assert coordinator.prompt =~ "its follow-ups or recovery"
-      assert coordinator.prompt =~ "create separate missions for independently scoped outcomes"
-      assert coordinator.prompt =~ "Shared topic or channel alone does not justify reuse"
-      assert coordinator.prompt =~ "Do not cancel or recreate active work for regrouping"
-      assert coordinator.prompt =~ "mission delegate --after <task-id>"
-      assert coordinator.prompt =~ "corrections that must change active work now"
-
-      assert coordinator.prompt =~
-               "queued or dispatched acknowledgment does not confirm execution"
-
-      assert coordinator.prompt =~ "honor explicit Stop"
-      assert coordinator.prompt =~ "without reconfirming permission"
-      assert coordinator.prompt =~ "preserve the user's scope"
-      assert coordinator.prompt =~ "same task, saved session and workspace"
-      assert coordinator.prompt =~ "implementation, verification and authorized delivery"
-      assert coordinator.prompt =~ "`--review` at start only"
-      assert coordinator.prompt =~ "cascade-chat attachment --message-id <id>"
-      refute coordinator.prompt =~ "for actionable work immediately use"
-    end
-
-    ambient = build(c, trigger, %{ambientGroupChat: true, finalReplyOnly: true})
-    assert ambient.prompt =~ "persistent participant"
-    assert ambient.prompt =~ "Use your own judgment"
-    assert ambient.prompt =~ "final response is posted automatically"
-    assert ambient.prompt =~ "do not call cascade-chat send or collaboration tools"
-    refute ambient.prompt =~ "output exactly [no-reply]"
-  end
-
   test "Claude compact is a bare native command, not a quoted or worker request", c do
     trigger = message(c, "@BUILDER /CoMpAcT")
     assert build(c, trigger) == %{prompt: "/compact", images: [], reply_to: nil}
@@ -198,7 +138,8 @@ defmodule Cascade.Chat.DispatchPromptTest do
 
     result = build(c, trigger)
     assert result.prompt =~ "Evidence 1"
-    assert result.prompt =~ "Please inspect trace.txt"
+    assert result.prompt =~ "Please inspect"
+    assert result.prompt =~ "trace.txt"
     refute result.prompt =~ "batch-secret"
     refute result.prompt =~ "Other agent boundary"
     refute result.prompt =~ "Future same-author text"

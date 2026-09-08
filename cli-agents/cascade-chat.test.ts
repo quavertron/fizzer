@@ -24,23 +24,37 @@ test('coordinator helper starts and delegates a mission with structured API call
       body: raw ? JSON.parse(raw) : null,
     });
     res.setHeader('content-type', 'application/json');
-    if (req.method === 'POST' && req.url === '/api/vaults/vault-1/channels/channel-1/messages') {
-      const body = raw ? JSON.parse(raw) : {};
-      res.statusCode = 201;
-      res.end(JSON.stringify({ message: { id: 'sys-mission-root-new', body: body.body || '' } }));
+    if (req.method === 'GET' && req.url === '/api/vaults/vault-1/channels/channel-1/agents') {
+      res.end(JSON.stringify({ agents: [{ id: 'reg-sol', vaultAgentId: 'identity-sol', mention: 'sol' }] }));
       return;
     }
-    if (req.method === 'GET' && req.url?.startsWith('/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol')) {
-      res.end(JSON.stringify({ missions: [{ id: 'mission-1', title: 'Release', status: 'attention', coordinatorMention: 'sol', tasks: [{ id: 'task-1', title: 'Verify', status: 'running', assigneeMention: 'terra', attempt: 2, runId: 42 }] }] }));
+    if (req.method === 'GET' && req.url === '/api/vaults/vault-1/missions') {
+      res.end(JSON.stringify({ missions: [{
+        id: 'mission-1', title: 'Release', status: 'attention', coordinatorMention: 'sol',
+        tasks: [{ id: 'task-1', title: 'Verify', status: 'running', assigneeMention: 'terra', attempt: 2, runId: 42 }],
+      }] }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol') {
+      res.end(JSON.stringify({ missions: [{
+        id: 'mission-1', title: 'Release', status: 'attention', coordinatorMention: 'sol',
+        tasks: [{ id: 'task-1', title: 'Verify', status: 'running', assigneeMention: 'terra', attempt: 2, runId: 42 }],
+      }] }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/vaults/vault-1/missions/mission-1') {
+      res.end(JSON.stringify({
+        mission: { id: 'mission-1', title: 'Release', status: 'reviewing', notes: [], tasks: [] },
+      }));
       return;
     }
     if (req.method === 'GET' && req.url === '/api/vaults/vault-1/channels/channel-1/missions/mission-1/history') {
       res.end(JSON.stringify({ events: [{ id: 1, kind: 'task_retried', title: 'Verify browser', fromStatus: 'failed', toStatus: 'pending', summary: '', attempt: 1, createdAt: '2026-08-08T12:00:00.000Z' }] }));
       return;
     }
-    if (req.method === 'POST' && req.url === '/api/vaults/vault-1/channels/channel-1/missions') {
+    if (req.method === 'POST' && req.url === '/api/vaults/vault-1/missions') {
       res.statusCode = 201;
-      res.end(JSON.stringify({ mission: { id: 'mission-1', title: 'Release', status: 'active', tasks: [] } }));
+      res.end(JSON.stringify({ mission: { id: 'mission-1', title: 'Release', status: 'planning', notes: [], tasks: [] } }));
       return;
     }
     if (req.url === '/api/vaults/vault-1/channels/channel-1/missions/mission-1/tasks') {
@@ -49,12 +63,6 @@ test('coordinator helper starts and delegates a mission with structured API call
         mission: { id: 'mission-1', title: 'Release', status: 'active' },
         task: { id: 'task-1', title: 'Verify browser', assigneeMention: 'sol·sub' },
         scheduled: true,
-      }));
-      return;
-    }
-    if (req.url === '/api/vaults/vault-1/channels/channel-1/missions/mission-1?coordinator=reg-sol') {
-      res.end(JSON.stringify({
-        mission: { id: 'mission-1', title: 'Release', status: 'reviewing', tasks: [] },
       }));
       return;
     }
@@ -96,27 +104,24 @@ test('coordinator helper starts and delegates a mission with structured API call
   }));
   t.after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
   const withCoordinator = { ...process.env, CASCADE_HELPER_CONFIG: config, CASCADE_RUN_ID: '777' };
+  const missionCollectionPath = '/api/vaults/vault-1/missions';
+  const taskCreatePath = '/api/vaults/vault-1/channels/channel-1/missions/mission-1/tasks';
+  const steerPath = '/api/vaults/vault-1/channels/channel-1/missions/tasks/task-1/steer';
+  const finishPath = '/api/vaults/vault-1/channels/channel-1/missions/mission-1/finish';
+  const recoveryPath = '/api/vaults/vault-1/channels/channel-1/missions/tasks/task-1/recovery-evidence';
 
-  const steered = await execFileAsync(process.execPath, [
+  await execFileAsync(process.execPath, [
     cli, 'mission', 'steer', '--task', 'task-1', '--message', 'Keep edits; narrow the test.', ...common,
   ], { env: withCoordinator });
-  assert.match(steered.stdout, /queued steering 7: Waiting for provider stop acknowledgment/);
-  assert.deepEqual(requests.find((request) => request.path.endsWith('/steer'))?.body, {
-    coordinatorRegistrationId: 'reg-sol', message: 'Keep edits; narrow the test.', attempt: 2, runId: 42,
-  });
-
-  requests.length = 0;
-  const started = await execFileAsync(process.execPath, [
-    cli, 'mission', 'start', '--title', 'Release', '--objective', 'Ship safely',
+  await execFileAsync(process.execPath, [
+    cli, 'mission', 'start', '--title', 'Release', '--message', 'Ship safely',
     ...common,
   ], { env: withCoordinator });
-  assert.match(started.stdout, /mission mission-1 started/);
-  const delegated = await execFileAsync(process.execPath, [
-    cli, 'mission', 'delegate', '--mission', 'mission-1', '--to', '@sol', '--anonymous',
-    '--task', 'Verify browser', '--message', 'Exercise reload and reconnect.',
+  await execFileAsync(process.execPath, [
+    cli, 'mission', 'delegate', '--mission', 'mission-1', '--to', '@sol',
+    '--task', 'Verify browser', '--purpose', 'verification', '--brief-note', 'note-1', '--message', 'Exercise reload and reconnect.',
     '--after', 'task-a,task-b', '--priority', '7', '--effort', 'high', ...common,
   ], { env: withCoordinator });
-  assert.match(delegated.stdout, /dispatched task-1 to @sol·sub/);
   const status = await execFileAsync(process.execPath, [
     cli, 'mission', 'status', '--mission', 'mission-1', ...common,
   ], { env: withCoordinator });
@@ -125,14 +130,9 @@ test('coordinator helper starts and delegates a mission with structured API call
     cli, 'mission', 'list', ...common,
   ], { env: withCoordinator });
   assert.match(listed.stdout, /attention\s+mission-1/);
-  assert.match(listed.stdout, /running\s+task-1\s+Verify\s+· @terra/);
-  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact');
   await execFileAsync(process.execPath, [cli, 'mission', 'list', '--status', 'active,blocked', '--task-status', 'running', '--json', ...common], { env: withCoordinator });
-  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact&status=active%2Cblocked&taskStatus=running');
   const detail = await execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', ...common], { env: withCoordinator });
   assert.equal(JSON.parse(detail.stdout)[0].tasks[0].runId, 42);
-  assert.equal(requests.at(-1)?.path, '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol');
-  await assert.rejects(execFileAsync(process.execPath, [cli, 'mission', 'list', '--status', 'typo', ...common], { env: withCoordinator }), /Invalid --status/);
   await assert.rejects(execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', '--task-status', 'running', ...common], { env: withCoordinator }), /cannot be combined/);
   const history = await execFileAsync(process.execPath, [
     cli, 'mission', 'history', '--mission', 'mission-1', ...common,
@@ -153,60 +153,58 @@ test('coordinator helper starts and delegates a mission with structured API call
     '--source-run', '3131', '--target-run', '3099', '--target-attempt', '0',
     '--objective', 'Ship safely', '--verification', 'Exact revision verified', ...common,
   ], { env: withCoordinator });
-  assert.deepEqual(requests.at(-1)?.body, {
-    coordinatorRegistrationId: 'reg-sol', sourceTaskId: 'recovered-task', sourceRunId: 3131,
-    targetRunId: 3099, targetAttempt: 0, objective: 'Ship safely', verification: 'Exact revision verified',
+  const coordinatorMissions = requests.find((request) =>
+    request.method === 'GET' && request.path === '/api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol');
+  assert.ok(coordinatorMissions);
+  assert.equal(coordinatorMissions.body, null);
+  const steerRequest = requests.find((request) => request.method === 'POST' && request.path === steerPath);
+  assert.ok(steerRequest);
+  assert.deepEqual(steerRequest.body, {
+    coordinatorRegistrationId: 'reg-sol', message: 'Keep edits; narrow the test.', attempt: 2, runId: 42,
   });
-  assert.deepEqual(requests.map((request) => `${request.method} ${request.path}`), [
-    'POST /api/vaults/vault-1/channels/channel-1/messages',
-    'POST /api/vaults/vault-1/channels/channel-1/missions',
-    'POST /api/vaults/vault-1/channels/channel-1/missions/mission-1/tasks',
-    'GET /api/vaults/vault-1/channels/channel-1/missions/mission-1?coordinator=reg-sol',
-    'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact',
-    'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol&view=compact&status=active%2Cblocked&taskStatus=running',
-    'GET /api/vaults/vault-1/channels/channel-1/missions?coordinator=reg-sol',
-    'GET /api/vaults/vault-1/channels/channel-1/missions/mission-1/history',
-    'PATCH /api/vaults/vault-1/channels/channel-1/missions/tasks/task-1',
-    'PATCH /api/vaults/vault-1/channels/channel-1/missions/tasks/task-1',
-    'POST /api/vaults/vault-1/channels/channel-1/missions/mission-1/finish',
-    'POST /api/vaults/vault-1/channels/channel-1/missions/tasks/task-1/recovery-evidence',
-  ]);
-  assert.ok(requests.every((request) => request.runId === '777'));
-  assert.equal(requests[0]?.body?.registrationId, 'reg-sol');
-  assert.equal(requests[0]?.body?.author, 'Sol');
-  assert.notEqual(requests[0]?.body?.id, 'root-message');
-  assert.deepEqual(requests[1]?.body, {
-    rootMessageId: 'sys-mission-root-new',
-    coordinatorRegistrationId: 'reg-sol',
+  const missionStart = requests.find((request) => request.method === 'POST' && request.path === missionCollectionPath);
+  assert.ok(missionStart);
+  assert.match(String(missionStart.body?.id), /^[0-9a-f-]{36}$/);
+  assert.deepEqual({ ...missionStart.body, id: undefined }, {
+    id: undefined,
     title: 'Release',
-    objective: 'Ship safely',
-    controlPlane: false,
-    reviewRequested: false,
-    authorityMessageIds: [],
+    coordinatorIdentityId: 'identity-sol',
+    briefContent: 'Ship safely',
   });
-  assert.deepEqual(requests[2]?.body, {
+  assert.equal(missionStart.body?.task, undefined);
+  const delegatedTasks = requests.filter((request) => request.method === 'POST' && request.path === taskCreatePath);
+  assert.equal(delegatedTasks.length, 1);
+  assert.deepEqual(delegatedTasks[0]?.body, {
     coordinatorRegistrationId: 'reg-sol',
     title: 'Verify browser',
+    purpose: 'verification',
     assignee: '@sol',
     prompt: 'Exercise reload and reconnect.',
+    briefNoteId: 'note-1',
     dependsOn: ['task-a', 'task-b'],
     priority: 7,
     reasoningEffort: 'high',
-    anonymous: true,
     workspaceMode: 'shared',
   });
-  assert.deepEqual(requests[8]?.body, { status: 'blocked', summary: 'Needs a credential', finding: true });
-  assert.deepEqual(requests[9]?.body, { status: 'pending', summary: 'Try again' });
-  assert.deepEqual(requests[10]?.body, {
+  const finishRequest = requests.find((request) => request.method === 'POST' && request.path === finishPath);
+  assert.ok(finishRequest);
+  assert.deepEqual(finishRequest.body, {
     coordinatorRegistrationId: 'reg-sol',
     status: 'completed',
     summary: 'Integrated',
     verification: 'Tests passed; artifact inspected',
   });
+  const recoveryRequest = requests.find((request) => request.method === 'POST' && request.path === recoveryPath);
+  assert.ok(recoveryRequest);
+  assert.deepEqual(recoveryRequest.body, {
+    coordinatorRegistrationId: 'reg-sol', sourceTaskId: 'recovered-task', sourceRunId: 3131,
+    targetRunId: 3099, targetAttempt: 0, objective: 'Ship safely', verification: 'Exact revision verified',
+  });
+  assert.ok(requests.every((request) => request.runId === '777'));
   assert.equal(JSON.parse(fs.readFileSync(config, 'utf8')).usedChatSend, undefined);
 });
 
-test('control-plane mission start explicitly asks the server not to bind a primary task', async (t) => {
+test('mission start creates a vault mission without a coordinator self-task', async (t) => {
   const runHeaders: Array<string | undefined> = [];
   const bodies: Array<Record<string, unknown>> = [];
   const server = http.createServer(async (req, res) => {
@@ -215,8 +213,8 @@ test('control-plane mission start explicitly asks the server not to bind a prima
     runHeaders.push(req.headers['x-cascade-run-id'] as string | undefined);
     bodies.push(raw ? JSON.parse(raw) : {});
     res.setHeader('content-type', 'application/json');
-    if (req.url?.endsWith('/messages')) return res.end(JSON.stringify({ message:{ id:'control-root' } }));
-    if (req.url?.endsWith('/missions')) return res.end(JSON.stringify({ mission:{ id:'control-mission', title:'Control' } }));
+    if (req.url?.endsWith('/agents')) return res.end(JSON.stringify({ agents: [{ id: 'reg-sol', vaultAgentId: 'identity-sol' }] }));
+    if (req.method === 'POST' && req.url?.endsWith('/missions')) return res.end(JSON.stringify({ mission:{ id:'control-mission', title:'Control' } }));
     res.statusCode = 404; res.end(JSON.stringify({ error:'not found' }));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -226,47 +224,62 @@ test('control-plane mission start explicitly asks the server not to bind a prima
   const config = path.join(dir, 'helper.json');
   fs.writeFileSync(config, JSON.stringify({ registrationId:'reg-sol', displayName:'Sol' }));
   t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
-  await execFileAsync(process.execPath, [cli, 'mission', 'start', '--control-plane', '--title', 'Control', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'], {
+  await execFileAsync(process.execPath, [cli, 'mission', 'start', '--title', 'Control', '--message', 'Request', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'], {
     env:{ ...process.env, CASCADE_HELPER_CONFIG:config, CASCADE_RUN_ID:'4242' },
   });
-  assert.equal(runHeaders[0], '4242');
-  assert.equal(runHeaders[1], '4242');
-  assert.equal(bodies[1]?.controlPlane, true);
+  assert.deepEqual(runHeaders, ['4242', '4242']);
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0]?.id, undefined);
+  assert.match(String(bodies[1]?.id), /^[0-9a-f-]{36}$/);
+  assert.deepEqual({ ...bodies[1], id: undefined }, {
+    id: undefined, title: 'Control', coordinatorIdentityId: 'identity-sol', briefContent: 'Request',
+  });
+});
+test('mission notes, approval, and explicit task outcomes use frozen payloads', async (t) => {
+  const requests: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push({ method: req.method || '', path: req.url || '', body: raw ? JSON.parse(raw) : {} });
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'POST' && req.url?.endsWith('/notes')) {
+      res.statusCode = 201;
+      return res.end(JSON.stringify({ note: { noteId: 'note-2', kind: 'feature', revision: 1, title: 'Feature' } }));
+    }
+    if (req.method === 'GET' && req.url?.endsWith('/missions/mission-1')) {
+      return res.end(JSON.stringify({ mission: { id: 'mission-1', notes: [{ noteId: 'note-1', kind: 'mission', revision: 2, title: 'Brief' }] } }));
+    }
+    if (req.method === 'POST' && req.url?.endsWith('/approve')) {
+      return res.end(JSON.stringify({ mission: { id: 'mission-1', phase: 'executing' } }));
+    }
+    if (req.method === 'PATCH' && req.url?.endsWith('/task-1')) {
+      return res.end(JSON.stringify({ mission: { id: 'mission-1' } }));
+    }
+    res.statusCode = 404; res.end(JSON.stringify({ error: 'not found' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const common = ['--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-chat-mission-notes-'));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId: 'reg-sol' }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  await execFileAsync(process.execPath, [cli, 'mission', 'note', 'create', '--mission', 'mission-1', '--kind', 'feature', '--title', 'Feature', '--content', 'Deliver feature', ...common], { env });
+  await execFileAsync(process.execPath, [cli, 'mission', 'note', 'list', '--mission', 'mission-1', '--json', ...common], { env });
+  await execFileAsync(process.execPath, [cli, 'mission', 'approve', '--mission', 'mission-1', '--expected-revisions', '{"note-1":2}', ...common], { env });
+  await execFileAsync(process.execPath, [cli, 'mission', 'update', '--task', 'task-1', '--status', 'completed', '--review-outcome', 'accepted', '--verification-passed', 'true', ...common], { env });
+  assert.deepEqual(requests[0].body, {
+    id: requests[0].body.id, kind: 'feature', parentNoteId: null, title: 'Feature', content: 'Deliver feature',
+  });
+  assert.match(String(requests[0].body.id), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(requests[2].body, { expectedRevisions: { 'note-1': 2 } });
+  assert.deepEqual(requests[3].body, {
+    status: 'completed', summary: '', reviewOutcome: 'accepted', verificationPassed: true,
+  });
 });
 
-test('mission start delegates in one command and preserves explicit review', async (t) => {
-  const runHeaders: Array<string | undefined> = [];
-  const bodies: Array<Record<string, unknown>> = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    runHeaders.push(req.headers['x-cascade-run-id'] as string | undefined);
-    bodies.push(raw ? JSON.parse(raw) : {});
-    res.setHeader('content-type', 'application/json');
-    if (req.url?.endsWith('/messages')) return res.end(JSON.stringify({ message:{ id:'control-root' } }));
-    if (req.url?.endsWith('/missions')) return res.end(JSON.stringify({ mission:{ id:'control-mission', title:'Control' } }));
-    if (req.url?.endsWith('/tasks')) return res.end(JSON.stringify({ mission:{ id:'control-mission' }, task:{ id:'task-1', title:'Control' }, scheduled:true }));
-    res.statusCode = 404; res.end(JSON.stringify({ error:'not found' }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => server.close());
-  const address = server.address(); assert(address && typeof address === 'object');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-chat-control-plane-'));
-  const config = path.join(dir, 'helper.json');
-  fs.writeFileSync(config, JSON.stringify({ registrationId:'reg-sol', displayName:'Sol' }));
-  t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
-  await execFileAsync(process.execPath, [cli, 'mission', 'start', '--control-plane', '--title', 'Control', '--message', 'Do the requested work', '--review', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'], {
-    env:{ ...process.env, CASCADE_HELPER_CONFIG:config, CASCADE_RUN_ID:'4242' },
-  });
-  assert.equal(runHeaders[0], '4242');
-  assert.equal(runHeaders[1], '4242');
-  assert.equal(bodies[1]?.controlPlane, true);
-  assert.equal(bodies[1]?.reviewRequested, true);
-  assert.equal(bodies[2]?.assignee, 'reg-sol');
-  assert.equal(bodies[2]?.anonymous, true);
-  assert.equal(bodies[2]?.prompt, 'Do the requested work');
-  assert.equal(runHeaders[2], '4242');
-});
 
 test('send creates a typed single-agent handoff without suppressing the caller reply', async (t) => {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
@@ -534,14 +547,14 @@ test('command help is local, focused and documents the interpretation and listin
       assert.deepEqual(JSON.parse(example[1]), { revision: 0, fingerprint: '', noMaterialChange: true });
     }
     if (command[1] === 'status') {
-      assert.match(stdout, /authorityMessageIds/);
+      assert.match(stdout, /phase, brief, notes/);
       assert.match(stdout, /--detail/);
-      assert.doesNotMatch(stdout, /--json returns the full/);
+      assert.doesNotMatch(stdout, /authorityMessageIds/);
     }
     if (command[1] === 'list') {
       assert.match(stdout, /--task-status open\|all/);
       assert.match(stdout, /empty missions remain visible/);
-      assert.match(stdout, /--detail combined with filters/);
+      assert.match(stdout, /filters are errors/);
     }
   }
   const general = await execFileAsync(process.execPath, [cli, '--help'], { env });

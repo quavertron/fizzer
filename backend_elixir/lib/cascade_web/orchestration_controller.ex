@@ -134,6 +134,7 @@ defmodule CascadeWeb.OrchestrationController do
               resume
             )
             |> PromptContext.append_context(context)
+            |> PromptContext.append_mission_context(dispatch, execution.runner_user_id)
 
           start_dispatch(dispatch, execution, %{built | prompt: prompt}, resume, inline_svgs)
         else
@@ -277,6 +278,12 @@ defmodule CascadeWeb.OrchestrationController do
   def my_active_sessions(conn) do
     authenticated(conn, fn conn, user ->
       JSON.send(conn, 200, %{sessions: Store.active_sessions(user.id)})
+    end)
+  end
+
+  def cancel_all_runs(conn) do
+    authenticated(conn, fn conn, user ->
+      JSON.send(conn, 200, Store.cancel_all(user.id))
     end)
   end
 

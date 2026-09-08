@@ -4,7 +4,10 @@ defmodule Cascade.DB.Migrator do
   alias Cascade.DB.Repo
   alias Ecto.Adapters.SQL
 
-  @migrations [Cascade.DB.Migrations.V1CoreCompatibility]
+  @migrations [
+    Cascade.DB.Migrations.V1CoreCompatibility,
+    Cascade.DB.Migrations.V2NoteRevisionCounter
+  ]
 
   def run! do
     SQL.query!(Repo, "PRAGMA foreign_keys = ON", [])

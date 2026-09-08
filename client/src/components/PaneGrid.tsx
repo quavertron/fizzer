@@ -12,7 +12,7 @@
 
 import { Fragment, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles } from 'lucide-react';
+import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Flag } from 'lucide-react';
 import type { Tab } from './TabBar';
 import { NOTE_DND_TYPE } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
@@ -109,6 +109,7 @@ function sideFromPosition(rect: DOMRect, clientX: number, clientY: number): Drop
 
 function TabIcon({ type }: { type: Tab['type'] }) {
   if (type === 'chat') return <Hash size={13} className="text-secondary" style={{ marginRight: 6 }} />;
+  if (type === 'mission') return <Flag size={13} className="text-accent" style={{ marginRight: 6 }} />;
   if (type === 'superkanban') return <LayoutDashboard size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   if (type === 'new') return <Sparkles size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   return <FileText size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
@@ -195,13 +196,15 @@ function PaneTabStrip({
   };
 
   const closeMenu = () => setContextMenu(null);
-
   const handleDragStart = (event: DragEvent, tabId: string) => {
     const payload: TabDragPayload = { tabId, fromPaneId: pane.id };
     event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-    // Let the sidebar accept an open (including unlisted/implicit) note tab as
-    // a note drop. Its move endpoint also promotes unlisted notes to listed.
-    event.dataTransfer.setData(NOTE_DND_TYPE, tabId);
+    // Only note/chat tabs map to the sidebar's note drop protocol. Mission
+    // tabs have their own namespaced identity and must never become notes.
+    const tab = openTabs.find((item) => item.id === tabId);
+    if (tab?.type === 'note' || tab?.type === 'chat') {
+      event.dataTransfer.setData(NOTE_DND_TYPE, tabId);
+    }
     event.dataTransfer.effectAllowed = 'move';
   };
 

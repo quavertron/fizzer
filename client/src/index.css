@@ -1126,6 +1126,13 @@ button:focus-visible,
   overflow-x: hidden;
   padding: 2px var(--rail-pad-x) 14px;
 }
+/* Sidebar navigation must be styled before the lazy mission workspace loads. */
+.sidebar-missions { flex: none; min-width: 0; }
+.sidebar-mission-list { max-height: min(28vh, 240px); overflow-y: auto; padding: 0 var(--rail-pad-x); }
+.sidebar-mission-phase { flex: none; color: var(--text-tertiary); font-size: .6rem; }
+.sidebar-mission-history summary { cursor: pointer; padding: 6px var(--rail-pad-x); color: var(--text-tertiary); font-size: .72rem; }
+.sidebar-mission-history summary span { margin-left: 4px; }
+.sidebar-mission-history summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tree-item {
   display: flex;
   align-items: center;

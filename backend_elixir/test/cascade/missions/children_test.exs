@@ -4,7 +4,7 @@ defmodule Cascade.Missions.ChildrenTest do
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Messages}
   alias Cascade.Content.Store, as: ContentStore
-  alias Cascade.Missions.{Dispatches, Scheduler, Store}
+  alias Cascade.Missions.{Dispatches, Interpretation, Scheduler, Store}
   alias Cascade.Missions.Children
   alias Cascade.Runs.Store, as: RunStore
 
@@ -494,15 +494,40 @@ defmodule Cascade.Missions.ChildrenTest do
         title: "Child lifecycle"
       })
 
-    {:ok, added} =
-      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
-        coordinatorRegistrationId: ctx.coordinator.id,
-        assignee: ctx.worker.id,
-        title: "Parent"
+    brief =
+      ContentStore.create_note(ctx.vault.id, ctx.user.id, %{
+        id: "mission-brief-#{created.mission.id}",
+        title: "Child lifecycle brief",
+        content: "Implement and verify the child lifecycle.",
+        is_listed: true
       })
 
-    [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
-    {created.mission, added.task, start(ctx, dispatch)}
+    brief_revision = Cascade.Content.Privacy.note_revision(brief)
+
+    SQL.exec(
+      """
+      INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision)
+      VALUES(?,?, 'mission',NULL,0,?)
+      """,
+      [created.mission.id, brief.id, brief_revision]
+    )
+
+    {:ok, approved} =
+      Store.approve_workspace(ctx.user.id, ctx.vault.id, created.mission.id, %{
+        brief.id => brief_revision
+      })
+    acknowledge_approval(ctx, approved.id)
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, approved.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        assignee: ctx.worker.id,
+        title: "Parent",
+        purpose: "implementation"
+      })
+
+    [%{dispatch: dispatch}] = Scheduler.schedule(approved.id).dispatches
+    {approved, added.task, start(ctx, dispatch)}
   end
 
   defp start(ctx, dispatch) do
@@ -510,5 +535,45 @@ defmodule Cascade.Missions.ChildrenTest do
     :ok = Dispatches.attach_run(dispatch.id, run.id)
     {:ok, _} = Store.attach_run(dispatch.id, run.id)
     run
+  end
+
+  defp acknowledge_approval(ctx, mission_id) do
+    [dispatch_id] =
+      SQL.one(
+        "SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?",
+        [mission_id]
+      )
+
+    assert is_binary(dispatch_id)
+    {:ok, dispatch} = Dispatches.get(ctx.user.id, ctx.channel.id, dispatch_id)
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Interpret", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: dispatch.id,
+        conversation_id: dispatch.conversationId
+      )
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+
+    {:ok, state} =
+      Interpretation.get(ctx.user.id, ctx.channel.id, mission_id, ctx.coordinator.id)
+
+    assert {:ok, _} =
+             Interpretation.record(
+               ctx.user,
+               ctx.channel.id,
+               mission_id,
+               ctx.coordinator.id,
+               %{
+                 "revision" => state.revision,
+                 "fingerprint" => state.fingerprint,
+                 "noMaterialChange" => true
+               },
+               run.id,
+               Cascade.Chat.Events.Noop
+             )
+
+    :ok = RunStore.finish(run.id, "completed", "Acknowledged approval")
   end
 end

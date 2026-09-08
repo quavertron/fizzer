@@ -139,13 +139,16 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         coordinatorRegistrationId: ctx.registration.id,
         title: "Review without UI"
       })
+    approve_mission(ctx, mission)
+
 
     {:ok, added} =
       Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
         coordinatorRegistrationId: ctx.registration.id,
         assignee: ctx.registration.id,
         anonymous: true,
-        title: "Worker"
+        title: "Worker",
+        purpose: "implementation"
       })
 
     {:ok, _} =
@@ -854,18 +857,36 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     mission_id = Ecto.UUID.generate()
     task_id = Ecto.UUID.generate()
 
+    brief_content = "Approved mission brief."
+    brief =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: "mission-brief-#{mission_id}",
+        title: "Mission brief",
+        content: brief_content,
+        is_listed: true
+      })
+
+    brief_revision = Cascade.Content.Privacy.note_revision(brief)
+
     worker =
       SQL.transaction(fn ->
         SQL.exec(
-          "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,created_by) VALUES(?,?,?,?,?,'Mission',?)",
+          "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,created_by,phase,approved_at,approved_by,approved_revisions_json) VALUES(?,?,?,?,?,'Mission',?,'executing',datetime('now'),?,?)",
           [
             mission_id,
             ctx.owner_vault.id,
             ctx.owner_channel.id,
             ctx.dispatch.messageId,
             ctx.registration.id,
-            ctx.owner.id
+            ctx.owner.id,
+            ctx.owner.id,
+            Jason.encode!(%{brief.id => brief_revision})
           ]
+        )
+
+        SQL.exec(
+          "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+          [mission_id, brief.id, brief_revision]
         )
 
         worker =
@@ -875,7 +896,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
           )
 
         SQL.exec(
-          "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,dispatch_id) VALUES(?,?,'Worker',?,?)",
+          "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,dispatch_id,purpose) VALUES(?,?,'Worker',?,?, 'implementation')",
           [task_id, mission_id, ctx.registration.id, worker.id]
         )
 
@@ -885,7 +906,6 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     delegated = event!(ctx.sid, "run:delegate")
     assert Store.get(coordinator["runId"]).status == "queued"
     assert Store.find_by_chat_dispatch(worker.id).conversation_id == "mission:#{task_id}"
-    assert delegated["prompt"] =~ "mission worker"
     assert delegated["prompt"] =~ "Owner app guidance."
     refute delegated["prompt"] =~ "Guest private guidance."
 
@@ -993,7 +1013,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
       })
 
     {:ok, independent} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, other.id)
-    delegated = event!(ctx.sid, "run:delegate")
+    delegated = event_for_dispatch!(ctx.sid, "run:delegate", independent.id)
     assert Store.find_by_chat_dispatch(independent.id).id == delegated["runId"]
 
     prepared!(ctx.sid, preparation, "/parent/task", "parent-base")
@@ -1038,6 +1058,9 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         title: title
       })
 
+    approve_mission(ctx, mission)
+
+
     {:ok, added} =
       Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
         coordinatorRegistrationId: ctx.registration.id,
@@ -1045,11 +1068,40 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         anonymous: true,
         workspaceMode: mode,
         title: title,
+        purpose: "implementation",
         prompt: "Do work"
       })
 
     {mission, added.task}
   end
+  defp approve_mission(ctx, mission) do
+    content = "Approved mission brief."
+    note_id = "mission-brief-#{mission.mission.id}"
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: note_id,
+        title: "Mission brief",
+        content: content,
+        is_listed: true
+      })
+
+    revision = Cascade.Content.Privacy.note_revision(note)
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+      [mission.mission.id, note.id, revision]
+    )
+
+    assert {:ok, _} =
+             Cascade.Missions.Store.approve_workspace(
+               ctx.owner.id,
+               ctx.owner_vault.id,
+               mission.mission.id,
+               %{note.id => revision}
+             )
+  end
+
 
   defp prepared!(sid, packet, path, base) do
     input = Enum.at(packet.data, 1)
@@ -1092,6 +1144,38 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
   end
 
   defp event!(sid, name), do: packet!(sid, name).data |> Enum.at(1)
+
+  defp event_for_dispatch!(sid, name, dispatch_id, remaining \\ 12) do
+    assert remaining > 0
+    {:ok, payload} = Session.poll(sid, 1_000)
+
+    packets =
+      payload
+      |> EngineIO.decode_payload()
+      |> elem(1)
+      |> Enum.flat_map(fn
+        %{type: :message, data: data} ->
+          case SocketIO.decode(data) do
+            {:ok, packet} -> [packet]
+            _ -> []
+          end
+
+        _ ->
+          []
+      end)
+
+    expected_message_id = "agent-dispatch-#{dispatch_id}"
+
+    case Enum.find(packets, fn packet ->
+           data = Map.get(packet, :data, [])
+
+           List.first(data) == name and
+             match?(%{"chatMessageId" => ^expected_message_id}, Enum.at(data, 1))
+         end) do
+      nil -> event_for_dispatch!(sid, name, dispatch_id, remaining - 1)
+      packet -> Enum.at(packet.data, 1)
+    end
+  end
 
   defp packet!(sid, name, remaining \\ 12) do
     assert remaining > 0

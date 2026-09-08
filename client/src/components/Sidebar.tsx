@@ -30,10 +30,12 @@ import {
 } from '../mediaLinks';
 import { CHAT_NOTE_MARKER } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
+import type { MissionCreateInput, MissionSummary } from '../missions';
 import {
   Folder as FolderIcon, FolderOpen, FileText, Pin, Edit2, FolderPlus,
   Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
   Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
+  Flag,
 } from 'lucide-react';
 
 export function vaultOptionLabel(vault: Vault): string {
@@ -49,6 +51,11 @@ interface SidebarProps {
   activeVaultId: string | null;
   folders: Folder[];
   notes: NoteSummary[];
+  missions?: MissionSummary[];
+  vaultAgents?: Array<{ id: string; displayName?: string; mention?: string; agentId?: string }>;
+  onOpenMission?: (id: string) => void;
+  onCreateMission?: (input: MissionCreateInput) => Promise<boolean>;
+  missionCreateBusy?: boolean;
   activeNoteId: string | null;
   updateCounts: CommunityUpdates['counts'];
   agentActivity: Readonly<Record<string, ChannelAgentActivity>>;
@@ -154,6 +161,11 @@ export const Sidebar = memo(function Sidebar({
   activeVaultId,
   folders,
   notes,
+  missions = [],
+  vaultAgents = [],
+  onOpenMission,
+  onCreateMission,
+  missionCreateBusy = false,
   activeNoteId,
   updateCounts,
   agentActivity,
@@ -201,6 +213,10 @@ export const Sidebar = memo(function Sidebar({
   const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
   const [creatingVault, setCreatingVault] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
+  const [missionFormOpen, setMissionFormOpen] = useState(false);
+  const [missionTitle, setMissionTitle] = useState('');
+  const [missionBrief, setMissionBrief] = useState('');
+  const [missionCoordinator, setMissionCoordinator] = useState('');
   const [creatingVaultBusy, setCreatingVaultBusy] = useState(false);
   const [vaultFormError, setVaultFormError] = useState('');
   const [joiningVault, setJoiningVault] = useState(false);
@@ -858,6 +874,20 @@ export const Sidebar = memo(function Sidebar({
     { id: 'new-channel', title: 'New channel', icon: <Hash size={15} />, onClick: () => { void createChannel(null); } },
     { id: 'search', title: 'Search', icon: <Search size={15} />, onClick: onSearch },
   ];
+  const renderMission = (mission: MissionSummary) => (
+    <button
+      type="button"
+      key={mission.id}
+      className={`tree-item sidebar-mission-item${activeNoteId === `mission:${mission.id}` ? ' active' : ''}`}
+      onClick={() => onOpenMission?.(mission.id)}
+      title={`${mission.title} · ${mission.phase === 'closed' ? mission.status : mission.phase}`}
+    >
+      <span className="tree-icon"><Flag size={14} aria-hidden="true" /></span>
+      <span className="tree-label">{mission.title || 'Untitled mission'}</span>
+      {mission.phase !== 'closed' && <span className="sidebar-mission-phase">{mission.phase}</span>}
+    </button>
+  );
+
   const actionButtons = (location: string) => quickActions.map((action) => (
     <button key={action.id} id={`${action.id}-btn-${location}`} className="btn-icon" onClick={action.onClick} title={action.title}>{action.icon}</button>
   ));
@@ -873,6 +903,25 @@ export const Sidebar = memo(function Sidebar({
     setNewVaultName('');
     setCreatingVault(false);
     setVaultMenuOpen(false);
+  };
+
+  const submitNewMission = async () => {
+    if (!onCreateMission || missionCreateBusy) return;
+    const title = missionTitle.trim();
+    const briefContent = missionBrief.trim();
+    if (!title || !briefContent || !missionCoordinator) return;
+    const created = await onCreateMission({
+      id: crypto.randomUUID(),
+      title,
+      briefContent,
+      coordinatorIdentityId: missionCoordinator,
+    });
+    if (created) {
+      setMissionFormOpen(false);
+      setMissionTitle('');
+      setMissionBrief('');
+      setMissionCoordinator('');
+    }
   };
 
   const submitJoinVault = async () => {
@@ -1075,6 +1124,80 @@ export const Sidebar = memo(function Sidebar({
       )}
 
       <div className="sidebar-actions sidebar-actions-mobile">{actionButtons('mobile')}</div>
+
+      {(onOpenMission || onCreateMission) && (
+        <section className="sidebar-missions" aria-labelledby="missions-sidebar-heading">
+          <div className="sidebar-section-label sidebar-section-label-with-action">
+            <span id="missions-sidebar-heading">Missions</span>
+            {onCreateMission && (
+              <button
+                type="button"
+                className="btn-icon"
+                title="Create mission"
+                aria-label="Create mission"
+                onClick={() => setMissionFormOpen((open) => !open)}
+              >
+                <Plus size={14} />
+              </button>
+            )}
+          </div>
+          {missionFormOpen && onCreateMission && (
+            <form
+              className="sidebar-mission-create-form"
+              onSubmit={(event) => { event.preventDefault(); void submitNewMission(); }}
+            >
+              <input
+                value={missionTitle}
+                onChange={(event) => setMissionTitle(event.target.value)}
+                placeholder="Mission title"
+                aria-label="Mission title"
+                required
+              />
+              <textarea
+                value={missionBrief}
+                onChange={(event) => setMissionBrief(event.target.value)}
+                placeholder="Brief / request"
+                aria-label="Mission brief"
+                rows={3}
+                required
+              />
+              <select
+                value={missionCoordinator}
+                onChange={(event) => setMissionCoordinator(event.target.value)}
+                aria-label="Mission coordinator"
+                required
+              >
+                <option value="">Choose coordinator</option>
+                {vaultAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.displayName || agent.mention || agent.agentId || agent.id}
+                  </option>
+                ))}
+              </select>
+              <div className="sidebar-mission-form-actions">
+                <button type="button" onClick={() => setMissionFormOpen(false)}>Cancel</button>
+                <button type="submit" disabled={missionCreateBusy || !vaultAgents.length}>
+                  {missionCreateBusy ? 'Creating…' : 'Create mission'}
+                </button>
+              </div>
+            </form>
+          )}
+          <div className="sidebar-mission-list">
+            {missions.filter((mission) => mission.phase !== 'closed').map(renderMission)}
+          </div>
+          {missions.some((mission) => mission.phase === 'closed') && (
+            <details className="sidebar-mission-history" key={activeVaultId}>
+              <summary>History <span>{missions.filter((mission) => mission.phase === 'closed').length}</span></summary>
+              <div className="sidebar-mission-list">
+                {missions.filter((mission) => mission.phase === 'closed').map(renderMission)}
+              </div>
+            </details>
+          )}
+          {missions.length === 0 && !missionFormOpen && (
+            <div className="palette-empty sidebar-missions-empty">No missions yet.</div>
+          )}
+        </section>
+      )}
 
       {/* Folder tree. The "Notes" header doubles as the move-to-root drop target. */}
       <div

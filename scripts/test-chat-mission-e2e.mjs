@@ -1,600 +1,354 @@
 #!/usr/bin/env node
-/** Real-server persistence/multiplayer test for chat-first missions. */
+/**
+ * Internal mission-workspace acceptance apparatus.
+ * Real HTTP, SQLite, Socket.IO dispatch, restart, Git worktrees and Node tests;
+ * deterministic worker/coordinator decisions, not a live-model quality claim.
+ */
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { io } from 'socket.io-client';
 import { launchTestBackend } from './lib/test-backend.mjs';
 import { pickPort } from './lib/test-ports.mjs';
 
-const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const API_PORT = Number(process.env.TEST_API_PORT) || await pickPort();
-const API_BASE = `http://127.0.0.1:${API_PORT}`;
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const port = await pickPort();
+const base = `http://127.0.0.1:${port}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const checks = [];
+const sockets = [];
+const backgroundErrors = [];
+const missionByChannel = new Map();
+const worktrees = new Map();
+let runner;
+let owner;
+let helper;
+let repo;
+let server;
+let initialServer;
+const serverOptions = { name: 'mission-workspace-e2e', repoRoot: root, port,
+  env: { JWT_SECRET: 'mission-workspace-e2e-secret', CASCADE_ALLOW_OPEN_REGISTRATION: '1',
+    CASCADE_NETWORK_MODE: 'false', CASCADE_QMD_WORKER_ENABLED: 'false' }, pipeOutput: false };
 
-async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
-  });
-  const data = await response.json().catch(() => ({}));
-  return { ok: response.ok, status: response.status, data };
+function check(name, value) {
+  assert.ok(value, name);
+  checks.push({ name, at: new Date().toISOString() });
+  console.log(`PASS ${name}`);
 }
-
-async function must(url, options = {}) {
-  const result = await request(url, options);
-  if (!result.ok) throw new Error(`${result.status} ${url}: ${result.data.error || 'request failed'}`);
-  return result.data;
+async function request(endpoint, auth = owner?.auth, method = 'GET', body) {
+  const response = await fetch(`${base}${endpoint}`, { method,
+    headers: { 'content-type': 'application/json', ...auth },
+    body: body == null ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+  return { status: response.status, ok: response.ok, data: await response.json() };
 }
-
-async function register(username) {
-  const { token } = await must(`${API_BASE}/api/auth/register`, {
-    method: 'POST', body: JSON.stringify({ username, password: 'testpass12345' }),
-  });
-  return { token, auth: { authorization: `Bearer ${token}` } };
+async function must(endpoint, auth, method, body) {
+  const response = await request(endpoint, auth, method, body);
+  assert.ok(response.ok, `${method || 'GET'} ${endpoint}: ${response.status} ${JSON.stringify(response.data)}`);
+  return response.data;
 }
-
-async function socketFor(token, vaultId) {
-  const socket = io(`${API_BASE}/vault`, { auth: { token }, transports: ['websocket'] });
-  const created = [];
-  const updated = [];
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('socket timeout')), 10_000);
-    socket.on('connect', () => {
-      clearTimeout(timer);
-      socket.emit('joinVault', vaultId);
-      resolve();
-    });
-    socket.on('connect_error', reject);
-  });
-  socket.on('vault:chatMessageCreated', (event) => created.push(event));
-  socket.on('vault:chatMessageUpdated', (event) => updated.push(event));
-  return { socket, created, updated };
-}
-
-async function runnerFor(token, activeRunIds = []) {
-  const socket = io(`${API_BASE}/runners`, { auth: { token }, transports: ['websocket'] });
-  const delegated = [];
-  const canceled = [];
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('runner socket timeout')), 10_000);
-    socket.on('connect_error', reject);
-    socket.on('runner:registered', (response) => {
-      clearTimeout(timer);
-      if (response?.ok === false) reject(new Error(response.error || 'runner registration failed'));
-      else resolve();
-    });
-    socket.on('connect', () => {
-      socket.emit('runner:register', {
-        activeRunIds,
-        runnerInstanceId: `mission-e2e-${Date.now()}`,
-      });
-    });
-  });
-  socket.on('workspace:prepare', (payload, acknowledge) => {
-    acknowledge({
-      ok: true,
-      path: `/tmp/mission-e2e-${payload.workItemId}`,
-      repository: '/tmp/mission-e2e-repo',
-      branch: payload.branch,
-      baseBranch: 'master',
-      baseCommit: '0123456789abcdef0123456789abcdef01234567',
-      resumed: false,
-    });
-  });
-  socket.on('run:delegate', (payload) => {
-    delegated.push(payload);
-    socket.emit('runner:runEvent', {
-      runId: payload.runId,
-      type: 'status',
-      payload: { status: 'running' },
-    });
-    // This harness drives model dispositions deterministically. An interrupted
-    // coordinator must acknowledge waiting while its existing workers continue.
-    if (String(payload.chatTriggeringMessageId || '').startsWith('sys-continuation-')) {
-      const url = `${API_BASE}/api/vaults/${payload.vaultId}/channels/${payload.chatChannelId}/continuation`;
-      const headers = { authorization: `Bearer ${token}`, 'x-cascade-run-id': String(payload.runId) };
-      must(url, { headers }).then((state) => must(url, {
-        method: 'POST', headers, body: JSON.stringify({ revision: state.revision,
-          status: 'waiting', summary: 'Existing workers own delivery; wait for their results.' }),
-      })).then(() => socket.emit('runner:runEvent', {
-        runId: payload.runId, type: 'status', payload: { status: 'completed', summary: 'Worker ownership preserved.' },
-      })).catch((error) => { check(`continuation disposition: ${error.message}`, false); });
-    }
-  });
-  socket.on('run:cancel', ({ runId }, acknowledge) => {
-    canceled.push(Number(runId));
-    acknowledge({ success: true });
-  });
-  await waitUntil('runner registration to become authoritative', async () => {
-    const status = await request(`${API_BASE}/api/me/desktop-runner`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    return status.ok && status.data.online;
-  });
-  return { socket, delegated, canceled };
-}
-
-async function waitUntil(label, predicate, timeout = 10_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
+async function until(name, predicate, timeout = 15_000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (backgroundErrors.length) throw backgroundErrors.shift();
     const value = await predicate();
     if (value) return value;
     await sleep(50);
   }
-  throw new Error(`timed out waiting for ${label}`);
+  throw new Error(`Timed out: ${name}`);
 }
-
-let failures = 0;
-function check(label, condition) {
-  if (condition) console.log(`[mission-e2e] OK  ${label}`);
-  else { console.error(`[mission-e2e] FAIL ${label}`); failures += 1; }
+function git(cwd, ...args) {
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+function testArtifact(cwd, strict = false) {
+  const script = `import assert from 'node:assert/strict'; import { slug } from './slug.mjs';
+    assert.equal(slug(' Hello World '), 'hello-world');
+    ${strict ? "assert.equal(slug(' Two   Words '), 'two-words');" : ''}`;
+  try {
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd, stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+function commit(cwd, message) {
+  git(cwd, 'add', '.');
+  git(cwd, '-c', 'user.name=Mission Test', '-c', 'user.email=mission-test@example.invalid', 'commit', '-m', message);
+  return git(cwd, 'rev-parse', 'HEAD');
+}
+async function register(name) {
+  const data = await must('/api/auth/register', {}, 'POST', { username: name, password: 'mission-test-password' });
+  return { ...data, auth: { authorization: `Bearer ${data.token}` } };
+}
+async function connect(namespace, token) {
+  const socket = io(`${base}/${namespace}`, { auth: { token }, transports: ['websocket'], autoConnect: false });
+  sockets.push(socket);
+  const connected = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${namespace} connection timeout`)), 10_000);
+    socket.once('connect', () => { clearTimeout(timeout); resolve(); });
+    socket.once('connect_error', (error) => { clearTimeout(timeout); reject(error); });
+  });
+  socket.connect();
+  await connected;
+  return socket;
+}
+async function runnerFor(activeRunIds = []) {
+  const socket = await connect('runners', owner.token);
+  const result = { socket, delegated: [], canceled: [] };
+  socket.on('workspace:prepare', (payload, acknowledge) => {
+    try {
+      let directory = worktrees.get(payload.workItemId);
+      const resumed = Boolean(directory);
+      if (!directory) {
+        directory = path.join(initialServer.tempRoot, `work-${payload.workItemId}`);
+        git(repo, 'worktree', 'add', '-b', payload.branch, directory, 'master');
+        worktrees.set(payload.workItemId, directory);
+      }
+      acknowledge({ ok: true, path: directory, repository: repo, branch: payload.branch,
+        baseBranch: 'master', baseCommit: git(repo, 'rev-parse', 'master'), resumed });
+    } catch (error) { acknowledge({ ok: false, error: error.message }); backgroundErrors.push(error); }
+  });
+  socket.on('run:delegate', (payload) => {
+    result.delegated.push(payload);
+    socket.emit('runner:runEvent', { runId: payload.runId, type: 'session',
+      payload: { sessionId: `mission-test-session-${payload.runId}` } });
+    socket.emit('runner:runEvent', { runId: payload.runId, type: 'status', payload: { status: 'running' } });
+    // Only scripted coordinator maintenance is automatic. Artifact workers stay
+    // running until the scenario has executed and checked their real outputs.
+    if (String(payload.chatTriggeringMessageId || '').startsWith('sys-mission-')) {
+      void (async () => {
+        const mission = missionByChannel.get(payload.chatChannelId);
+        if (!mission) return;
+        const endpoint = `${mission.taskBase}/${mission.id}/interpretation`;
+        const auth = { ...helper, 'x-cascade-run-id': String(payload.runId) };
+        const state = await must(`${endpoint}?coordinator=${mission.coordinatorRegistrationId}`, auth);
+        const questions = state.understanding?.questions || [];
+        const references = state.understanding?.evidenceReferences || [];
+        const askMigration = questions.some((q) => q.id === 'migration-resumption' && q.status === 'open')
+          && !references.includes('migration-question-published');
+        const saved = await request(endpoint, auth, 'POST', {
+          coordinatorRegistrationId: mission.coordinatorRegistrationId,
+          revision: state.revision, fingerprint: state.fingerprint, noMaterialChange: !askMigration,
+          ...(askMigration ? {
+            body: 'This unfinished mission was paused during the upgrade. Should I resume it with a newly approved brief, revise the plan, or close it?',
+            evidenceReferences: [...references, 'migration-question-published'],
+          } : {}),
+          assessment: 'Internal test coordinator has inspected current durable state; existing tasks retain ownership.' });
+        if (!saved.ok && ![409, 410].includes(saved.status)) throw new Error(JSON.stringify(saved));
+        socket.emit('runner:runEvent', { runId: payload.runId, type: 'status',
+          payload: { status: 'completed', summary: 'Durable mission state acknowledged.' } });
+      })().catch((error) => backgroundErrors.push(error));
+    }
+  });
+  socket.on('run:cancel', ({ runId }, acknowledge) => {
+    result.canceled.push(Number(runId));
+    acknowledge({ success: true });
+  });
+  const registered = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('runner registration timeout')), 10_000);
+    socket.once('runner:registered', (data) => { clearTimeout(timeout); data?.ok === false ? reject(new Error(data.error)) : resolve(); });
+  });
+  socket.emit('runner:register', { activeRunIds, runnerInstanceId: 'mission-workspace-apparatus' });
+  await registered;
+  return result;
+}
+function enrich(mission) {
+  const value = { ...mission, workspace: `/api/vaults/${mission.vaultId}/missions/${mission.id}`,
+    taskBase: `/api/vaults/${mission.vaultId}/channels/${mission.channelId}/missions` };
+  missionByChannel.set(value.channelId, value);
+  return value;
+}
+async function state(mission) { return (await must(mission.workspace)).mission; }
+async function task(mission, id) { return (await state(mission)).tasks.find((row) => row.id === id); }
+async function add(mission, purpose, assignee, name, dependsOn = []) {
+  return (await must(`${mission.taskBase}/${mission.id}/tasks`, helper, 'POST', {
+    coordinatorRegistrationId: mission.coordinatorRegistrationId, title: name, purpose,
+    assignee, prompt: name, dependsOn, workspaceMode: 'isolated' })).task;
+}
+async function running(mission, id) {
+  return until(`task running ${id}`, async () => {
+    const row = await task(mission, id);
+    const payload = runner.delegated.find((item) => item.runId === row.runId);
+    return row.status === 'running' && payload ? { ...row, payload } : null;
+  });
+}
+async function settle(mission, row, summary, outcome = {}) {
+  runner.socket.emit('runner:runEvent', { runId: row.runId, type: 'status', payload: { status: 'completed', summary } });
+  await until(`task completed ${row.id}`, async () => (await task(mission, row.id)).status === 'completed');
+  if (Object.keys(outcome).length) await must(`${mission.taskBase}/tasks/${row.id}`, helper, 'PATCH', { status: 'completed', summary, ...outcome });
+}
+async function approve(mission, auth = owner.auth) {
+  const current = await state(mission);
+  return must(`${mission.workspace}/approve`, auth, 'POST', {
+    expectedRevisions: Object.fromEntries(current.notes.map((note) => [note.noteId, note.revision])) });
+}
+async function finish(mission, status, summary) {
+  return request(`${mission.taskBase}/${mission.id}/finish`, helper, 'POST', {
+    coordinatorRegistrationId: mission.coordinatorRegistrationId, status, summary, verification: summary });
 }
 
 async function main() {
-  const serverOptions = {
-    name: 'chat-mission-e2e', repoRoot: root, port: API_PORT,
-    env: {
-      JWT_SECRET: 'mission-e2e-secret',
-      CASCADE_ALLOW_OPEN_REGISTRATION: '1',
-    },
-  };
-  let server = await launchTestBackend(serverOptions);
-  const initialServer = server;
-
-  try {
-    const stamp = Date.now();
-    const owner = await register(`owner_${stamp}`);
-    const guest = await register(`guest_${stamp}`);
-    const { vault } = await must(`${API_BASE}/api/vaults`, {
-      method: 'POST', headers: owner.auth, body: JSON.stringify({ name: 'Mission vault' }),
-    });
-    const { note: channel } = await must(`${API_BASE}/api/vaults/${vault.id}/notes`, {
-      method: 'POST', headers: owner.auth,
-      body: JSON.stringify({ title: 'dev', content: 'cascade://chat-channel' }),
-    });
-    const solIdentity = await must(`${API_BASE}/api/vaults/${vault.id}/vault-agents`, {
-      method: 'PUT', headers: owner.auth,
-      body: JSON.stringify({
-        agentId: 'codex', displayName: 'Sol', mention: 'sol', model: 'gpt-5.6-sol', cwd: root,
-      }),
-    });
-    const terraIdentity = await must(`${API_BASE}/api/vaults/${vault.id}/vault-agents`, {
-      method: 'PUT', headers: owner.auth,
-      body: JSON.stringify({ agentId: 'codex', displayName: 'Terra', mention: 'terra', model: 'gpt-5.6-terra' }),
-    });
-    const { registration: sol } = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agents/from-vault`, {
-      method: 'POST', headers: owner.auth,
-      body: JSON.stringify({ vaultAgentId: solIdentity.agent.id, orchestrator: true, pingableByOthers: true }),
-    });
-    const { registration: terra } = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agents/from-vault`, {
-      method: 'POST', headers: owner.auth,
-      body: JSON.stringify({ vaultAgentId: terraIdentity.agent.id, taggableByAgents: false }),
-    });
-    check('coordinator implies reply-to-every-human-message', sol.orchestrator && sol.replyToEveryMessage);
-    check('worker remains closed to ordinary agent chaining', !terra.taggableByAgents);
-    const { token: agentToken } = await must(`${API_BASE}/api/auth/agent-token`, {
-      method: 'POST', headers: owner.auth,
-    });
-    const agentAuth = { authorization: `Bearer ${agentToken}` };
-    const helperMembers = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agents`, {
-      headers: agentAuth,
-    });
-    check('restricted helper token can list mission teammates', helperMembers.agents?.length === 2);
-    const helperFolder = await must(`${API_BASE}/api/vaults/${vault.id}/folders`, {
-      method: 'POST', headers: agentAuth, body: JSON.stringify({ name: 'agent-created' }),
-    });
-    check('restricted helper token can create a live-note folder', helperFolder.folder?.name === 'agent-created');
-
-    await must(`${API_BASE}/api/vaults/${vault.id}/members`, {
-      method: 'POST', headers: owner.auth,
-      body: JSON.stringify({ username: `guest_${stamp}`, role: 'editor' }),
-    });
-    const ownerSocket = await socketFor(owner.token, vault.id);
-    const guestSocket = await socketFor(guest.token, vault.id);
-    await sleep(150);
-
-    const guestIdentity = await must(`${API_BASE}/api/vaults/${vault.id}/vault-agents`, {
-      method: 'PUT', headers: guest.auth,
-      body: JSON.stringify({ agentId: 'codex', displayName: 'Guest Sol', mention: `guest_sol_${stamp}`, model: 'gpt-5.6-sol' }),
-    });
-    const { registration: guestCoordinator } = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agents/from-vault`, {
-      method: 'POST', headers: guest.auth,
-      body: JSON.stringify({ vaultAgentId: guestIdentity.agent.id, orchestrator: true }),
-    });
-
-    const guestPost = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, {
-      method: 'POST', headers: guest.auth,
-      body: JSON.stringify({
-        id: `guest-${stamp}`, channelId: channel.id, author: `guest_${stamp}`,
-        body: 'Coordinate this shared-channel request.', createdAt: new Date().toISOString(),
-      }),
-    });
-    check('a shared user wakes only their own coordinator', guestPost.dispatches?.[0]?.registration?.id === guestCoordinator.id);
-
-    const rootMessage = {
-      id: `root-${stamp}`, channelId: channel.id, author: `owner_${stamp}`,
-      body: 'Investigate and verify multiplayer orchestration.', createdAt: new Date().toISOString(),
-    };
-    const posted = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, {
-      method: 'POST', headers: owner.auth, body: JSON.stringify(rootMessage),
-    });
-    check('human message creates a durable coordinator dispatch', posted.dispatches?.[0]?.registration?.id === sol.id);
-
-    const { mission } = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions`, {
-      method: 'POST', headers: agentAuth,
-      body: JSON.stringify({
-        rootMessageId: rootMessage.id,
-        coordinatorRegistrationId: sol.id,
-        title: 'Multiplayer orchestration',
-        objective: rootMessage.body,
-      }),
-    });
-    const delegated = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${mission.id}/tasks`, {
-      method: 'POST', headers: agentAuth,
-      body: JSON.stringify({
-        coordinatorRegistrationId: sol.id,
-        title: 'Verify guest reload',
-        assignee: '@terra',
-        prompt: 'Verify the guest can reload and retain mission state.',
-      }),
-    });
-    check('coordinator can dispatch an opt-out worker explicitly', delegated.task?.assigneeMention === 'terra');
-    check('delegation message is linked to its durable task', delegated.message?.missionTaskId === delegated.task?.id);
-    const dependent = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${mission.id}/tasks`, {
-      method: 'POST', headers: agentAuth,
-      body: JSON.stringify({
-        coordinatorRegistrationId: sol.id,
-        title: 'Recheck after guest verification',
-        assignee: '@terra',
-        prompt: 'Recheck only after the guest reload evidence is ready.',
-        dependsOn: [delegated.task.id],
-        priority: 5,
-        reasoningEffort: 'high',
-      }),
-    });
-    check('dependent work stays undispatched while prerequisites run', dependent.scheduled === false && !dependent.message);
-    check('mission projection exposes dependency waiting state', dependent.task?.waitingFor?.[0] === delegated.task.id);
-    const helperStatus = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${mission.id}`, {
-      headers: agentAuth,
-    });
-    check('restricted helper token can read mission state', helperStatus.mission?.id === mission.id);
-    const helperUpdate = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/tasks/${delegated.task.id}`, {
-      method: 'PATCH', headers: agentAuth,
-      body: JSON.stringify({ status: 'running', summary: 'Accepted by the worker queue.' }),
-    });
-    check('restricted helper token can update a mission task', helperUpdate.mission?.tasks?.[0]?.status === 'running');
-    const completedFirst = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/tasks/${delegated.task.id}`, {
-      method: 'PATCH', headers: agentAuth,
-      body: JSON.stringify({ status: 'completed', summary: 'Guest reload verified.' }),
-    });
-    check('completing a prerequisite automatically dispatches its dependent', (
-      completedFirst.mission?.tasks?.find((task) => task.id === dependent.task.id)?.queueReason === 'queued'
-    ));
-
-    await sleep(300);
-    check('owner received the inline mission update', ownerSocket.updated.some((event) => event.message?.mission?.id === mission.id));
-    check('shared member received the same mission projection', guestSocket.updated.some((event) => (
-      event.channelId === channel.id && event.message?.mission?.id === mission.id
-    )));
-    check('worker dispatch reached owner clients as a durable outbox event', ownerSocket.created.some((event) => (
-      event.message?.missionTaskId === delegated.task.id
-      && event.dispatches?.[0]?.registration?.id === terra.id
-    )));
-    check('automatic dependent dispatch reached owner clients', ownerSocket.created.some((event) => (
-      event.message?.missionTaskId === dependent.task.id
-      && event.dispatches?.[0]?.reasoningEffort === 'high'
-    )));
-    check('shared member received the owner-scoped worker dispatch', guestSocket.created.some((event) => (
-      event.message?.missionTaskId === delegated.task.id
-      && event.dispatches?.[0]?.registration?.id === terra.id
-    )));
-
-    const ownerReload = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages?detail=list`, { headers: owner.auth });
-    const guestReload = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages?detail=list`, { headers: guest.auth });
-    check('owner reload retains the scheduled task graph', ownerReload.messages.find((message) => message.id === rootMessage.id)?.mission?.tasks?.length === 2);
-    check('shared member reload retains the scheduled task graph', guestReload.messages.find((message) => message.id === rootMessage.id)?.mission?.tasks?.length === 2);
-
-    const pending = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agent-dispatches/pending`, { headers: owner.auth });
-    check('pending outbox survives without a renderer', pending.dispatches.some((dispatch) => (
-      dispatch.message?.missionTaskId === dependent.task.id && dispatch.registration?.id === terra.id
-    )));
-
-    const failedDependent = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/tasks/${dependent.task.id}`, {
-      method: 'PATCH', headers: agentAuth,
-      body: JSON.stringify({ status: 'failed', summary: 'Transient provider failure.' }),
-    });
-    check('worker failure asks for attention without closing the mission', failedDependent.mission?.status === 'attention');
-    const retriedDependent = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/tasks/${dependent.task.id}`, {
-      method: 'PATCH', headers: agentAuth,
-      body: JSON.stringify({ status: 'pending', summary: 'Retry with the same task and workspace.' }),
-    });
-    check('retry keeps task identity and increments its attempt', (
-      retriedDependent.mission?.tasks?.find((task) => task.id === dependent.task.id)?.attempt === 1
-    ));
-    const retryOutbox = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agent-dispatches/pending`, { headers: owner.auth });
-    check('retry gets a fresh durable dispatch instead of reusing the settled one', retryOutbox.dispatches.some((dispatch) => (
-      dispatch.message?.id === `mission-task-${dependent.task.id}-1`
-    )));
-    const history = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${mission.id}/history`, { headers: agentAuth });
-    check('append-only history retains the retry transition', history.events?.some((event) => (
-      event.kind === 'task_retried' && event.taskId === dependent.task.id
-    )));
-    const archive = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions`, { headers: agentAuth });
-    check('mission archive is independent of the transcript window', archive.missions?.some((item) => item.id === mission.id));
-
-    let runner = await runnerFor(owner.token);
-    const parallel = [];
-    for (const label of ['alpha', 'beta']) {
-      const rootId = `sys-parallel-${label}-${stamp}`;
-      await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, {
-        method: 'POST', headers: agentAuth,
-        body: JSON.stringify({
-          id: rootId, channelId: channel.id, author: 'Sol', registrationId: sol.id,
-          body: `Parallel ${label}`, createdAt: new Date().toISOString(),
-        }),
-      });
-      const { mission: parallelMission } = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions`, {
-        method: 'POST', headers: agentAuth,
-        body: JSON.stringify({
-          rootMessageId: rootId,
-          coordinatorRegistrationId: sol.id,
-          title: `Parallel ${label}`,
-          objective: `Execute parallel ${label}`,
-          controlPlane: true,
-        }),
-      });
-      check(`control-plane ${label} starts without a coordinator task`, parallelMission.tasks?.length === 0);
-      const delegatedTask = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}/tasks`, {
-        method: 'POST', headers: agentAuth,
-        body: JSON.stringify({
-          coordinatorRegistrationId: sol.id,
-          title: `Anonymous ${label}`,
-          assignee: '@sol',
-          prompt: `SYSTEM_PARALLEL_${label.toUpperCase()}`,
-          anonymous: true,
-          workspaceMode: 'isolated',
-        }),
-      });
-      parallel.push({ mission: parallelMission, task: delegatedTask.task });
-    }
-
-    const workers = [];
-    for (const { mission: parallelMission } of parallel) {
-      let observedMission;
-      let running;
-      try {
-        running = await waitUntil(`running worker for ${parallelMission.title}`, async () => {
-          const result = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}`, { headers: agentAuth });
-          observedMission = result.mission;
-          const taskState = result.mission.tasks?.[0];
-          return taskState?.status === 'running' && taskState.runId ? taskState : null;
-        });
-      } catch (error) {
-        throw new Error(`${error.message}; last mission state: ${JSON.stringify(observedMission)}`);
-      }
-      workers.push(running);
-      check(`parallel mission ${parallelMission.title} reaches running`, true);
-    }
-    check('independent anonymous missions dispatch concurrently', new Set(workers.map((run) => run.runId)).size === 2);
-    check('each worker is bound to its own isolated workspace', workers.every((run) => (
-      run.workItemId && String(run.worktreePath).startsWith('/tmp/mission-e2e-')
-    )));
-
-    const startCoordinatorTurn = async (sequence) => {
-      const messageId = `control-plane-${sequence}-${stamp}`;
-      const postedControl = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, {
-        method: 'POST', headers: owner.auth,
-        body: JSON.stringify({
-          id: messageId,
-          channelId: channel.id,
-          author: `owner_${stamp}`,
-          body: `Control-plane message ${sequence}`,
-          createdAt: new Date().toISOString(),
-        }),
-      });
-      const dispatch = postedControl.dispatches?.find((item) => item.registration?.id === sol.id);
-      if (!dispatch) throw new Error(`control-plane message ${sequence} did not dispatch Sol`);
-      const run = await waitUntil(`server-started coordinator turn ${sequence}`, () => (
-        runner.delegated.find((run) => run.chatMessageId === `agent-dispatch-${dispatch.id}`)
-      ));
-      return { id: run.runId };
-    };
-
-    const firstCoordinatorRun = await startCoordinatorTurn('one');
-    const secondCoordinatorRun = await startCoordinatorTurn('two');
-    check('new coordinator turn replaces only its foreground predecessor', (
-      runner.canceled.includes(firstCoordinatorRun.id)
-      && !runner.canceled.some((runId) => workers.some((worker) => worker.runId === runId))
-    ));
-
-    runner.socket.emit('runner:runEvent', {
-      runId: secondCoordinatorRun.id,
-      type: 'status',
-      payload: { status: 'completed', summary: 'Control plane stayed responsive.' },
-    });
-    await waitUntil('second coordinator turn completion', async () => {
-      const result = await must(`${API_BASE}/api/runs/${secondCoordinatorRun.id}`, { headers: owner.auth });
-      return result.run?.status === 'completed';
-    });
-
-    const thirdCoordinatorRun = await startCoordinatorTurn('three');
-    runner.socket.emit('runner:runEvent', {
-      runId: thirdCoordinatorRun.id,
-      type: 'status',
-      payload: { status: 'completed', summary: 'A later control-plane turn also completed.' },
-    });
-    await waitUntil('third coordinator turn completion', async () => {
-      const result = await must(`${API_BASE}/api/runs/${thirdCoordinatorRun.id}`, { headers: owner.auth });
-      return result.run?.status === 'completed';
-    });
-
-    for (const { mission: parallelMission } of parallel) {
-      const stillRunning = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}`, { headers: agentAuth });
-      check(`coordinator activity leaves ${parallelMission.title} running`, (
-        stillRunning.mission.status === 'active'
-        && stillRunning.mission.tasks?.[0]?.status === 'running'
-      ));
-    }
-
-    const missionBase = `${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions`;
-    let parent = workers[0];
-    let workerAuth = { ...agentAuth, 'x-cascade-run-id': String(parent.runId) };
-    const createChild = (title) => must(`${missionBase}/current/children`, {
-      method: 'POST', headers: workerAuth, body: JSON.stringify({ title, prompt: title }),
-    });
-    const child = await createChild('Verify child artifact');
-    const duplicateChild = await createChild('Verify child artifact');
-    check('worker-token HTTP retry creates only one child', child.task.id === duplicateChild.task.id);
-    const canceledChild = await createChild('Explicitly canceled child');
-    const taskState = async (id) => {
-      const state = await must(`${missionBase}/${parallel[0].mission.id}`, { headers: agentAuth });
-      return state.mission.tasks.find((task) => task.id === id);
-    };
-    const runningChild = await waitUntil('child runner dispatch', async () => {
-      const task = await taskState(child.task.id);
-      return task.status === 'running' && task.runId ? task : null;
-    });
-    const runningCanceledChild = await waitUntil('cancelable child runner dispatch', async () => {
-      const task = await taskState(canceledChild.task.id);
-      return task.status === 'running' && task.runId ? task : null;
-    });
-    runner.socket.emit('runner:runEvent', {
-      runId: parent.runId, type: 'session', payload: { sessionId: 'mission-http-parent-session' },
-    });
-    await waitUntil('saved parent session', async () => {
-      const { run } = await must(`${API_BASE}/api/runs/${parent.runId}`, { headers: owner.auth });
-      return run.session_id === 'mission-http-parent-session';
-    });
-    const beforeSteering = parent;
-    await must(`${missionBase}/tasks/${parent.id}/steer`, {
-      method: 'POST', headers: agentAuth,
-      body: JSON.stringify({ coordinatorRegistrationId: sol.id, runId: parent.runId,
-        attempt: parent.attempt, message: 'Retain children and verify integration evidence' }),
-    });
-    parent = await waitUntil('steered parent dispatch', async () => {
-      const task = await taskState(beforeSteering.id);
-      return task.status === 'running' && task.runId !== beforeSteering.runId ? task : null;
-    }, 20_000);
-    workerAuth = { ...agentAuth, 'x-cascade-run-id': String(parent.runId) };
-    check('steering preserves child execution and parent workspace',
-      (await taskState(child.task.id)).runId === runningChild.runId && parent.workItemId === beforeSteering.workItemId);
-    const steeredRun = await waitUntil('steered runner delivery', () => runner.delegated.find((run) => run.runId === parent.runId));
-    check('steering resumes saved provider session', steeredRun.resumeSessionId === 'mission-http-parent-session');
-    await must(`${missionBase}/tasks/${canceledChild.task.id}`, {
-      method: 'PATCH', headers: workerAuth,
-      body: JSON.stringify({ status: 'canceled', summary: 'Explicit parent cancellation' }),
-    });
-    await waitUntil('explicit child provider stop', () => runner.canceled.includes(runningCanceledChild.runId));
-    const join = await must(`${missionBase}/children/join`, {
-      method: 'POST', headers: workerAuth, body: '{}',
-    });
-    check('worker-token join returns both child obligations', join.children.length === 2);
-    runner.socket.emit('runner:runEvent', {
-      runId: parent.runId, type: 'status', payload: { status: 'completed', summary: 'Independent work complete; joining' },
-    });
-    await waitUntil('parent waits for child evidence', async () => (await taskState(parent.id)).joiningChildren);
-    const activeRuns = await Promise.all(runner.delegated.map(async ({ runId }) => {
-      const { run } = await must(`${API_BASE}/api/runs/${runId}`, { headers: owner.auth });
-      return ['queued', 'running'].includes(run.status) ? runId : null;
-    }));
-    runner.socket.disconnect();
-    await server.stop({ cleanup: false });
-    server = await launchTestBackend({ ...serverOptions, tempRoot: server.tempRoot });
-    runner = await runnerFor(owner.token, activeRuns.filter((id) => id != null));
-    check('backend restart preserves waiting parent and running child',
-      (await taskState(parent.id)).joiningChildren && (await taskState(child.task.id)).runId === runningChild.runId);
-    const premature = await request(`${missionBase}/${parallel[0].mission.id}/finish`, {
-      method: 'POST', headers: agentAuth,
-      body: JSON.stringify({ coordinatorRegistrationId: sol.id, status: 'completed', verification: 'Not yet integrated' }),
-    });
-    check('completion gate rejects unintegrated child obligations', !premature.ok);
-    runner.socket.emit('runner:runEvent', {
-      runId: runningChild.runId, type: 'status', payload: { status: 'completed', summary: 'Child artifact verified over runner socket' },
-    });
-    workers[0] = await waitUntil('parent continuation after child result', async () => {
-      const task = await taskState(parent.id);
-      return task.status === 'running' && task.runId !== parent.runId ? task : null;
-    }, 20_000);
-    const continuation = await waitUntil('continuation delivered to runner', () => runner.delegated.find((run) => run.runId === workers[0].runId));
-    check('parent continuation carries child evidence', JSON.stringify(continuation).includes('Child artifact verified over runner socket'));
-    check('join retains parent workspace', workers[0].workItemId === parent.workItemId && workers[0].worktreePath === parent.worktreePath);
-    runner.socket.emit('runner:runEvent', {
-      runId: parent.runId, type: 'status', payload: { status: 'completed', summary: 'Duplicate old completion' },
-    });
-    check('duplicate old settlement retains current parent attempt', (await taskState(parent.id)).runId === workers[0].runId);
-
-    for (const worker of workers) {
-      runner.socket.emit('runner:runEvent', {
-        runId: worker.runId,
-        type: 'status',
-        payload: { status: 'completed', summary: `Produced by run ${worker.runId}` },
-      });
-    }
-
-    for (const { mission: parallelMission } of parallel) {
-      const completed = await waitUntil(`automatic completion for ${parallelMission.title}`, async () => {
-        const result = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}`, { headers: agentAuth });
-        return result.mission.status === 'completed' ? result.mission : null;
-      });
-      check(`parallel mission ${parallelMission.title} reconciles run evidence`, (
-        completed.tasks?.[0]?.verification?.startsWith('Produced by run ')
-        && completed.tasks?.[0]?.baseCommit === '0123456789abcdef0123456789abcdef01234567'
-      ));
-      const reviewRun = await waitUntil(`server-started review for ${parallelMission.title}`, () => (
-        runner.delegated.find((run) => run.chatRegistrationId === sol.id
-          && String(run.chatTriggeringMessageId || '').startsWith(`sys-mission-${parallelMission.id}-`))
-      ), 20_000).catch(async (error) => {
-        console.error('Coordinator deliveries:', JSON.stringify(await Promise.all(runner.delegated
-          .filter((run) => run.chatRegistrationId === sol.id)
-          .map(async (run) => ({ runId: run.runId, trigger: run.chatTriggeringMessageId,
-            status: (await must(`${API_BASE}/api/runs/${run.runId}`, { headers: owner.auth })).run?.status })))));
-        throw error;
-      });
-      check(`parallel mission ${parallelMission.title} wakes its coordinator`, true);
-      const interpretationUrl = `${missionBase}/${parallelMission.id}/interpretation`;
-      const reviewAuth = { ...agentAuth, 'x-cascade-run-id': String(reviewRun.runId) };
-      const interpretation = await must(`${interpretationUrl}?coordinator=${sol.id}`, { headers: reviewAuth });
-      const input = {
-        coordinatorRegistrationId: sol.id,
-        revision: interpretation.revision,
-        fingerprint: interpretation.fingerprint,
-        assessment: 'Worker evidence inspected; finite objective complete.',
-        body: `${parallelMission.title}: verified worker outcome published.`,
-      };
-      const published = await must(interpretationUrl, {
-        method: 'POST', headers: reviewAuth, body: JSON.stringify(input),
-      });
-      const replay = await must(interpretationUrl, {
-        method: 'POST', headers: reviewAuth, body: JSON.stringify(input),
-      });
-      check(`parallel mission ${parallelMission.title} publishes idempotently after automatic completion`,
-        Boolean(published.messageId) && replay.messageId === published.messageId);
-      runner.socket.emit('runner:runEvent', {
-        runId: reviewRun.runId,
-        type: 'status',
-        payload: { status: 'completed', summary: `Reviewed ${parallelMission.title}` },
-      });
-      await waitUntil(`coordinator review turn for ${parallelMission.title}`, async () => {
-        const result = await must(`${API_BASE}/api/runs/${reviewRun.runId}`, { headers: owner.auth });
-        return result.run?.status === 'completed';
-      });
-      const transcript = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/messages`, { headers: owner.auth });
-      check(`parallel mission ${parallelMission.title} outcome is readable in chat`,
-        transcript.messages?.some((message) => message.id === published.messageId && message.body === input.body));
-    }
-    runner.socket.disconnect();
-
-    ownerSocket.socket.disconnect();
-    guestSocket.socket.disconnect();
-    if (failures) throw new Error(`${failures} mission check(s) failed`);
-    console.log('[mission-e2e] All chat-first mission checks passed');
-  } finally {
-    await server.stop();
-    await initialServer.stop();
+  server = initialServer = await launchTestBackend(serverOptions);
+  repo = path.join(server.tempRoot, 'artifact-repo');
+  fs.mkdirSync(repo);
+  git(repo, 'init', '-b', 'master');
+  fs.writeFileSync(path.join(repo, 'slug.mjs'), 'export const slug = (value) => value;\n');
+  const baseCommit = commit(repo, 'Baseline slug fixture');
+  owner = await register(`mission_owner_${Date.now()}`);
+  const guest = await register(`mission_guest_${Date.now()}`);
+  helper = { authorization: `Bearer ${(await must('/api/auth/agent-token', owner.auth, 'POST', {})).token}` };
+  const { vault } = await must('/api/vaults', owner.auth, 'POST', { name: 'Internal mission acceptance' });
+  await must(`/api/vaults/${vault.id}/members`, owner.auth, 'POST', { username: guest.user.username, role: 'editor' });
+  const identities = {};
+  for (const mention of ['coordinator', 'implementer', 'reviewer', 'integrator']) {
+    identities[mention] = (await must(`/api/vaults/${vault.id}/vault-agents`, owner.auth, 'PUT', {
+      agentId: 'codex', mention, displayName: mention, model: 'gpt-5.6-sol', cwd: repo })).agent;
   }
-}
+  const mission = enrich((await must(`/api/vaults/${vault.id}/missions`, owner.auth, 'POST', {
+    id: randomUUID(), title: 'Build a tested slug function', coordinatorIdentityId: identities.coordinator.id,
+    briefContent: 'Implement slug(value): trim, lowercase, and replace whitespace with a single hyphen. Independent review and integration required.' })).mission);
+  check('mission starts in planning with a dedicated channel and brief', mission.phase === 'planning' && mission.channelId && mission.notes.length === 1);
+  await must(`/api/vaults/${vault.id}/channels/${mission.channelId}/agents`);
+  const guestState = (await must(mission.workspace, guest.auth)).mission;
+  check('another vault member can open the same mission', guestState.id === mission.id);
+  const external = await register(`mission_external_${Date.now()}`);
+  check('unrelated user cannot read the mission', !(await request(mission.workspace, external.auth)).ok);
+  check('agent credentials cannot approve execution', !(await request(`${mission.workspace}/approve`, helper, 'POST', { expectedRevisions: Object.fromEntries(mission.notes.map((n) => [n.noteId, n.revision])) })).ok);
+  check('implementation is rejected during planning', !(await request(`${mission.taskBase}/${mission.id}/tasks`, helper, 'POST', {
+    coordinatorRegistrationId: mission.coordinatorRegistrationId, title: 'Unauthorized implementation', purpose: 'implementation', assignee: '@implementer' })).ok);
+  const research = await add(mission, 'research', '@reviewer', 'Inspect fixture requirements');
+  runner = await runnerFor();
+  const researchRun = await running(mission, research.id);
+  check('research dispatch receives planning context and a real isolated worktree',
+    JSON.stringify(researchRun.payload).includes('planning') && fs.existsSync(researchRun.worktreePath));
+  check('baseline artifact fails requirements', !testArtifact(researchRun.worktreePath));
+  await settle(mission, researchRun, `Research inspected ${baseCommit}; baseline does not normalize whitespace.`);
+  await approve(mission);
+  check('human approval moves the mission to execution', (await state(mission)).phase === 'executing');
+  const implementation = await add(mission, 'implementation', '@implementer', 'Implement slug and await amended edge case', [research.id]);
+  let implementing = await running(mission, implementation.id);
 
-main().catch((error) => {
-  console.error('[mission-e2e] FAILED:', error.message || error);
-  process.exit(1);
-});
+  const beforeEdit = await state(mission);
+  const brief = beforeEdit.notes.find((note) => note.kind === 'mission');
+  const note = (await must(`/api/notes/${brief.noteId}`)).note;
+  const updated = await must(`/api/notes/${brief.noteId}`, guest.auth, 'PUT', {
+    content: `${note.content}\nSteering acceptance marker: also collapse repeated internal whitespace.`, expectedRevision: note.revision });
+  check('collaborator note edit advances its revision', updated.note.revision !== note.revision);
+  check('stale note save is rejected without overwrite', (await request(`/api/notes/${brief.noteId}`, owner.auth, 'PUT', {
+    content: 'stale overwrite', expectedRevision: note.revision })).status === 409);
+  const oldRunId = implementing.runId;
+  await must(`${mission.taskBase}/tasks/${implementation.id}/steer`, helper, 'POST', {
+    coordinatorRegistrationId: mission.coordinatorRegistrationId, message: 'Steering acceptance marker: collapse repeated internal whitespace.',
+    attempt: implementing.attempt, runId: implementing.runId });
+  implementing = await until('steered attempt receives fresh instructions', async () => {
+    const row = await task(mission, implementation.id);
+    const payload = runner.delegated.find((item) => item.runId === row.runId);
+    return row.runId !== oldRunId && row.status === 'running' && payload ? { ...row, payload } : null;
+  });
+  check('steering stops old execution, preserves workspace and reaches resumed worker',
+    runner.canceled.includes(oldRunId) && implementing.workItemId === implementation.workItemId
+      && JSON.stringify(implementing.payload).includes('Steering acceptance marker'));
+
+  const message = await must(`/api/vaults/${vault.id}/channels/${mission.channelId}/messages`, owner.auth, 'POST', {
+    id: randomUUID(), author: owner.user.username, body: 'Confirm you are available while implementation runs.', channelId: mission.channelId });
+  const responseRun = await until('coordinator gets live human message while worker executes', () => runner.delegated.find((run) => run.chatMessageId === `agent-dispatch-${message.dispatches?.[0]?.id}`));
+  check('coordinator stays reachable without replacing its worker', responseRun.runId !== implementing.runId && !runner.canceled.includes(implementing.runId));
+  runner.socket.emit('runner:runEvent', { runId: responseRun.runId, type: 'status', payload: { status: 'completed', summary: 'Worker remains responsible; amended brief acknowledged.' } });
+
+  fs.writeFileSync(path.join(implementing.worktreePath, 'slug.mjs'), "export const slug = (value) => value.trim().toLowerCase().replace(' ', '-');\n");
+  const firstCommit = commit(implementing.worktreePath, 'Implement basic slug normalization');
+  check('implementation produces a real commit with passing basic tests', testArtifact(implementing.worktreePath) && firstCommit !== baseCommit);
+  await settle(mission, implementing, `Implemented ${firstCommit}; basic Node assertions passed.`);
+  check('worker completion alone cannot close a mission', !(await finish(mission, 'completed', 'Premature completion')).ok);
+  const review = await add(mission, 'review', '@reviewer', 'Review implementation including repeated whitespace', [implementation.id]);
+  const reviewing = await running(mission, review.id);
+  git(reviewing.worktreePath, 'checkout', '--detach', firstCommit);
+  check('independent review finds the deliberately missed edge case', !testArtifact(reviewing.worktreePath, true));
+  await settle(mission, reviewing, `Reviewed ${firstCommit}: repeated spaces fail; changes requested.`, { reviewOutcome: 'changes_requested' });
+  const fix = await add(mission, 'fix', '@implementer', 'Fix repeated whitespace after independent review', [review.id]);
+  const fixing = await running(mission, fix.id);
+  git(fixing.worktreePath, 'checkout', '--detach', firstCommit);
+  fs.writeFileSync(path.join(fixing.worktreePath, 'slug.mjs'), 'export const slug = (value) => value.trim().toLowerCase().replace(/\\s+/g, "-");\n');
+  const fixedCommit = commit(fixing.worktreePath, 'Collapse repeated whitespace');
+  check('fix satisfies all real Node assertions', testArtifact(fixing.worktreePath, true));
+  await settle(mission, fixing, `Fixed ${fixedCommit}; strict Node assertions passed.`);
+  const accepted = await add(mission, 'review', '@reviewer', 'Independently accept corrected implementation', [fix.id]);
+  const accepting = await running(mission, accepted.id);
+  git(accepting.worktreePath, 'checkout', '--detach', fixedCommit);
+  check('independent reviewer verifies the exact corrected revision', testArtifact(accepting.worktreePath, true));
+  await settle(mission, accepting, `Accepted ${fixedCommit}; all requirements verified independently.`, { reviewOutcome: 'accepted' });
+  const integration = await add(mission, 'integration', '@integrator', 'Integrate independently accepted revision', [accepted.id]);
+  const integrating = await running(mission, integration.id);
+  git(repo, 'merge', '--ff-only', fixedCommit);
+  check('integration lands the exact verified commit in the fixture main branch', git(repo, 'rev-parse', 'master') === fixedCommit && testArtifact(repo, true));
+  await settle(mission, integrating, `Integrated ${fixedCommit} into fixture master; strict assertions passed.`);
+  const verification = await add(mission, 'verification', '@reviewer', 'Verify integrated artifact', [integration.id]);
+  const verifying = await running(mission, verification.id);
+  check('verification worktree starts from integrated master', git(verifying.worktreePath, 'rev-parse', 'HEAD') === fixedCommit && testArtifact(verifying.worktreePath, true));
+  await settle(mission, verifying, `Verified integrated ${fixedCommit}.`, { verificationPassed: true });
+  const final = await finish(mission, 'completed', `Delivered ${fixedCommit}; independent review and integrated Node tests passed.`);
+  check('full reviewed delivery closes successfully', final.ok && (await state(mission)).phase === 'closed');
+  const history = await must(`${mission.taskBase}/${mission.id}/history`, helper);
+  check('history preserves worker, steering, and completion evidence', history.events.some((event) => event.kind === 'mission_completed') && history.events.some((event) => String(event.kind).includes('steer')));
+
+  const stopped = enrich((await must(`/api/vaults/${vault.id}/missions`, owner.auth, 'POST', {
+    id: randomUUID(), title: 'Stop and restart acceptance', coordinatorIdentityId: identities.coordinator.id,
+    briefContent: 'Research only; stop on request and never resume without fresh authority.' })).mission);
+  await must(`/api/vaults/${vault.id}/channels/${stopped.channelId}/agents`);
+  const stopTask = await add(stopped, 'research', '@implementer', 'Wait for explicit Stop');
+  const stopping = await running(stopped, stopTask.id);
+  check('Stop closes the mission and reaches its active worker', (await finish(stopped, 'canceled', 'Owner requested Stop.')).ok);
+  await until('runner acknowledges Stop', () => runner.canceled.includes(stopping.runId));
+  const legacy = enrich((await must(`/api/vaults/${vault.id}/missions`, owner.auth, 'POST', {
+    id: randomUUID(), title: 'Unfinished mission before upgrade', coordinatorIdentityId: identities.coordinator.id,
+    briefContent: 'Preserve this unfinished responsibility and ask before continuing.' })).mission);
+  await must(`/api/vaults/${vault.id}/channels/${legacy.channelId}/agents`);
+  const legacyTask = await add(legacy, 'research', '@implementer', 'Historical task awaiting a decision');
+  const legacyRun = await running(legacy, legacyTask.id);
+  runner.socket.disconnect();
+  await server.stop({ cleanup: false });
+  // Only this owned throwaway DB is edited: emulate a pre-cutover database so
+  // the real startup migration, not a test-side substitute, fences old work.
+  const database = new DatabaseSync(initialServer.databasePath);
+  database.prepare("DELETE FROM chat_mission_migrations WHERE name IN ('mission-workspace-fence-v2','mission-workspace-decisions-v1')").run();
+  database.close();
+  server = await launchTestBackend({ ...serverOptions, tempRoot: initialServer.tempRoot });
+  runner = await runnerFor();
+  await sleep(1_000);
+  check('restart retains completed delivery and stopped mission without worker revival',
+    (await state(mission)).phase === 'closed' && (await state(stopped)).status === 'canceled'
+      && !runner.delegated.some((run) => run.missionTaskId === stopTask.id));
+  check('restart preserves the exact integrated artifact', git(repo, 'rev-parse', 'master') === fixedCommit && testArtifact(repo, true));
+  const migrated = await state(legacy);
+  check('migration fences unfinished work and clears stale execution authority', migrated.phase === 'planning'
+    && migrated.tasks.every((row) => row.status === 'canceled') && !migrated.approvedAt);
+  const legacyMessages = async () => (await must(`/api/vaults/${vault.id}/channels/${legacy.channelId}/messages`)).messages;
+  const migrationQuestion = (messages) => messages.filter((message) => message.body.includes('Should I resume it with a newly approved brief'));
+  await until('orchestrator publishes the migration question', async () => migrationQuestion(await legacyMessages()).length === 1);
+  check('migration question is visible while historical worker remains stopped',
+    !(runner.delegated.some((run) => run.runId === legacyRun.runId)) && (await task(legacy, legacyTask.id)).status === 'canceled');
+  runner.socket.disconnect();
+  await server.stop({ cleanup: false });
+  server = await launchTestBackend({ ...serverOptions, tempRoot: initialServer.tempRoot });
+  runner = await runnerFor();
+  await sleep(1_000);
+  check('second restart retains one question and does not resume historical work',
+    migrationQuestion(await legacyMessages()).length === 1 && (await state(legacy)).phase === 'planning'
+      && (await task(legacy, legacyTask.id)).status === 'canceled');
+  await approve(legacy);
+  const decided = await must(`${legacy.taskBase}/${legacy.id}/interpretation?coordinator=${legacy.coordinatorRegistrationId}`, helper);
+  check('fresh human approval durably answers the migration decision', decided.understanding.questions.some((q) => q.id === 'migration-resumption' && q.status === 'answered'));
+  await finish(legacy, 'canceled', 'Migration acceptance complete; stop the fixture.');
+  const evidence = { kind: 'deterministic internal acceptance, real server and artifacts', checks, baseCommit, fixedCommit,
+    missionId: mission.id, stoppedMissionId: stopped.id, worktrees: [...worktrees.values()] };
+  fs.writeFileSync(path.join(initialServer.tempRoot, 'mission-evidence.json'), JSON.stringify(evidence, null, 2));
+  console.log(JSON.stringify({ passed: checks.length, evidence: path.join(initialServer.tempRoot, 'mission-evidence.json'), fixedCommit }));
+}
+try { await main(); }
+catch (error) { console.error(error.stack); if (server) console.error(server.output?.()); process.exitCode = 1; }
+finally {
+  for (const socket of sockets) socket.disconnect();
+  await server?.stop();
+  if (initialServer !== server) await initialServer?.stop();
+}
