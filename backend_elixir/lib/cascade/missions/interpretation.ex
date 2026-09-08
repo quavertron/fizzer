@@ -5,6 +5,8 @@ defmodule Cascade.Missions.Interpretation do
   alias Cascade.Missions.Store
   alias Cascade.Realtime.OrderedPublisher
 
+  @max_retries 3
+
   @columns "state_json,revision,handled_fingerprint,pending_fingerprint,pending_context_json,dispatch_id,attempt,retry_after,stopped,publication_pending"
 
   defp coordinator(id),
@@ -257,7 +259,36 @@ defmodule Cascade.Missions.Interpretation do
   end
 
   defp retry_wake(update, record) do
+    current = snapshot(update.mission.id, record.state)
+    digest = fingerprint(current)
+
     cond do
+      record.attempt >= @max_retries and digest != record.pending ->
+        # Only a settled batch reaches here. Preserve its understanding while
+        # giving changed evidence a fresh budget and invalidating stale writers.
+        SQL.exec(
+          """
+          UPDATE chat_mission_interpretations SET revision=revision+1,
+            pending_fingerprint=?,pending_context_json=?,attempt=0,retry_after=NULL
+          WHERE mission_id=?
+          """,
+          [digest, Jason.encode!(current), update.mission.id]
+        )
+
+        wake(update, %{
+          record
+          | revision: record.revision + 1,
+            pending: digest,
+            context: current,
+            attempt: 0,
+            retry: nil
+        })
+
+      record.attempt >= @max_retries ->
+        # Keep the unacknowledged responsibility available to its coordinator;
+        # elapsed time alone must not restart an unchanged failed batch forever.
+        nil
+
       record.retry == nil ->
         seconds = min(300, 10 * (record.attempt + 1))
 

@@ -221,7 +221,7 @@ defmodule Cascade.Missions.Scheduler do
 
     body =
       if Map.has_key?(wake, :interpretation) do
-        Cascade.Missions.Interpretation.prompt(wake)
+        "Reviewing updates for mission #{wake.mission.id}: #{wake.mission.title}"
       else
         """
         @#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.

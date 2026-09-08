@@ -130,7 +130,7 @@ defmodule Cascade.Missions.InterpretationTest do
       Scheduler.schedule().wakeDispatches
       |> Enum.filter(&String.contains?(&1.message.body, c.mission))
 
-    assert next.message.body =~ "Which condition permits resuming?"
+    assert Interpretation.dispatch_prompt(next.dispatch.id) =~ "Which condition permits resuming?"
     assert Scheduler.schedule(c.mission).wakeDispatches == []
     next_run = run(c, next.dispatch)
 
@@ -228,7 +228,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
     for prompt <- [
           Interpretation.context(c.user.id, c.channel, c.coordinator.id),
-          next.message.body
+          Interpretation.dispatch_prompt(next.dispatch.id)
         ] do
       refute prompt =~ "fulfilled-only-marker"
       assert prompt =~ "still-open-marker"
@@ -446,7 +446,6 @@ defmodule Cascade.Missions.InterpretationTest do
     [wake] = Scheduler.schedule(c.mission).wakeDispatches
 
     for prompt <- [
-          wake.message.body,
           Interpretation.dispatch_prompt(wake.dispatch.id),
           Interpretation.context(c.user.id, c.channel, c.coordinator.id)
         ] do
@@ -690,6 +689,76 @@ defmodule Cascade.Missions.InterpretationTest do
            ]) == [0]
   end
 
+  for terminal <- ["failed", "completed"] do
+    @terminal terminal
+    test "unchanged #{@terminal} interpretation exhausts retries but new evidence can resume",
+         c do
+      finding(c, "Original finding")
+      [wake] = Scheduler.schedule(c.mission).wakeDispatches
+
+      last =
+        Enum.reduce(1..3, wake, fn _, wake ->
+          review = run(c, wake.dispatch)
+          :ok = Runs.finish(review.id, @terminal, "No acknowledgment")
+          assert Scheduler.schedule(c.mission).wakeDispatches == []
+
+          SQL.exec(
+            "UPDATE chat_mission_interpretations SET retry_after=datetime('now','-1 second') WHERE mission_id=?",
+            [c.mission]
+          )
+
+          [next] = Scheduler.schedule(c.mission).wakeDispatches
+          next
+        end)
+
+      review = run(c, last.dispatch)
+      :ok = Runs.finish(review.id, @terminal, "No acknowledgment")
+      before = state(c)
+
+      for _ <- 1..3 do
+        SQL.exec(
+          "UPDATE chat_mission_interpretations SET retry_after=datetime('now','-1 second') WHERE mission_id=?",
+          [c.mission]
+        )
+
+        assert Scheduler.schedule(c.mission).wakeDispatches == []
+      end
+
+      assert state(c).fingerprint == before.fingerprint
+      assert state(c).revision == before.revision
+
+      finding(c, "New evidence from the worker")
+      [fresh] = Scheduler.schedule(c.mission).wakeDispatches
+      refute fresh.dispatch.id == last.dispatch.id
+      assert Interpretation.dispatch_prompt(fresh.dispatch.id) =~ "New evidence from the worker"
+      assert state(c).revision > before.revision
+      assert Scheduler.schedule(c.mission).wakeDispatches == []
+      next_run = run(c, fresh.dispatch)
+      {{:ok, _}, _} = record(c, next_run, %{"noMaterialChange" => true})
+    end
+  end
+
+  test "chat wake contains only a status while provider admission retains the full instructions",
+       c do
+    finding(c, "Private-to-run evidence marker")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    assert wake.message.body == "Reviewing updates for mission #{c.mission}: Deliver behavior"
+    refute wake.message.body =~ "Private-to-run evidence marker"
+
+    execution = %{
+      registration: c.coordinator,
+      target_channel_id: c.channel,
+      runner_user_id: c.user.id,
+      agent: c.coordinator.agentId,
+      vault: %{id: c.vault}
+    }
+
+    prompt = Cascade.Chat.DispatchPrompt.build(wake.dispatch, execution, nil).prompt
+    assert prompt =~ "Private-to-run evidence marker"
+    assert prompt =~ "Interpret meaningful changes"
+    assert prompt =~ "noMaterialChange"
+  end
+
   test "automatic completion leaves pending explanation dispatch executable and objective assessment independent",
        c do
     [worker] = Scheduler.schedule(c.mission).dispatches
@@ -746,7 +815,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
     :ok = Runs.finish(review.id, "completed", "Saved")
     [overdue] = Scheduler.schedule(c.mission).wakeDispatches
-    assert overdue.message.body =~ "Report the rollout"
+    assert Interpretation.dispatch_prompt(overdue.dispatch.id) =~ "Report the rollout"
     assert state(c).evidence["overdueCommitments"] |> length() == 1
     overdue_run = run(c, overdue.dispatch)
     {{:ok, _}, _} = record(c, overdue_run, %{"noMaterialChange" => true})
@@ -791,8 +860,11 @@ defmodule Cascade.Missions.InterpretationTest do
 
     :ok = Runs.finish(review.id, "completed", "Checkpoint saved")
     [next] = Scheduler.schedule(c.mission).wakeDispatches
-    assert next.message.body =~ "Recover the existing authorized task"
-    assert next.message.body =~ "What remains unfinished?"
+
+    assert Interpretation.dispatch_prompt(next.dispatch.id) =~
+             "Recover the existing authorized task"
+
+    assert Interpretation.dispatch_prompt(next.dispatch.id) =~ "What remains unfinished?"
     assert Scheduler.schedule(c.mission).wakeDispatches == []
     next_run = run(c, next.dispatch)
 
@@ -829,7 +901,7 @@ defmodule Cascade.Missions.InterpretationTest do
     SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [c.mission])
     :ok = Runs.finish(review.id, "completed", "Execution done; answer still owed")
     [next] = Scheduler.schedule(c.mission).wakeDispatches
-    assert next.message.body =~ "What did the checks demonstrate?"
+    assert Interpretation.dispatch_prompt(next.dispatch.id) =~ "What did the checks demonstrate?"
     stopped = run(c, next.dispatch)
     Interpretation.stop_run(stopped.id)
     :ok = Runs.finish(stopped.id, "canceled", "Owner Stop")
@@ -889,7 +961,10 @@ defmodule Cascade.Missions.InterpretationTest do
     :ok = Runs.finish(review.id, "completed", "Original provider still owns work")
     [agenda] = Scheduler.schedule(c.mission).wakeDispatches
     action = run(c, agenda.dispatch)
-    assert agenda.message.body =~ "failed projection or reconnect text is not proof"
+
+    assert Interpretation.dispatch_prompt(agenda.dispatch.id) =~
+             "failed projection or reconnect text is not proof"
+
     # Simulate a confirmed terminal provider result, then use existing recovery.
     :ok = Runs.finish(worker_run.id, "failed", "Confirmed provider exit")
     [work_item] = SQL.one("SELECT work_item_id FROM chat_mission_tasks WHERE id=?", [c.task])
