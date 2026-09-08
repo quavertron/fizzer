@@ -23,6 +23,7 @@ import {
   fetchMissionTaskTrace,
   saveMissionNote,
   steerMissionTask,
+  stopMission,
   type MissionHistoryEvent,
   type MissionNote,
   type MissionNoteInput,
@@ -96,6 +97,16 @@ export function mergeMissionTraceMessages(snapshot: ChatMessage[], live: ChatMes
   return [...merged.values()];
 }
 
+function missionTaskNotePath(notes: MissionNoteRef[], task: Pick<MissionTask, 'briefNoteId'>): MissionNoteRef[] {
+  const result: MissionNoteRef[] = [];
+  let note = notes.find((candidate) => candidate.noteId === task.briefNoteId);
+  while (note && !result.some((candidate) => candidate.noteId === note!.noteId)) {
+    result.push(note);
+    note = notes.find((candidate) => candidate.noteId === note!.parentNoteId);
+  }
+  return result;
+}
+
 type MissionView = 'brief' | 'work' | 'history';
 type NoteConflict = { current: MissionNote | null; draft: string; message: string };
 type CreateNoteState = { kind: 'milestone' | 'feature'; parentNoteId: string | null; title: string } | null;
@@ -152,6 +163,7 @@ export function MissionWorkspace({
   const [createNote, setCreateNote] = useState<CreateNoteState>(null);
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
   const [traceFullscreen, setTraceFullscreen] = useState(false);
+  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [traceMessages, setTraceMessages] = useState<Record<string, ChatMessage[]>>({});
   const [traceLoading, setTraceLoading] = useState<Record<string, boolean>>({});
   const [steerDraft, setSteerDraft] = useState('');
@@ -164,6 +176,7 @@ export function MissionWorkspace({
   const [saving, setSaving] = useState<Set<string>>(() => new Set());
   const [creating, setCreating] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
@@ -327,6 +340,7 @@ export function MissionWorkspace({
 
   const dirtyNoteIds = [...dirtyRef.current];
   const tasks = mission?.tasks ?? [];
+  const standaloneTasks = tasks.filter((task) => !noteRefs.some((note) => note.noteId === task.briefNoteId && note.kind !== 'mission'));
   const activeTasks = tasks.filter((task) => task.status === 'running').length;
   const pendingTasks = tasks.filter((task) => task.status === 'pending').length;
   const blockedTasks = tasks.filter((task) => task.status === 'blocked' || task.status === 'failed').length;
@@ -505,7 +519,6 @@ export function MissionWorkspace({
   const hydrateTrace = useCallback(async (task: MissionTask) => {
     if (!mission?.channelId || !task.id) return;
     const key = missionTraceKey(task);
-    if (traceMessages[key]) return;
     const request = (traceRequestRef.current[key] ?? 0) + 1;
     traceRequestRef.current[key] = request;
     setTraceLoading((previous) => ({ ...previous, [key]: true }));
@@ -522,29 +535,46 @@ export function MissionWorkspace({
         setTraceLoading((previous) => ({ ...previous, [key]: false }));
       }
     }
-  }, [mission?.channelId, traceMessages, vaultId]);
+  }, [mission?.channelId, vaultId]);
+
+  const revealTask = useCallback((task: MissionTask) => {
+    setView('work');
+    const path = missionTaskNotePath(mission?.notes ?? [], task);
+    setOpenMilestones((previous) => new Set([...previous, ...path.filter((note) => note.kind === 'milestone').map((note) => note.noteId)]));
+    setOpenFeatures((previous) => new Set([...previous, ...path.filter((note) => note.kind === 'feature').map((note) => note.noteId)]));
+    setFocusedTaskId(task.id);
+  }, [mission?.notes]);
+
+  useEffect(() => {
+    if (view !== 'work' || !focusedTaskId) return;
+    const frame = requestAnimationFrame(() => {
+      document.getElementById(`mission-worker-${focusedTaskId}`)?.scrollIntoView({ block: 'nearest' });
+      setFocusedTaskId(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [view, focusedTaskId]);
 
   const openTrace = useCallback((task: MissionTask, trigger: HTMLElement | null) => {
     if (!task.id) return;
     restoreFocusRef.current = trigger;
-    setView('work');
+    revealTask(task);
     setTraceTaskId(task.id);
     setSteerDraft('');
     setSteerError('');
-    void hydrateTrace(task);
-  }, [hydrateTrace]);
+  }, [revealTask]);
 
   const activeTraceTask = tasks.find((task) => task.id === traceTaskId) ?? null;
   useEffect(() => {
     if (!activeTraceTask) return;
     void hydrateTrace(activeTraceTask);
-  }, [activeTraceTask, hydrateTrace]);
+  }, [activeTraceTask?.id, activeTraceTask?.attempt, activeTraceTask?.runId, activeTraceTask?.status, hydrateTrace, online]);
 
   const activeTraceMessages = activeTraceTask
     ? mergeMissionTraceMessages(
       traceMessages[missionTraceKey(activeTraceTask)] ?? [],
-      channelMessages.filter((message) => message.missionTaskId === activeTraceTask.id
-        || (activeTraceTask.runId != null && message.runId === activeTraceTask.runId)),
+      channelMessages.filter((message) => activeTraceTask.runId != null
+        ? message.runId === activeTraceTask.runId
+        : message.missionTaskId === activeTraceTask.id),
     )
     : [];
   const submitSteering = useCallback(async () => {
@@ -573,6 +603,65 @@ export function MissionWorkspace({
       setSteering(false);
     }
   }, [activeTraceTask, loadMission, mission, onMissionChanged, steerDraft, steering, vaultId]);
+
+  const workerTrace = activeTraceTask && <section className={`mission-trace${traceFullscreen ? ' is-fullscreen' : ''}`} aria-label={`Worker trace for ${taskWorkerLabel(activeTraceTask)}`}>
+        <header>
+          <div><strong>@{taskWorkerLabel(activeTraceTask)}</strong><span>{activeTraceTask.title} · {taskStatusLabel(activeTraceTask)}{activeTraceTask.runId != null ? ` · run ${activeTraceTask.runId}` : ''}</span></div>
+          <div>
+            <button type="button" onClick={() => void hydrateTrace(activeTraceTask)} title="Refresh trace">↻</button>
+            <button type="button" onClick={() => setTraceFullscreen((value) => !value)} title={traceFullscreen ? 'Exit fullscreen' : 'Open fullscreen'}><Expand size={14} /></button>
+            <button type="button" onClick={() => { setTraceFullscreen(false); setTraceTaskId(null); restoreFocusRef.current?.focus(); }} title="Close trace"><X size={14} /></button>
+          </div>
+        </header>
+        <div className="mission-trace-body" role="log">
+          {traceLoading[missionTraceKey(activeTraceTask)] && <div className="mission-empty"><LoadingIndicator label="Loading stored task trace" /></div>}
+          {!traceLoading[missionTraceKey(activeTraceTask)] && activeTraceMessages.length === 0 && <div className="mission-empty">No stored trace messages for this task yet.</div>}
+          {activeTraceMessages.map((message) => (
+            <article key={message.id}>
+              <time>{eventDate(message.createdAt)}</time>
+              <span className="mission-trace-status">{message.status || 'done'}</span>
+              <div>
+                {message.body && <p>{message.body}</p>}
+                {message.blocks?.map((block, index) => (
+                  block.text || block.redacted
+                    ? <pre key={`${message.id}-block-${index}`} className={`mission-trace-block mission-trace-${block.type}`}>{block.redacted ? '[redacted]' : block.text}</pre>
+                    : null
+                ))}
+                {message.harnessLog && <details open><summary>Harness log</summary><pre className="mission-trace-harness">{message.harnessLog}</pre></details>}
+                {!message.body && !message.harnessLog && !(message.blocks?.some((block) => block.text || block.redacted)) && <p>(no public output)</p>}
+              </div>
+            </article>
+          ))}
+        </div>
+        <form className="mission-trace-steering" onSubmit={(event) => { event.preventDefault(); void submitSteering(); }}>
+          <textarea
+            value={steerDraft}
+            onChange={(event) => { setSteerDraft(event.target.value); setSteerError(''); }}
+            placeholder="Send guidance to this worker…"
+            aria-label="Worker steering message"
+            rows={2}
+            disabled={steering || mission?.phase === 'closed' || activeTraceTask.status === 'canceled' || activeTraceTask.status === 'completed'}
+          />
+          <button type="submit" disabled={steering || !steerDraft.trim() || !mission?.coordinatorRegistrationId || mission.phase === 'closed' || activeTraceTask.status === 'canceled' || activeTraceTask.status === 'completed'}>{steering ? 'Sending…' : 'Steer worker'}</button>
+          {steerError && <span className="mission-error" role="alert">{steerError}</span>}
+        </form>
+      </section>;
+
+  const handleStop = async () => {
+    if (!mission?.coordinatorRegistrationId || stopping) return;
+    setStopping(true);
+    setError('');
+    try {
+      const stopped = await stopMission(vaultId, mission.channelId, mission.id, mission.coordinatorRegistrationId);
+      setMission(stopped);
+      setNotice('Mission stopped. Worker cancellation requested.');
+      onMissionChanged?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not stop mission');
+    } finally {
+      setStopping(false);
+    }
+  };
 
   const renderNote = (reference: MissionNoteRef, compact = false) => {
     const note = notes[reference.noteId];
@@ -616,11 +705,20 @@ export function MissionWorkspace({
           onWorkerMention={onWorkerMention}
         />
         <div className="mission-note-actions">
-          {incomingRevisionChanged && !conflict && <span className="mission-muted" role="status">A newer server revision is loaded; your draft still saves against its original revision.</span>}
+          {incomingRevisionChanged && !conflict && <span className="mission-muted" role="status">Someone updated this note. Your unsaved edits are preserved; review the changes before saving.</span>}
           {dirtyRef.current.has(reference.noteId) && <span className="mission-dirty">Unsaved changes</span>}
           {saving.has(reference.noteId) && <span className="mission-muted">Saving…</span>}
           {!saving.has(reference.noteId) && dirtyRef.current.has(reference.noteId) && (
             <button type="button" className="mission-save-button" onClick={() => void saveNote(reference.noteId)}><Save size={13} /> Save</button>
+          )}
+          {mission?.phase === 'planning' && !dirtyRef.current.has(reference.noteId)
+            && note.revision !== reviewedRevisionsRef.current[reference.noteId] && (
+            <button type="button" className="mission-save-button" onClick={() => {
+              if (note.revision) reviewedRevisionsRef.current[reference.noteId] = note.revision;
+              setNotes((previous) => ({ ...previous }));
+              setNotice('Updated note marked reviewed.');
+              setError('');
+            }}>Mark updated note reviewed</button>
           )}
           <button type="button" className="mission-open-note" onClick={() => onOpenNote(reference.noteId)}>Open note</button>
         </div>
@@ -663,6 +761,7 @@ export function MissionWorkspace({
               <button
                 type="button"
                 key={task.id}
+                id={`mission-worker-${task.id}`}
                 className={`mission-worker-mention mission-worker-${task.status}`}
                 title={`${task.title} · ${taskStatusLabel(task)}`}
                 onClick={(event) => void openTrace(task, event.currentTarget)}
@@ -670,6 +769,7 @@ export function MissionWorkspace({
             ))}
           </div>
         )}
+        {reference.kind !== 'mission' && activeTraceTask?.briefNoteId === reference.noteId && workerTrace}
       </div>
     );
   };
@@ -684,11 +784,12 @@ export function MissionWorkspace({
       <header className="mission-toolbar">
         <div className="mission-title"><span className="mission-mark" aria-hidden="true">◇</span><span>{mission.title}</span></div>
         <span className="mission-phase">{mission.phase}</span>
+        {mission.phase !== 'closed' && <button type="button" className="mission-stop" disabled={stopping || !mission.coordinatorRegistrationId} onClick={() => void handleStop()}>{stopping ? 'Stopping…' : 'Stop'}</button>}
         <nav className="mission-tabs" aria-label="Mission views">
           <button type="button" className={view === 'brief' ? 'is-active' : ''} onClick={() => setView('brief')}>Brief</button>
           <button type="button" className={view === 'work' ? 'is-active' : ''} onClick={() => setView('work')}>Work</button>
         </nav>
-        <button type="button" className="mission-live-summary" onClick={() => { setView('work'); const task = tasks.find((candidate) => candidate.status === 'running') ?? tasks.find((candidate) => candidate.status === 'pending'); if (task?.briefNoteId) setOpenFeatures((previous) => new Set(previous).add(task.briefNoteId!)); }}>
+        <button type="button" className="mission-live-summary" onClick={() => { const task = tasks.find((candidate) => candidate.status === 'running') ?? tasks.find((candidate) => candidate.status === 'pending'); if (task) revealTask(task); else setView('work'); }}>
           <span className={`mission-live-dot${activeTasks ? ' is-live' : ''}`} /> {activeTasks} active · {pendingTasks} queued · {completedTasks} done
         </button>
         <button type="button" className="mission-icon-button" aria-expanded={detailsOpen} title="Mission details" onClick={() => setDetailsOpen((value) => !value)}><Clock3 size={15} /></button>
@@ -705,7 +806,7 @@ export function MissionWorkspace({
             <section className="mission-view mission-brief-view" aria-label="Mission brief">
               {briefRef ? renderNote(briefRef) : <div className="mission-empty">This mission has no brief note.</div>}
               {mission.phase === 'planning' && (
-                <div className="mission-approval-bar"><div><strong>Planning revision ready?</strong><span>Approval snapshots every linked note revision and starts execution.</span></div><button type="button" disabled={approving || dirtyNoteIds.length > 0 || !briefRef} onClick={() => void handleApprove()}>{approving ? 'Approving…' : 'Approve mission'}</button>{dirtyNoteIds.length > 0 && <small>Save your drafts before approving.</small>}</div>
+                <div className="mission-approval-bar"><div><strong>Planning revision ready?</strong><span>Approve this plan to let workers begin implementation.</span></div><button type="button" disabled={approving || dirtyNoteIds.length > 0 || !briefRef} onClick={() => void handleApprove()}>{approving ? 'Approving…' : 'Approve mission'}</button>{dirtyNoteIds.length > 0 && <small>Save your drafts before approving.</small>}</div>
               )}
             </section>
           )}
@@ -714,6 +815,16 @@ export function MissionWorkspace({
               <div className="mission-view-heading"><div><span className="mission-eyebrow">Milestones &amp; features</span><p>Editable plan notes, dependencies, open questions, and explicit assignment boundaries.</p></div><button type="button" onClick={() => setCreateNote({ kind: 'milestone', parentNoteId: null, title: '' })}><Plus size={14} /> Add milestone</button></div>
               {createNote?.kind === 'milestone' && <div className="mission-create-form"><input autoFocus value={createNote.title} placeholder="Milestone title" onChange={(event) => setCreateNote({ ...createNote, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') void handleCreateNote(); }} /><button type="button" disabled={creating || !createNote.title.trim()} onClick={() => void handleCreateNote()}>{creating ? 'Creating…' : 'Create'}</button><button type="button" onClick={() => setCreateNote(null)}>Cancel</button></div>}
               {milestones.length === 0 && <div className="mission-empty">No milestones yet. Add one to shape the work.</div>}
+              {standaloneTasks.length > 0 && <section className="mission-assignments" aria-label="Mission assignments">
+                <h3>Assignments</h3>
+                {standaloneTasks.map((task) => <article key={task.id}>
+                  <button type="button" id={`mission-worker-${task.id}`} className="mission-assignment" onClick={(event) => openTrace(task, event.currentTarget)}>
+                    <span><strong>{task.title}</strong><small>@{taskWorkerLabel(task)} · {task.purpose || 'Work'}</small></span>
+                    <span>{taskStatusLabel(task)}</span>
+                  </button>
+                  {activeTraceTask?.id === task.id && workerTrace}
+                </article>)}
+              </section>}
               {milestones.map((milestone) => {
                 const open = openMilestones.has(milestone.noteId);
                 const features = featuresByParent.get(milestone.noteId) ?? [];
@@ -729,47 +840,7 @@ export function MissionWorkspace({
         {chatOpen && <aside className="mission-chat" aria-label="Mission conversation"><div className="mission-chat-header"><strong>Mission conversation</strong><button type="button" className="mission-icon-button" title="Hide conversation" onClick={() => setChatOpen(false)}><MessageCircle size={15} /></button></div><div className="mission-chat-body">{renderChat(mission.channelId, `${mission.title} conversation`)}</div></aside>}
       </div>
       {mentionChooser && <div className="mission-mention-chooser-backdrop" role="presentation" onMouseDown={() => setMentionChooser(null)}><section className="mission-mention-chooser" role="dialog" aria-label={`Choose worker for @${mentionChooser.mention}`} onMouseDown={(event) => event.stopPropagation()}><header><strong>@{mentionChooser.mention}</strong><button type="button" onClick={() => setMentionChooser(null)} aria-label="Close worker chooser"><X size={14} /></button></header>{mentionChooser.tasks.map((task) => <button type="button" key={task.id} onClick={(event) => { setMentionChooser(null); void openTrace(task, event.currentTarget); }}><span>@{taskWorkerLabel(task)}</span><small>{task.title} · {taskStatusLabel(task)}</small></button>)}</section></div>}
-      {activeTraceTask && <section className={`mission-trace${traceFullscreen ? ' is-fullscreen' : ''}`} aria-label={`Worker trace for ${taskWorkerLabel(activeTraceTask)}`}>
-        <header>
-          <div><strong>@{taskWorkerLabel(activeTraceTask)}</strong><span>{activeTraceTask.title} · {taskStatusLabel(activeTraceTask)}{activeTraceTask.runId != null ? ` · run ${activeTraceTask.runId}` : ''}</span></div>
-          <div>
-            <button type="button" onClick={() => setTraceFullscreen((value) => !value)} title={traceFullscreen ? 'Exit fullscreen' : 'Open fullscreen'}><Expand size={14} /></button>
-            <button type="button" onClick={() => { setTraceFullscreen(false); setTraceTaskId(null); restoreFocusRef.current?.focus(); }} title="Close trace"><X size={14} /></button>
-          </div>
-        </header>
-        <div className="mission-trace-body" role="log">
-          {traceLoading[missionTraceKey(activeTraceTask)] && <div className="mission-empty"><LoadingIndicator label="Loading stored task trace" /></div>}
-          {!traceLoading[missionTraceKey(activeTraceTask)] && activeTraceMessages.length === 0 && <div className="mission-empty">No stored trace messages for this task yet.</div>}
-          {activeTraceMessages.map((message) => (
-            <article key={message.id}>
-              <time>{eventDate(message.createdAt)}</time>
-              <span className="mission-trace-status">{message.status || 'done'}</span>
-              <div>
-                {message.body && <p>{message.body}</p>}
-                {message.blocks?.map((block, index) => (
-                  block.text || block.redacted
-                    ? <pre key={`${message.id}-block-${index}`} className={`mission-trace-block mission-trace-${block.type}`}>{block.redacted ? '[redacted]' : block.text}</pre>
-                    : null
-                ))}
-                {message.harnessLog && <details open><summary>Harness log</summary><pre className="mission-trace-harness">{message.harnessLog}</pre></details>}
-                {!message.body && !message.harnessLog && !(message.blocks?.some((block) => block.text || block.redacted)) && <p>(no public output)</p>}
-              </div>
-            </article>
-          ))}
-        </div>
-        <form className="mission-trace-steering" onSubmit={(event) => { event.preventDefault(); void submitSteering(); }}>
-          <textarea
-            value={steerDraft}
-            onChange={(event) => { setSteerDraft(event.target.value); setSteerError(''); }}
-            placeholder="Send guidance to this worker…"
-            aria-label="Worker steering message"
-            rows={2}
-            disabled={steering}
-          />
-          <button type="submit" disabled={steering || !steerDraft.trim() || !mission.coordinatorRegistrationId}>{steering ? 'Sending…' : 'Steer worker'}</button>
-          {steerError && <span className="mission-error" role="alert">{steerError}</span>}
-        </form>
-      </section>}
+
     </section>
   );
 }

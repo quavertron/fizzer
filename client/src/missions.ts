@@ -244,7 +244,7 @@ export async function fetchMissionTaskTrace(
   }
 
   const exact = listed.filter((message) => (
-    message.missionTaskId === taskId || (runId != null && message.runId === runId)
+    runId != null ? message.runId === runId : message.missionTaskId === taskId
   ));
   const detailed = await Promise.all(exact.map(async (message) => {
     try {

@@ -1734,6 +1734,8 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const newDoc = update.state.doc.toString();
+          // Applying the controlled content prop is not a local edit.
+          if (newDoc === contentRef.current) return;
           contentRef.current = newDoc;
           onContentChangeRef.current(newDoc);
         }
