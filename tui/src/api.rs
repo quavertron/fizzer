@@ -9,7 +9,6 @@ pub struct Vault {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultsResponse {
-    #[serde(default)]
     pub vaults: Vec<Vault>,
 }
 
@@ -37,7 +36,6 @@ pub struct NoteDetailResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotesResponse {
-    #[serde(default)]
     pub notes: Vec<NoteSummary>,
 }
 
@@ -47,7 +45,7 @@ pub struct ChannelItem {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
     #[serde(default)]
@@ -129,7 +127,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
-    #[serde(default)]
     pub messages: Vec<ChatMessage>,
 }
 
@@ -142,7 +139,6 @@ pub struct SessionUser {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionResponse {
-    #[serde(default)]
     pub authenticated: bool,
     pub user: Option<SessionUser>,
 }
@@ -152,7 +148,7 @@ pub struct CreateMessageResponse {
     pub message: ChatMessage,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentItem {
     pub id: String,
     #[serde(rename = "displayName", default)]
@@ -189,7 +185,6 @@ pub struct AgentItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelAgentsResponse {
-    #[serde(default)]
     pub agents: Vec<AgentItem>,
 }
 
@@ -207,7 +202,6 @@ pub struct ActiveSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveSessionsResponse {
-    #[serde(default)]
     pub sessions: Vec<ActiveSession>,
 }
 
@@ -246,14 +240,12 @@ impl CascadeClient {
         let req = self.auth_header(self.client.get(&url));
         let res = req.send().await.map_err(|e| e.to_string())?;
 
-        if res.status().is_success() {
-            if let Ok(sess) = res.json::<SessionResponse>().await {
-                if sess.authenticated {
-                    return Ok(sess.user.map(|u| u.username));
-                }
-            }
+        if !res.status().is_success() {
+            return Err(format!("GET /api/session returned {}", res.status()));
         }
-        Ok(None)
+        let sess = res.json::<SessionResponse>().await
+            .map_err(|e| format!("Failed to parse session response: {}", e))?;
+        Ok(if sess.authenticated { sess.user.map(|u| u.username) } else { None })
     }
 
     pub async fn fetch_vaults(&self) -> Result<Vec<Vault>, String> {
@@ -300,15 +292,11 @@ impl CascadeClient {
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
-        let notes = if let Ok(resp) = serde_json::from_str::<NotesResponse>(&body) {
-            resp.notes
-        } else if let Ok(list) = serde_json::from_str::<Vec<NoteSummary>>(&body) {
-            list
-        } else {
-            Vec::new()
-        };
-
-        Ok(notes)
+        if let Ok(resp) = serde_json::from_str::<NotesResponse>(&body) {
+            return Ok(resp.notes);
+        }
+        serde_json::from_str::<Vec<NoteSummary>>(&body)
+            .map_err(|e| format!("Failed to parse notes response: {}", e))
     }
 
     pub async fn fetch_note(&self, note_id: &str) -> Result<NoteDetail, String> {
@@ -357,7 +345,7 @@ impl CascadeClient {
             return Ok(messages);
         }
 
-        Ok(Vec::new())
+        Err("Failed to parse messages response".into())
     }
 
     pub async fn fetch_agents(&self, vault_id: &str, channel_id: &str) -> Result<Vec<AgentItem>, String> {
@@ -377,7 +365,7 @@ impl CascadeClient {
             return Ok(agents);
         }
 
-        Ok(Vec::new())
+        Err("Failed to parse agents response".into())
     }
 
     pub async fn fetch_active_sessions(&self, vault_id: &str) -> Result<Vec<ActiveSession>, String> {
@@ -397,7 +385,7 @@ impl CascadeClient {
             return Ok(sessions);
         }
 
-        Ok(Vec::new())
+        Err("Failed to parse active sessions response".into())
     }
 
     pub async fn send_message(
@@ -578,4 +566,46 @@ fn rand_suffix() -> String {
         .unwrap_or_default()
         .subsec_nanos();
     format!("{:06x}", nanos % 0xffffff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn server(status: u16, body: &str) -> CascadeClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = CascadeClient::new(format!("http://{}", listener.local_addr().unwrap()), None);
+        let response = format!("HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        client
+    }
+
+    #[tokio::test]
+    async fn malformed_collections_are_errors_instead_of_empty_snapshots() {
+        for body in ["not json", "{}", r#"{"error":"backend failure"}"#] {
+            assert!(server(200, body).await.fetch_vaults().await.is_err());
+            assert!(server(200, body).await.fetch_notes("v").await.is_err());
+            assert!(server(200, body).await.fetch_messages("v", "c").await.is_err());
+            assert!(server(200, body).await.fetch_agents("v", "c").await.is_err());
+            assert!(server(200, body).await.fetch_active_sessions("v").await.is_err());
+        }
+        assert!(server(200, r#"{"notes":[]}"#).await.fetch_notes("v").await.unwrap().is_empty());
+        assert!(server(200, "[]").await.fetch_messages("v", "c").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_server_and_parse_errors_are_not_healthy_responses() {
+        assert!(server(500, "{}").await.check_session().await.is_err());
+        assert!(server(200, "not json").await.check_session().await.is_err());
+        assert!(server(200, "{}").await.check_session().await.is_err());
+        assert_eq!(server(200, r#"{"authenticated":false}"#).await.check_session().await.unwrap(), None);
+        assert_eq!(server(200, r#"{"authenticated":true,"user":{"id":1,"username":"human"}}"#)
+            .await.check_session().await.unwrap(), Some("human".into()));
+    }
 }

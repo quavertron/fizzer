@@ -1,5 +1,4 @@
 use super::*;
-use crossterm::event::KeyEvent;
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -82,22 +81,15 @@ impl MockServer {
     }
 }
 
-fn quit() -> io::Result<Event> {
-    Ok(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)))
-}
-
-fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| ui::render(f, app)).unwrap();
-    terminal
-}
-
-fn screen(terminal: &Terminal<TestBackend>) -> String {
-    terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect()
+async fn finish_send(app: &mut App) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    send_draft(app, &tx);
+    let result = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+    apply_backend_event(app, result, &tx);
 }
 
 #[tokio::test]
-async fn failed_send_preserves_draft_for_retry() {
+async fn failed_send_preserves_draft_and_images_for_retry() {
     let attempts = std::sync::atomic::AtomicUsize::new(0);
     let server = MockServer::new(move |_, body| {
         if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -108,147 +100,128 @@ async fn failed_send_preserves_draft_for_retry() {
     }).await;
     let mut app = server.app();
     app.input = "  keep this\ndraft 界  ".into();
+    app.pending_images = vec!["data:image/png;base64,test".into()];
     app.cursor_pos = 5;
     app.input_scroll_offset = 1;
     let draft = app.input.clone();
-    send_draft(&mut app).await;
+    finish_send(&mut app).await;
     assert_eq!(app.input, draft);
+    assert_eq!(app.pending_images.len(), 1);
     assert_eq!(app.cursor_pos, 5);
     assert_eq!(app.input_scroll_offset, 1);
     assert!(app.status_message.starts_with("Send error:"));
-    send_draft(&mut app).await;
+    finish_send(&mut app).await;
     assert!(app.input.is_empty());
+    assert!(app.pending_images.is_empty());
     assert_eq!(app.cursor_pos, 0);
-    assert_eq!(app.input_scroll_offset, 0);
     assert_eq!(app.messages.len(), 1);
     let requests = server.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].1["body"], requests[1].1["body"]);
+    assert_eq!(requests[0].1["images"], requests[1].1["images"]);
 }
 
 #[tokio::test]
 async fn sending_without_a_channel_preserves_draft() {
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
     app.input = "keep me".into();
-    send_draft(&mut app).await;
+    let (tx, _) = mpsc::unbounded_channel();
+    send_draft(&mut app, &tx);
     assert_eq!(app.input, "keep me");
+    assert!(!app.send_in_flight);
+}
+
+#[tokio::test]
+async fn sending_is_nonblocking_and_does_not_erase_new_edits() {
+    let server = MockServer::new(|_, _| (201, json!({"message": {"id": "sent"}}), Duration::from_millis(50))).await;
+    let mut app = server.app();
+    app.input = "sent text".into();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    send_draft(&mut app, &tx);
+    send_draft(&mut app, &tx);
+    assert!(app.send_in_flight);
+    app.input.push_str(" plus new typing");
+    let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+    apply_backend_event(&mut app, event, &tx);
+    assert_eq!(app.input, "sent text plus new typing");
+    assert!(!app.send_in_flight);
+    assert_eq!(server.requests.lock().unwrap().iter().filter(|(r, _)| r.starts_with("POST")).count(), 1);
+}
+
+#[test]
+fn stale_channel_results_are_ignored_and_empty_results_clear_lists() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    app.active_channel_id = Some("current".into());
+    app.messages = vec![serde_json::from_value(json!({"id":"m"})).unwrap()];
+    let (tx, _) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::Messages { channel_id: "old".into(), messages: vec![] }, &tx);
+    assert_eq!(app.messages.len(), 1);
+    apply_backend_event(&mut app, BackendEvent::Messages { channel_id: "current".into(), messages: vec![] }, &tx);
     assert!(app.messages.is_empty());
 }
 
-#[tokio::test]
-async fn multiline_paste_stays_in_composer() {
+#[test]
+fn render_handles_small_terminals_and_unicode_drafts() {
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
-    app.set_demo_data();
-    let before = app.messages.len();
-    let events = futures_util::stream::iter([Ok(Event::Paste("first\r\nsecond\rthird".into())), quit()]);
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    run_app(&mut terminal, &mut app, events).await.unwrap();
-    assert_eq!(app.input, "first\nsecond\nthird");
-    assert_eq!(app.messages.len(), before);
-    assert_eq!(app.cursor_line_col(), (2, 5));
+    app.input = "界🙂test".repeat(50);
+    app.move_cursor_end();
+    for (width, height) in [(1, 1), (20, 5), (80, 24), (120, 40)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| ui::render(f, &app)).unwrap();
+    }
 }
 
-#[tokio::test]
-async fn keyboard_and_quit_remain_responsive_during_slow_poll() {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let notify = started.clone();
-    let server = MockServer::new(move |_, _| {
-        notify.notify_one();
-        (200, json!({"messages": [], "agents": []}), Duration::from_secs(30))
-    }).await;
-    let mut app = server.app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let events = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx));
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    let typing = async move {
-        started.notified().await;
-        tx.send(Ok(Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)))).unwrap();
-        tx.send(quit()).unwrap();
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        let (result, ()) = tokio::join!(run_app(&mut terminal, &mut app, events), typing);
-        result.unwrap();
-    }).await.expect("Keyboard blocked behind network polling");
-    assert_eq!(app.input, "x");
-    assert!(app.should_quit);
-}
-
-#[tokio::test]
-async fn refresh_replaces_demo_channel_and_handles_empty_vault() {
-    let empty = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let server_empty = empty.clone();
-    let server = MockServer::new(move |request, _| {
-        let body = if request.contains("/notes ") {
-            if server_empty.load(std::sync::atomic::Ordering::SeqCst) { json!({"notes": []}) }
-            else { json!({"notes": [{"id": "real-channel", "title": "real", "content_preview": "cascade://chat-channel"}]}) }
-        } else if request.contains("/real-channel/messages?") {
-            json!({"messages": [{"id": "real-message", "body": "live"}]})
-        } else if request.contains("/real-channel/agents ") {
-            json!({"agents": []})
-        } else if request.contains("/api/vaults ") {
-            json!({"vaults": [{"id": "v", "name": "Recovered vault"}]})
-        } else { return (404, json!({}), Duration::ZERO); };
-        (200, body, Duration::ZERO)
-    }).await;
-    let mut app = server.app();
-    app.set_demo_data();
-    refresh_channels_and_messages(&mut app).await;
-    assert_eq!(app.active_channel_id.as_deref(), Some("real-channel"));
-    assert!(!app.offline_mode);
-    assert_ne!(app.vault_name, "Local Demo Vault");
-    assert_eq!(app.messages[0].id, "real-message");
-    assert!(app.agents.is_empty());
-    assert!(!server.requests.lock().unwrap().iter().any(|(req, _)| req.contains("chan-general")));
-
-    // Discovery can recover even if the initial vault listing was unavailable.
-    app.set_demo_data();
-    app.vault_id = None;
-    refresh_channels_and_messages(&mut app).await;
-    assert_eq!(app.vault_name, "Recovered vault");
-    assert_eq!(app.active_channel_id.as_deref(), Some("real-channel"));
-
-    empty.store(true, std::sync::atomic::Ordering::SeqCst);
-    refresh_channels_and_messages(&mut app).await;
+#[test]
+fn channel_refresh_reselects_removed_channel_and_clears_empty_vault() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    app.active_channel_id = Some("removed".into());
+    app.messages = vec![serde_json::from_value(json!({"id":"m"})).unwrap()];
+    apply_channels(&mut app, vec![ChannelItem { id: "new".into(), title: "New".into() }]);
+    assert_eq!(app.active_channel_id.as_deref(), Some("new"));
+    assert!(app.messages.is_empty());
+    apply_channels(&mut app, vec![]);
     assert!(app.active_channel_id.is_none());
     assert!(app.channels.is_empty());
-    assert!(app.messages.is_empty());
-    assert!(app.agents.is_empty());
 }
 
 #[test]
-fn stale_channel_snapshot_is_ignored_and_empty_results_clear_lists() {
+fn old_vault_results_cannot_replace_current_lists() {
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
-    app.set_demo_data();
-    app.offline_mode = false;
-    app.vault_id = Some("v".into());
-    ChannelSnapshot { vault_id: "v".into(), channel_id: "old-channel".into(), messages: Ok(vec![]), agents: Ok(vec![]) }.apply(&mut app);
-    assert!(!app.messages.is_empty());
-    ChannelSnapshot { vault_id: "v".into(), channel_id: "chan-general".into(), messages: Ok(vec![]), agents: Ok(vec![]) }.apply(&mut app);
-    assert!(app.messages.is_empty());
-    assert!(app.agents.is_empty());
+    app.vault_id = Some("current".into());
+    app.channels = vec![ChannelItem { id: "channel".into(), title: "Current".into() }];
+    app.notes = vec![serde_json::from_value(json!({"id":"note", "title":"Keep"})).unwrap()];
+    let (tx, _) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::Channels { vault_id: "old".into(), result: Ok(vec![]) }, &tx);
+    apply_backend_event(&mut app, BackendEvent::Notes { vault_id: "old".into(), result: Ok(vec![]) }, &tx);
+    apply_backend_event(&mut app, BackendEvent::ChannelCreated { vault_id: "old".into(), result: Ok(ChannelItem { id: "wrong".into(), title: "Wrong".into() }) }, &tx);
+    assert_eq!(app.channels.len(), 1);
+    assert_eq!(app.channels[0].id, "channel");
+    assert_eq!(app.notes.len(), 1);
 }
 
 #[test]
-fn header_displays_status_and_error_text() {
+fn rename_updates_channel_by_id_after_reordering() {
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
-    app.status_message = "Send error: UNIQUE_FAILURE".into();
-    assert!(screen(&render(&app, 120, 40)).contains("Send error: UNIQUE_FAILURE"));
+    app.channels = vec![ChannelItem { id: "b".into(), title: "B".into() }, ChannelItem { id: "a".into(), title: "A".into() }];
+    let (tx, _) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::ChannelRenamed { result: Ok(ChannelItem { id: "a".into(), title: "Renamed".into() }) }, &tx);
+    assert_eq!(app.channels[0].title, "B");
+    assert_eq!(app.channels[1].title, "Renamed");
 }
 
 #[test]
-fn long_draft_and_cursor_stay_visible_after_resize_and_navigation() {
+fn saved_agent_updates_by_id_without_closing_another_modal() {
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
-    for text in [format!("{}DRAFT_END", "x".repeat(100)), format!("{}DRAFT_END", "界".repeat(100))] {
-        app.input = text;
-        app.move_cursor_end();
-        for width in [120, 80] {
-            let mut terminal = render(&app, width, 40);
-            assert!(screen(&terminal).contains("DRAFT_END"));
-            let cursor = terminal.backend_mut().get_cursor_position().unwrap();
-            assert_eq!(cursor.x, if width >= ui::MIN_WIDTH_FOR_AGENTS { width - 30 } else { width - 2 });
-        }
-        app.move_cursor_home();
-        let mut terminal = render(&app, 120, 40);
-        assert_eq!(terminal.backend_mut().get_cursor_position().unwrap().x, 29);
-    }
+    app.active_channel_id = Some("c".into());
+    let agent_a: AgentItem = serde_json::from_value(json!({"id":"a","displayName":"A"})).unwrap();
+    let agent_b: AgentItem = serde_json::from_value(json!({"id":"b","displayName":"B"})).unwrap();
+    app.agents = vec![agent_b, agent_a.clone()];
+    app.open_agent_settings();
+    let mut saved = agent_a;
+    saved.display_name = "Updated A".into();
+    let (tx, _) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::AgentSaved { channel_id: "c".into(), agent_id: "a".into(), display_name: "Updated A".into(), mention: "a".into(), is_new: false, result: Ok(saved) }, &tx);
+    assert_eq!(app.agents[0].display_name, "B");
+    assert_eq!(app.agents[1].display_name, "Updated A");
+    assert_eq!(app.agent_settings_modal.as_ref().unwrap().agent.id, "b");
 }

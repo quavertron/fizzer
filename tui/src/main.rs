@@ -2,6 +2,8 @@ mod api;
 mod app;
 mod ui;
 mod emacs;
+#[cfg(test)]
+mod tests;
 
 use std::fs;
 use std::io::{self, stdout};
@@ -35,19 +37,19 @@ use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
 enum BackendEvent {
     Messages { channel_id: String, messages: Vec<ChatMessage> },
     Agents { channel_id: String, agents: Vec<AgentItem> },
-    ActiveSessions { sessions: Vec<ActiveSession> },
-    Notes(Result<Vec<crate::api::NoteSummary>, String>),
+    ActiveSessions { vault_id: String, sessions: Vec<ActiveSession> },
+    Notes { vault_id: String, result: Result<Vec<crate::api::NoteSummary>, String> },
     Vaults(Result<Vec<Vault>, String>),
-    Channels(Result<Vec<ChannelItem>, String>),
+    Channels { vault_id: String, result: Result<Vec<ChannelItem>, String> },
     /// Whether the backend responded to a lightweight health ping.
     Connectivity(bool),
     /// Whether the desktop runner daemon is running locally.
     RunnerStatus(bool),
-    ChannelCreated(Result<ChannelItem, String>),
-    ChannelRenamed { channel_idx: usize, result: Result<ChannelItem, String> },
-    SendResult { channel_id: String, result: Result<ChatMessage, String> },
+    ChannelCreated { vault_id: String, result: Result<ChannelItem, String> },
+    ChannelRenamed { result: Result<ChannelItem, String> },
+    SendResult { channel_id: String, draft: String, images: Vec<String>, result: Result<ChatMessage, String> },
     AgentSaved {
-        agent_idx: usize,
+        channel_id: String,
         agent_id: String,
         display_name: String,
         mention: String,
@@ -82,7 +84,7 @@ fn spawn_active_sessions(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let tx = tx.clone();
     tokio::spawn(async move {
         if let Ok(sessions) = client.fetch_active_sessions(&vault_id).await {
-            let _ = tx.send(BackendEvent::ActiveSessions { sessions });
+            let _ = tx.send(BackendEvent::ActiveSessions { vault_id, sessions });
         }
     });
 }
@@ -100,7 +102,7 @@ fn spawn_notes_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
                 .filter(|note| !note.content_preview.trim().starts_with("cascade://chat-channel"))
                 .collect()
         });
-        let _ = tx.send(BackendEvent::Notes(result));
+        let _ = tx.send(BackendEvent::Notes { vault_id, result });
     });
 }
 
@@ -113,16 +115,23 @@ fn spawn_vault_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
 }
 
 /// Spawn a message send; the result comes back as a `BackendEvent`.
-fn spawn_send_message(app: &App, text: String, images: Vec<String>, tx: &mpsc::UnboundedSender<BackendEvent>) {
-    let (Some(vault_id), Some(channel_id)) = (app.vault_id.clone(), app.active_channel_id.clone())
-    else {
+fn send_draft(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    if app.send_in_flight || (app.input.trim().is_empty() && app.pending_images.is_empty()) {
+        return;
+    }
+    let (Some(vault_id), Some(channel_id)) = (app.vault_id.clone(), app.active_channel_id.clone()) else {
+        app.status_message = "No channel selected.".into();
         return;
     };
+    let draft = app.input.clone();
+    let images = app.pending_images.clone();
+    app.send_in_flight = true;
+    app.status_message = "Sending message...".into();
     let client = app.client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
-        let result = client.send_message(&vault_id, &channel_id, &text, &images).await;
-        let _ = tx.send(BackendEvent::SendResult { channel_id, result });
+        let result = client.send_message(&vault_id, &channel_id, draft.trim(), &images).await;
+        let _ = tx.send(BackendEvent::SendResult { channel_id, draft, images, result });
     });
 }
 
@@ -220,13 +229,12 @@ fn spawn_create_channel(app: &App, title: String, tx: &mpsc::UnboundedSender<Bac
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = client.create_channel(&vault_id, &title).await;
-        let _ = tx.send(BackendEvent::ChannelCreated(result));
+        let _ = tx.send(BackendEvent::ChannelCreated { vault_id, result });
     });
 }
 
 fn spawn_rename_channel(
     app: &App,
-    channel_idx: usize,
     channel_id: String,
     title: String,
     tx: &mpsc::UnboundedSender<BackendEvent>,
@@ -235,7 +243,7 @@ fn spawn_rename_channel(
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = client.rename_channel(&channel_id, &title).await;
-        let _ = tx.send(BackendEvent::ChannelRenamed { channel_idx, result });
+        let _ = tx.send(BackendEvent::ChannelRenamed { result });
     });
 }
 
@@ -251,7 +259,7 @@ fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent
     let channel_tx = tx.clone();
     tokio::spawn(async move {
         let result = client.fetch_channels(&vault_id).await;
-        let _ = channel_tx.send(BackendEvent::Channels(result));
+        let _ = channel_tx.send(BackendEvent::Channels { vault_id, result });
     });
 }
 
@@ -261,7 +269,6 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
     match event {
         BackendEvent::Messages { channel_id, messages } => {
             if app.active_channel_id.as_deref() == Some(channel_id.as_str())
-                && (!messages.is_empty() || app.messages.is_empty())
             {
                 app.messages = messages;
                 app.clamp_message_selection();
@@ -269,15 +276,17 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
         }
         BackendEvent::Agents { channel_id, agents } => {
             if app.active_channel_id.as_deref() == Some(channel_id.as_str())
-                && (!agents.is_empty() || app.agents.is_empty())
             {
                 app.agents = agents;
             }
         }
-        BackendEvent::ActiveSessions { sessions } => {
-            app.apply_active_sessions(sessions);
+        BackendEvent::ActiveSessions { vault_id, sessions } => {
+            if app.vault_id.as_deref() == Some(vault_id.as_str()) {
+                app.apply_active_sessions(sessions);
+            }
         }
-        BackendEvent::Notes(result) => {
+        BackendEvent::Notes { vault_id, result } => {
+            if app.vault_id.as_deref() != Some(vault_id.as_str()) { return; }
             if let Ok(notes) = result {
                 app.notes = notes;
                 app.clamp_note_selection();
@@ -297,7 +306,9 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
         BackendEvent::RunnerStatus(running) => {
             app.runner_online = running;
         }
-        BackendEvent::ChannelCreated(result) => match result {
+        BackendEvent::ChannelCreated { vault_id, result } => {
+            if app.vault_id.as_deref() != Some(vault_id.as_str()) { return; }
+            match result {
             Ok(channel) => {
                 app.backend_online = true;
                 app.channels.push(channel.clone());
@@ -315,10 +326,11 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
             Err(err) => {
                 app.status_message = format!("Create channel error: {}", err);
             }
+            }
         },
-        BackendEvent::ChannelRenamed { channel_idx, result } => match result {
+        BackendEvent::ChannelRenamed { result } => match result {
             Ok(channel) => {
-                if let Some(existing) = app.channels.get_mut(channel_idx) {
+                if let Some(existing) = app.channels.iter_mut().find(|item| item.id == channel.id) {
                     *existing = channel.clone();
                 }
                 app.status_message = format!("Renamed #{}", channel.title);
@@ -327,33 +339,32 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 app.status_message = format!("Rename channel error: {}", err);
             }
         },
-        BackendEvent::Channels(result) => {
+        BackendEvent::Channels { vault_id, result } => {
+            if app.vault_id.as_deref() != Some(vault_id.as_str()) { return; }
             app.is_loading = false;
             match result {
-                Ok(channels) if !channels.is_empty() => {
-                    app.backend_online = true;
-                    app.channels = channels;
-                    if app.active_channel_id.is_none() {
-                        app.active_channel_id = Some(app.channels[0].id.clone());
-                    }
-                    app.status_message =
-                        format!("Connected ({} channels loaded)", app.channels.len());
+                Ok(channels) => {
+                    apply_channels(app, channels);
                     spawn_channel_sync(app, tx);
                     spawn_active_sessions(app, tx);
                     spawn_notes_sync(app, tx);
                 }
-                Ok(_) => {
-                    app.status_message = "Vault has no chat channels yet.".to_string();
-                }
-                Err(err) => {
-                    app.mark_offline(format!("Backend unreachable: {}", err));
-                }
+                Err(err) => app.mark_offline(format!("Backend unreachable: {}", err)),
             }
         }
-        BackendEvent::SendResult { channel_id, result } => match result {
+        BackendEvent::SendResult { channel_id, draft, images, result } => {
+            app.send_in_flight = false;
+            match result {
             Ok(new_msg) => {
                 if app.active_channel_id.as_deref() == Some(channel_id.as_str()) {
                     app.messages.push(new_msg);
+                }
+                if app.input == draft && app.pending_images == images {
+                    app.input.clear();
+                    app.pending_images.clear();
+                    app.cursor_pos = 0;
+                    app.input_scroll_offset = 0;
+                    app.scroll_offset = 0;
                 }
                 app.status_message = "Message sent".to_string();
                 spawn_channel_sync(app, tx);
@@ -361,23 +372,25 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
             Err(err) => {
                 app.status_message = format!("Send error: {}", err);
             }
+            }
         },
-        BackendEvent::AgentSaved { agent_idx, agent_id, display_name, mention, is_new, result } => {
+        BackendEvent::AgentSaved { channel_id, agent_id, display_name, mention, is_new, result } => {
+            if app.active_channel_id.as_deref() != Some(channel_id.as_str()) { return; }
+            let same_modal = app.agent_settings_modal.as_ref().is_some_and(|modal| modal.agent.id == agent_id);
             match result {
                 Ok(saved_agent) => {
                     if is_new {
                         app.agents.push(saved_agent);
                         app.selected_agent_idx = app.agents.len().saturating_sub(1);
-                    } else if let Some(agent) = app.agents.get_mut(agent_idx) {
-                        *agent = saved_agent;
                     } else if let Some(agent) = app.agents.iter_mut().find(|a| a.id == agent_id) {
                         *agent = saved_agent;
                     }
                     app.status_message =
                         format!("Updated settings for {} (@{})", display_name, mention);
-                    app.close_agent_settings();
+                    if same_modal { app.close_agent_settings(); }
                 }
                 Err(err) => {
+                    if !same_modal { return; }
                     if let Some(ref mut modal) = app.agent_settings_modal {
                         modal.error_message = Some(format!("Failed to save: {}", err));
                     }
@@ -755,7 +768,7 @@ async fn run_app(
                                     if !title.is_empty() {
                                         if let Some(channel_idx) = app.renaming_channel_idx.take() {
                                             if let Some(channel) = app.channels.get(channel_idx) {
-                                                spawn_rename_channel(app, channel_idx, channel.id.clone(), title, &tx);
+                                                spawn_rename_channel(app, channel.id.clone(), title, &tx);
                                             }
                                         } else if app.vault_id.is_some() {
                                             spawn_create_channel(app, title, &tx);
@@ -1042,20 +1055,7 @@ async fn run_app(
                                             app.backspace();
                                             app.insert_char('\n');
                                         } else {
-                                            let text = app.input.trim().to_string();
-                                            if !text.is_empty() || !app.pending_images.is_empty() {
-                                                if app.vault_id.is_some() && app.active_channel_id.is_some() {
-                                                    let images = std::mem::take(&mut app.pending_images);
-                                                    app.status_message = "Sending message...".into();
-                                                    spawn_send_message(app, text, images, &tx);
-                                                } else {
-                                                    app.status_message = "No channel selected.".into();
-                                                }
-                                                app.input.clear();
-                                                app.cursor_pos = 0;
-                                                app.input_scroll_offset = 0;
-                                                app.scroll_offset = 0;
-                                            }
+                                            send_draft(app, &tx);
                                         }
                                     }
                                     KeyCode::Char('\n') | KeyCode::Char('\r') => {
@@ -1397,6 +1397,25 @@ fn restore_tui_after_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>
     Ok(())
 }
 
+fn apply_channels(app: &mut App, channels: Vec<ChannelItem>) {
+    app.backend_online = true;
+    let active_exists = channels.iter().any(|channel| Some(channel.id.as_str()) == app.active_channel_id.as_deref());
+    app.channels = channels;
+    if !active_exists {
+        app.active_channel_id = app.channels.first().map(|channel| channel.id.clone());
+        app.messages.clear();
+        app.agents.clear();
+        app.reset_agent_activity();
+        app.scroll_offset = 0;
+    }
+    app.selected_channel_idx = app.channels.iter().position(|channel| Some(channel.id.as_str()) == app.active_channel_id.as_deref()).unwrap_or(0);
+    app.status_message = if app.channels.is_empty() {
+        "Vault has no chat channels yet.".into()
+    } else {
+        format!("Connected ({} channels loaded)", app.channels.len())
+    };
+}
+
 async fn refresh_channels_and_messages(app: &mut App) {
     if let Some(vault_id) = app.vault_id.clone() {
         app.is_loading = true;
@@ -1410,23 +1429,14 @@ async fn refresh_channels_and_messages(app: &mut App) {
         }
         match app.client.fetch_channels(&vault_id).await {
             Ok(channels) => {
-                if !channels.is_empty() {
-                    app.channels = channels;
-                    if app.active_channel_id.is_none() {
-                        app.active_channel_id = Some(app.channels[0].id.clone());
+                apply_channels(app, channels);
+                if let Some(channel_id) = &app.active_channel_id {
+                    if let Ok(msgs) = app.client.fetch_messages(&vault_id, channel_id).await {
+                        app.messages = msgs;
                     }
-                    if let Some(channel_id) = &app.active_channel_id {
-                        if let Ok(msgs) = app.client.fetch_messages(&vault_id, channel_id).await {
-                            app.messages = msgs;
-                        }
-                        if let Ok(agents) = app.client.fetch_agents(&vault_id, channel_id).await {
-                            app.agents = agents;
-                        }
+                    if let Ok(agents) = app.client.fetch_agents(&vault_id, channel_id).await {
+                        app.agents = agents;
                     }
-                    app.backend_online = true;
-                    app.status_message = format!("Connected ({} channels loaded)", app.channels.len());
-                } else {
-                    app.status_message = "Vault has no chat channels yet.".to_string();
                 }
             }
             Err(err) => {
@@ -1511,7 +1521,7 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
     tokio::spawn(async move {
         let result = client.update_agent(&vault_id, &channel_id, &agent_to_save).await;
         let _ = tx.send(BackendEvent::AgentSaved {
-            agent_idx,
+            channel_id,
             agent_id,
             display_name,
             mention,

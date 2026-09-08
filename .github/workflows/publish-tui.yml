@@ -26,6 +26,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -33,6 +35,8 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+      - name: Test TUI
+        run: cargo test --locked --manifest-path tui/Cargo.toml
       - name: Build binary
         run: node scripts/build-tui-binaries.mjs ${{ matrix.target }}
       - name: Publish platform package

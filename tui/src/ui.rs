@@ -465,12 +465,10 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
     let is_valid = {
         let cache = app.chat_cache.read().unwrap();
         cache.channel_id == app.active_channel_id
-            && cache.message_count == app.messages.len()
             && cache.wrap_width == body_wrap_width
             && cache.author == app.author
-            && cache.agent_count == app.agents.len()
-            && cache.last_message_id == app.messages.last().map(|m| m.id.clone())
-            && cache.last_message_body_len == app.messages.last().map(|m| m.body.len())
+            && cache.messages == app.messages
+            && cache.agents == app.agents
     };
 
     if is_valid {
@@ -610,12 +608,10 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
     let char_count = chat_text.chars().count();
     *app.chat_cache.write().unwrap() = ChatRenderCache {
         channel_id: app.active_channel_id.clone(),
-        message_count: app.messages.len(),
-        last_message_id: app.messages.last().map(|m| m.id.clone()),
-        last_message_body_len: app.messages.last().map(|m| m.body.len()),
-        wrap_width: body_wrap_width,
+        messages: app.messages.clone(),
+        agents: app.agents.clone(),
         author: app.author.clone(),
-        agent_count: app.agents.len(),
+        wrap_width: body_wrap_width,
         lines,
         line_offsets,
         chat_text,
@@ -1064,9 +1060,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("[r]", " Refresh "),
         ],
     };
-    let box_spans = hint_spans(box_hints, box_badge_style, box_text_style);
+    let show_status = app.send_in_flight || app.is_loading
+        || app.status_message.contains("error:")
+        || ["Backend ", "No ", "Vault has no ", "Sending ", "Connecting ", "Saving "]
+            .iter().any(|prefix| app.status_message.starts_with(prefix));
+    let box_spans = if !show_status || app.status_message.is_empty() {
+        hint_spans(box_hints, box_badge_style, box_text_style)
+    } else {
+        vec![Span::styled(app.status_message.replace(['\n', '\r'], " "), box_text_style)]
+    };
 
-    let right_width: u16 = box_spans.iter().map(|s| s.content.chars().count() as u16).sum();
+    let right_width = Line::from(box_spans.clone()).width()
+        .min(area.width.saturating_sub(10) as usize) as u16;
 
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -1451,6 +1456,59 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::api::AgentItem;
+
+    #[test]
+    fn footer_shows_send_errors_and_pending_status() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        for width in [80, 120] {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            for status in ["Send error: server unavailable", "Sending message..."] {
+                app.status_message = status.into();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+                assert!(footer.contains(status), "Missing status: {footer}");
+            }
+            for status in ["Connected (2 channels loaded)", "Message sent"] {
+                app.status_message = status.into();
+                app.active_pane = ActivePane::ChatInput;
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+                assert!(footer.contains("[Enter] Send"), "Missing Send hint: {footer}");
+                assert!(!footer.contains(status));
+            }
+        }
+    }
+
+    #[test]
+    fn chat_cache_tracks_edits_attachments_and_agent_colors() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        let message = crate::api::ChatMessage {
+            id: "first".into(), author: "Bot".into(), body: "before".into(),
+            created_at: "2026-09-08T12:00:00Z".into(), agent_id: Some("agent-1".into()),
+            images: vec![], has_images: false,
+        };
+        app.messages = vec![message.clone(), crate::api::ChatMessage {
+            id: "last".into(), ..message
+        }];
+        app.agents.push(serde_json::from_value(serde_json::json!({
+            "id": "agent-1", "agentId": "codex", "displayName": "Bot", "color": "#ff0000"
+        })).unwrap());
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("before"));
+        app.messages[0].body = "edited".into();
+        app.messages[1].body = "change".into();
+        ensure_chat_cache(&app, 80);
+        let text = app.chat_cache.read().unwrap().chat_text.clone();
+        assert!(text.contains("edited") && text.contains("change"));
+        assert!(!text.contains("before"));
+        app.messages[0].has_images = true;
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("image"));
+        app.agents[0].color = Some("#00ff00".into());
+        ensure_chat_cache(&app, 80);
+        assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
+            Some(resolve_color(Some("#00ff00"), Color::Cyan)));
+    }
 
     #[test]
     fn test_termimations_loaded() {

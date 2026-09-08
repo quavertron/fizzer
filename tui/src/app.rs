@@ -11,12 +11,10 @@ pub const HEADER_HEIGHT: u16 = 1;
 #[derive(Default, Debug, Clone)]
 pub struct ChatRenderCache {
     pub channel_id: Option<String>,
-    pub message_count: usize,
-    pub last_message_id: Option<String>,
-    pub last_message_body_len: Option<usize>,
-    pub wrap_width: usize,
+    pub messages: Vec<ChatMessage>,
+    pub agents: Vec<AgentItem>,
     pub author: String,
-    pub agent_count: usize,
+    pub wrap_width: usize,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<(usize, usize)>,
     pub chat_text: String,
@@ -162,6 +160,9 @@ pub struct AgentSettingsState {
 
 pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let s = hex.trim().trim_start_matches('#');
+    if !s.is_ascii() {
+        return None;
+    }
     if s.len() == 6 {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
@@ -658,6 +659,7 @@ pub struct App {
     pub input_height_override: Option<u16>,
     pub status_message: String,
     pub is_loading: bool,
+    pub send_in_flight: bool,
     pub author: String,
     pub scroll_offset: usize,
     /// Character offset in the flattened chat log. `None` initializes at EOF.
@@ -717,6 +719,7 @@ impl App {
             input_height_override: None,
             status_message: "Initializing Fizzer TUI...".to_string(),
             is_loading: false,
+            send_in_flight: false,
             author,
             scroll_offset: 0,
             chat_cursor: None,
@@ -1673,6 +1676,8 @@ mod tests {
         assert_eq!(parse_hex_color("#0000FF"), Some((0, 0, 255)));
         assert_eq!(parse_hex_color("#FFF"), Some((255, 255, 255)));
         assert_eq!(parse_hex_color("invalid"), None);
+        assert_eq!(parse_hex_color("aéabc"), None);
+        assert_eq!(parse_hex_color("€"), None);
     }
 
     #[test]
