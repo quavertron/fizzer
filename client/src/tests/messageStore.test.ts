@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatMessageStore, fetchChatMessageSnapshot } from '../chat/messageStore';
 import { api, ApiError } from '../api';
 import { captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
@@ -7,8 +7,10 @@ vi.mock('../api', async (original) => ({ ...await original<typeof import('../api
 import type { ChatMessage } from '../chat/types';
 
 function message(id: string, channelId: string): ChatMessage {
-  return { id, channelId, author: 'asdfasdf', body: id, createdAt: id };
+  return { id, channelId, author: 'asdfasdf', actorUserId: 1, body: id, createdAt: id };
 }
+
+beforeEach(() => chatMessageStore.setActivityUserId(1));
 
 describe('channel snapshot recovery', () => {
   const live: ChatMessage = { ...message('older-run', 'recovery'), seq: 1, agentId: 'codex', status: 'running' };
@@ -161,4 +163,22 @@ describe('chatMessageStore', () => {
    chatMessageStore.update(channel, () => [{ ...row, status: undefined }]);
    expect(chatMessageStore.getChannel(channel)).toEqual([]);
    chatMessageStore.remove(channel);
+ });
+
+ it('shows orange activity only for the signed-in owner, including cached rows after account changes', () => {
+   const channel = 'shared-owners';
+   const other = { ...message('other', channel), actorUserId: 2, agentId: 'claude-code', status: 'running' as const };
+   const unknown = { ...other, id: 'unknown', actorUserId: undefined };
+   chatMessageStore.set(channel, [other, unknown]);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBeUndefined();
+   const own = { ...other, id: 'own', actorUserId: 1, status: 'queued' as const };
+   chatMessageStore.update(channel, rows => [...rows, own]);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBe('running');
+   chatMessageStore.update(channel, rows => rows.filter(row => row.id !== 'own'));
+   expect(chatMessageStore.getAgentActivity()[channel]).not.toBe('running');
+   expect(chatMessageStore.getChannel(channel)).toEqual([other, unknown]);
+   chatMessageStore.setActivityUserId(2);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBe('running');
+   chatMessageStore.setActivityUserId(null);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBeUndefined();
  });

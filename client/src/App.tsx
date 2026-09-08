@@ -196,7 +196,7 @@ export default function App() {
   const [communityUpdatesLoading, setCommunityUpdatesLoading] = useState(false);
   const [communityUpdatesError, setCommunityUpdatesError] = useState('');
   const [showAgentMemory, setShowAgentMemory] = useState(() => localStorage.getItem('cascade_show_agent_memory') === '1');
-  const agentActivity = useAgentActivity();
+  const agentActivity = useAgentActivity(user?.id ?? null);
 
   const { openTabs, layout, focusedPaneId, noteContents } = workspaceStore.active;
   const setOpenTabs = useCallback((value: React.SetStateAction<Tab[]>) => workspaceStore.set('openTabs', value), [workspaceStore]);

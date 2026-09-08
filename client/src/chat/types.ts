@@ -37,6 +37,7 @@ export interface ChatMessage {
   status?: 'queued' | 'sending' | 'running' | 'failed' | 'canceled';
   agentId?: string;
   registrationId?: string;
+  actorUserId?: number;
   runId?: number;
   blocks?: ChatBlock[];
   /** Full harness terminal transcript (raw process I/O / provider stream). */
