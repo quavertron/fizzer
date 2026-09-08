@@ -160,6 +160,31 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
     assert :ok = Schema.ensure!()
     refute Cascade.Missions.Interpretation.migration_decision_pending?(mission_id)
     assert ["canceled"] == SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", ["migration-task-#{suffix}"])
+    # Simulate a branch installation that already applied the original v2,
+    # retaining its immutable migration events but lacking the new questions.
+    SQL.exec("DELETE FROM chat_mission_migrations WHERE name='mission-workspace-decisions-v1'")
+    SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(preserved), mission_id])
+    SQL.exec("UPDATE chat_missions SET approved_at='legacy-approval',approved_by=? WHERE id=?", [user_id, mission_id])
+    SQL.exec("DELETE FROM chat_mission_events WHERE mission_id=? AND kind='historical_task_fenced'", [mission_id])
+    for {id, root} <- [{"new-#{suffix}", worker_message_id}, {"resumed-#{suffix}", coordinator_message_id}] do
+      SQL.exec("INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,status,phase,created_by,approved_at) VALUES(?,?,?,?,?,?,'active','planning',?,'fresh-approval')", [id, vault_id, channel_id, root, "coordinator-#{suffix}", "New work", user_id])
+      SQL.exec("INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status) VALUES(?,?,?,?,'running')", ["task-#{id}", id, "New worker", "worker-#{suffix}"])
+    end
+    resumed_id = "resumed-#{suffix}"
+    SQL.exec("INSERT INTO chat_mission_events(mission_id,kind,source_key) VALUES(?,'mission_brief_backfilled',?)", [resumed_id, "migration:mission:#{resumed_id}:brief"])
+    SQL.exec("INSERT INTO chat_mission_events(mission_id,kind) VALUES(?,'mission_approved')", [resumed_id])
+    assert :ok = Schema.ensure!()
+    assert Cascade.Missions.Interpretation.migration_decision_pending?(mission_id)
+    assert [nil, nil] == SQL.one("SELECT approved_at,approved_by FROM chat_missions WHERE id=?", [mission_id])
+    assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='historical_task_fenced'", [mission_id])
+    for id <- ["new-#{suffix}", resumed_id] do
+      refute Cascade.Missions.Interpretation.migration_decision_pending?(id)
+      assert ["fresh-approval"] == SQL.one("SELECT approved_at FROM chat_missions WHERE id=?", [id])
+      assert ["running"] == SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", ["task-#{id}"])
+    end
+    [state_after_upgrade] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [mission_id])
+    assert :ok = Schema.ensure!()
+    assert [state_after_upgrade] == SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [mission_id])
     raise "rollback migration fixture"
       end)
     end

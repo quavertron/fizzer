@@ -270,6 +270,7 @@ defmodule Cascade.Missions.Schema do
     )
 
     migrate_contract!()
+    backfill_migration_decisions!()
     backfill_note_revisions!()
 
     repair_legacy_dependencies!()
@@ -339,9 +340,9 @@ defmodule Cascade.Missions.Schema do
     :ok
   end
 
-  defp request_migration_decisions! do
-    SQL.all("SELECT id FROM chat_missions WHERE phase='planning' AND status<>'canceled'")
-    |> Enum.each(fn [id] ->
+  defp request_migration_decisions!(missions \\ nil) do
+    missions = missions || SQL.all("SELECT id FROM chat_missions WHERE phase='planning' AND status<>'canceled'")
+    Enum.each(missions, fn [id] ->
       SQL.exec("INSERT OR IGNORE INTO chat_mission_interpretations(mission_id) VALUES(?)", [id])
       [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
       state = Jason.decode!(encoded || "{}")
@@ -350,9 +351,50 @@ defmodule Cascade.Missions.Schema do
         "status" => "open",
         "question" => "This unfinished mission was paused during the workspace upgrade. Should we resume it with a newly approved brief, revise the plan, or close it? Ask the owner once, preserve the answer, and do not resume historical work automatically."
       }
-      state = Map.update(state, "questions", [question], &(&1 ++ [question]))
-      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(state), id])
+      unless Enum.any?(state["questions"] || [], &(&1["id"] == question["id"])) do
+        state = Map.update(state, "questions", [question], &(&1 ++ [question]))
+        SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(state), id])
+      end
     end)
+  end
+
+  defp backfill_migration_decisions! do
+    migration = "mission-workspace-decisions-v1"
+    unless SQL.one("SELECT 1 FROM chat_mission_migrations WHERE name=?", [migration]) do
+      SQL.transaction(fn ->
+        # Only legacy missions have these durable fence events. Approval after
+        # that boundary is a fresh decision, and must never be reset here.
+        legacy = SQL.all("""
+        WITH legacy AS (SELECT m.id,MAX(e.id) AS boundary
+        FROM chat_missions m JOIN chat_mission_events e ON e.mission_id=m.id
+        WHERE m.phase='planning' AND m.status NOT IN ('completed','canceled')
+          AND e.source_key IN ('migration:mission:' || m.id || ':brief',
+                               'migration:mission:' || m.id || ':interpretation-superseded')
+        GROUP BY m.id)
+        SELECT id,boundary FROM legacy
+        WHERE NOT EXISTS (SELECT 1 FROM chat_mission_events a
+          WHERE a.mission_id=legacy.id AND a.kind='mission_approved' AND a.id>legacy.boundary)
+        """)
+
+        Enum.each(legacy, fn [id, boundary] ->
+          SQL.exec("UPDATE chat_missions SET approved_at=NULL,approved_by=NULL,approved_revisions_json='{}' WHERE id=?", [id])
+          SQL.exec("""
+          INSERT OR IGNORE INTO chat_mission_events(mission_id,task_id,kind,summary,source_key,attempt)
+          SELECT t.mission_id,t.id,'historical_task_fenced','Historical task retained as evidence.',
+                 'migration:task:' || t.id || ':fenced',t.attempt
+          FROM chat_mission_tasks t JOIN chat_mission_events boundary ON boundary.id=?
+          WHERE t.mission_id=? AND t.status NOT IN ('pending','running')
+            AND datetime(t.created_at)<=datetime(boundary.created_at)
+            AND datetime(t.updated_at)<=datetime(boundary.created_at)
+            AND NOT EXISTS (SELECT 1 FROM chat_mission_events later
+              WHERE later.mission_id=t.mission_id AND later.task_id=t.id AND later.id>boundary.id
+                AND COALESCE(later.source_key,'') NOT LIKE 'backfill:task:%')
+          """, [boundary, id])
+        end)
+        request_migration_decisions!(Enum.map(legacy, fn [id, _] -> [id] end))
+        SQL.exec("INSERT INTO chat_mission_migrations(name) VALUES(?)", [migration])
+      end)
+    end
   end
 
   defp backfill_note_revisions! do
