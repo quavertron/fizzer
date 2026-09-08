@@ -73,6 +73,24 @@ const ROLLING_SCHEMA_TRANSITIONS = new Map([
   ])],
 ]);
 
+// Actual old-release boot (461382ce) -> reviewed mission workspace boot.
+// This transition fences work and writes briefs; it is NEVER rolling-safe.
+const MISSION_WORKSPACE_SCHEMA_TRANSITION = new Map([
+  ['table:chat_mission_tasks', ['33b1e39de513ad50a87310b8fb08c032cc03ed6f27859c9711a30ef174b49e7e', '1f39d416fe9554b58cf75d7d096c7458f468cc9e2b00ecee609a01a669666617']],
+  ['table:chat_missions', ['295076a884512f48c0fdb397c9c2e878e1bb1aefd3e8e64b3687d2a8cdae5526', '51dc5b55c2a7b5e147f44fb3007b60c0a6e388b4a69df94f9140f2d0ab9ffbb9']],
+  ['table:notes', ['9bd0b8f5bd1a321dd2ed475329eaaabb01aabf0b2167584550342d853d4b72fd', '5a7c290bbde43be7ca74a2650286916d9c6bb15057b5c0d536ed407e45186ecc']],
+  ['index:chat_mission_cancellation_replays_mission_idx', [null, '04a96f71656bc5b645eb6785c6422eb1ea720766d6b55940d368ce3443a3c3a7']],
+  ['index:chat_mission_notes_parent_idx', [null, '010a66b38fcc5c10c4b65e08da59bc0e0ebedb0f04ff0545e508f674cd5e0b3b']],
+  ['table:chat_mission_cancellation_replays', [null, '94f6d8dbbad7b2e8bc9d09841df8b9ebeb8646625e66569a5f63ad0f08cb5547']],
+  ['table:chat_mission_migrations', [null, '265e3213c7aa1aa60c5768d48bd05623d4aaacb0cb6ca9a1d9358d80056a15df']],
+  ['table:chat_mission_notes', [null, '51b3ab915b2289e8db061712f3fe193ba49082c4726183bb8c8f03df098f6996']],
+]);
+const NOTE_REVISION_LEDGER_ROW = {
+  "version": 2,
+  "name": "note_revision_counter",
+  "checksum": "c3f35b7730ea9f2780477c1dbdbffe4337ef709da82644fde0810dae2e3060ce"
+};
+
 function parseArgs(argv) {
   const args = { allowTable: [], requireIdentical: false, schemaOnly: false };
   for (let index = 0; index < argv.length; index += 1) {
@@ -81,6 +99,10 @@ function parseArgs(argv) {
     const key = arg.slice(2);
     if (key === 'require-identical') {
       args.requireIdentical = true;
+      continue;
+    }
+    if (key === 'allow-mission-workspace-migration') {
+      args.allowMissionWorkspaceMigration = true;
       continue;
     }
     if (key === 'schema-only') {
@@ -123,6 +145,9 @@ function parseArgs(argv) {
     throw new Error('--require-identical and --schema-only are mutually exclusive');
   }
   if ((args.beforeSchema || args.afterSchema) && !args.schemaOnly) args.schemaOnly = true;
+  if (args.allowMissionWorkspaceMigration && !args.schemaOnly) {
+    throw new Error('--allow-mission-workspace-migration requires --schema-only');
+  }
   return args;
 }
 
@@ -413,6 +438,26 @@ export function loadSchemaFingerprint(source) {
   const text = fs.readFileSync(source, 'utf8');
   if (text.startsWith('{')) return JSON.parse(text);
   return readSchemaFingerprint(source);
+}
+
+export function recognizeMissionWorkspaceMigration(before, after) {
+  if (!same(before.migrations, [MIGRATION_LEDGER_ROW])
+      || !same(after.migrations, [MIGRATION_LEDGER_ROW, NOTE_REVISION_LEDGER_ROW])) return false;
+  const beforeObjects = new Map(before.objects.map(object => [`${object.type}:${object.name}`, object]));
+  const afterObjects = new Map(after.objects.map(object => [`${object.type}:${object.name}`, object]));
+  if (beforeObjects.size !== before.objects.length || afterObjects.size !== after.objects.length) return false;
+  for (const [key, [oldHash, newHash]] of MISSION_WORKSPACE_SCHEMA_TRANSITION) {
+    const oldObject = beforeObjects.get(key);
+    const nextObject = afterObjects.get(key);
+    if ((oldObject ? sha256(normalizedSql(oldObject.sql)) : null) !== oldHash
+        || !nextObject || sha256(normalizedSql(nextObject.sql)) !== newHash) return false;
+    if (oldObject && (oldObject.type !== nextObject.type || oldObject.name !== nextObject.name
+        || oldObject.tableName !== nextObject.tableName)) return false;
+    beforeObjects.delete(key);
+    afterObjects.delete(key);
+  }
+  // Unrelated DDL, indexes, triggers, removals and ledger drift still fail.
+  return same([...beforeObjects], [...afterObjects]);
 }
 
 export function compareSchemaFingerprints(before, after) {
@@ -1068,8 +1113,11 @@ export function runComparison(options) {
   if (options.schemaOnly) {
     const before = options.beforeFingerprint || loadSchemaFingerprint(options.beforeSchema || options.before);
     const after = options.afterFingerprint || loadSchemaFingerprint(options.afterSchema || options.after);
-    const failures = compareSchemaFingerprints(before, after);
+    const drained = options.allowMissionWorkspaceMigration
+      && recognizeMissionWorkspaceMigration(before, after);
+    const failures = drained ? [] : compareSchemaFingerprints(before, after);
     return {
+      ...(drained ? { cutoverMode: 'drained' } : {}),
       ok: failures.length === 0,
       failures,
       beforeTables: tableCountFromFingerprint(before),
@@ -1120,7 +1168,9 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  if (args.requireIdentical) {
+  if (result.cutoverMode === 'drained') {
+    console.log('Reviewed mission workspace migration requires drained cutover.');
+  } else if (args.requireIdentical) {
     console.log(
       `Rolling data identity check passed: ${result.beforeTables} existing tables; ${result.afterTables} tables after boot.`,
     );

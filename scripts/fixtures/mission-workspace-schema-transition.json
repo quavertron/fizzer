@@ -1,0 +1,96 @@
+{
+  "provenance": "Value-free schema subset captured from actual boot of 461382ce, then 45470750 against the same database.",
+  "before": {
+    "objects": [
+      {
+        "type": "table",
+        "name": "chat_mission_tasks",
+        "tableName": "chat_mission_tasks",
+        "sql": "CREATE TABLE chat_mission_tasks ( id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES chat_missions(id) ON DELETE CASCADE, title TEXT NOT NULL, assignee_registration_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', summary TEXT NOT NULL DEFAULT '', prompt TEXT NOT NULL DEFAULT '', depends_on_json TEXT NOT NULL DEFAULT '[]', priority INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT '', anonymous INTEGER NOT NULL DEFAULT 0, dispatch_id TEXT, run_id INTEGER, attempt INTEGER NOT NULL DEFAULT 0, work_item_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , parent_task_id TEXT, child_result_delivered INTEGER NOT NULL DEFAULT 0, joining_children INTEGER NOT NULL DEFAULT 0, workspace_mode TEXT NOT NULL DEFAULT 'shared')"
+      },
+      {
+        "type": "table",
+        "name": "chat_missions",
+        "tableName": "chat_missions",
+        "sql": "CREATE TABLE chat_missions ( id TEXT PRIMARY KEY, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, root_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, coordinator_registration_id TEXT NOT NULL, title TEXT NOT NULL, objective TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', summary TEXT NOT NULL DEFAULT '', wake_sent INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), authority_json TEXT NOT NULL DEFAULT '[]', verification TEXT NOT NULL DEFAULT '', UNIQUE(channel_id, root_message_id) )"
+      },
+      {
+        "type": "table",
+        "name": "notes",
+        "tableName": "notes",
+        "sql": "CREATE TABLE notes ( id TEXT PRIMARY KEY, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', content_preview TEXT NOT NULL DEFAULT '', is_pinned INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_listed INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0, word_count INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      }
+    ],
+    "migrations": [
+      {
+        "version": 1,
+        "name": "core_node_schema_compatibility",
+        "checksum": "b844b7f41e5377d5ce8ff5dd3c3cc0951cab766773f5bf0816aaec45864d338a"
+      }
+    ]
+  },
+  "after": {
+    "objects": [
+      {
+        "type": "index",
+        "name": "chat_mission_cancellation_replays_mission_idx",
+        "tableName": "chat_mission_cancellation_replays",
+        "sql": "CREATE INDEX chat_mission_cancellation_replays_mission_idx ON chat_mission_cancellation_replays(mission_id,run_id)"
+      },
+      {
+        "type": "index",
+        "name": "chat_mission_notes_parent_idx",
+        "tableName": "chat_mission_notes",
+        "sql": "CREATE INDEX chat_mission_notes_parent_idx ON chat_mission_notes(mission_id,parent_note_id,position)"
+      },
+      {
+        "type": "table",
+        "name": "chat_mission_cancellation_replays",
+        "tableName": "chat_mission_cancellation_replays",
+        "sql": "CREATE TABLE chat_mission_cancellation_replays ( run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, mission_id TEXT NOT NULL REFERENCES chat_missions(id) ON DELETE CASCADE, dispatch_id TEXT, owner_user_id INTEGER NOT NULL REFERENCES users(id), reason TEXT NOT NULL DEFAULT 'Historical mission work fenced during migration.', created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "chat_mission_migrations",
+        "tableName": "chat_mission_migrations",
+        "sql": "CREATE TABLE chat_mission_migrations ( name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+      },
+      {
+        "type": "table",
+        "name": "chat_mission_notes",
+        "tableName": "chat_mission_notes",
+        "sql": "CREATE TABLE chat_mission_notes ( mission_id TEXT NOT NULL REFERENCES chat_missions(id) ON DELETE CASCADE, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, kind TEXT NOT NULL, parent_note_id TEXT REFERENCES notes(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (mission_id, note_id) )"
+      },
+      {
+        "type": "table",
+        "name": "chat_mission_tasks",
+        "tableName": "chat_mission_tasks",
+        "sql": "CREATE TABLE chat_mission_tasks ( id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES chat_missions(id) ON DELETE CASCADE, title TEXT NOT NULL, assignee_registration_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', summary TEXT NOT NULL DEFAULT '', prompt TEXT NOT NULL DEFAULT '', depends_on_json TEXT NOT NULL DEFAULT '[]', priority INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT '', anonymous INTEGER NOT NULL DEFAULT 0, dispatch_id TEXT, run_id INTEGER, attempt INTEGER NOT NULL DEFAULT 0, work_item_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , parent_task_id TEXT, child_result_delivered INTEGER NOT NULL DEFAULT 0, joining_children INTEGER NOT NULL DEFAULT 0, workspace_mode TEXT NOT NULL DEFAULT 'shared', purpose TEXT NOT NULL DEFAULT 'implementation', brief_note_id TEXT, brief_revisions_json TEXT NOT NULL DEFAULT '{}', review_outcome TEXT, verification_passed INTEGER)"
+      },
+      {
+        "type": "table",
+        "name": "chat_missions",
+        "tableName": "chat_missions",
+        "sql": "CREATE TABLE chat_missions ( id TEXT PRIMARY KEY, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, root_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, coordinator_registration_id TEXT NOT NULL, title TEXT NOT NULL, objective TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', summary TEXT NOT NULL DEFAULT '', wake_sent INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), authority_json TEXT NOT NULL DEFAULT '[]', verification TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'planning', approved_at TEXT, approved_by INTEGER REFERENCES users(id), approved_revisions_json TEXT NOT NULL DEFAULT '{}', creation_fingerprint TEXT, UNIQUE(channel_id, root_message_id) )"
+      },
+      {
+        "type": "table",
+        "name": "notes",
+        "tableName": "notes",
+        "sql": "CREATE TABLE notes ( id TEXT PRIMARY KEY, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', content_preview TEXT NOT NULL DEFAULT '', is_pinned INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_listed INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0, word_count INTEGER NOT NULL DEFAULT 0, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , revision_counter INTEGER NOT NULL DEFAULT 1)"
+      }
+    ],
+    "migrations": [
+      {
+        "version": 1,
+        "name": "core_node_schema_compatibility",
+        "checksum": "b844b7f41e5377d5ce8ff5dd3c3cc0951cab766773f5bf0816aaec45864d338a"
+      },
+      {
+        "version": 2,
+        "name": "note_revision_counter",
+        "checksum": "c3f35b7730ea9f2780477c1dbdbffe4337ef709da82644fde0810dae2e3060ce"
+      }
+    ]
+  }
+}
