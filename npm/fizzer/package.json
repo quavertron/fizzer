@@ -5,8 +5,7 @@
   "author": "Fizzer",
   "license": "MIT",
   "bin": {
-    "fizzer": "bin/fizzer.cjs",
-    "fizzer-tui": "bin/fizzer.cjs"
+    "fizzer": "bin/fizzer.cjs"
   },
   "main": "bin/fizzer.cjs",
   "engines": {
