@@ -2434,8 +2434,6 @@ defmodule Cascade.Missions.Store do
        when purpose != "research",
        do: false
 
-  defp task_schedulable?(%{phase: "executing"}, %{purpose: "research"}, _by_id), do: false
-
   defp task_schedulable?(mission, task, by_id) do
     dependencies = dependencies(task)
 

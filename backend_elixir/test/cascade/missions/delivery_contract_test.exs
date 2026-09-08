@@ -327,6 +327,53 @@ defmodule Cascade.Missions.DeliveryContractTest do
         "Review own implementation through fix", "review", worker.id, depends_on: [fix.task.id])
   end
 
+  test "planning research remains schedulable after approval", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
+      Ecto.UUID.generate(), "Research crossing approval")
+    coordinator = created.mission.coordinatorRegistrationId
+    {:ok, research} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Already accepted research", "research", coordinator, anonymous: true)
+
+    {:ok, _} = Store.approve_workspace(ctx.user_id, ctx.vault.id, created.mission.id,
+      Map.new(created.mission.notes, &{&1.noteId, &1.revision}))
+
+    assert [dispatch] = SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [research.task.id])
+    assert is_binary(dispatch)
+    assert {:error, "Research tasks must be scheduled during planning"} =
+      add_task(ctx, created.channelId, created.mission.id, coordinator,
+        "New research after approval", "research", coordinator, anonymous: true)
+  end
+
+  test "closed missions retain cancellation maintenance until workers acknowledge Stop", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
+      Ecto.UUID.generate(), "Disconnected Stop")
+    coordinator = created.mission.coordinatorRegistrationId
+    {:ok, research} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Running research", "research", coordinator, anonymous: true)
+    SQL.exec("INSERT INTO runs(vault_id,owner_user_id,prompt,conversation_id,status) VALUES(?,?,?,?,?)",
+      [ctx.vault.id, ctx.user_id, "Research", Ecto.UUID.generate(), "running"])
+    run = SQL.last_insert_id()
+    SQL.exec("UPDATE chat_mission_tasks SET status='running',run_id=? WHERE id=?", [run, research.task.id])
+    {:ok, stopped} = Store.finish(ctx.user_id, created.channelId, created.mission.id, %{
+      coordinatorRegistrationId: coordinator, status: "canceled", summary: "User Stop"})
+    assert stopped.mission.phase == "closed"
+
+    for acknowledged <- [false, true] do
+      assert Enum.any?(Cascade.Missions.Scheduler.maintenance_missions(), &(hd(&1) == created.mission.id))
+      scheduled = Cascade.Missions.Scheduler.schedule(created.mission.id)
+      assert scheduled.dispatches == []
+      assert scheduled.wakeDispatches == []
+      Cascade.Missions.Recovery.replay_cancellations(fn owner, id ->
+        assert owner == ctx.user_id
+        assert id == run
+        acknowledged
+      end, created.mission.id)
+    end
+
+    refute Enum.any?(Cascade.Missions.Scheduler.maintenance_missions(), &(hd(&1) == created.mission.id))
+    assert ["canceled"] = SQL.one("SELECT status FROM runs WHERE id=?", [run])
+  end
+
   defp wait_for_write_lock(pid, attempts \\ 200)
   defp wait_for_write_lock(_pid, 0), do: flunk("Approval did not reach the write lock")
   defp wait_for_write_lock(pid, attempts) do

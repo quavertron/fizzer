@@ -17,11 +17,11 @@ defmodule Cascade.Missions.Scheduler do
             SELECT 1 FROM chat_mission_interpretations i
             WHERE i.mission_id=m.id AND i.stopped=0
               AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL)
-          ) OR EXISTS (
-            SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
-            WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running')
           )
         )
+      ) OR EXISTS (
+        SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
+        WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running')
       ) OR EXISTS (
         SELECT 1
         FROM chat_mission_cancellation_replays c
