@@ -84,8 +84,16 @@ for (const target of targets) {
   }
 }
 
-// Ensure bin/fizzer.cjs is executable
+// Ensure bin/fizzer.cjs is executable and stage npm/fizzer files
 const shimPath = path.join(repoRoot, 'bin', 'fizzer.cjs');
 if (existsSync(shimPath)) {
   chmodSync(shimPath, 0o755);
+  const fizzerPkgDir = path.join(repoRoot, 'npm', 'fizzer');
+  mkdirSync(path.join(fizzerPkgDir, 'bin'), { recursive: true });
+  copyFileSync(shimPath, path.join(fizzerPkgDir, 'bin', 'fizzer.cjs'));
+  chmodSync(path.join(fizzerPkgDir, 'bin', 'fizzer.cjs'), 0o755);
+  const licenseSrc = path.join(repoRoot, 'LICENSE');
+  const readmeSrc = path.join(repoRoot, 'tui', 'README.md');
+  if (existsSync(licenseSrc)) copyFileSync(licenseSrc, path.join(fizzerPkgDir, 'LICENSE'));
+  if (existsSync(readmeSrc)) copyFileSync(readmeSrc, path.join(fizzerPkgDir, 'README.md'));
 }

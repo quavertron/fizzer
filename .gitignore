@@ -49,3 +49,8 @@ target/
 tui/target/
 bin/cascade-tui
 bin/cascade-tui.exe
+
+# Packaging artifacts
+.package/
+*.tgz
+

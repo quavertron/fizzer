@@ -3,18 +3,10 @@
   "author": "Fizzer",
   "description": "Fizzer shared workspace",
   "license": "MIT",
-  "main": "bin/fizzer.cjs",
+  "main": "cascade-electron/main.cjs",
   "version": "0.2.0",
   "engines": { "node": ">=24" },
-  "private": false,
-  "bin": {
-    "fizzer": "bin/fizzer.cjs"
-  },
-  "files": [
-    "bin/",
-    "LICENSE",
-    "README.md"
-  ],
+  "private": true,
   "type": "module",
   "workspaces": [
     "client"
@@ -78,8 +70,8 @@
     "package": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run package",
     "make": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run make",
     "build:electron": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run package",
-    "build:macos": "node scripts/build-macos.mjs",
-    "build:macos:app": "node scripts/build-macos.mjs package",
+    "build:macos": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run make",
+    "build:macos:app": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run package",
     "build:client": "npm --workspace=client run build",
     "build:client:android": "CAPACITOR=true dotenv -e client/android.env -- npm --workspace=client run build",
     "cap:sync": "npx cap sync android",
@@ -88,18 +80,16 @@
     "android:codex-runtime": "node scripts/prepare-android-codex-runtime.mjs",
     "android:apk": "npm run android:codex-runtime && npm run android:build && cd android && JAVA_HOME=\"${JAVA_HOME:-$HOME/.local/jdks/jdk-21.0.11+10}\" ./gradlew clean assembleDebug && cp -f app/build/outputs/apk/debug/app-debug.apk ../client/public/cascade-android.apk && cp -f app/build/outputs/apk/debug/app-debug.apk ../client/dist/cascade-android.apk"
   },
-  "optionalDependencies": {
-    "fizzer-darwin-arm64": "0.2.0",
-    "fizzer-linux-x64": "0.2.0"
+  "dependencies": {
+    "@tobilu/qmd": "^2.5.3",
+    "better-sqlite3": "^12.5.0"
   },
   "devDependencies": {
     "@capacitor/android": "^8.4.1",
     "@capacitor/cli": "^8.4.1",
     "@capacitor/core": "^8.4.1",
-    "@tobilu/qmd": "^2.5.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.9.2",
-    "better-sqlite3": "^12.5.0",
     "concurrently": "^8.2.2",
     "dotenv-cli": "^11.0.0",
     "playwright": "^1.61.1",

@@ -46,7 +46,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  publish-root:
+  publish-main:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -55,9 +55,9 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-      - name: Publish root package
+      - name: Publish fizzer package
+        working-directory: npm/fizzer
         run: |
-          rm -f bin/cascade-tui bin/cascade-tui.exe
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
             npm pack
           else

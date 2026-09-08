@@ -1,0 +1,23 @@
+{
+  "name": "fizzer",
+  "version": "0.2.0",
+  "description": "Fizzer TUI — a terminal client for the Fizzer AI-native workspace",
+  "author": "Fizzer",
+  "license": "MIT",
+  "bin": {
+    "fizzer": "bin/fizzer.cjs"
+  },
+  "main": "bin/fizzer.cjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/fizzer.cjs",
+    "LICENSE",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "fizzer-darwin-arm64": "0.2.0",
+    "fizzer-linux-x64": "0.2.0"
+  }
+}
