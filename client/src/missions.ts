@@ -129,6 +129,19 @@ export async function approveMission(
   return result.mission;
 }
 
+export async function stopMission(
+  vaultId: string,
+  channelId: string,
+  missionId: string,
+  coordinatorRegistrationId: string,
+): Promise<MissionRecord> {
+  const result = await api<{ mission: MissionRecord }>(
+    `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/missions/${encodeURIComponent(missionId)}/finish`,
+    { method: 'POST', body: JSON.stringify({ coordinatorRegistrationId, status: 'canceled', summary: 'Stopped by the user.' }) },
+  );
+  return result.mission;
+}
+
 export async function fetchMissionNote(noteId: string): Promise<MissionNote> {
   const result = await api<{ note: MissionNote }>(`/api/notes/${encodeURIComponent(noteId)}`);
   return result.note;
