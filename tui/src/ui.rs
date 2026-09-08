@@ -29,6 +29,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
+    if app.show_vaults {
+        frame.render_widget(Clear, size);
+        render_vaults_panel(frame, app, size);
+        return;
+    }
+
     render_header(frame, app, vertical_chunks[0]);
     render_main_area(frame, app, vertical_chunks[1]);
     render_footer(frame, app, vertical_chunks[2]);
@@ -75,8 +81,7 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
     let show_channels = app.show_channels;
     let show_agents = app.show_agents && area.width >= MIN_WIDTH_FOR_AGENTS;
     let show_notes = app.show_notes;
-    let show_vaults = app.show_vaults;
-    let show_left_sidebar = show_channels || show_notes || show_vaults;
+    let show_left_sidebar = show_channels || show_notes;
 
     if show_left_sidebar && show_agents {
         let chunks = Layout::default()
@@ -88,7 +93,7 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
             ])
             .split(area);
 
-        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes, show_vaults);
+        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
         render_chat_modality(frame, app, chunks[1]);
         render_agents_panel(frame, app, chunks[2]);
     } else if show_left_sidebar {
@@ -100,7 +105,7 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
             ])
             .split(area);
 
-        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes, show_vaults);
+        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
         render_chat_modality(frame, app, chunks[1]);
     } else if show_agents {
         let chunks = Layout::default()
@@ -118,29 +123,8 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_left_sidebar(frame: &mut Frame, app: &App, area: Rect, show_channels: bool, show_notes: bool, show_vaults: bool) {
-    let visible = [show_vaults, show_channels, show_notes].into_iter().filter(|visible| *visible).count();
-    if visible > 1 {
-        let constraints = match visible {
-            2 => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-            _ => vec![Constraint::Percentage(34), Constraint::Percentage(33), Constraint::Percentage(33)],
-        };
-        let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
-        let mut index = 0;
-        if show_vaults {
-            render_vaults_panel(frame, app, chunks[index]);
-            index += 1;
-        }
-        if show_channels {
-            render_chat_selector(frame, app, chunks[index]);
-            index += 1;
-        }
-        if show_notes {
-            render_notes_panel(frame, app, chunks[index]);
-        }
-    } else if show_vaults {
-        render_vaults_panel(frame, app, area);
-    } else if show_channels && show_notes {
+fn render_left_sidebar(frame: &mut Frame, app: &App, area: Rect, show_channels: bool, show_notes: bool) {
+    if show_channels && show_notes {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
