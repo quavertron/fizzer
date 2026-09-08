@@ -270,6 +270,8 @@ export function SessionManager({
   const [loading, setLoading] = useState(false);
   const [traceLoading, setTraceLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [stoppingAll, setStoppingAll] = useState(false);
+  const [stopNotice, setStopNotice] = useState('');
   const [stoppingId, setStoppingId] = useState<number | null>(null);
   const [view, setView] = useState<'activity' | 'console'>('activity');
   const [now, setNow] = useState(Date.now());
@@ -422,8 +424,25 @@ export function SessionManager({
     }
   };
 
+  const stopAll = async () => {
+    if (stoppingAll || stoppingId != null) return;
+    setStoppingAll(true);
+    setStopNotice('');
+    try {
+      const result = await api<{ stopped: number; missions: number; failed: number }>('/api/me/active-sessions/stop', { method: 'POST' });
+      await refresh();
+      setStopNotice(result.failed
+        ? `${result.failed} sessions could not be stopped. Try again.`
+        : 'Stop requested for your sessions. Queued work and missions are canceled.');
+    } catch (err) {
+      setStopNotice(err instanceof Error ? err.message : 'Could not stop all work');
+    } finally {
+      setStoppingAll(false);
+    }
+  };
+
   const stopSelected = async () => {
-    if (!selected || stoppingId != null) return;
+    if (!selected || stoppingId != null || stoppingAll) return;
     setStoppingId(selected.id);
     try {
       const stopped = await onCancel(selected.id);
@@ -479,6 +498,16 @@ export function SessionManager({
             </span>
             <button
               type="button"
+              className="btn btn-sm btn-danger"
+              onClick={() => void stopAll()}
+              disabled={stoppingAll || stoppingId != null}
+              title="Stop all your sessions, missions and queued work across vaults"
+            >
+              {stoppingAll ? <Loader2 className="is-spinning" size={12} /> : <Square size={10} fill="currentColor" />}
+              {stoppingAll ? 'Stopping all' : 'Stop all'}
+            </button>
+            <button
+              type="button"
               className="btn-icon"
               onClick={() => void refresh(true)}
               title="Refresh sessions"
@@ -500,6 +529,7 @@ export function SessionManager({
           </div>
         </header>
 
+        {stopNotice && <p role="status">{stopNotice}</p>}
         <div className={`session-manager-body${selected ? ' has-selection' : ''}`}>
           <nav
             className="session-manager-list"
@@ -617,7 +647,7 @@ export function SessionManager({
                       type="button"
                       className="btn btn-sm btn-danger"
                       onClick={() => void stopSelected()}
-                      disabled={stoppingId === selected.id}
+                      disabled={stoppingAll || stoppingId === selected.id}
                     >
                       {stoppingId === selected.id
                         ? <Loader2 className="is-spinning" size={12} />

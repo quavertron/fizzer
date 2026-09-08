@@ -280,6 +280,12 @@ defmodule CascadeWeb.OrchestrationController do
     end)
   end
 
+  def cancel_all_runs(conn) do
+    authenticated(conn, fn conn, user ->
+      JSON.send(conn, 200, Store.cancel_all(user.id))
+    end)
+  end
+
   def local_agents(conn) do
     authenticated(conn, fn conn, _user ->
       # The production release does not share a host filesystem with desktop

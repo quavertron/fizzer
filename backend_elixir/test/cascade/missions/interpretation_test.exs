@@ -102,6 +102,78 @@ defmodule Cascade.Missions.InterpretationTest do
     {result, input}
   end
 
+  test "Stop all authenticates its owner and stops queued work, missions and retries offline",
+       c do
+    [worker] = Scheduler.schedule(c.mission).dispatches
+    worker_run = run(c, worker.dispatch)
+    finding(c, "Pending interpretation")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+    assert Runs.get(review.id).status == "queued"
+
+    other = Cascade.TestHelpers.owner_vault("stop-other")
+
+    {:ok, foreign} =
+      Runs.start(other.vault_id, nil, "Other owner's work", "codex", owner_user_id: other.user_id)
+
+    {:ok, ordinary} = Messages.create(c.user, c.vault, c.channel, %{body: "New request"})
+    {:ok, pending} = Dispatches.create(c.user.id, c.channel, ordinary, c.coordinator.id)
+
+    SQL.exec(
+      "INSERT INTO chat_coordinator_continuations (registration_id,conversation_id,channel_id,owner_user_id,status) VALUES (?,?,?,?,'waiting')",
+      [c.coordinator.id, "stop-all-continuation", c.channel, c.user.id]
+    )
+
+    SQL.exec(
+      "INSERT INTO chat_next_step_checks (registration_id,channel_id,source_id,kind) VALUES (?,?,?,'checkpoint')",
+      [c.coordinator.id, c.channel, "stop-all-check"]
+    )
+
+    request = fn token ->
+      Plug.Test.conn(
+        :post,
+        "/api/me/active-sessions/stop",
+        Jason.encode!(%{ownerUserId: other.user_id})
+      )
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{token}")
+      |> CascadeWeb.OrchestrationRouter.call(CascadeWeb.OrchestrationRouter.init([]))
+    end
+
+    assert request.("invalid").status == 401
+    response = request.(Cascade.Auth.Token.sign_user(c.user))
+    assert response.status == 200
+    assert Jason.decode!(response.resp_body)["failed"] == 0
+    assert Runs.get(review.id).status == "canceled"
+    assert Runs.get(worker_run.id).status == "canceled"
+    assert Runs.get(foreign.id).status == "queued"
+    assert SQL.one("SELECT status FROM chat_missions WHERE id=?", [c.mission]) == ["canceled"]
+
+    assert SQL.one("SELECT stopped FROM chat_mission_interpretations WHERE mission_id=?", [
+             c.mission
+           ]) == [1]
+
+    assert {:error, _} = Dispatches.for_execution(pending.id)
+
+    assert SQL.one(
+             "SELECT status FROM chat_coordinator_continuations WHERE registration_id=? AND conversation_id='stop-all-continuation'",
+             [c.coordinator.id]
+           ) == ["canceled"]
+
+    assert SQL.one(
+             "SELECT outcome FROM chat_next_step_checks WHERE registration_id=? AND source_id='stop-all-check'",
+             [c.coordinator.id]
+           ) == ["canceled"]
+
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    assert request.(Cascade.Auth.Token.sign_user(c.user)).status == 200
+
+    {:ok, newer} =
+      Messages.create(c.user, c.vault, c.channel, %{body: "A fresh request after Stop all"})
+
+    assert {:ok, _} = Dispatches.create(c.user.id, c.channel, newer, c.coordinator.id)
+  end
+
   test "completed execution with an unanswered question stays in the shared maintenance selection",
        c do
     finding(c, "Delivery evidence")
