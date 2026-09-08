@@ -28,35 +28,96 @@ defmodule CascadeWeb.MissionRouter do
     end)
   end
 
-  post "/api/vaults/:vault_id/channels/:channel_id/missions" do
+  get "/api/vaults/:vault_id/missions" do
+    authenticated(conn, nil, fn conn, user ->
+      case Store.list_workspace(user.id, vault_id) do
+        {:ok, missions} ->
+          JSON.send(conn, 200, %{missions: Enum.map(missions, &workspace_projection/1)})
+
+        error ->
+          route_error(conn, 404, error, "Missions not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions" do
     authenticated(conn, :vault, fn conn, user ->
       input = %{
-        rootMessageId: string_body(conn, "rootMessageId"),
-        coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
+        id: string_body(conn, "id"),
         title: string_body(conn, "title"),
-        objective: string_body(conn, "objective"),
-        authorityMessageIds: body(conn, "authorityMessageIds", []),
-        reviewRequested: js_truthy?(body(conn, "reviewRequested", false)),
-        controlPlane: js_truthy?(body(conn, "controlPlane", false))
+        coordinatorIdentityId: string_body(conn, "coordinatorIdentityId"),
+        briefContent: string_body(conn, "briefContent")
       }
 
       opts =
-        [
-          agent: conn.assigns.auth_access == "agent",
-          control_plane: input.controlPlane
-        ] ++
+        [agent: conn.assigns.auth_access == "agent"] ++
           case run_id(conn) do
             nil -> []
             id -> [current_run_id: id]
           end
 
-      case Store.create(user.id, vault_id, channel_id, input, opts) do
-        {:ok, update} ->
-          Scheduler.emit_projection(update, callback(conn, :events))
-          JSON.send(conn, 201, %{mission: update.mission})
+      case Store.create_workspace(user.id, vault_id, input, opts) do
+        {:ok, mission} -> JSON.send(conn, 201, %{mission: workspace_projection(mission)})
+        error -> route_error(conn, 400, error, "Could not create mission")
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/missions/:mission_id" do
+    authenticated(conn, nil, fn conn, user ->
+      case Store.get_workspace(user.id, vault_id, mission_id) do
+        {:ok, mission} -> JSON.send(conn, 200, %{mission: workspace_projection(mission)})
+        error -> route_error(conn, 404, error, "Mission not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions/:mission_id/notes" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        id: string_body(conn, "id"),
+        kind: string_body(conn, "kind"),
+        parentNoteId: body(conn, "parentNoteId", nil),
+        title: string_body(conn, "title"),
+        content: string_body(conn, "content")
+      }
+
+      case Store.create_workspace_note(user.id, vault_id, mission_id, input) do
+        {:ok, %{mission: mission}} ->
+          JSON.send(conn, 201, %{mission: workspace_projection(mission)})
 
         error ->
-          route_error(conn, 400, error, "Could not create mission")
+          route_error(conn, 400, error, "Could not create mission note")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions/:mission_id/approve" do
+    human_authenticated(conn, :vault, fn conn, user ->
+      expected_revisions = body(conn, "expectedRevisions", %{})
+
+      opts =
+        case run_id(conn) do
+          nil -> []
+          id -> [current_run_id: id]
+        end
+
+      with {:ok, mission} <-
+             Store.approve_workspace(
+               user.id,
+               vault_id,
+               mission_id,
+               expected_revisions,
+               opts
+             ),
+           {:ok, _scheduled} <- safe_schedule(mission_id, conn) do
+        JSON.send(conn, 200, %{mission: mission})
+      else
+        {:error, {:revision_conflict, _revisions}} ->
+          workspace_revision_conflict(conn, user.id, vault_id, mission_id)
+
+        error ->
+          route_error(conn, 400, error, "Could not approve mission")
       end
     end)
   end
@@ -184,6 +245,9 @@ defmodule CascadeWeb.MissionRouter do
         title: string_body(conn, "title"),
         assignee: string_body(conn, "assignee"),
         prompt: string_body(conn, "prompt"),
+        purpose: string_body(conn, "purpose", "implementation"),
+        briefNoteId: body(conn, "briefNoteId", nil),
+        briefRevisions: body(conn, "briefRevisions", nil),
         dependsOn: string_list(body(conn, "dependsOn", [])),
         priority: numeric_body(conn, "priority"),
         reasoningEffort: string_body(conn, "reasoningEffort"),
@@ -220,6 +284,9 @@ defmodule CascadeWeb.MissionRouter do
       input = %{
         title: string_body(conn, "title"),
         prompt: string_body(conn, "prompt"),
+        purpose: string_body(conn, "purpose", "implementation"),
+        briefNoteId: body(conn, "briefNoteId", nil),
+        briefRevisions: body(conn, "briefRevisions", nil),
         reasoningEffort: string_body(conn, "reasoningEffort")
       }
 
@@ -273,9 +340,10 @@ defmodule CascadeWeb.MissionRouter do
       input = %{
         status: string_body(conn, "status"),
         summary: string_body(conn, "summary"),
-        finding: conn.body_params["finding"] == true
+        finding: conn.body_params["finding"] == true,
+        reviewOutcome: body(conn, "reviewOutcome", nil),
+        verificationPassed: body(conn, "verificationPassed", nil)
       }
-
       with :ok <-
              Cascade.Missions.Children.authorize_update(
                user.id,
@@ -388,6 +456,20 @@ defmodule CascadeWeb.MissionRouter do
     end
   end
 
+  defp human_authenticated(conn, gate, fun) do
+    options =
+      [access: :user] ++
+        if(gate == :vault,
+          do: [mutation_gate: &Cascade.Accounts.VaultMembers.mutation_gate/2],
+          else: []
+        )
+
+    case Auth.require(conn, options) do
+      {:ok, authorized} -> fun.(authorized, authorized.assigns.current_user)
+      {:error, rejected} -> rejected
+    end
+  end
+
   defp safe_schedule(mission_id, conn) do
     scheduled = Scheduler.schedule(mission_id, events: callback(conn, :events))
 
@@ -412,8 +494,18 @@ defmodule CascadeWeb.MissionRouter do
     :ok
   end
 
-  defp route_error(conn, _status, {:error, %{code: "revision_conflict"} = conflict}, _fallback),
-    do: JSON.send(conn, 409, conflict)
+  defp route_error(conn, _status, {:error, %{"code" => code} = conflict}, _fallback)
+       when code in [:conflict, :revision_conflict, "conflict", "revision_conflict"],
+       do: JSON.send(conn, 409, conflict)
+  defp route_error(conn, _status, {:error, %{code: code} = conflict}, _fallback)
+       when code in [:conflict, :revision_conflict, "conflict", "revision_conflict"],
+       do: JSON.send(conn, 409, conflict)
+
+  defp route_error(conn, _status, {:error, :revision_conflict}, _fallback),
+    do: JSON.send(conn, 409, %{code: "revision_conflict", error: "Revision conflict"})
+
+  defp route_error(conn, _status, {:error, :not_found}, fallback),
+    do: JSON.send(conn, 404, %{error: fallback})
 
   defp route_error(conn, status, {:error, message}, fallback),
     do: JSON.send(conn, status, %{error: if(is_binary(message), do: message, else: fallback)})
@@ -421,10 +513,27 @@ defmodule CascadeWeb.MissionRouter do
   defp route_error(conn, status, _error, fallback),
     do: JSON.send(conn, status, %{error: fallback})
 
+  defp workspace_revision_conflict(conn, user_id, vault_id, mission_id) do
+    case Store.get_workspace(user_id, vault_id, mission_id) do
+      {:ok, mission} ->
+        JSON.send(conn, 409, %{
+          error: "revision_conflict",
+          code: "revision_conflict",
+          mission: workspace_projection(mission)
+        })
+
+      _ ->
+        JSON.send(conn, 409, %{error: "revision_conflict", code: "revision_conflict"})
+    end
+  end
+
   defp callback(conn, :events),
     do: Keyword.get(conn.assigns.domain_options, :events) || Cascade.Chat.Events.Noop
 
   defp callback(conn, key), do: Keyword.get(conn.assigns.domain_options, key)
+
+  defp workspace_projection(%{mission: mission}), do: mission
+  defp workspace_projection(mission), do: mission
 
   defp put_domain_options(%{assigns: %{domain_options: _}} = conn, _compiled), do: conn
   defp put_domain_options(conn, options), do: assign(conn, :domain_options, options)

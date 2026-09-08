@@ -88,38 +88,55 @@ membership setting, not a separate project-management surface:
   users' agents require an explicit opted-in @mention;
 - an explicit `@specialist` mention takes the direct zero-hop path instead;
 - the coordinator answers tiny Q&A and one-liner fixes itself;
-- for almost any non-trivial request it creates a **mission** — durable,
-  searchable task data projected on the chat transcript (subagents optional;
-  a solo mission the coordinator executes alone is normal);
-- for parallel or long work it may also delegate focused tasks to other
-  registered channel agents, or to anonymous subagents of a named agent
-  (including itself) via `mission delegate --anonymous`.
+- for non-trivial work it creates a **mission** with a linked brief. Mission
+  planning starts with research; after the human approves the brief, the
+  coordinator explicitly assigns implementation, independent review, fixes,
+  integration, and verification tasks;
+- every assignment names a registered agent and declares its purpose:
+  `research|implementation|review|fix|integration|verification`. The
+  coordinator must not anonymously delegate work to itself;
+- mission notes are shared milestone/feature records. Workers report findings
+  and outcomes through their task summaries; note edits never implicitly
+  dispatch work or approve a mission.
 
 The provider session remains the reasoning and execution environment. Cascade
 only supplies the durable coordination substrate through `cascade-chat`:
 
 ```text
 cascade-chat members
-cascade-chat mission start --title "..." --objective "..."
-cascade-chat mission delegate --mission <id> --to @agent --task "..." --message "..."
-cascade-chat mission delegate --mission <id> --to @agent --anonymous --effort high --task "..." --message "..."
+cascade-chat mission start --title "..." --message "Brief and acceptance request"
+cascade-chat mission note create --mission <id> --kind milestone --title "..." --content "..."
+cascade-chat mission note list --mission <id>
+cascade-chat mission delegate --mission <id> --to @researcher --task "Investigate ..." --purpose research --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --to @implementer --task "Implement ..." --purpose implementation --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --to @reviewer --task "Review ..." --purpose review --message "..." --brief-note <note-id> --after <implementation-task-id>
+cascade-chat mission update --task <review-task-id> --status completed --review-outcome accepted --summary "..."
+cascade-chat mission delegate --mission <id> --to @integrator --task "Integrate ..." --purpose integration --message "..." --after <review-task-id>
+cascade-chat mission delegate --mission <id> --to @verifier --task "Verify ..." --purpose verification --message "..." --after <integration-task-id>
+cascade-chat mission update --task <verification-task-id> --status completed --verification-passed true --summary "Observed checks and artifact/live evidence"
 cascade-chat mission status --mission <id>
-cascade-chat mission list
 cascade-chat mission history --mission <id>
-cascade-chat mission retry --task <id> --summary "..."
-cascade-chat mission finish --mission <id> --summary "..." --verification "Observed checks and artifact/live revision evidence"
+cascade-chat mission finish --mission <id> --summary "Delivered" --verification "Observed checks and artifact/live revision evidence"
 ```
 
-Named assignees still get at most one active mission task at a time.
-`--anonymous` creates a parallel clone of that agent (isolated session, no
-extra channel membership) so a coordinator can fan out several sols at
-different effort levels without registering duplicate members. Workers inherit
-that agent's tools and authority, not its coordinator role: they execute one
-task and cannot start missions or use coordinator delegation. A worker can create
-up to eight direct child tasks under its own task, using its own agent identity and the existing runner
-concurrency limits. Children start isolated worktrees from the parent's committed
-workspace state. Commit prerequisites before creating a child; uncommitted edits
-are not inherited. Children cannot delegate further:
+Mission approval is a human action against the current note revisions:
+
+```text
+cascade-chat mission approve --mission <id> --expected-revisions '{"<note-id>":1}'
+```
+
+The server rejects approval from agent credentials. A reviewer must be distinct
+from the implementation/fix assignee it reviews. Review acceptance and passed
+verification are explicit task outcomes; provider completion alone is not
+evidence of either.
+
+Named assignees still get at most one active mission task at a time. Workers
+inherit their assigned agent's tools and authority, not its coordinator role:
+they execute one task and cannot start missions or use coordinator delegation.
+A worker can create direct child tasks under its own task using its own agent
+identity and the existing runner concurrency limits. Children start isolated
+worktrees from the parent's committed workspace state. Commit prerequisites
+before creating a child; uncommitted edits are not inherited:
 
 ```text
 cascade-chat mission child --task "Parser tests" --message "Implement only the parser regression tests"
@@ -130,10 +147,10 @@ The parent keeps doing independent work, then ends its turn to join. Once its
 children settle, the same parent task resumes with each child's summary, branch,
 workspace and verification for integration. Failed or blocked children must be
 resolved before parent completion. Stopping a parent cancels unfinished children;
-steering the parent preserves them. Recovery retries unacknowledged stops for every
-canceled task, including parents, until the runner acknowledges cancellation.
-Children do not trigger a separate mission
-review. The parent owns integration and the coordinator performs the final review.
+steering the parent preserves them. Recovery retries unacknowledged stops for
+every canceled task, including parents, until the runner acknowledges
+cancellation. Children do not replace the mission's explicit review,
+integration, or verification path.
 
 `chat_missions` and `chat_mission_tasks` are authoritative, while
 `chat_mission_events` is an append-only timeline with no retention window. A compact mission
@@ -149,12 +166,11 @@ is not proof execution stopped. Stop or withdrawn authority must not be undone
 by a retry. Use `mission diagnose --task <id>` and mission history to inspect
 current evidence before choosing recovery.
 
-For missions requiring review, qualifying worker completion leads to `reviewing`;
-the coordinator reviews the integrated evidence and explicitly finishes with
-verification. Missions created with `--control-plane` and without `--review`
-request automatic completion when their evidence qualifies. Neither mode makes
-a completed task proof of deployment: the assigned worker owns its authorized
-delivery and verification.
+Mission phase is `planning` until the human approves the linked brief, then
+`executing`; it is `closed` only after accepted review, completed integration,
+and passed verification. A completed provider run never implies review
+acceptance or verification success. Failed or changes-requested work must
+follow the explicit fix/review path before downstream integration.
 
 Chat-to-agent intent is also an outbox (`chat_agent_dispatches`). Message and
 target survive renderer reloads and reconnects. The server admits and starts
@@ -205,17 +221,15 @@ before delegation.
 
 ## Durable authority and completion evidence
 
-Mission creation snapshots owner-authored messages in the root reply chain.
-Use `mission start --authority-messages <id,id>` to include earlier explicit
-instructions from the same channel. Agent-authored messages cannot be recorded
-as user grants. Saved instructions and the mission objective accompany worker
-and review dispatches. Legacy missions created before authority capture may have
-empty source records; recover their original user context when authority is unclear.
-Later user corrections and revocations take precedence over saved instructions.
+Mission creation stores a linked brief and shared mission notes. The brief and
+current note revisions accompany worker and review dispatches; later note
+changes are surfaced to the coordinator and workers. These records preserve
+context, not additional tool permissions, and note edits do not implicitly
+dispatch work or approve a mission.
 
-These records preserve context, not additional tool permissions. They do not
-constitute a general spend/deploy permission system. Coordinator completion
-requires `--verification` separately from the worker summary, alongside the
+The brief and note records preserve context, not additional tool permissions;
+they do not constitute a general spend/deploy permission system. Coordinator
+completion requires `--verification` separately from the worker summary,
 existing bound-run evidence checks. Record actual check results and inspectable
 artifacts or live revisions. The server checks presence and provenance of run
 records; the coordinator remains responsible for verifying external claims.

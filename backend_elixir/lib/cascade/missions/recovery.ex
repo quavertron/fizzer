@@ -1,5 +1,5 @@
 defmodule Cascade.Missions.Recovery do
-  @moduledoc "Reconciles missed worker settlement and cancellation through the existing scheduler."
+  @moduledoc "Reconciles missed worker settlement and durable worker/coordinator cancellation."
   alias Cascade.Accounts.SQL
 
   # The scheduler holds the publisher lock and database transaction.
@@ -26,16 +26,39 @@ defmodule Cascade.Missions.Recovery do
   # Retry provider cancellation after crashes/disconnects, outside SQL locks.
   def replay_cancellations(cancel \\ &cancel_run/2, mission_id \\ nil) do
     filter = if mission_id, do: " AND m.id=?", else: ""
+    params = if mission_id, do: [mission_id], else: []
 
-    SQL.all(
-      """
-      SELECT r.id,m.created_by FROM chat_mission_tasks t
-      JOIN chat_missions m ON m.id=t.mission_id JOIN runs r ON r.id=t.run_id
-      WHERE t.status='canceled' AND r.status IN ('queued','running') #{filter}
-      """,
-      if(mission_id, do: [mission_id], else: [])
-    )
-    |> Enum.each(fn [run, user] ->
+    worker_rows = """
+    SELECT r.id AS run_id,m.created_by AS owner_user_id
+    FROM chat_mission_tasks t
+    JOIN chat_missions m ON m.id=t.mission_id
+    JOIN runs r ON r.id=t.run_id
+    WHERE t.status='canceled' AND r.status IN ('queued','running') #{filter}
+    """
+
+    rows =
+      if SQL.table_exists?("chat_mission_cancellation_replays") do
+        SQL.all(
+          """
+          SELECT run_id,MAX(owner_user_id)
+          FROM (
+            #{worker_rows}
+            UNION ALL
+            SELECT r.id,COALESCE(c.owner_user_id,r.owner_user_id,m.created_by)
+            FROM chat_mission_cancellation_replays c
+            JOIN chat_missions m ON m.id=c.mission_id
+            JOIN runs r ON r.id=c.run_id
+            WHERE r.status IN ('queued','running') #{filter}
+          )
+          GROUP BY run_id
+          """,
+          params ++ params
+        )
+      else
+        SQL.all(worker_rows, params)
+      end
+
+    Enum.each(rows, fn [run, user] ->
       if cancel.(user, run) do
         Cascade.Runs.Store.finish(run, "canceled", "Mission task canceled.")
 

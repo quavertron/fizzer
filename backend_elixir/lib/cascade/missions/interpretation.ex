@@ -41,6 +41,208 @@ defmodule Cascade.Missions.Interpretation do
       end
     end
   end
+  def migration_decision_pending?(id) do
+    case SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id]) do
+      [encoded] ->
+        state = Jason.decode!(encoded || "{}")
+        Enum.any?(agenda(state)["questions"], &(&1["id"] == "migration-resumption"))
+      _ -> false
+    end
+  end
+
+  def resolve_migration_decision(id, user_id) do
+    if migration_decision_pending?(id) do
+      [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
+      state = Jason.decode!(encoded)
+      questions = Enum.map(state["questions"], fn
+        %{"id" => "migration-resumption"} = question ->
+          Map.merge(question, %{"status" => "answered", "answer" => "User #{user_id} approved the current brief for fresh execution."})
+        question -> question
+      end)
+      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(Map.put(state, "questions", questions)), id])
+    end
+    :ok
+  end
+
+  @doc "Coalesces a successful linked-note mutation into the mission awareness snapshot."
+  def note_changed(note_id, actor_id, kind, opts \\ []) do
+    persist = fn ->
+      rows =
+        SQL.all(
+          "SELECT mission_id FROM chat_mission_notes WHERE note_id=?",
+          [note_id]
+        )
+
+      previous_revision = Keyword.get(opts, :previous_revision)
+
+      committed_revision =
+        Keyword.get(opts, :committed_revision) ||
+          case SQL.one("SELECT revision_counter FROM notes WHERE id=?", [note_id]) do
+            [revision_counter] ->
+              Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter})
+            _ -> ""
+          end
+
+      mutation_id = Keyword.get(opts, :mutation_id) || Ecto.UUID.generate()
+      auth = Keyword.get(opts, :auth) || %{actor_id: actor_id, origin: :external}
+
+      Enum.each(rows, fn [mission_id] ->
+        SQL.exec(
+          "UPDATE chat_mission_notes SET revision=?,updated_at=datetime('now') WHERE mission_id=? AND note_id=?",
+          [committed_revision, mission_id, note_id]
+        )
+
+        source_key =
+          "mission-note:#{mission_id}:#{note_id}:#{committed_revision}:#{mutation_id}"
+
+        SQL.exec(
+          """
+          INSERT OR IGNORE INTO chat_mission_events
+            (mission_id,kind,summary,source_key)
+          VALUES (?,?,?,?)
+          """,
+          [
+            mission_id,
+            "mission_note_changed",
+            Jason.encode!(%{
+              noteId: note_id,
+              actorId: actor_id,
+              kind: to_string(kind),
+              mutationId: mutation_id,
+              previousRevision: previous_revision,
+              committedRevision: committed_revision,
+              auth: auth_payload(auth, actor_id)
+            }),
+            source_key
+          ]
+        )
+
+        initialize(mission_id)
+      end)
+
+      :ok
+    end
+
+    if Keyword.get(opts, :in_transaction, false), do: persist.(), else: SQL.transaction(persist)
+  end
+
+  defp auth_payload(auth, actor_id) when is_map(auth) do
+    %{
+      actorId: Map.get(auth, :actor_id, Map.get(auth, "actor_id", actor_id)),
+      origin: Map.get(auth, :origin, Map.get(auth, "origin", "external")) |> to_string(),
+      registrationId: Map.get(auth, :registration_id, Map.get(auth, "registration_id")),
+      runId: Map.get(auth, :run_id, Map.get(auth, "run_id")),
+      dispatchId: Map.get(auth, :dispatch_id, Map.get(auth, "dispatch_id"))
+    }
+  end
+
+  defp auth_payload(_auth, actor_id), do: %{actorId: actor_id, origin: "external"}
+
+  defp auth_field(auth, key) do
+    Map.get(auth, key) ||
+      Map.get(auth, Atom.to_string(key)) ||
+      Map.get(auth, camel_auth_key(key))
+  end
+
+  defp camel_auth_key(:actor_id), do: "actorId"
+  defp camel_auth_key(:registration_id), do: "registrationId"
+  defp camel_auth_key(:run_id), do: "runId"
+  defp camel_auth_key(:dispatch_id), do: "dispatchId"
+  defp camel_auth_key(key), do: Atom.to_string(key)
+
+  defp note_event_authored_by_dispatch?(summary, mission_id, dispatch_id) do
+    auth = summary["auth"] || %{}
+
+    with [registration, run_id, coordinator, owner] <-
+           SQL.one(
+             """
+             SELECT d.registration_id,d.run_id,m.coordinator_registration_id,m.created_by
+             FROM chat_agent_dispatches d JOIN chat_missions m ON m.id=?
+             WHERE d.id=?
+             """,
+             [mission_id, dispatch_id]
+           ),
+         true <- is_binary(registration) and is_integer(run_id),
+         true <- auth_field(auth, :origin) in ["agent", :agent],
+         ^registration <- auth_field(auth, :registration_id),
+         ^run_id <- auth_field(auth, :run_id),
+         ^dispatch_id <- auth_field(auth, :dispatch_id),
+         ^coordinator <- registration,
+         ^owner <- auth_field(auth, :actor_id) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp acknowledge_self_note_changes(context, mission_id, dispatch_id) do
+    cursor =
+      case Integer.parse(to_string(context["eventCursor"] || "0")) do
+        {value, ""} -> value
+        _ -> 0
+      end
+
+    changes =
+      SQL.all(
+        """
+        SELECT summary FROM chat_mission_events
+        WHERE mission_id=? AND id>? AND kind='mission_note_changed'
+        ORDER BY id
+        """,
+        [mission_id, cursor]
+      )
+      |> Enum.map(fn [summary] -> Jason.decode!(summary) end)
+
+    latest_by_note =
+      Enum.reduce(changes, %{}, fn change, acc ->
+        Map.put(acc, change["noteId"], change)
+      end)
+
+    self_changes =
+      Enum.filter(changes, fn change ->
+        latest_by_note[change["noteId"]] == change and
+          note_event_authored_by_dispatch?(change, mission_id, dispatch_id)
+      end)
+
+    if self_changes == [] do
+      context
+    else
+      linked_notes =
+        Enum.map(context["linkedNotes"] || [], fn note ->
+          case Enum.find(self_changes, &(&1["noteId"] == note["noteId"])) do
+            %{"committedRevision" => revision} ->
+              updated_at =
+                SQL.one(
+                  "SELECT n.updated_at FROM chat_mission_notes mn JOIN notes n ON n.id=mn.note_id WHERE mn.mission_id=? AND mn.note_id=?",
+                  [mission_id, note["noteId"]]
+                )
+                |> case do
+                  [value] -> value
+                  _ -> note["updatedAt"]
+                end
+
+              note
+              |> Map.put("revision", revision)
+              |> Map.put("updatedAt", updated_at)
+
+            _ ->
+              note
+          end
+        end)
+
+      note_changes =
+        Enum.uniq_by(
+          Enum.reverse(self_changes) ++ (context["noteChanges"] || []),
+          &{&1["noteId"], &1["committedRevision"], &1["mutationId"]}
+        )
+        |> Enum.take(32)
+
+      context
+      |> Map.put("linkedNotes", linked_notes)
+      |> Map.put("noteChanges", note_changes)
+    end
+  end
+
 
   defp row(id) do
     case SQL.one("SELECT #{@columns} FROM chat_mission_interpretations WHERE mission_id=?", [id]) do
@@ -66,8 +268,17 @@ defmodule Cascade.Missions.Interpretation do
   # Progress remains in task history. Only deliberate findings and settled work
   # need interpretation; child results belong to their integrating parent.
   defp snapshot(id, state) do
-    [objective, status, summary, verification] =
-      SQL.one("SELECT objective,status,summary,verification FROM chat_missions WHERE id=?", [id])
+    [objective, status, summary, verification, phase, approved_at, approved_by, approved_revisions] =
+      SQL.one(
+        "SELECT objective,status,summary,verification,phase,approved_at,approved_by,approved_revisions_json FROM chat_missions WHERE id=?",
+        [id]
+      )
+
+    approved_revisions =
+      case Jason.decode(approved_revisions || "{}") do
+        {:ok, value} -> value
+        _ -> %{}
+      end
 
     findings =
       SQL.all(
@@ -124,6 +335,26 @@ defmodule Cascade.Missions.Interpretation do
         end
       end)
 
+    linked_notes =
+      SQL.all(
+        """
+        SELECT mn.note_id,mn.kind,mn.parent_note_id,n.title,n.revision_counter,n.updated_at
+        FROM chat_mission_notes mn JOIN notes n ON n.id=mn.note_id
+        WHERE mn.mission_id=? ORDER BY mn.position,mn.note_id
+        """,
+        [id]
+      )
+      |> Enum.map(fn [note_id, kind, parent, title, revision_counter, updated_at] ->
+        %{noteId: note_id, kind: kind, parentNoteId: parent, title: title, revision: Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter}), updatedAt: updated_at}
+      end)
+
+    note_changes =
+      SQL.all(
+        "SELECT summary FROM chat_mission_events WHERE mission_id=? AND kind='mission_note_changed' ORDER BY id DESC LIMIT 32",
+        [id]
+      )
+      |> Enum.map(fn [summary] -> Jason.decode!(summary) end)
+
     overdue =
       Enum.filter(state["commitments"] || [], fn item ->
         item["status"] == "open" and item["accepted"] != false and due?(item["dueAt"])
@@ -131,10 +362,18 @@ defmodule Cascade.Missions.Interpretation do
 
     %{
       objective: objective,
+      phase: phase,
+      approval: %{
+        approvedAt: approved_at,
+        approvedBy: approved_by,
+        approvedRevisions: approved_revisions
+      },
       eventCursor:
         SQL.one("SELECT COALESCE(MAX(id),0) FROM chat_mission_events WHERE mission_id=?", [id])
         |> hd(),
       findings: findings,
+      linkedNotes: linked_notes,
+      noteChanges: note_changes,
       delivery:
         if(status == "completed",
           do: %{status: status, summary: summary, verification: verification}
@@ -178,6 +417,7 @@ defmodule Cascade.Missions.Interpretation do
 
   defp due?(_), do: false
 
+
   defp fingerprint(value) do
     value = if is_map(value), do: Map.drop(value, [:eventCursor, "eventCursor"]), else: value
     :crypto.hash(:sha256, :erlang.term_to_binary(canonical(value))) |> Base.encode16(case: :lower)
@@ -198,9 +438,18 @@ defmodule Cascade.Missions.Interpretation do
     current = snapshot(id, record.state)
     digest = fingerprint(current)
 
+    approval = current[:approval] || current["approval"] || %{}
+    approved_at = approval[:approvedAt] || approval["approvedAt"]
+
+    approval_changed =
+      current[:phase] == "executing" and is_binary(approved_at) and approved_at != "" and
+        digest != record.handled
+
     meaningful =
-      current.findings != [] or current.delivery != nil or current.overdueCommitments != [] or
-        current.recoveryEvidence != [] or Map.has_key?(current, "agenda") or record.handled != ""
+      current.findings != [] or current.linkedNotes != [] or current.noteChanges != [] or
+        current.delivery != nil or current.overdueCommitments != [] or
+        current.recoveryEvidence != [] or Map.has_key?(current, "agenda") or
+        approval_changed or record.handled != ""
 
     cond do
       update.mission.status == "canceled" or record.stopped ->
@@ -719,6 +968,7 @@ defmodule Cascade.Missions.Interpretation do
               record.context
               |> Map.put("overdueCommitments", still_due)
               |> with_agenda(remaining)
+              |> acknowledge_self_note_changes(id, record.dispatch)
               |> fingerprint()
 
         SQL.exec(

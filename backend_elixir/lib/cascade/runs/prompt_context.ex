@@ -113,6 +113,15 @@ defmodule Cascade.Runs.PromptContext do
       do: Privacy.redact_blocks(prompt),
       else: Privacy.redact_blocks(prompt <> "\n\n[Context: " <> context <> "]")
   end
+  @doc "Appends current mission context to a dispatch prompt without changing ordinary prompts."
+  def append_mission_context(prompt, dispatch, user_id) do
+    context = Cascade.Missions.Context.for_dispatch(dispatch, user_id)
+
+    if context == "" or String.contains?(to_string(prompt), "[Fizzer mission context — current at dispatch time]"),
+      do: Privacy.redact_blocks(to_string(prompt || "")),
+      else: append_context(prompt, [context])
+  end
+
 
   def extract_inline_svgs(prompt) when is_binary(prompt) do
     @inline_svg

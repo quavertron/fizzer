@@ -424,6 +424,39 @@ defmodule Cascade.ContentDomainTest do
                  fn -> Privacy.restore_blocks(existing, "changed") end
   end
 
+  test "note CAS serializes simultaneous agent writes and restores private blocks" do
+    vault = Store.create_vault(1, %{name: "Concurrent notes"})
+    note = Store.create_note(vault.id, 1, %{title: "Mission brief", content: "public\n:::private\nsecret\n:::"})
+    revision = Privacy.note_revision(note)
+    redacted = Privacy.redact_note(note, true).content
+
+    updates =
+      [
+        String.replace(redacted, "public", "first"),
+        String.replace(redacted, "public", "second")
+      ]
+      |> Enum.map(fn content ->
+        Task.async(fn ->
+          Store.update_note(
+            note.id,
+            content,
+            1,
+            expected_revision: revision,
+            actor_origin: :agent
+          )
+        end)
+      end)
+      |> Enum.map(&Task.await(&1, 10_000))
+
+    assert Enum.count(updates, &is_map/1) == 1
+    assert Enum.count(updates, &match?({:error, %{error: "revision_conflict"}}, &1)) == 1
+
+    current = Store.get_note(note.id)
+    assert current.content =~ "secret"
+    assert current.content =~ ":::private"
+    assert File.read!(current.file_path) == current.content
+  end
+
   test "isolated content router preserves auth, response wrappers and viewer errors" do
     owner_token = Token.sign_user(%{id: 1, username: "alice", auth_version: 0})
     viewer_token = Token.sign_user(%{id: 2, username: "bob", auth_version: 0})

@@ -15,18 +15,21 @@ defmodule Cascade.Missions.Children do
            [count] when count < @max_children <-
              SQL.one(
                "SELECT COUNT(*) FROM chat_mission_tasks WHERE parent_task_id=? AND title<>?",
-               [parent.id, input[:title] |> to_string() |> String.trim() |> String.slice(0, 240)]
+               [parent.id, field(input, :title) |> to_string() |> String.trim() |> String.slice(0, 240)]
              ) do
-        # Identity, scope, depth and workspace are server-owned. A child gets no
-        # coordinator authority and cannot create children of its own.
+        # Identity, scope, depth and workspace remain server-owned. Child work is
+        # bounded to this parent, while the worker keeps its normal capabilities.
         bounded = %{
           coordinatorRegistrationId: parent.coordinator,
           assignee: parent.assignee,
-          title: input[:title],
-          prompt: to_string(input[:prompt] || input[:title]),
+          title: field(input, :title),
+          prompt: to_string(field(input, :prompt) || field(input, :title)),
+          purpose: field(input, :purpose, "implementation"),
+          briefNoteId: field(input, :briefNoteId),
+          briefRevisions: field(input, :briefRevisions, %{}),
           anonymous: true,
           workspaceMode: "isolated",
-          reasoningEffort: input[:reasoningEffort]
+          reasoningEffort: field(input, :reasoningEffort)
         }
 
         Store.add_task(user, channel, parent.mission, bounded, parent_task_id: parent.id)
@@ -105,12 +108,12 @@ defmodule Cascade.Missions.Children do
   defp owner(_, _, _), do: {:error, "A current worker run is required"}
 
   def guidance(id) do
-    case SQL.one("SELECT parent_task_id FROM chat_mission_tasks WHERE id=?", [id]) do
-      [nil] ->
-        "You own this task, integration and authorized delivery. Continue through ordinary implementation, verification and delivery without handing milestones to the coordinator. For authorized parallel work use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` (up to eight direct children in isolated worktrees). Children start from your committed workspace state; commit prerequisite edits before delegating them. Keep working independently, then `cascade-chat mission join` and end the turn to resume with child results. Do not start or finish missions or spawn provider subagents."
+    case SQL.one("SELECT parent_task_id,purpose FROM chat_mission_tasks WHERE id=?", [id]) do
+      [nil, purpose] ->
+        "You are the root worker for this mission task (purpose=#{purpose || "implementation"}). The mission orchestrator owns phase changes, approval, independent review, integration and verification. Deliver your assigned artifacts and evidence; if you delegate bounded child work, integrate those child results in this workspace before reporting completion. Use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` for up to eight direct children, then `cascade-chat mission join` and continue after their results arrive."
 
-      [_parent] ->
-        "You are a bounded child worker. Return artifacts and verification to your parent. Do not delegate, integrate other tasks, start or finish missions."
+      [_parent, purpose] ->
+        "You are a bounded child worker for purpose=#{purpose || "implementation"}. Return artifacts and verification evidence to your parent. The parent integrates your result; the mission orchestrator owns lifecycle decisions, review disposition, integration and verification."
 
       _ ->
         ""
@@ -205,26 +208,38 @@ defmodule Cascade.Missions.Children do
   defp results(id) do
     SQL.all(
       """
-      SELECT t.id,t.title,t.status,t.summary,t.run_id,t.work_item_id,w.branch,w.worktree_path,w.verification
+      SELECT t.id,t.title,t.purpose,t.status,t.summary,t.run_id,t.work_item_id,
+             t.review_outcome,t.verification_passed,w.branch,w.worktree_path,w.verification
       FROM chat_mission_tasks t LEFT JOIN work_items w ON w.id=t.work_item_id
       WHERE t.parent_task_id=? ORDER BY t.rowid
       """,
       [id]
     )
-    |> Enum.map(fn [id, title, status, summary, run, item, branch, path, verification] ->
+    |> Enum.map(fn [id, title, purpose, status, summary, run, item, review_outcome,
+                    verification_passed, branch, path, verification] ->
       %{
         id: id,
         title: title,
+        purpose: purpose,
         status: status,
         summary: summary,
         runId: run,
         workItemId: item,
+        reviewOutcome: review_outcome,
+        verificationPassed: verification_passed,
         branch: branch,
         worktreePath: path,
         verification: verification
       }
     end)
   end
+
+  defp field(map, key, fallback \\ nil)
+
+  defp field(map, key, fallback) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), fallback))
+
+  defp field(_map, _key, fallback), do: fallback
 
   def cancel(id) do
     SQL.all(
