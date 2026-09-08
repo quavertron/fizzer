@@ -5,7 +5,9 @@
   "license": "MIT",
   "main": "cascade-electron/main.cjs",
   "version": "0.2.0",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "private": true,
   "type": "module",
   "workspaces": [
@@ -82,7 +84,8 @@
   },
   "dependencies": {
     "@tobilu/qmd": "^2.5.3",
-    "better-sqlite3": "^12.5.0"
+    "better-sqlite3": "^12.5.0",
+    "fizzer": "^0.2.0"
   },
   "devDependencies": {
     "@capacitor/android": "^8.4.1",
