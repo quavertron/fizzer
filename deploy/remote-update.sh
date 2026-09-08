@@ -33,6 +33,9 @@ CANDIDATE_IMAGE=""
 ROLLBACK_IMAGE="cascade:rollback-$REVISION"
 PREFLIGHT_DIR=""
 SCHEMA_CHANGED=0
+DRAINED_MIGRATION=0
+DRAINED_STARTED=0
+DRAINED_SNAPSHOT_READY=0
 SNAPSHOT_DIR=""
 DEPLOY_COMMITTED=0
 DEPLOY_DOMAIN=""
@@ -367,7 +370,9 @@ on_exit() {
   local status=$?
   trap - EXIT INT TERM
   cleanup_preflight
-  if [[ "$ROLLING_STARTED" == "1" && "$DEPLOY_COMMITTED" != "1" ]]; then
+  if [[ "$DRAINED_STARTED" == "1" && "$DEPLOY_COMMITTED" != "1" ]]; then
+    rollback_drained_cutover || true
+  elif [[ "$ROLLING_STARTED" == "1" && "$DEPLOY_COMMITTED" != "1" ]]; then
     rollback_rolling_cutover || true
   fi
   exit "$status"
@@ -474,13 +479,26 @@ preflight_candidate() {
     -v "$PREFLIGHT_DIR:/preflight:ro" \
     "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
     --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json; then
-    echo "Error: incompatible schema change; deploy a backward-compatible migration before this revision." >&2
-    return 1
+    # This reviewed lifecycle migration must never run beside the old scheduler.
+    if docker run --rm --network none --entrypoint node \
+      -v "$PREFLIGHT_DIR:/preflight:ro" \
+      "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
+      --schema-only --allow-mission-workspace-migration \
+      --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json; then
+      DRAINED_MIGRATION=1
+    else
+      echo "Error: unrecognized schema change; migration review is required." >&2
+      return 1
+    fi
   fi
   if ! cmp -s "$PREFLIGHT_DIR/before-schema.json" "$PREFLIGHT_DIR/after-schema.json"; then
     SCHEMA_CHANGED=1
   fi
-  echo "==> Candidate schema supports rolling deployment"
+  if [[ "$DRAINED_MIGRATION" == "1" ]]; then
+    echo "==> Reviewed mission migration requires a drained cutover"
+  else
+    echo "==> Candidate schema supports rolling deployment"
+  fi
 
   # Schema compatibility is checked before touching live data.
   cleanup_preflight_clones
@@ -492,8 +510,19 @@ backup_database_before_migration() {
   local temporary="$DATA_DIR/.deploy-backup-$REVISION.db"
   SNAPSHOT_DIR="/var/backups/cascade/database-$REVISION-$(date -u +%Y%m%dT%H%M%SZ)"
   install -d -m 0700 "$SNAPSHOT_DIR"
-  echo "==> Backing up the database before an additive schema change"
-  backup_running_database "$temporary"
+  echo "==> Backing up the database before migration"
+  if [[ "$DRAINED_MIGRATION" == "1" ]]; then
+    # The old process has exited, including its scheduler and SQLite writer.
+    docker run --rm --network none --entrypoint node \
+      -v "$DATA_DIR:/data" -e CASCADE_BACKUP_PATH="/data/$(basename "$temporary")" \
+      "$CANDIDATE_IMAGE" --input-type=module -e '
+        import Database from "better-sqlite3";
+        const db = new Database("/data/docs.db", { readonly: true, fileMustExist: true });
+        try { await db.backup(process.env.CASCADE_BACKUP_PATH); } finally { db.close(); }
+      '
+  else
+    backup_running_database "$temporary"
+  fi
   mv "$temporary" "$SNAPSHOT_DIR/docs.db"
   chmod 0600 "$SNAPSHOT_DIR/docs.db"
   (cd "$SNAPSHOT_DIR" && sha256sum docs.db > docs.db.sha256)
@@ -503,12 +532,14 @@ backup_database_before_migration() {
 
 verify_live_schema_identity() {
   local container="${1:?container is required}"
+  local compatibility_args=()
+  if [[ "$DRAINED_MIGRATION" == "1" ]]; then compatibility_args+=(--allow-mission-workspace-migration); fi
   docker exec "$container" node /app/scripts/check-elixir-data-compat.mjs \
     --dump-schema /data/docs.db > "$PREFLIGHT_DIR/live-schema-$container.json"
   docker run --rm --network none --entrypoint node \
     -v "$PREFLIGHT_DIR:/preflight:ro" \
     "$CANDIDATE_IMAGE" /app/scripts/check-elixir-data-compat.mjs \
-    --schema-only \
+    --schema-only "${compatibility_args[@]}" \
     --before-schema /preflight/before-schema.json \
     --after-schema "/preflight/live-schema-$container.json"
 }
@@ -668,6 +699,47 @@ rollback_rolling_cutover() {
   set -e
 }
 
+rollback_drained_cutover() {
+  echo "==> Restoring the pre-migration database and previous image behind maintenance" >&2
+  # Never rewind after reopening the edge: DEPLOY_COMMITTED ends this path.
+  if container_exists "$CONTAINER_NAME"; then
+    docker stop -t 120 "$CONTAINER_NAME" >/dev/null || return 1
+  fi
+  if [[ "$DRAINED_SNAPSHOT_READY" == "1" ]]; then
+    (cd "$SNAPSHOT_DIR" && sha256sum -c docs.db.sha256) || return 1
+    cp --preserve=mode,ownership "$SNAPSHOT_DIR/docs.db" "$DATA_DIR/.deploy-restore.db" || return 1
+    chown 1000:1000 "$DATA_DIR/.deploy-restore.db" || return 1
+    rm -f -- "$LIVE_DB-wal" "$LIVE_DB-shm" || return 1
+    mv -f "$DATA_DIR/.deploy-restore.db" "$LIVE_DB" || return 1
+  fi
+  CASCADE_IMAGE="$ROLLBACK_IMAGE" docker compose "${COMPOSE_ARGS[@]}" up -d --no-build --force-recreate || return 1
+  wait_for_url "$HEALTH_URL" 90 "migration rollback" || return 1
+  rm -f "$MAINTENANCE_MARKER"
+  verify_reopened_production_edge
+}
+
+drained_mission_cutover() {
+  echo "==> Draining production for the reviewed mission migration"
+  DRAINED_STARTED=1
+  touch "$MAINTENANCE_MARKER"
+  docker stop -t 120 "$CONTAINER_NAME" >/dev/null
+  backup_database_before_migration
+  DRAINED_SNAPSHOT_READY=1
+  CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" up -d --no-build --force-recreate
+  verify_container_runtime_shape "$CONTAINER_NAME" "mission migration candidate"
+  wait_for_url "$HEALTH_URL" 90 "mission migration candidate"
+  verify_live_schema_identity "$CONTAINER_NAME"
+  check_engine_io "http://127.0.0.1:3000"
+  verify_authenticated_live_candidate "$CONTAINER_NAME" "http://127.0.0.1:3000"
+  [[ "$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")" == "$CERTIFIED_IMAGE_ID" ]]
+  docker tag "$CERTIFIED_IMAGE_ID" cascade:latest
+  # All private checks passed. After the edge opens, preserve every new write.
+  DEPLOY_COMMITTED=1
+  rm -f "$MAINTENANCE_MARKER"
+  verify_reopened_production_edge
+  echo "==> Mission migration cutover committed"
+}
+
 rolling_cutover() {
   echo "==> Starting zero-503 rolling cutover"
   ROLLING_STARTED=1
@@ -781,8 +853,12 @@ if [[ "${CASCADE_TUNE_HOST_CAPACITY:-1}" == "1" ]]; then
   "$ROOT/deploy/tune-host-capacity.sh"
 fi
 
-if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi
-rolling_cutover
+if [[ "$DRAINED_MIGRATION" == "1" ]]; then
+  drained_mission_cutover
+else
+  if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi
+  rolling_cutover
+fi
 
 docker compose "${COMPOSE_ARGS[@]}" ps
 if [[ -n "$SNAPSHOT_DIR" ]]; then

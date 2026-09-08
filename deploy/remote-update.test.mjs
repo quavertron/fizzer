@@ -70,7 +70,7 @@ test('state-identical releases use a warmed backup and never close the maintenan
   assertOrdered(
     'sync_nginx_security 3000 "$ROLLING_PORT"',
     'settle_reloaded_nginx',
-    'rolling_cutover',
+    '  rolling_cutover',
   );
 });
 
@@ -232,6 +232,7 @@ test('schema preflight accepts additions and rejects incompatibility before back
 DATA_DIR="$1"
 CANDIDATE_IMAGE=fixture
 SCHEMA_CHANGED=0
+DRAINED_MIGRATION=0
 chown() { :; }
 dump_live_schema() { echo before > "$1"; }
 boot_preflight_database() { :; }
@@ -255,12 +256,12 @@ echo "schema_changed=$SCHEMA_CHANGED"
       assert.equal(result.status, Number(status), result.stderr);
       if (status === '0') assert.match(result.stdout, /schema_changed=1/);
       else {
-        assert.match(result.stderr, /incompatible schema change/);
+        assert.match(result.stderr, /unrecognized schema change/);
         assert.doesNotMatch(result.stdout, /schema_changed=/);
       }
     }
     assert.doesNotMatch(source, /maintenance_cutover|verify_migration_clone|verify_live_database|prune_cutover_snapshots/);
-    assertOrdered('preflight_candidate', 'if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi', 'rolling_cutover');
+    assertOrdered('preflight_candidate', '  if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi', '  rolling_cutover');
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -505,4 +506,93 @@ verify_reopened_production_edge
 `], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /UNNECESSARY_WAIT/);
+});
+
+test('mission migration drains before snapshot and never rolls back after reopening', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-drained-cutover-'));
+  try {
+    for (const fail of ['', 'health']) {
+      const log = path.join(directory, 'events');
+      fs.writeFileSync(log, '');
+      const script = `set -euo pipefail
+MAINTENANCE_MARKER="$1/maintenance"
+EVENT_LOG="$1/events"
+CONTAINER_NAME=cascade
+CANDIDATE_IMAGE=candidate
+CERTIFIED_IMAGE_ID=sha256:fixture
+COMPOSE_ARGS=()
+HEALTH_URL=http://fixture
+DRAINED_STARTED=0
+DRAINED_SNAPSHOT_READY=0
+DEPLOY_COMMITTED=0
+record() { echo "$*" >> "$EVENT_LOG"; }
+docker() {
+  if [[ "$1" == inspect ]]; then echo sha256:fixture; return; fi
+  [[ -e "$MAINTENANCE_MARKER" ]] || return 99
+  record "docker $*"
+}
+backup_database_before_migration() { record snapshot; }
+verify_container_runtime_shape() { record shape; }
+wait_for_url() { record health; [[ "$FAIL" != health ]]; }
+verify_live_schema_identity() { record schema; }
+check_engine_io() { record realtime; }
+verify_authenticated_live_candidate() { record auth; }
+verify_reopened_production_edge() {
+  [[ ! -e "$MAINTENANCE_MARKER" && "$DEPLOY_COMMITTED" == 1 ]]
+  record public
+}
+${functionBody('drained_mission_cutover')}
+trap 'echo "committed=$DEPLOY_COMMITTED snapshot=$DRAINED_SNAPSHOT_READY" >> "$EVENT_LOG"' EXIT
+drained_mission_cutover
+`;
+      const result = spawnSync('bash', ['-c', script, 'test', directory], { encoding: 'utf8', env: { ...process.env, FAIL: fail } });
+      assert.equal(result.status, fail ? 1 : 0, result.stderr);
+      const events = fs.readFileSync(log, 'utf8');
+      assert.ok(events.indexOf('docker stop') < events.indexOf('snapshot'));
+      assert.ok(events.indexOf('snapshot') < events.indexOf('docker compose'));
+      if (fail) {
+        assert.match(events, /committed=0 snapshot=1/);
+        assert.ok(fs.existsSync(path.join(directory, 'maintenance')));
+        assert.doesNotMatch(events, /public/);
+      } else {
+        assert.match(events, /auth\ndocker tag.*\npublic\ncommitted=1 snapshot=1/);
+      }
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('failed drained migration restores the snapshot before reopening the old image', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-drained-rollback-'));
+  try {
+    const snapshot = path.join(directory, 'snapshot');
+    fs.mkdirSync(snapshot);
+    fs.writeFileSync(path.join(snapshot, 'docs.db'), 'original database');
+    fs.writeFileSync(path.join(snapshot, 'docs.db.sha256'), `${createHash('sha256').update('original database').digest('hex')}  docs.db\n`);
+    fs.writeFileSync(path.join(directory, 'docs.db'), 'migrated database');
+    fs.writeFileSync(path.join(directory, 'docs.db-wal'), 'candidate WAL');
+    fs.writeFileSync(path.join(directory, 'maintenance'), '');
+    const script = `set -euo pipefail
+DATA_DIR="$1"
+LIVE_DB="$1/docs.db"
+SNAPSHOT_DIR="$1/snapshot"
+MAINTENANCE_MARKER="$1/maintenance"
+DRAINED_SNAPSHOT_READY=1
+ROLLBACK_IMAGE=old
+CONTAINER_NAME=cascade
+COMPOSE_ARGS=()
+HEALTH_URL=http://fixture
+container_exists() { return 0; }
+chown() { :; }
+docker() { [[ -e "$MAINTENANCE_MARKER" ]]; }
+wait_for_url() { [[ "$(cat "$LIVE_DB")" == 'original database' ]]; }
+verify_reopened_production_edge() { [[ ! -e "$MAINTENANCE_MARKER" ]]; }
+${functionBody('rollback_drained_cutover')}
+rollback_drained_cutover
+`;
+    const result = spawnSync('bash', ['-c', script, 'test', directory], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(directory, 'docs.db'), 'utf8'), 'original database');
+    assert.ok(!fs.existsSync(path.join(directory, 'docs.db-wal')));
+    assert.ok(!fs.existsSync(path.join(directory, 'maintenance')));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
