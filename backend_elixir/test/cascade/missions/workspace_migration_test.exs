@@ -4,6 +4,43 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
   alias Cascade.Accounts.SQL
   alias Cascade.Missions.Schema
 
+  test "domain bootstrap retains cancellations before realtime exists" do
+    database = Path.join(System.tmp_dir!(), "cascade-bootstrap-#{System.unique_integer([:positive])}.sqlite3")
+    on_exit(fn -> Enum.each([database, database <> "-wal", database <> "-shm"], &File.rm/1) end)
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    script = ~S"""
+    [encoded, database] = System.argv()
+    Application.load(:cascade_elixir)
+    for {key, value} <- encoded |> Base.decode64!() |> :erlang.binary_to_term(), do: Application.put_env(:cascade_elixir, key, value)
+    repo = Application.fetch_env!(:cascade_elixir, Cascade.DB.Repo) |> Keyword.put(:database, database)
+    Application.put_env(:cascade_elixir, Cascade.DB.Repo, repo)
+    for app <- Application.spec(:cascade_elixir, :applications), do: Application.ensure_all_started(app)
+    Logger.configure(level: :warning)
+    {:ok, _} = Cascade.DB.Repo.start_link()
+    {:ok, _} = Cascade.DB.WriteCoordinator.start_link([])
+    {:ok, _} = Cascade.DB.Bootstrap.start_link([])
+    {:ok, _} = Cascade.DomainBootstrap.start_link([])
+    alias Cascade.Accounts.SQL
+    SQL.exec("INSERT INTO users(id,username,password_hash,display_name,avatar_url) VALUES(1,'startup','x','Startup','')")
+    SQL.exec("INSERT INTO vaults(id,name,root_path,created_by) VALUES('v','Startup','/tmp/startup',1)")
+    SQL.exec("INSERT INTO notes(id,vault_id,title,content,created_by) VALUES('c','v','Room','cascade://chat-channel',1)")
+    SQL.exec("INSERT INTO chat_messages(id,channel_id,vault_id,author,body,actor_user_id) VALUES('root','c','v','startup','Legacy mission',1)")
+    SQL.exec("INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,status,created_by) VALUES('m','v','c','root','coord','Legacy mission','active',1)")
+    SQL.exec("INSERT INTO runs(id,vault_id,owner_user_id,prompt,conversation_id,status) VALUES(1,'v',1,'Legacy work','legacy','running')")
+    SQL.exec("INSERT INTO chat_mission_cancellation_replays(run_id,mission_id,owner_user_id) VALUES(1,'m',1)")
+    nil = Process.whereis(Cascade.Realtime.Hub)
+    :ok = Cascade.Missions.Schema.ensure!()
+    [["m", 1]] = Cascade.Missions.Scheduler.maintenance_missions()
+    ["running"] = SQL.one("SELECT status FROM runs WHERE id=1")
+    [1] = SQL.one("SELECT COUNT(*) FROM chat_mission_cancellation_replays WHERE run_id=1")
+    IO.puts("bootstrap cancellation retained")
+    """
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    {output, status} = System.cmd(System.find_executable("elixir"), paths ++ ["-e", script, "--", config, database], stderr_to_stdout: true)
+    assert status == 0, output
+    assert output =~ "bootstrap cancellation retained"
+  end
+
   test "fences historical worker and coordinator work and backfills one durable brief" do
     suffix = System.unique_integer([:positive])
     user_id = suffix + 700_000

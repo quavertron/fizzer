@@ -331,12 +331,8 @@ defmodule Cascade.Missions.Schema do
         end)
     end
 
-    # Replay is deliberately outside the transaction: the durable rows above
-    # survive a crash, and every subsequent startup can retry provider
-    # cancellation without admitting the old dispatch.
-    unless Cascade.DB.Repo.in_transaction?() do
-      Cascade.Missions.Recovery.replay_cancellations()
-    end
+    # Provider cancellation belongs to DispatchReannouncer, which starts after
+    # realtime supervision. Durable replay rows survive a crash before then.
     :ok
   end
 
