@@ -445,51 +445,63 @@ defmodule Cascade.Missions.Schema do
 
   defp persist_task_cancellation_replays! do
     SQL.exec("""
+    WITH task_dispatches AS (
+      SELECT t.id AS task_id,d.id AS dispatch_id
+      FROM chat_mission_tasks t JOIN chat_agent_dispatches d ON d.id=t.dispatch_id
+      WHERE t.status='canceled'
+      UNION
+      SELECT t.id,d.id
+      FROM chat_messages message
+      JOIN chat_mission_tasks t ON t.id=message.mission_task_id
+      JOIN chat_agent_dispatches d ON d.message_id=message.id
+      WHERE t.status='canceled'
+    )
     INSERT OR IGNORE INTO chat_mission_cancellation_replays
       (run_id,mission_id,dispatch_id,owner_user_id,reason)
-    SELECT DISTINCT r.id,t.mission_id,COALESCE(t.dispatch_id,d.id),m.created_by,
+    SELECT DISTINCT r.id,t.mission_id,COALESCE(t.dispatch_id,links.dispatch_id),m.created_by,
       'Historical mission worker run fenced during migration.'
-    FROM chat_mission_tasks t
+    FROM task_dispatches links
+    JOIN chat_mission_tasks t ON t.id=links.task_id
     JOIN chat_missions m ON m.id=t.mission_id
-    JOIN chat_agent_dispatches d
-      ON d.id=t.dispatch_id OR d.message_id IN (
-        SELECT id FROM chat_messages WHERE mission_task_id=t.id
-      )
-    JOIN runs r ON r.id=t.run_id OR r.chat_dispatch_id=d.id
-    WHERE t.status='canceled' AND r.status IN ('queued','running')
+    JOIN runs r ON r.id=t.run_id OR r.chat_dispatch_id=links.dispatch_id
+    WHERE r.status IN ('queued','running')
     """)
+  end
+
+  # Materialize each authoritative relationship once. A correlated OR/EXISTS
+  # over every mission, dispatch and run makes populated upgrades unbounded.
+  defp coordinator_dispatch_links_sql do
+    """
+    SELECT m.id AS mission_id,d.id AS dispatch_id
+    FROM chat_missions m JOIN chat_agent_dispatches d
+      ON d.channel_id=m.channel_id AND d.registration_id=m.coordinator_registration_id
+    WHERE d.message_id=m.root_message_id OR d.message_id LIKE 'sys-mission-' || m.id || '-%'
+    UNION
+    SELECT i.mission_id,d.id
+    FROM chat_mission_interpretations i
+    JOIN chat_missions m ON m.id=i.mission_id
+    JOIN chat_agent_dispatches d ON d.id=i.dispatch_id
+    """
   end
 
   defp persist_coordinator_cancellation_replays! do
     SQL.exec("""
+    WITH coordinator_dispatches AS (#{coordinator_dispatch_links_sql()})
     INSERT OR IGNORE INTO chat_mission_cancellation_replays
       (run_id,mission_id,dispatch_id,owner_user_id,reason)
     SELECT DISTINCT r.id,m.id,d.id,COALESCE(r.owner_user_id,m.created_by),
       'Historical mission coordinator run fenced during migration.'
-    FROM chat_missions m
-    JOIN chat_agent_dispatches d
-      ON (
-        (d.channel_id=m.channel_id AND d.registration_id=m.coordinator_registration_id)
-        OR EXISTS (
-          SELECT 1 FROM chat_mission_interpretations i
-          WHERE i.mission_id=m.id AND i.dispatch_id=d.id
-        )
-      )
+    FROM coordinator_dispatches links
+    JOIN chat_missions m ON m.id=links.mission_id
+    JOIN chat_agent_dispatches d ON d.id=links.dispatch_id
     JOIN runs r ON r.id=d.run_id OR r.chat_dispatch_id=d.id
     WHERE r.status IN ('queued','running')
-      AND (
-        d.message_id=m.root_message_id
-        OR d.message_id LIKE 'sys-mission-' || m.id || '-%'
-        OR EXISTS (
-          SELECT 1 FROM chat_mission_interpretations i
-          WHERE i.mission_id=m.id AND i.dispatch_id=d.id
-        )
-      )
     """)
   end
 
   defp fence_historical_dispatches! do
     SQL.exec("""
+    WITH coordinator_dispatches AS (#{coordinator_dispatch_links_sql()})
     UPDATE chat_agent_dispatches
     SET failed_at=COALESCE(failed_at,datetime('now')),
         error=COALESCE(error,'Historical mission dispatch fenced during migration.')
@@ -505,22 +517,7 @@ defmodule Cascade.Missions.Schema do
       JOIN chat_mission_tasks t ON t.id=message.mission_task_id
       WHERE t.status='canceled'
       UNION
-      SELECT d.id
-      FROM chat_missions m
-      JOIN chat_agent_dispatches d
-        ON (
-          (d.channel_id=m.channel_id AND d.registration_id=m.coordinator_registration_id)
-          OR EXISTS (
-            SELECT 1 FROM chat_mission_interpretations i
-            WHERE i.mission_id=m.id AND i.dispatch_id=d.id
-          )
-        )
-      WHERE d.message_id=m.root_message_id
-         OR d.message_id LIKE 'sys-mission-' || m.id || '-%'
-         OR EXISTS (
-           SELECT 1 FROM chat_mission_interpretations i
-           WHERE i.mission_id=m.id AND i.dispatch_id=d.id
-         )
+      SELECT dispatch_id FROM coordinator_dispatches
     )
       AND (run_id IS NULL OR EXISTS (
         SELECT 1 FROM runs r WHERE r.id=chat_agent_dispatches.run_id AND r.status IN ('queued','running')

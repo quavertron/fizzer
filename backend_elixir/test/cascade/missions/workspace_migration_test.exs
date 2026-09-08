@@ -151,6 +151,20 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
     SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(preserved), mission_id])
     SQL.exec("UPDATE chat_missions SET phase='executing',approved_at='old-approval',approved_by=?,approved_revisions_json='{}' WHERE id=?", [user_id, mission_id])
 
+    # Retain all authoritative links even when projections disagree: worker
+    # message linkage, explicit interpretation linkage, and both run pointers.
+    SQL.exec("UPDATE chat_messages SET mission_task_id=? WHERE id=?", ["migration-task-#{suffix}", worker_message_id])
+    detached_worker_dispatch = "detached-worker-#{suffix}"
+    SQL.exec("INSERT INTO chat_agent_dispatches(id,message_id,channel_id,registration_id) VALUES(?,?,?,?)", [detached_worker_dispatch, worker_message_id, channel_id, "detached-worker-#{suffix}"])
+    SQL.exec("INSERT INTO runs(vault_id,owner_user_id,prompt,conversation_id,status,chat_dispatch_id) VALUES(?,?,?,?,?,?)", [vault_id, user_id, "Detached worker", "detached-worker-#{suffix}", "running", detached_worker_dispatch])
+    detached_worker_run = SQL.last_insert_id()
+    SQL.exec("UPDATE runs SET chat_dispatch_id=NULL WHERE id=?", [worker_run_id])
+    SQL.exec("UPDATE chat_agent_dispatches SET registration_id=?,run_id=NULL WHERE id=?", ["stale-coordinator-#{suffix}", coordinator_dispatch_id])
+    direct_coordinator_dispatch = "direct-coordinator-#{suffix}"
+    SQL.exec("INSERT INTO runs(vault_id,owner_user_id,prompt,conversation_id,status) VALUES(?,?,?,?,'running')", [vault_id, user_id, "Direct coordinator", "direct-coordinator-#{suffix}"])
+    direct_coordinator_run = SQL.last_insert_id()
+    SQL.exec("INSERT INTO chat_agent_dispatches(id,message_id,channel_id,registration_id,run_id) VALUES(?,?,?,?,?)", [direct_coordinator_dispatch, root_id, channel_id, "coordinator-#{suffix}", direct_coordinator_run])
+
     # The application has already recorded the migration at boot. Removing only
     # this marker makes the test exercise the restart-safe migration path.
     SQL.exec("DELETE FROM chat_mission_migrations WHERE name=?", ["mission-workspace-fence-v2"])
@@ -182,6 +196,13 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
 
     assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_cancellation_replays WHERE run_id=?", [worker_run_id])
     assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_cancellation_replays WHERE run_id=?", [coordinator_run_id])
+
+    for run_id <- [detached_worker_run, direct_coordinator_run] do
+      assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_cancellation_replays WHERE run_id=?", [run_id])
+    end
+    for dispatch_id <- [detached_worker_dispatch, direct_coordinator_dispatch] do
+      assert is_binary(SQL.one("SELECT failed_at FROM chat_agent_dispatches WHERE id=?", [dispatch_id]) |> hd())
+    end
 
     relation_count = SQL.one("SELECT COUNT(*) FROM chat_mission_notes WHERE mission_id=? AND kind='mission'", [mission_id])
     note_count = SQL.one("SELECT COUNT(*) FROM notes WHERE id=?", ["mission-brief-#{mission_id}"])
