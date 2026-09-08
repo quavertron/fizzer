@@ -296,15 +296,15 @@ defmodule Cascade.Missions.Store do
   end
 
   def approve_workspace(user_id, vault_id, mission_id, expected_revisions, _opts \\ []) do
-    with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
-         mission when not is_nil(mission) <- mission_row(mission_id),
-         true <- mission.vault_id == vault.id,
-         :ok <- ensure_workspace_brief(mission.id),
-         revisions <- workspace_revisions(mission.id),
-         :ok <- ensure_expected_revisions(revisions, expected_revisions) do
-      approved_at = DateTime.utc_now() |> DateTime.to_iso8601()
+    result = SQL.transaction(fn ->
+      with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
+           mission when not is_nil(mission) <- mission_row(mission_id),
+           true <- mission.vault_id == vault.id,
+           :ok <- ensure_workspace_brief(mission.id),
+           revisions <- workspace_revisions(mission.id),
+           :ok <- ensure_expected_revisions(revisions, expected_revisions) do
+        approved_at = DateTime.utc_now() |> DateTime.to_iso8601()
 
-      SQL.transaction(fn ->
         SQL.exec(
           """
           UPDATE chat_missions
@@ -323,15 +323,17 @@ defmodule Cascade.Missions.Store do
         })
 
         Cascade.Missions.Interpretation.initialize(mission.id)
-      end)
-      _ = Cascade.Missions.Scheduler.schedule(mission.id)
+        {:ok, mission.id}
+      else
+        nil -> {:error, "Vault or mission not found"}
+        false -> {:error, "Mission does not belong to this vault"}
+        {:error, _} = error -> error
+      end
+    end)
 
-      {:ok, refresh!(mission.id).mission}
-    else
-      nil -> {:error, "Vault or mission not found"}
-      false -> {:error, "Mission does not belong to this vault"}
-      {:error, _} = error -> error
-      _ -> {:error, "Mission approval failed"}
+    with {:ok, id} <- result do
+      _ = Cascade.Missions.Scheduler.schedule(id)
+      {:ok, refresh!(id).mission}
     end
   rescue
     error -> {:error, Exception.message(error)}
@@ -2269,18 +2271,15 @@ defmodule Cascade.Missions.Store do
        do: :ok
 
   defp validate_reviewer_distinct(mission_id, "review", assignee, dependencies) do
-    if dependencies == [] do
-      :ok
-    else
-      placeholders = Enum.map_join(dependencies, ",", fn _ -> "?" end)
+    by_id = Map.new(task_rows(mission_id), &{&1.id, &1})
 
-      case SQL.one(
-             "SELECT 1 FROM chat_mission_tasks WHERE mission_id=? AND id IN (#{placeholders}) AND assignee_registration_id=? AND purpose IN ('implementation','fix') LIMIT 1",
-             [mission_id | dependencies] ++ [assignee]
-           ) do
-        [1] -> {:error, "Review assignee must be independent from implementation and fix workers"}
-        _ -> :ok
-      end
+    if Enum.any?(dependency_closure(dependencies, by_id), fn id ->
+         task = by_id[id]
+         task.assignee_registration_id == assignee and task.purpose in ~w(implementation fix)
+       end) do
+      {:error, "Review assignee must be independent from implementation and fix workers"}
+    else
+      :ok
     end
   end
 

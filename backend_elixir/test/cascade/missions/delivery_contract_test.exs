@@ -288,6 +288,57 @@ defmodule Cascade.Missions.DeliveryContractTest do
     assert finished.mission.status == "completed"
   end
 
+  test "approval rejects a brief edit committed while waiting for the write lock", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
+      Ecto.UUID.generate(), "Concurrent approval")
+    expected = Map.new(created.mission.notes, &{&1.noteId, &1.revision})
+    brief = Enum.find(created.mission.notes, &(&1.kind == "mission"))
+
+    approval = Cascade.DB.WriteCoordinator.with_lock(fn ->
+      approval = Task.async(fn ->
+        Store.approve_workspace(ctx.user_id, ctx.vault.id, created.mission.id, expected)
+      end)
+      wait_for_write_lock(approval.pid)
+      SQL.exec("UPDATE notes SET content=?,revision_counter=revision_counter+1 WHERE id=?",
+        ["Changed scope before approval commits", brief.noteId])
+      approval
+    end)
+
+    assert {:error, {:revision_conflict, _}} = Task.await(approval)
+    assert ["planning"] = SQL.one("SELECT phase FROM chat_missions WHERE id=?", [created.mission.id])
+  end
+
+  test "review independence includes implementation ancestors behind a fix", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
+      Ecto.UUID.generate(), "Independent ancestry")
+    {:ok, approved} = Store.approve_workspace(ctx.user_id, ctx.vault.id, created.mission.id,
+      Map.new(created.mission.notes, &{&1.noteId, &1.revision}))
+    {:ok, identity} = Agents.upsert_identity(ctx.user_id, ctx.vault.id, %{
+      agentId: "codex", displayName: "Ancestry worker", mention: "ancestry-#{ctx.suffix}", model: "gpt-5.6"})
+    {:ok, worker} = Agents.add_to_channel(ctx.user_id, ctx.vault.id, created.channelId, identity.id)
+    coordinator = approved.coordinatorRegistrationId
+    {:ok, implementation} = add_task(ctx, created.channelId, approved.id, coordinator,
+      "Original implementation", "implementation", worker.id)
+    {:ok, fix} = add_task(ctx, created.channelId, approved.id, coordinator,
+      "Follow-up fix", "fix", coordinator, depends_on: [implementation.task.id], anonymous: true)
+
+    assert {:error, "Review assignee must be independent from implementation and fix workers"} =
+      add_task(ctx, created.channelId, approved.id, coordinator,
+        "Review own implementation through fix", "review", worker.id, depends_on: [fix.task.id])
+  end
+
+  defp wait_for_write_lock(pid, attempts \\ 200)
+  defp wait_for_write_lock(_pid, 0), do: flunk("Approval did not reach the write lock")
+  defp wait_for_write_lock(pid, attempts) do
+    state = :sys.get_state(Cascade.DB.WriteCoordinator)
+    if Enum.any?(state.waiters, fn {_, waiter} -> waiter.pid == pid end) do
+      :ok
+    else
+      Process.sleep(5)
+      wait_for_write_lock(pid, attempts - 1)
+    end
+  end
+
   defp workspace_fixture(ctx, vault_id, identity_id, id, title) do
     Store.create_workspace(ctx.user_id, vault_id, %{
       id: id,
