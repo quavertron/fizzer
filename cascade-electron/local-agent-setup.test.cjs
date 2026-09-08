@@ -18,6 +18,10 @@ async function fixture(t, overrides = {}) {
     let text = ''; for await (const chunk of req) text += chunk;
     const body = text ? JSON.parse(text) : null;
     state.calls.push([req.method, req.url]);
+    if (state.rejectChannel && req.url === root + '/notes' && req.method === 'POST') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: state.rejectChannel })); return;
+    }
     if (state.redirect) { res.writeHead(302, { Location: 'https://invalid.example/forbidden' }); res.end(); return; }
     if (req.method !== 'GET') state.writes.push([req.method, req.url, body]);
     assert.equal(req.headers['x-cascade-browser'], '1');
@@ -85,6 +89,22 @@ test('forbidden methods/routes, browser cross-origin headers and arbitrary URL f
     { ...INPUT, flags: { ...FLAGS, yolo: true } }, { ...INPUT, flags: {} }, { ...INPUT, cwd: 'relative' },
     { ...INPUT, displayName: 'x'.repeat(5000) }]) assert.equal((await rpc(f.socketPath, { body })).status, 400);
   assert.equal(f.state.calls.length, 0);
+});
+test('partial setup reports only fixed diagnostics and preserves identity on retry', async t => {
+  const f = await fixture(t, { rejectChannel: 'permission denied: /private/secret-token' });
+  const first = await rpc(f.socketPath);
+  assert.equal(first.status, 400);
+  assert.equal(first.body.stage, 'channel-create');
+  assert.equal(first.body.upstream_status, 400);
+  assert.equal(first.body.category, 'filesystem-permission');
+  assert.equal(JSON.stringify(first).includes('secret-token'), false);
+  assert.equal(f.state.agents.length, 1);
+  assert.equal(f.state.notes.length, 0);
+  f.state.rejectChannel = false;
+  const retry = await rpc(f.socketPath);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.agent_id, f.state.agents[0].id);
+  assert.equal(f.state.agents.length, 1);
 });
 test('authoritative account/private-vault preflight prevents all writes', async t => {
   for (const overrides of [{ owner: 2 }, { memberCount: 2 }, { memberCount: 0 }]) {

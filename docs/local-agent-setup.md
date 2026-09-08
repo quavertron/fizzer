@@ -54,6 +54,14 @@ within this service. A transport failure may mean a partial setup: inspect/retry
 this same binding rather than creating a different handle. Setup sends no chat,
 run, model, approval or orchestration request.
 
+Failures return only a fixed `stage`, numeric `upstream_status` when available,
+and an allowlisted error `category`. Upstream bodies, exception text, paths,
+headers and credentials are never forwarded. A `channel-create` failure after
+identity readback means a vault identity may exist without a usable channel
+membership; do not report phone activation from the identity record alone.
+Retry the same binding only after inspecting exact records and resolving the
+reported stage; matching identities are preserved.
+
 **Identity visibility is vault-wide**, not channel-only. Fizzer can project
 memberships into other channels, with backend defaults. The returned flags are
 verified for the returned membership only. An external session adapter must
