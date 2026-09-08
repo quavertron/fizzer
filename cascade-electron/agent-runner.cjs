@@ -877,7 +877,7 @@ async function runClaudeLocally(opts, emit) {
     const { code, signal, error: launchError } = await exited;
     if (launchError) throw launchError;
     if (code !== 0 && !canceledClaudeRuns.has(runId) && !startupTimedOut) {
-      throw new Error(stderr.trim() || `Claude CLI exited with ${signal || `code ${code}`}.`);
+      throw new Error(stderr.trim() || summary || `Claude CLI exited with ${signal || `code ${code}`}.`);
     }
   } catch (error) {
     throw error;
