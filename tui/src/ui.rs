@@ -29,12 +29,6 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
-    if app.show_vaults {
-        frame.render_widget(Clear, size);
-        render_vaults_panel(frame, app, size);
-        return;
-    }
-
     render_header(frame, app, vertical_chunks[0]);
     render_main_area(frame, app, vertical_chunks[1]);
     render_footer(frame, app, vertical_chunks[2]);
