@@ -8,9 +8,9 @@
 	 "classes": ["blinker"]
 	},
 	{"name": "petals_1",
-	 "animation": "✾✤❁✺❁✤",
+	 "animation": "✤❁✺❁",
 	 "classes": ["petals"],
-	 "frame_milliseconds": 500
+	 "frame_milliseconds": 400
 	},
 	{"name": "drop",
 	 "animation": "˚°ᵒ◦◡⏝⎵⏝◡◦ᵒ°",

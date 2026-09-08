@@ -1,8 +1,27 @@
 use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage, NoteSummary};
+use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 use unicode_width::UnicodeWidthChar;
 
 pub const HEADER_HEIGHT: u16 = 1;
+
+/// Cached layout and pre-rendered lines for the chat messages stream.
+/// Avoids re-parsing, re-wrapping, and re-allocating thousands of chat lines on every frame.
+#[derive(Default, Debug, Clone)]
+pub struct ChatRenderCache {
+    pub channel_id: Option<String>,
+    pub message_count: usize,
+    pub last_message_id: Option<String>,
+    pub last_message_body_len: Option<usize>,
+    pub wrap_width: usize,
+    pub author: String,
+    pub agent_count: usize,
+    pub lines: Vec<Line<'static>>,
+    pub line_offsets: Vec<(usize, usize)>,
+    pub chat_text: String,
+    pub char_count: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePane {
@@ -654,6 +673,7 @@ pub struct App {
     pub renaming_channel_idx: Option<usize>,
     /// Base64 data-URL images staged from clipboard paste, sent with the next message.
     pub pending_images: Vec<String>,
+    pub chat_cache: RwLock<ChatRenderCache>,
 }
 
 impl App {
@@ -700,6 +720,7 @@ impl App {
             new_channel_name: None,
             renaming_channel_idx: None,
             pending_images: Vec::new(),
+            chat_cache: RwLock::new(ChatRenderCache::default()),
         }
     }
 
@@ -916,11 +937,24 @@ impl App {
     }
 
     pub fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(2);
+        self.scroll_up_by(3);
+    }
+
+    pub fn scroll_up_by(&mut self, delta: usize) {
+        let max_lines = self.chat_cache.read().map(|c| c.lines.len()).unwrap_or(0);
+        if max_lines > 0 {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta).min(max_lines);
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta);
+        }
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(2);
+        self.scroll_down_by(3);
+    }
+
+    pub fn scroll_down_by(&mut self, delta: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(delta);
     }
 
     fn chat_offset(&self, text: &str) -> usize {
@@ -949,6 +983,36 @@ impl App {
     }
 
     pub fn move_chat_cursor_vertical(&mut self, text: &str, delta: isize, extend: bool) {
+        let target_offset = {
+            let cache = self.chat_cache.read().ok();
+            if let Some(cache) = cache.as_ref().filter(|c| c.chat_text == text && !c.line_offsets.is_empty()) {
+                let current = self.chat_offset(text);
+                let (cur_line, col) = crate::ui::chat_line_column_from_offsets(&cache.line_offsets, current);
+                if delta.is_negative() {
+                    if cur_line == 0 {
+                        return;
+                    }
+                    let target_line = cur_line.saturating_sub(delta.unsigned_abs());
+                    let (target_start, target_len) = cache.line_offsets[target_line];
+                    Some(target_start + col.min(target_len))
+                } else {
+                    if cur_line + 1 >= cache.line_offsets.len() {
+                        return;
+                    }
+                    let target_line = (cur_line + delta as usize).min(cache.line_offsets.len() - 1);
+                    let (target_start, target_len) = cache.line_offsets[target_line];
+                    Some(target_start + col.min(target_len))
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(target) = target_offset {
+            self.set_chat_offset(target, text, extend);
+            return;
+        }
+
         let chars: Vec<char> = text.chars().collect();
         let current = self.chat_offset(text);
         let line_start = chars[..current].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);

@@ -753,11 +753,11 @@ async fn run_app(
                                     continue;
                                 }
                                 KeyCode::PageUp => {
-                                    app.scroll_offset = app.scroll_offset.saturating_add(5);
+                                    app.scroll_up_by(5);
                                     continue;
                                 }
                                 KeyCode::PageDown => {
-                                    app.scroll_offset = app.scroll_offset.saturating_sub(5);
+                                    app.scroll_down_by(5);
                                     continue;
                                 }
                                 KeyCode::F(5) | KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -859,14 +859,14 @@ async fn run_app(
                                         if is_input_tall {
                                             app.input_scroll_up();
                                         } else {
-                                            app.scroll_offset = app.scroll_offset.saturating_add(5);
+                                            app.scroll_up_by(5);
                                         }
                                     }
                                     KeyCode::PageDown => {
                                         if is_input_tall {
                                             app.input_scroll_down();
                                         } else {
-                                            app.scroll_offset = app.scroll_offset.saturating_sub(5);
+                                            app.scroll_down_by(5);
                                         }
                                     }
                                     KeyCode::Enter => {
@@ -1100,7 +1100,6 @@ async fn run_app(
                                         app.chat_cursor.unwrap_or(offset),
                                     );
                                     app.chat_cursor = Some(offset);
-                                    app.scroll_offset = 0;
                                 }
                             }
                             MouseEventKind::ScrollUp => {
@@ -1288,8 +1287,9 @@ fn chat_offset_at_position(
     }
 
     let body_width = center_width.saturating_sub(4).max(10) as usize;
-    let chat_text = ui::chat_log_text(app, body_width);
-    let total_lines = chat_text.split('\n').count().max(1);
+    ui::ensure_chat_cache(app, body_width);
+    let cache = app.chat_cache.read().unwrap();
+    let total_lines = cache.lines.len().max(1);
     let visible_lines = input_top_y.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(visible_lines);
     let scroll_y = max_scroll.saturating_sub(app.scroll_offset);
@@ -1298,14 +1298,11 @@ fn chat_offset_at_position(
         .min(total_lines.saturating_sub(1));
     let column = column.saturating_sub(channels_width.saturating_add(1)) as usize;
 
-    let mut offset = 0;
-    for (index, text_line) in chat_text.split('\n').enumerate() {
-        if index == line {
-            return Some(offset + column.min(text_line.chars().count()));
-        }
-        offset += text_line.chars().count() + 1;
+    if let Some(&(start, len)) = cache.line_offsets.get(line) {
+        Some(start + column.min(len))
+    } else {
+        Some(cache.char_count)
     }
-    Some(chat_text.chars().count())
 }
 
 fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {

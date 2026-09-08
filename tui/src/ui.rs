@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{parse_hex_color, ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
+use crate::app::{
+    parse_hex_color, ActivePane, AgentSettingsField, App, ChatRenderCache, HEADER_HEIGHT,
+};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let size = frame.area();
@@ -424,22 +426,47 @@ fn render_chat_modality(frame: &mut Frame, app: &App, area: Rect) {
     render_input_composer(frame, app, vertical_chunks[1]);
 }
 
-fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
-    let is_focused = app.active_pane == ActivePane::ChatMessages;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
+    let is_valid = {
+        let cache = app.chat_cache.read().unwrap();
+        cache.channel_id == app.active_channel_id
+            && cache.message_count == app.messages.len()
+            && cache.wrap_width == body_wrap_width
+            && cache.author == app.author
+            && cache.agent_count == app.agents.len()
+            && cache.last_message_id == app.messages.last().map(|m| m.id.clone())
+            && cache.last_message_body_len == app.messages.last().map(|m| m.body.len())
+    };
 
-    let active_title = format!(" #{} ", app.active_channel_title());
+    if is_valid {
+        return;
+    }
 
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let body_wrap_width = inner_width.saturating_sub(2).max(10);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut line_offsets: Vec<(usize, usize)> = Vec::new();
+    let mut chat_text = String::new();
+    let mut current_char_offset = 0;
 
-    let mut lines: Vec<Line> = Vec::new();
+    let mut push_line = |line: Line<'static>, text_line: &str| {
+        let char_count = text_line.chars().count();
+        line_offsets.push((current_char_offset, char_count));
+        if !lines.is_empty() {
+            chat_text.push('\n');
+        }
+        chat_text.push_str(text_line);
+        current_char_offset += char_count + 1;
+        lines.push(line);
+    };
 
     if app.messages.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " No messages in this channel yet.",
-            Style::default().fg(Color::DarkGray).italic(),
-        )));
+        let msg = " No messages in this channel yet.";
+        push_line(
+            Line::from(Span::styled(
+                msg.to_string(),
+                Style::default().fg(Color::DarkGray).italic(),
+            )),
+            msg,
+        );
     } else {
         let msg_count = app.messages.len();
         for (m_idx, msg) in app.messages.iter().enumerate() {
@@ -449,7 +476,11 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                 && crate::api::continues_chat_group(&app.messages[m_idx - 1], msg);
 
             // Author formatting
-            let is_agent = msg.agent_id.is_some() || msg.author.to_lowercase().contains("bot") || msg.author.to_lowercase().contains("agent") || msg.author == "Codex" || msg.author == "Pi";
+            let is_agent = msg.agent_id.is_some()
+                || msg.author.to_lowercase().contains("bot")
+                || msg.author.to_lowercase().contains("agent")
+                || msg.author == "Codex"
+                || msg.author == "Pi";
             let is_self = msg.author == app.author;
 
             let author_color = if is_self {
@@ -473,13 +504,15 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             if !continues_group {
+                let ts = crate::api::format_timestamp(&msg.created_at);
                 let author_line = Line::from(vec![
                     Span::styled("● ", Style::default().fg(author_color)),
-                    Span::styled(&msg.author, Style::default().fg(author_color).bold()),
+                    Span::styled(msg.author.clone(), Style::default().fg(author_color).bold()),
                     Span::raw("  "),
-                    Span::styled(crate::api::format_timestamp(&msg.created_at), Style::default().fg(Color::DarkGray)),
+                    Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
                 ]);
-                lines.push(author_line);
+                let text_line = format!("● {}  {}", msg.author, ts);
+                push_line(author_line, &text_line);
             }
 
             // A grouped continuation has no author line to mark its start, so its
@@ -489,19 +522,21 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             // Message Body: word-wrapped so each Line is exactly 1 visual terminal row
             for body_line in msg.body.lines() {
                 if body_line.trim().is_empty() {
-                    lines.push(Line::from(""));
+                    push_line(Line::from(""), "");
                 } else {
                     for wrapped_chunk in wrap_text(body_line, body_wrap_width) {
-                        let margin = if marker_pending {
+                        let (margin_str, margin_span) = if marker_pending {
                             marker_pending = false;
-                            Span::styled("> ", Style::default().fg(author_color))
+                            ("> ", Span::styled("> ", Style::default().fg(author_color)))
                         } else {
-                            Span::raw("  ")
+                            ("  ", Span::raw("  "))
                         };
-                        lines.push(Line::from(vec![
-                            margin,
-                            Span::styled(wrapped_chunk, Style::default().fg(Color::White)),
-                        ]));
+                        let line = Line::from(vec![
+                            margin_span,
+                            Span::styled(wrapped_chunk.clone(), Style::default().fg(Color::White)),
+                        ]);
+                        let text_line = format!("{}{}", margin_str, wrapped_chunk);
+                        push_line(line, &text_line);
                     }
                 }
             }
@@ -512,16 +547,18 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                     0 | 1 => " ▤ image ".to_string(),
                     n => format!(" ▤ {} images ", n),
                 };
-                let margin = if marker_pending {
+                let (margin_str, margin_span) = if marker_pending {
                     marker_pending = false;
-                    Span::styled("> ", Style::default().fg(author_color))
+                    ("> ", Span::styled("> ", Style::default().fg(author_color)))
                 } else {
-                    Span::raw("  ")
+                    ("  ", Span::raw("  "))
                 };
-                lines.push(Line::from(vec![
-                    margin,
-                    Span::styled(label, Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
-                ]));
+                let line = Line::from(vec![
+                    margin_span,
+                    Span::styled(label.clone(), Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
+                ]);
+                let text_line = format!("{}{}", margin_str, label);
+                push_line(line, &text_line);
             }
             let _ = marker_pending;
 
@@ -530,39 +567,46 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             let next_continues = m_idx + 1 < msg_count
                 && crate::api::continues_chat_group(msg, &app.messages[m_idx + 1]);
             if m_idx + 1 < msg_count && !next_continues {
-                lines.push(Line::from(""));
+                push_line(Line::from(""), "");
             }
         }
     }
 
-    // No bottom border: the composer below draws the shared divider so the two
-    // panes read as one conjoined box.
+    let char_count = chat_text.chars().count();
+    *app.chat_cache.write().unwrap() = ChatRenderCache {
+        channel_id: app.active_channel_id.clone(),
+        message_count: app.messages.len(),
+        last_message_id: app.messages.last().map(|m| m.id.clone()),
+        last_message_body_len: app.messages.last().map(|m| m.body.len()),
+        wrap_width: body_wrap_width,
+        author: app.author.clone(),
+        agent_count: app.agents.len(),
+        lines,
+        line_offsets,
+        chat_text,
+        char_count,
+    };
+}
+
+fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::ChatMessages;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+    let active_title = format!(" #{} ", app.active_channel_title());
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let body_wrap_width = inner_width.saturating_sub(2).max(10);
+
+    ensure_chat_cache(app, body_wrap_width);
+    let cache = app.chat_cache.read().unwrap();
+
     let messages_block = Block::default()
         .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
         .title(Span::styled(active_title, Style::default().fg(Color::Cyan).bold()))
         .border_style(Style::default().fg(border_color));
 
     let visible_lines = area.height.saturating_sub(1) as usize;
-    let total_lines = lines.len();
-
-    let plain_lines: Vec<String> = lines
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-    let chat_text = plain_lines.join("\n");
-
-    if let Some((selection_start, selection_end)) = app.chat_selection_bounds(&chat_text) {
-        let mut offset = 0;
-        for line in &mut lines {
-            let line_len = line.spans.iter().map(|span| span.content.chars().count()).sum::<usize>();
-            let start = selection_start.saturating_sub(offset).min(line_len);
-            let end = selection_end.saturating_sub(offset).min(line_len);
-            if start < end {
-                highlight_line_range(line, start, end);
-            }
-            offset += line_len + 1;
-        }
-    }
+    let total_lines = cache.lines.len();
 
     // Auto-scroll to bottom if scroll_offset is 0, else apply offset
     let max_scroll = total_lines.saturating_sub(visible_lines);
@@ -571,7 +615,7 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
     // Keep the text cursor visible while moving through the flattened log.
     if is_focused && app.scroll_offset == 0 {
         if let Some(cursor) = app.chat_cursor {
-            let (cursor_line, _) = chat_line_column(&chat_text, cursor);
+            let (cursor_line, _) = chat_line_column_from_offsets(&cache.line_offsets, cursor);
             if cursor_line < scroll_y {
                 scroll_y = cursor_line;
             } else if cursor_line >= scroll_y.saturating_add(visible_lines) {
@@ -581,18 +625,46 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let paragraph = Paragraph::new(Text::from(lines))
-        .block(messages_block)
-        .scroll((scroll_y as u16, 0));
+    let selection_bounds = app.chat_selection_bounds(&cache.chat_text);
+
+    // Slice only the lines visible in the current viewport to avoid iterating,
+    // formatting, and cloning thousands of offscreen lines every frame.
+    let slice_end = (scroll_y + visible_lines).min(total_lines);
+    let visible_slice: Vec<Line> = if scroll_y < total_lines {
+        (scroll_y..slice_end)
+            .map(|idx| {
+                let mut line = cache.lines[idx].clone();
+                if let Some((sel_start, sel_end)) = selection_bounds {
+                    let (line_start, line_len) = cache.line_offsets[idx];
+                    let line_end = line_start + line_len;
+                    if sel_start < line_end && sel_end > line_start {
+                        let start = sel_start.saturating_sub(line_start).min(line_len);
+                        let end = sel_end.saturating_sub(line_start).min(line_len);
+                        if start < end {
+                            highlight_line_range(&mut line, start, end);
+                        }
+                    }
+                }
+                line
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let paragraph = Paragraph::new(Text::from(visible_slice))
+        .block(messages_block);
 
     frame.render_widget(paragraph, area);
 
     if is_focused {
         if let Some(cursor) = app.chat_cursor {
-            let (cursor_line, cursor_column) = chat_line_column(&chat_text, cursor);
+            let (cursor_line, cursor_column) = chat_line_column_from_offsets(&cache.line_offsets, cursor);
             if cursor_line >= scroll_y && cursor_line < scroll_y + visible_lines {
+                let max_x = area.width.saturating_sub(2);
+                let col_u16 = (cursor_column as u16).min(max_x.saturating_sub(1));
                 frame.set_cursor_position(Position {
-                    x: area.x + 1 + cursor_column as u16,
+                    x: area.x + 1 + col_u16,
                     y: area.y + 1 + (cursor_line - scroll_y) as u16,
                 });
             }
@@ -632,6 +704,27 @@ fn highlight_line_range(line: &mut Line, start: usize, end: usize) {
     line.spans = next;
 }
 
+pub fn chat_line_column_from_offsets(line_offsets: &[(usize, usize)], offset: usize) -> (usize, usize) {
+    if line_offsets.is_empty() {
+        return (0, 0);
+    }
+    let idx = match line_offsets.binary_search_by(|&(start, len)| {
+        if offset < start {
+            std::cmp::Ordering::Greater
+        } else if offset <= start + len {
+            std::cmp::Ordering::Equal
+        } else {
+            std::cmp::Ordering::Less
+        }
+    }) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1).min(line_offsets.len() - 1),
+    };
+    let (start, len) = line_offsets[idx];
+    (idx, offset.saturating_sub(start).min(len))
+}
+
+#[allow(dead_code)]
 fn chat_line_column(text: &str, offset: usize) -> (usize, usize) {
     let mut line = 0;
     let mut column = 0;
@@ -650,78 +743,8 @@ fn chat_line_column(text: &str, offset: usize) -> (usize, usize) {
 }
 
 pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
-    if app.messages.is_empty() {
-        return " No messages in this channel yet.".to_string();
-    }
-    let mut lines = Vec::new();
-    let msg_count = app.messages.len();
-    for (index, message) in app.messages.iter().enumerate() {
-        let continues_group = index > 0
-            && crate::api::continues_chat_group(&app.messages[index - 1], message);
-
-        let is_agent = message.agent_id.is_some()
-            || message.author.to_lowercase().contains("bot")
-            || message.author.to_lowercase().contains("agent")
-            || message.author == "Codex"
-            || message.author == "Pi";
-        let _author_color = if message.author == app.author {
-            Color::Green
-        } else if is_agent {
-            Color::Cyan
-        } else if message.author == "System" {
-            Color::Magenta
-        } else {
-            Color::Yellow
-        };
-        if !continues_group {
-            lines.push(format!(
-                "● {}  {}",
-                message.author,
-                crate::api::format_timestamp(&message.created_at)
-            ));
-        }
-
-        // Mirrors render_messages_stream: a grouped continuation's first content
-        // row gets a `>` margin marker instead of a blank author line.
-        let mut marker_pending = continues_group;
-
-        for body_line in message.body.lines() {
-            if body_line.trim().is_empty() {
-                lines.push(String::new());
-            } else {
-                for chunk in wrap_text(body_line, body_wrap_width) {
-                    let margin = if marker_pending {
-                        marker_pending = false;
-                        "> "
-                    } else {
-                        "  "
-                    };
-                    lines.push(format!("{}{}", margin, chunk));
-                }
-            }
-        }
-        if message.has_image() {
-            let label = match message.images.len() {
-                0 | 1 => " ▤ image ".to_string(),
-                count => format!(" ▤ {} images ", count),
-            };
-            let margin = if marker_pending {
-                marker_pending = false;
-                "> "
-            } else {
-                "  "
-            };
-            lines.push(format!("{}{}", margin, label));
-        }
-        let _ = marker_pending;
-
-        let next_continues = index + 1 < msg_count
-            && crate::api::continues_chat_group(message, &app.messages[index + 1]);
-        if index + 1 < msg_count && !next_continues {
-            lines.push(String::new());
-        }
-    }
-    lines.join("\n")
+    ensure_chat_cache(app, body_wrap_width);
+    app.chat_cache.read().unwrap().chat_text.clone()
 }
 
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
@@ -1077,14 +1100,7 @@ pub fn closest_ansi_color(r: u8, g: u8, b: u8) -> Color {
     best_color
 }
 
-pub fn resolve_color(hex_str: Option<&str>, default_color: Color) -> Color {
-    let Some(hex) = hex_str else {
-        return default_color;
-    };
-    let Some((r, g, b)) = parse_hex_color(hex) else {
-        return default_color;
-    };
-
+pub fn rgb_to_display_color(r: u8, g: u8, b: u8) -> Color {
     if supports_truecolor() {
         Color::Rgb(r, g, b)
     } else {
@@ -1092,14 +1108,28 @@ pub fn resolve_color(hex_str: Option<&str>, default_color: Color) -> Color {
     }
 }
 
+pub fn resolve_color(hex_str: Option<&str>, default_color: Color) -> Color {
+    let Some(hex) = hex_str else {
+        return default_color;
+    };
+    let Some((r, g, b)) = parse_hex_color(hex) else {
+        return default_color;
+    };
+    rgb_to_display_color(r, g, b)
+}
+
+/// Renders a full-width slider whose track is a gradient across the channel's
+/// entire range (other channels held at their current value) — the way
+/// native color-picker RGB sliders preview each axis, not a flat single tint.
 pub fn render_slider_line<'a>(
     label: &'static str,
     val: u16,
     max: u16,
     unit: &'static str,
     is_selected: bool,
-    color: Color,
+    label_color: Color,
     total_width: usize,
+    color_at: impl Fn(f64) -> (u8, u8, u8),
 ) -> Line<'a> {
     let prefix = format!("  {}: ", label);
     let suffix = format!(" {:>3}{} ", val, unit);
@@ -1109,32 +1139,11 @@ pub fn render_slider_line<'a>(
     let ratio = (val as f64 / max as f64).clamp(0.0, 1.0);
     let knob_pos = (ratio * (track_width.saturating_sub(1) as f64)).round() as usize;
 
-    let left_len = knob_pos;
-    let right_len = track_width.saturating_sub(knob_pos + 1);
-
-    let left_bar: String = "━".repeat(left_len);
-    let knob: &str = "●";
-    let right_bar: String = "─".repeat(right_len);
-
     let label_style = if is_selected {
-        Style::default().fg(Color::Black).bg(color).bold()
+        Style::default().fg(Color::Black).bg(label_color).bold()
     } else {
-        Style::default().fg(color).bold()
+        Style::default().fg(label_color).bold()
     };
-
-    let left_style = if is_selected {
-        Style::default().fg(color).bold()
-    } else {
-        Style::default().fg(color)
-    };
-
-    let knob_style = if is_selected {
-        Style::default().fg(Color::White).bold()
-    } else {
-        Style::default().fg(color).bold()
-    };
-
-    let right_style = Style::default().fg(Color::DarkGray);
 
     let suffix_style = if is_selected {
         Style::default().fg(Color::White).bold()
@@ -1142,13 +1151,22 @@ pub fn render_slider_line<'a>(
         Style::default().fg(Color::Gray)
     };
 
-    Line::from(vec![
-        Span::styled(prefix, label_style),
-        Span::styled(left_bar, left_style),
-        Span::styled(knob, knob_style),
-        Span::styled(right_bar, right_style),
-        Span::styled(suffix, suffix_style),
-    ])
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(track_width + 2);
+    spans.push(Span::styled(prefix, label_style));
+
+    for i in 0..track_width {
+        let t = if track_width <= 1 { 0.0 } else { i as f64 / (track_width - 1) as f64 };
+        let (r, g, b) = color_at(t);
+        let track_color = rgb_to_display_color(r, g, b);
+        if i == knob_pos {
+            spans.push(Span::styled("●", Style::default().fg(Color::White).bold()));
+        } else {
+            spans.push(Span::styled("▆", Style::default().fg(track_color)));
+        }
+    }
+
+    spans.push(Span::styled(suffix, suffix_style));
+    Line::from(spans)
 }
 
 pub fn agent_modal_rect(area: Rect) -> Rect {
@@ -1269,26 +1287,42 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let slider_width = inner_width.saturating_sub(1);
 
-    // 6 Full-Width Sliders
+    // 6 Full-Width Sliders — each track is a gradient sweeping its own channel
+    // end-to-end while the other channels stay pinned at their live value,
+    // matching the native RGB color-picker style the sliders were modeled on.
+    let (fixed_g, fixed_b) = (modal.color_g, modal.color_b);
     let r_sel = modal.selected_field == AgentSettingsField::ColorR;
-    lines.push(render_slider_line("R", modal.color_r as u16, 255, "", r_sel, Color::LightRed, slider_width));
+    lines.push(render_slider_line("R", modal.color_r as u16, 255, "", r_sel, Color::LightRed, slider_width,
+        move |t| (((t * 255.0).round() as i32).clamp(0, 255) as u8, fixed_g, fixed_b)));
 
+    let (fixed_r, fixed_b) = (modal.color_r, modal.color_b);
     let g_sel = modal.selected_field == AgentSettingsField::ColorG;
-    lines.push(render_slider_line("G", modal.color_g as u16, 255, "", g_sel, Color::LightGreen, slider_width));
+    lines.push(render_slider_line("G", modal.color_g as u16, 255, "", g_sel, Color::LightGreen, slider_width,
+        move |t| (fixed_r, ((t * 255.0).round() as i32).clamp(0, 255) as u8, fixed_b)));
 
+    let (fixed_r, fixed_g) = (modal.color_r, modal.color_g);
     let b_sel = modal.selected_field == AgentSettingsField::ColorB;
-    lines.push(render_slider_line("B", modal.color_b as u16, 255, "", b_sel, Color::LightBlue, slider_width));
+    lines.push(render_slider_line("B", modal.color_b as u16, 255, "", b_sel, Color::LightBlue, slider_width,
+        move |t| (fixed_r, fixed_g, ((t * 255.0).round() as i32).clamp(0, 255) as u8)));
 
+    let (fixed_s, fixed_v) = (modal.color_s, modal.color_v);
     let h_sel = modal.selected_field == AgentSettingsField::ColorH;
-    let (hr, hg, hb) = crate::app::hsv_to_rgb(modal.color_h, 100, 100);
-    let h_color = resolve_color(Some(&format!("#{:02X}{:02X}{:02X}", hr, hg, hb)), Color::LightYellow);
-    lines.push(render_slider_line("H", modal.color_h, 360, "°", h_sel, h_color, slider_width));
+    let h_label_color = {
+        let (hr, hg, hb) = crate::app::hsv_to_rgb(modal.color_h, 100, 100);
+        rgb_to_display_color(hr, hg, hb)
+    };
+    lines.push(render_slider_line("H", modal.color_h, 360, "°", h_sel, h_label_color, slider_width,
+        move |t| crate::app::hsv_to_rgb(((t * 360.0).round() as i32).clamp(0, 360) as u16, fixed_s, fixed_v)));
 
+    let (fixed_h, fixed_v2) = (modal.color_h, modal.color_v);
     let s_sel = modal.selected_field == AgentSettingsField::ColorS;
-    lines.push(render_slider_line("S", modal.color_s as u16, 100, "%", s_sel, Color::LightCyan, slider_width));
+    lines.push(render_slider_line("S", modal.color_s as u16, 100, "%", s_sel, Color::LightCyan, slider_width,
+        move |t| crate::app::hsv_to_rgb(fixed_h, ((t * 100.0).round() as i32).clamp(0, 100) as u8, fixed_v2)));
 
+    let (fixed_h2, fixed_s2) = (modal.color_h, modal.color_s);
     let v_sel = modal.selected_field == AgentSettingsField::ColorV;
-    lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", v_sel, Color::White, slider_width));
+    lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", v_sel, Color::White, slider_width,
+        move |t| crate::app::hsv_to_rgb(fixed_h2, fixed_s2, ((t * 100.0).round() as i32).clamp(0, 100) as u8)));
 
     // Replies Section
     lines.push(Line::from(Span::styled("  ── Replies ─────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
@@ -1436,10 +1470,97 @@ mod tests {
 
     #[test]
     fn test_render_slider_line_width() {
-        let line = render_slider_line("R", 128, 255, "", true, Color::LightRed, 60);
-        assert_eq!(line.spans.len(), 5);
-        // Spans: prefix, left_bar, knob, right_bar, suffix
+        let line = render_slider_line("R", 128, 255, "", true, Color::LightRed, 60, |t| ((t * 255.0).round() as u8, 0, 0));
+        // Spans: prefix, one span per track cell, suffix.
         let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert_eq!(total_chars, 60);
+    }
+
+    #[test]
+    fn test_render_slider_line_gradient_sweeps_channel() {
+        // The gradient should actually vary the fixed-other-channel color
+        // across the track, not repeat a single flat color.
+        let line = render_slider_line("R", 0, 255, "", false, Color::LightRed, 60, |t| (((t * 255.0).round()) as u8, 10, 20));
+        let colors: std::collections::HashSet<Color> = line.spans.iter().map(|s| s.style.fg.unwrap_or(Color::Reset)).collect();
+        assert!(colors.len() > 2, "expected the track to sweep through multiple colors, got {:?}", colors);
+    }
+
+    #[test]
+    fn test_chat_cache_and_scrolling_performance() {
+        use crate::api::{CascadeClient, ChatMessage};
+        let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("chan-long".into());
+
+        for i in 0..500 {
+            app.messages.push(ChatMessage {
+                id: format!("msg-{i}"),
+                author: if i % 2 == 0 { "diego".into() } else { "claude".into() },
+                body: format!("Message {i}: Here is some conversational content that will span across multiple wrapped lines in the chat stream!"),
+                created_at: "2026-09-08T04:00:00Z".into(),
+                agent_id: if i % 2 == 1 { Some("claude-code".into()) } else { None },
+                images: vec![],
+                has_images: false,
+            });
+        }
+
+        // First call populates cache
+        ensure_chat_cache(&app, 80);
+        let total_lines = app.chat_cache.read().unwrap().lines.len();
+        assert!(total_lines > 500);
+
+        // Ensure subsequent ensure_chat_cache calls are instant cache hits
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            ensure_chat_cache(&app, 80);
+        }
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_millis(50), "1000 cache checks took {:?}", elapsed);
+
+        // Clamping test
+        for _ in 0..10000 {
+            app.scroll_up();
+        }
+        assert_eq!(app.scroll_offset, total_lines);
+        app.scroll_down();
+        assert_eq!(app.scroll_offset, total_lines.saturating_sub(3));
+    }
+
+    #[test]
+    fn test_chat_line_column_from_offsets() {
+        let offsets = vec![(0, 5), (6, 6), (13, 0), (14, 10)];
+        assert_eq!(chat_line_column_from_offsets(&offsets, 0), (0, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 3), (0, 3));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 5), (0, 5));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 6), (1, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 12), (1, 6));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 13), (2, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 14), (3, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 24), (3, 10));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 100), (3, 10));
+    }
+
+    #[test]
+    fn test_chat_cache_invalidates_on_streaming_update() {
+        use crate::api::{CascadeClient, ChatMessage};
+        let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("chan-stream".into());
+        app.messages.push(ChatMessage {
+            id: "msg-1".into(),
+            author: "claude".into(),
+            body: "hello".into(),
+            created_at: "2026-09-08T04:00:00Z".into(),
+            agent_id: Some("claude-code".into()),
+            images: vec![],
+            has_images: false,
+        });
+
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("hello"));
+        assert!(!app.chat_cache.read().unwrap().chat_text.contains("world"));
+
+        // Streaming update appends tokens to body
+        app.messages[0].body = "hello world".into();
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("hello world"));
     }
 }
