@@ -110,11 +110,24 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
       [mission_id, "stale-fingerprint", ~s({"assessment":"stale"}), coordinator_dispatch_id, 2, "stale-publication"]
     )
 
+    preserved = %{"commitments" => [%{"id" => "old-responsibility", "summary" => "Deliver original result", "status" => "open"}], "questions" => [%{"id" => "old-question", "question" => "Which target?", "status" => "open"}]}
+    SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(preserved), mission_id])
+    SQL.exec("UPDATE chat_missions SET phase='executing',approved_at='old-approval',approved_by=?,approved_revisions_json='{}' WHERE id=?", [user_id, mission_id])
+
     # The application has already recorded the migration at boot. Removing only
     # this marker makes the test exercise the restart-safe migration path.
     SQL.exec("DELETE FROM chat_mission_migrations WHERE name=?", ["mission-workspace-fence-v2"])
 
     assert :ok = Schema.ensure!()
+
+    assert ["planning", nil, nil, "{}"] == SQL.one("SELECT phase,approved_at,approved_by,approved_revisions_json FROM chat_missions WHERE id=?", [mission_id])
+    assert Cascade.Missions.Interpretation.migration_decision_pending?(mission_id)
+    [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [mission_id])
+    migrated_state = Jason.decode!(encoded)
+    assert migrated_state["commitments"] == preserved["commitments"]
+    assert Enum.find(migrated_state["questions"], &(&1["id"] == "old-question")) == hd(preserved["questions"])
+    assert Enum.count(migrated_state["questions"], &(&1["id"] == "migration-resumption")) == 1
+    assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='historical_task_fenced'", [mission_id])
 
     assert ["canceled"] == SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", ["migration-task-#{suffix}"])
     assert is_binary(SQL.one("SELECT failed_at FROM chat_agent_dispatches WHERE id=?", [worker_dispatch_id]) |> hd())
@@ -141,6 +154,12 @@ defmodule Cascade.Missions.WorkspaceMigrationTest do
     assert relation_count == SQL.one("SELECT COUNT(*) FROM chat_mission_notes WHERE mission_id=? AND kind='mission'", [mission_id])
     assert note_count == SQL.one("SELECT COUNT(*) FROM notes WHERE id=?", ["mission-brief-#{mission_id}"])
     assert event_count == SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=?", [mission_id])
+    assert [encoded] == SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [mission_id])
+    assert :ok = Cascade.Missions.Interpretation.resolve_migration_decision(mission_id, user_id)
+    refute Cascade.Missions.Interpretation.migration_decision_pending?(mission_id)
+    assert :ok = Schema.ensure!()
+    refute Cascade.Missions.Interpretation.migration_decision_pending?(mission_id)
+    assert ["canceled"] == SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", ["migration-task-#{suffix}"])
     raise "rollback migration fixture"
       end)
     end

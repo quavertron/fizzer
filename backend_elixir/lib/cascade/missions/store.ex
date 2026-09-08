@@ -322,6 +322,7 @@ defmodule Cascade.Missions.Store do
           summary: Jason.encode!(%{approvedBy: user_id, revisions: revisions})
         })
 
+        Cascade.Missions.Interpretation.resolve_migration_decision(mission.id, user_id)
         Cascade.Missions.Interpretation.initialize(mission.id)
         {:ok, mission.id}
       else
@@ -2007,7 +2008,10 @@ defmodule Cascade.Missions.Store do
 
   defp maybe_finish_primary(_mission, tasks, _status, _run_id, _summary), do: tasks
 
-  defp ensure_delivery_ready!(_mission, tasks) do
+  defp ensure_delivery_ready!(mission, tasks) do
+    historical = SQL.all("SELECT task_id,attempt FROM chat_mission_events WHERE mission_id=? AND kind='historical_task_fenced'", [mission.id]) |> MapSet.new(&List.to_tuple/1)
+    tasks = Enum.reject(tasks, &MapSet.member?(historical, {&1.id, &1.attempt}))
+
     if Enum.any?(tasks, &(&1.status in ~w(pending running failed blocked canceled))) do
       raise "Mission has unfinished or failed work"
     end
@@ -2438,6 +2442,7 @@ defmodule Cascade.Missions.Store do
     dependencies = dependencies(task)
 
     mission.phase in ~w(planning executing) and
+      not Cascade.Missions.Interpretation.migration_decision_pending?(mission.id) and
       required_stage_dependency?(task, dependencies, by_id) and
       Enum.all?(dependencies, fn id ->
         case by_id[id] do

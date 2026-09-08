@@ -41,6 +41,29 @@ defmodule Cascade.Missions.Interpretation do
       end
     end
   end
+  def migration_decision_pending?(id) do
+    case SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id]) do
+      [encoded] ->
+        state = Jason.decode!(encoded || "{}")
+        Enum.any?(agenda(state)["questions"], &(&1["id"] == "migration-resumption"))
+      _ -> false
+    end
+  end
+
+  def resolve_migration_decision(id, user_id) do
+    if migration_decision_pending?(id) do
+      [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
+      state = Jason.decode!(encoded)
+      questions = Enum.map(state["questions"], fn
+        %{"id" => "migration-resumption"} = question ->
+          Map.merge(question, %{"status" => "answered", "answer" => "User #{user_id} approved the current brief for fresh execution."})
+        question -> question
+      end)
+      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(Map.put(state, "questions", questions)), id])
+    end
+    :ok
+  end
+
   @doc "Coalesces a successful linked-note mutation into the mission awareness snapshot."
   def note_changed(note_id, actor_id, kind, opts \\ []) do
     persist = fn ->

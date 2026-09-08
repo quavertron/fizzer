@@ -293,7 +293,17 @@ defmodule Cascade.Missions.Schema do
           SQL.exec("""
           UPDATE chat_missions
           SET phase=CASE WHEN status IN ('completed','canceled') THEN 'closed' ELSE 'planning' END,
-              approved_revisions_json=COALESCE(approved_revisions_json,'{}')
+              approved_at=CASE WHEN status IN ('completed','canceled') THEN approved_at ELSE NULL END,
+              approved_by=CASE WHEN status IN ('completed','canceled') THEN approved_by ELSE NULL END,
+              approved_revisions_json=CASE WHEN status IN ('completed','canceled') THEN approved_revisions_json ELSE '{}' END
+          """)
+
+          SQL.exec("""
+          INSERT OR IGNORE INTO chat_mission_events(mission_id,task_id,kind,summary,source_key,attempt)
+          SELECT mission_id,id,'historical_task_fenced',
+                 'Historical task retained as evidence; fresh approval requires a new delivery chain.',
+                 'migration:task:' || id || ':fenced',attempt
+          FROM chat_mission_tasks
           """)
 
           # Keep every task/event row, but make all pre-migration pending work
@@ -311,6 +321,7 @@ defmodule Cascade.Missions.Schema do
           fence_historical_dispatches!()
           supersede_interpretation_claims!()
           backfill_briefs!()
+          request_migration_decisions!()
 
           SQL.exec(
             "INSERT OR IGNORE INTO chat_mission_migrations(name) VALUES(?)",
@@ -326,6 +337,22 @@ defmodule Cascade.Missions.Schema do
       Cascade.Missions.Recovery.replay_cancellations()
     end
     :ok
+  end
+
+  defp request_migration_decisions! do
+    SQL.all("SELECT id FROM chat_missions WHERE phase='planning' AND status<>'canceled'")
+    |> Enum.each(fn [id] ->
+      SQL.exec("INSERT OR IGNORE INTO chat_mission_interpretations(mission_id) VALUES(?)", [id])
+      [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
+      state = Jason.decode!(encoded || "{}")
+      question = %{
+        "id" => "migration-resumption",
+        "status" => "open",
+        "question" => "This unfinished mission was paused during the workspace upgrade. Should we resume it with a newly approved brief, revise the plan, or close it? Ask the owner once, preserve the answer, and do not resume historical work automatically."
+      }
+      state = Map.update(state, "questions", [question], &(&1 ++ [question]))
+      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(state), id])
+    end)
   end
 
   defp backfill_note_revisions! do

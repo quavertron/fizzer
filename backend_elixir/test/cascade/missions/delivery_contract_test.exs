@@ -278,6 +278,19 @@ defmodule Cascade.Missions.DeliveryContractTest do
     complete(integration_b.task.id)
     complete(verification_b.task.id, verification_passed: 1)
 
+    # Historical canceled attempts remain evidence; retries remain accountable.
+    historical_id = "historical-#{ctx.suffix}"
+    SQL.exec("INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,purpose,attempt) VALUES(?,?,?,?,'canceled','implementation',1)", [historical_id, mission_id, "Historical task", worker.id])
+    SQL.exec("INSERT INTO chat_mission_events(mission_id,task_id,kind,source_key,attempt) VALUES(?,?,'historical_task_fenced',?,1)", [mission_id, historical_id, "migration:task:#{historical_id}:fenced"])
+    SQL.exec("UPDATE chat_mission_tasks SET attempt=2 WHERE id=?", [historical_id])
+    assert {:error, "Mission has unfinished or failed work"} =
+      Store.finish(ctx.user_id, created.channelId, mission_id, %{
+        coordinatorRegistrationId: coordinator_id,
+        status: "completed",
+        summary: "A canceled retry cannot be excused as migration history"
+      })
+    SQL.exec("UPDATE chat_mission_tasks SET attempt=1 WHERE id=?", [historical_id])
+
     assert {:ok, finished} =
              Store.finish(ctx.user_id, created.channelId, mission_id, %{
                coordinatorRegistrationId: coordinator_id,
@@ -286,6 +299,27 @@ defmodule Cascade.Missions.DeliveryContractTest do
              })
 
     assert finished.mission.status == "completed"
+    assert ["canceled", 1] == SQL.one("SELECT status,attempt FROM chat_mission_tasks WHERE id=?", [historical_id])
+  end
+
+  test "migration decision blocks workers until the owner approves a fresh brief", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id, Ecto.UUID.generate(), "Migrated plan")
+    id = created.mission.id
+    state = %{"questions" => [%{"id" => "migration-resumption", "question" => "Resume, revise, or close?", "status" => "open"}], "commitments" => [%{"id" => "old", "status" => "open", "summary" => "Retain responsibility"}]}
+    SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(state), id])
+    {:ok, added} = Store.add_task(ctx.user_id, created.channelId, id, %{
+      coordinatorRegistrationId: created.mission.coordinatorRegistrationId,
+      assignee: created.mission.coordinatorRegistrationId,
+      purpose: "research",
+      title: "Wait for migration decision",
+      anonymous: true
+    })
+    refute Enum.any?(Store.schedulable(id).candidates, &(&1.taskId == added.task.id))
+    assert Cascade.Missions.Interpretation.migration_decision_pending?(id)
+    assert {:ok, _} = Store.approve_workspace(ctx.user_id, ctx.vault.id, id, Map.new(created.mission.notes, &{&1.noteId, &1.revision}))
+    refute Cascade.Missions.Interpretation.migration_decision_pending?(id)
+    [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
+    assert Jason.decode!(encoded)["commitments"] == state["commitments"]
   end
 
   test "approval rejects a brief edit committed while waiting for the write lock", ctx do
