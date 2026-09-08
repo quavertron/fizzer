@@ -5,7 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const packageRoot = path.resolve(__dirname, '..');
-const binName = process.platform === 'win32' ? 'cascade-tui.exe' : 'cascade-tui';
+const binNames = process.platform === 'win32'
+  ? ['fizzer-tui.exe', 'cascade-tui.exe']
+  : ['fizzer-tui', 'cascade-tui'];
 
 // Prebuilt binaries ship as per-platform optionalDependencies (esbuild-style).
 // Map the current host to its platform package.
@@ -18,39 +20,41 @@ function findBinary() {
   const platformKey = `${process.platform}-${process.arch}`;
   const pkg = PLATFORM_PACKAGES[platformKey];
 
-  // 1. Installed platform package via optionalDependencies in node_modules
-  if (pkg) {
-    try {
-      return require.resolve(`${pkg}/bin/${binName}`);
-    } catch {
-      // not installed via npm optionalDependencies
+  for (const binName of binNames) {
+    // 1. Installed platform package via optionalDependencies in node_modules
+    if (pkg) {
+      try {
+        return require.resolve(`${pkg}/bin/${binName}`);
+      } catch {
+        // not installed via npm optionalDependencies
+      }
     }
-  }
 
-  // 2. Bundled binary directly in bin/ (for packaged standalone tarballs)
-  const bundledBin = path.join(__dirname, binName);
-  if (fs.existsSync(bundledBin)) return bundledBin;
+    // 2. Bundled binary directly in bin/ (for packaged standalone tarballs)
+    const bundledBin = path.join(__dirname, binName);
+    if (fs.existsSync(bundledBin)) return bundledBin;
 
-  // 3. Staged in npm/<platform-pkg>/bin/ (in repo checkout after build script)
-  if (pkg) {
-    const staged = path.join(packageRoot, 'npm', pkg, 'bin', binName);
-    if (fs.existsSync(staged)) return staged;
-  }
+    // 3. Staged in npm/<platform-pkg>/bin/ (in repo checkout after build script)
+    if (pkg) {
+      const staged = path.join(packageRoot, 'npm', pkg, 'bin', binName);
+      if (fs.existsSync(staged)) return staged;
+    }
 
-  // 4. In-tree cargo release builds (target-specific or default)
-  const targetTriples = {
-    'darwin-arm64': 'aarch64-apple-darwin',
-    'darwin-x64': 'x86_64-apple-darwin',
-    'linux-x64': 'x86_64-unknown-linux-gnu',
-    'linux-arm64': 'aarch64-unknown-linux-gnu',
-  };
-  const triple = targetTriples[platformKey];
-  if (triple) {
-    const targetBin = path.join(packageRoot, 'tui', 'target', triple, 'release', binName);
-    if (fs.existsSync(targetBin)) return targetBin;
+    // 4. In-tree cargo release builds (target-specific or default)
+    const targetTriples = {
+      'darwin-arm64': 'aarch64-apple-darwin',
+      'darwin-x64': 'x86_64-apple-darwin',
+      'linux-x64': 'x86_64-unknown-linux-gnu',
+      'linux-arm64': 'aarch64-unknown-linux-gnu',
+    };
+    const triple = targetTriples[platformKey];
+    if (triple) {
+      const targetBin = path.join(packageRoot, 'tui', 'target', triple, 'release', binName);
+      if (fs.existsSync(targetBin)) return targetBin;
+    }
+    const inTree = path.join(packageRoot, 'tui', 'target', 'release', binName);
+    if (fs.existsSync(inTree)) return inTree;
   }
-  const inTree = path.join(packageRoot, 'tui', 'target', 'release', binName);
-  if (fs.existsSync(inTree)) return inTree;
 
   return null;
 }

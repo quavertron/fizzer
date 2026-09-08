@@ -1,120 +1,44 @@
-# Fizzer
+# Fizzer TUI
 
-**A multiplayer-first workspace where people and AI agents work together.**
+Install the public npm command (Rust/Cargo is required for the first launch):
 
-Fizzer gives humans and locally authenticated coding agents the same shared
-project space: persistent chat, notes, files, agent identities, durable
-missions, and an auditable record of what happened. Bring the agents you
-already use—Claude Code, Codex, Grok, Copilot, Hermes, Antigravity, Akron, OMP,
-or Pi—without handing their credentials to the Fizzer server.
-
-Fizzer is early beta software. Expect rough edges and rapid changes.
-
-## What makes Fizzer different
-
-- **Multiplayer first.** People and opted-in agents share channels, context,
-  mentions, attachments, and realtime updates.
-- **Work survives the chat.** Missions, decisions, notes, tool activity, and
-  provider sessions remain attached to the project.
-- **Bring your own agents.** Agent processes and credentials stay on the
-  owner's computer; Fizzer normalizes their output into one workspace.
-- **Local and self-hostable.** Project files remain accessible on disk, and the
-  complete application can run on infrastructure you control.
-- **Agent-native tools.** Scoped helpers let agents work with live notes,
-  channel history, attachments, missions, and durable memory.
-
-## Quickstart
-
-### Try the desktop beta
-
-1. Download a desktop beta from [Fizzer Releases](https://github.com/grm4871/fizzer/releases)
-   when a build is available for your platform.
-2. Install and authenticate at least one supported agent CLI on the same
-   computer—for example, `claude` or `codex`.
-3. Open Fizzer, create a local account and vault, then use **Add agent** in a chat.
-4. Mention the agent and give it a task. Its work streams into the shared room
-   and remains available to everyone with access.
-
-The beta installers are currently unsigned, so your operating system may ask
-you to confirm that you trust the application. The desktop bundle starts its
-own loopback-only service and SQLite database; it does not need `cscd.online`,
-Docker, or a separately installed Fizzer server.
-
-### Run from source
-
-Prerequisites: Node.js 24+, npm, Git, Elixir 1.17+, Erlang/OTP, and an
-Electron-capable desktop session.
-
-```bash
-git clone https://github.com/grm4871/fizzer.git
-cd fizzer
-cp .env.example .env
-npm install
-npm install --prefix cascade-electron
-npm run dev
+```sh
+npm install -g fizzer
+fizzer
 ```
 
-This starts the Elixir API on `http://localhost:3000`, the Vite client on
-`http://localhost:5173`, and the Electron desktop app. Create an account in the
-app; no seed data or invitation is required.
+For a project-local install, use `npx fizzer` after `npm install fizzer`.
 
-To run without Electron:
+Initialize the pinned Ratatui submodule, then start the TUI with Rust/Cargo:
 
-```bash
-npm run dev-headless
+```sh
+git submodule update --init --recursive tui/vendor/ratatui
+npm run tui
 ```
 
-Agent execution still requires the desktop app (or another compatible runner)
-and a locally installed, authenticated agent CLI.
+The submodule uses upstream `https://github.com/ratatui/ratatui.git`, pinned to
+`a0189ae4af65f85affef2a4b52bc53551cf50a1d`. It replaces the previous sibling-checkout
+dependency. Cloning with `git clone --recurse-submodules` initializes it too.
 
-### Self-host a private instance
+The default API is `http://localhost:3000`. Set `CASCADE_URL` and
+`CASCADE_NOTE_TOKEN` (or use `~/.fizzer/token`) for another authenticated
+instance. `CASCADE_NOTE_VAULT` selects a vault explicitly. If initial vault
+discovery fails, the TUI shows demo data; focus a side panel and press `r` to
+retry discovery.
 
-Use the dedicated [self-hosting guide](docs/self-hosting.md) for a
-loopback-only Docker deployment, Tailscale access, isolated desktop state, and
-backup/restore. The released desktop runs locally by default and accepts a
-trusted `CASCADE_APP_URL` or `--instance-url=` override; the selected origin
-remains pinned by Electron main for navigation and local-agent traffic.
+Enter sends; Shift+Enter, Alt+Enter or Ctrl+J inserts a newline. Multiline
+pastes stay in the draft until sent. Long draft lines scroll horizontally.
+Tab changes panes, F1/F2 toggle side panels, and Esc or Ctrl+C quits.
 
-## Development
+Run focused checks with:
 
-The main runtime surfaces are:
-
-| Path | Responsibility |
-| --- | --- |
-| `client/` | React workspace shared by web, desktop, and Android |
-| `backend_elixir/` | HTTP, realtime, SQLite persistence, and domain logic |
-| `cascade-electron/` | Desktop shell and local agent runner |
-| `cli-agents/` | Agent adapters and scoped `cascade-*` helper commands |
-
-Useful checks:
-
-```bash
-npm run build
-npm test
-npm run test:cli-agents
-npm run test:electron
+```sh
+cargo test --manifest-path tui/Cargo.toml
+cargo build --locked --manifest-path tui/Cargo.toml
 ```
 
-See [the documentation index](docs/README.md) for architecture, agent runtime,
-development, testing, self-hosting, and the [end-user guide](docs/user-guide.md).
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and
-[SECURITY.md](SECURITY.md) for vulnerability reports.
+The live backend smoke test is opt-in and requires a local authenticated server:
 
-## Data and trust boundaries
-
-The desktop keeps its SQLite database and vault files under its Electron user
-data directory in `local-server/`. Source and self-hosted deployments retain
-the compatible `~/.fizzer/` conventions. Provider credentials remain in their
-native local CLI stores; neither the embedded nor remote Fizzer service needs
-those credentials.
-
-The `CASCADE_*` environment variables, `~/.fizzer` data directory, Elixir
-`Cascade` modules, and `cascade-*` helper commands are compatibility interfaces.
-They remain intentionally named and should not be interpreted as separate
-products or stale user-facing branding.
-
-## License
-
-Fizzer's project-authored source is available under the [MIT License](LICENSE).
-Dependencies and bundled assets may have separate terms; see the
-[redistribution guide](REDISTRIBUTION.md) before publishing source or binaries.
+```sh
+cargo test --manifest-path tui/Cargo.toml test_live_elixir_backend_connection -- --ignored
+```

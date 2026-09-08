@@ -1,5 +1,5 @@
 [package]
-name = "cascade-tui"
+name = "fizzer-tui"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,7 +9,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 color-eyre = "0.6"
 futures-util = "0.3"
 unicode-width = "0.2"

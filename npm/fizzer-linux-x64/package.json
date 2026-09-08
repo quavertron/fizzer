@@ -6,6 +6,7 @@
   "os": ["linux"],
   "cpu": ["x64"],
   "files": [
+    "bin/fizzer-tui",
     "bin/cascade-tui",
     "LICENSE",
     "README.md"

@@ -38,21 +38,29 @@ for (const target of targets) {
   const pkg = TARGETS[target];
   if (!pkg) throw new Error(`unknown target ${target}`);
 
-  console.error(`building ${target} -> npm/${pkg}`);
-  const build = spawnSync(
-    'cargo',
-    ['build', '--release', '--locked', '--manifest-path', manifest, '--target', target],
-    { stdio: 'inherit' },
-  );
+  let isHost = false;
+  try {
+    if (target === hostTarget()) isHost = true;
+  } catch {}
+
+  const buildArgs = isHost
+    ? ['build', '--release', '--locked', '--manifest-path', manifest, '--target', target]
+    : ['zigbuild', '--release', '--manifest-path', manifest, '--target', target];
+
+  const build = spawnSync('cargo', buildArgs, { stdio: 'inherit' });
   if (build.status !== 0) process.exit(build.status ?? 1);
 
-  const binName = target.includes('windows') ? 'cascade-tui.exe' : 'cascade-tui';
+  const binName = target.includes('windows') ? 'fizzer-tui.exe' : 'fizzer-tui';
   const from = path.join(repoRoot, 'tui', 'target', target, 'release', binName);
   const destDir = path.join(repoRoot, 'npm', pkg, 'bin');
   mkdirSync(destDir, { recursive: true });
   const to = path.join(destDir, binName);
   copyFileSync(from, to);
   chmodSync(to, 0o755);
+  // Also create cascade-tui alias for compatibility
+  const compatBinName = target.includes('windows') ? 'cascade-tui.exe' : 'cascade-tui';
+  copyFileSync(from, path.join(destDir, compatBinName));
+  chmodSync(path.join(destDir, compatBinName), 0o755);
   console.error(`staged ${to}`);
 
   // Copy LICENSE and README.md into platform package
@@ -70,16 +78,15 @@ for (const target of targets) {
 
   // If this target matches the host running the build, stage directly into
   // repo bin/ for local standalone packaging (npm pack)
-  let isHost = false;
-  try {
-    if (target === hostTarget()) isHost = true;
-  } catch {}
   if (isHost) {
     const hostBinDir = path.join(repoRoot, 'bin');
     mkdirSync(hostBinDir, { recursive: true });
     const hostBin = path.join(hostBinDir, binName);
     copyFileSync(from, hostBin);
     chmodSync(hostBin, 0o755);
+    const compatBinName = binName.includes('windows') ? 'cascade-tui.exe' : 'cascade-tui';
+    copyFileSync(from, path.join(hostBinDir, compatBinName));
+    chmodSync(path.join(hostBinDir, compatBinName), 0o755);
     console.error(`staged host binary ${hostBin}`);
   }
 }
