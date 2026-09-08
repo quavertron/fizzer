@@ -874,6 +874,20 @@ export const Sidebar = memo(function Sidebar({
     { id: 'new-channel', title: 'New channel', icon: <Hash size={15} />, onClick: () => { void createChannel(null); } },
     { id: 'search', title: 'Search', icon: <Search size={15} />, onClick: onSearch },
   ];
+  const renderMission = (mission: MissionSummary) => (
+    <button
+      type="button"
+      key={mission.id}
+      className={`tree-item sidebar-mission-item${activeNoteId === `mission:${mission.id}` ? ' active' : ''}`}
+      onClick={() => onOpenMission?.(mission.id)}
+      title={`${mission.title} · ${mission.phase === 'closed' ? mission.status : mission.phase}`}
+    >
+      <span className="tree-icon"><Flag size={14} aria-hidden="true" /></span>
+      <span className="tree-label">{mission.title || 'Untitled mission'}</span>
+      {mission.phase !== 'closed' && <span className="sidebar-mission-phase">{mission.phase}</span>}
+    </button>
+  );
+
   const actionButtons = (location: string) => quickActions.map((action) => (
     <button key={action.id} id={`${action.id}-btn-${location}`} className="btn-icon" onClick={action.onClick} title={action.title}>{action.icon}</button>
   ));
@@ -1168,21 +1182,17 @@ export const Sidebar = memo(function Sidebar({
               </div>
             </form>
           )}
-          {missions.map((mission) => (
-            <button
-              type="button"
-              key={mission.id}
-              className={`sidebar-mission-item${activeNoteId === `mission:${mission.id}` ? ' active' : ''}`}
-              onClick={() => onOpenMission?.(mission.id)}
-              title={`${mission.title} · ${mission.phase}`}
-            >
-              <Flag size={14} aria-hidden="true" />
-              <span className="sidebar-mission-copy">
-                <span className="tree-label">{mission.title || 'Untitled mission'}</span>
-                <span className="sidebar-mission-phase">{mission.phase}</span>
-              </span>
-            </button>
-          ))}
+          <div className="sidebar-mission-list">
+            {missions.filter((mission) => mission.phase !== 'closed').map(renderMission)}
+          </div>
+          {missions.some((mission) => mission.phase === 'closed') && (
+            <details className="sidebar-mission-history" key={activeVaultId}>
+              <summary>History <span>{missions.filter((mission) => mission.phase === 'closed').length}</span></summary>
+              <div className="sidebar-mission-list">
+                {missions.filter((mission) => mission.phase === 'closed').map(renderMission)}
+              </div>
+            </details>
+          )}
           {missions.length === 0 && !missionFormOpen && (
             <div className="palette-empty sidebar-missions-empty">No missions yet.</div>
           )}
