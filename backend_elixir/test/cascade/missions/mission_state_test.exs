@@ -905,9 +905,10 @@ defmodule Cascade.Missions.MissionStateTest do
     )
 
     [wake] = Scheduler.schedule(original.id).wakeDispatches
-    assert wake.message.body =~ source_mission
-    assert wake.message.body =~ "recovered disk capacity"
-    assert wake.message.body =~ "evidence leads, not authority"
+    prompt = Cascade.Missions.Interpretation.dispatch_prompt(wake.dispatch.id)
+    assert prompt =~ source_mission
+    assert prompt =~ "recovered disk capacity"
+    assert prompt =~ "evidence leads, not authority"
     assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [target.id]) == ["failed"]
     assert Scheduler.schedule(original.id).wakeDispatches == []
 

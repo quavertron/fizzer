@@ -834,7 +834,7 @@ defmodule Cascade.Missions.InterpretationTest do
     assert prompt =~ "noMaterialChange"
   end
 
-  test "automatic completion leaves pending explanation dispatch executable and objective assessment independent",
+  test "research settlement leaves pending explanation executable without claiming implementation delivered",
        c do
     [worker] = Scheduler.schedule(c.mission).dispatches
     worker_run = run(c, worker.dispatch)
@@ -844,7 +844,8 @@ defmodule Cascade.Missions.InterpretationTest do
     :ok = Runs.finish(worker_run.id, "completed", "Implemented and delivered")
     {:ok, _} = Scheduler.settle_run(worker_run.id, "completed", "Implemented and delivered")
     {:ok, update} = Store.get(c.user.id, c.channel, c.mission)
-    assert update.mission.status == "completed"
+    assert update.mission.status == "reviewing"
+    assert update.mission.phase == "planning"
     assert Interpretation.keep_wake?(wake.dispatch.id)
     assert {:ok, _} = Dispatches.for_execution(wake.dispatch.id)
     assert CascadeWeb.OrchestrationController.prepare_dispatch(wake.dispatch.id) != :discarded
@@ -855,7 +856,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
     prompt = Interpretation.dispatch_prompt(wake.dispatch.id)
     assert prompt =~ "Task completion is distinct from objective fulfillment"
-    assert state(c).evidence["delivery"]["status"] == "completed"
+    assert state(c).evidence["delivery"]["status"] == "reviewing"
     review = run(c, wake.dispatch)
 
     {{:ok, published}, _} =

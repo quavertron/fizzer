@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './components/LoadingIndicator';
 import { WorkspaceStore, reconcileWorkspaceNoteContent, type WorkspaceNote } from './workspace';
 import { findEmbeddedNote } from './docEmbeds';
 import { useEffect, useSyncExternalStore, useState, useCallback, useRef, useMemo, lazy, Suspense, type CSSProperties, type ReactNode } from 'react';
@@ -2528,17 +2529,17 @@ export default function App() {
 
   /** Render the content of a tab inside its pane. */
   const renderMissionChat = useCallback((channelId: string, channelName: string): ReactNode => (
-    <Suspense fallback={<div className="pane-empty chat-loading-empty"><strong>Loading chat…</strong></div>}>
+    <Suspense fallback={<div className="pane-empty chat-loading-empty"><LoadingIndicator label="Loading chat" /></div>}>
       <ChatView
         channelId={channelId}
         channelName={channelName}
         isLoadingMessages={loadingChatChannels[channelId] === true}
         currentUser={currentUsername}
+        currentUserId={user?.id}
         presence={applyLocalUserProfile(chatPresenceByChannel[channelId] ?? EMPTY_CHAT_PRESENCE, user)}
         availableAgents={AVAILABLE_CHAT_AGENTS}
         registeredAgents={chatState.registeredAgentsByChannel[channelId] ?? EMPTY_CHAT_AGENTS}
         vaultAgents={vaultAgents}
-        myAgents={myAgents}
         runnerHealth={runnerHealth}
         onRegisterAgent={handleRegisterChatAgent}
         onRemoveAgent={handleRemoveChatAgent}
@@ -2546,14 +2547,10 @@ export default function App() {
         onDeleteVaultAgent={handleDeleteVaultAgent}
         onDeleteAgentProfile={handleDeleteAgentProfile}
         onAddVaultAgentToChannel={handleAddVaultAgentToChannel}
-        onImportMyAgentToChannel={handleImportMyAgentToChannel}
         onInviteUser={handleInviteChatUser}
         onRemoveParticipant={handleRemoveChatParticipant}
         onLeaveChannel={handleLeaveChatChannel}
         onSendMessage={handleSendChatMessage}
-        draft={activeVaultId ? chatDraftsByVault[activeVaultId] ?? '' : ''}
-        draftKey={activeVaultId || undefined}
-        onDraftChange={handleChatDraftChange}
         onDeleteMessage={handleDeleteChatMessage}
         onForwardMessage={handleForwardChatMessage}
         onCancelRun={handleCancelChatRun}
@@ -2568,21 +2565,21 @@ export default function App() {
       />
     </Suspense>
   ), [
-    activeVaultId, chatDraftsByVault, chatMembersOpen, chatPresenceByChannel,
+    activeVaultId, chatMembersOpen, chatPresenceByChannel,
     chatState.registeredAgentsByChannel, currentUsername, handleAddVaultAgentToChannel,
-    handleCancelChatRun, handleChatDraftChange, handleChatJumpHandled,
+    handleCancelChatRun,
     handleDeleteAgentProfile, handleDeleteChatMessage, handleForwardChatMessage,
     handleHydrateChatMessage, handleInviteChatUser, handleLeaveChatChannel,
     handleRemoveChatAgent, handleRemoveChatParticipant, handleRegisterChatAgent,
-    handleSendChatMessage, handleUpsertVaultAgent, myAgents, notes, openNote,
-    handleOpenSharedChatNote, runnerHealth, user, vaultAgents,
+    handleSendChatMessage, handleUpsertVaultAgent, notes, openNote,
+    handleOpenSharedChatNote, handleDeleteVaultAgent, loadingChatChannels, runnerHealth, user, vaultAgents,
   ]);
   const renderTabContent = useCallback((tab: Tab): ReactNode => {
     if (tab.type === 'mission') {
       const id = missionIdFromTab(tab.id);
       if (!id || !activeVaultId || !user) return <div className="pane-empty">Mission unavailable</div>;
       return (
-        <Suspense fallback={<div className="pane-empty">Loading mission…</div>}>
+        <Suspense fallback={<div className="pane-empty"><LoadingIndicator label="Loading mission" /></div>}>
           <MissionWorkspace
             vaultId={activeVaultId}
             missionId={id}
@@ -2629,7 +2626,7 @@ export default function App() {
         return <div className="pane-empty">Channel not found</div>;
       }
       return (
-        <Suspense fallback={<div className="pane-empty chat-loading-empty"><strong>Loading chat…</strong></div>}>
+        <Suspense fallback={<div className="pane-empty chat-loading-empty"><LoadingIndicator label="Loading chat" /></div>}>
           <ChatView
             channelId={tab.id}
             channelName={channel?.title || tab.title}
