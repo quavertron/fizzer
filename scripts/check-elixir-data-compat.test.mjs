@@ -69,41 +69,44 @@ test('rolling schema classification permits only the pinned agent flag transitio
 });
 
 test('reviewed mission workspace migration requires drained mode and rejects unrelated drift', () => {
-  const { before, after } = JSON.parse(fs.readFileSync(new URL('./fixtures/mission-workspace-schema-transition.json', import.meta.url)));
-  const compare = (left, right, allow = true) => runComparison({
-    schemaOnly: true, beforeFingerprint: left, afterFingerprint: right,
-    allowMissionWorkspaceMigration: allow,
-  });
-  assert.equal(recognizeMissionWorkspaceMigration(before, after), true);
-  assert.equal(compare(before, after, false).ok, false, 'mission fencing must never qualify for rolling');
-  assert.equal(compare(before, after).cutoverMode, 'drained');
-  assert.equal(compare(before, after).ok, true);
-  assert.equal(compare(after, after).ok, true, 'subsequent releases remain rolling');
-  assert.equal(compare(after, after).cutoverMode, undefined);
-  assert.equal(compare(after, before).ok, false, 'reverse migration is not authorized');
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/mission-workspace-schema-transition.json', import.meta.url)));
+  for (const { before, after } of [fixture, fixture.production]) {
+    const compare = (left, right, allow = true) => runComparison({
+      schemaOnly: true, beforeFingerprint: left, afterFingerprint: right,
+      allowMissionWorkspaceMigration: allow,
+    });
+    assert.equal(recognizeMissionWorkspaceMigration(before, after), true);
+    assert.equal(compare(before, after, false).ok, false, 'mission fencing must never qualify for rolling');
+    assert.equal(compare(before, after).cutoverMode, 'drained');
+    assert.equal(compare(before, after).ok, true);
+    assert.equal(compare(after, after).ok, true, 'subsequent releases remain rolling');
+    assert.equal(compare(after, after).cutoverMode, undefined);
+    assert.equal(compare(after, before).ok, false, 'reverse migration is not authorized');
 
-  for (const mutate of [
-    x => { x.objects[0].sql += ' WHERE 1=1'; },
-    x => { x.objects.pop(); },
-    x => { x.objects.push({ type: 'table', name: 'unreviewed', tableName: 'unreviewed', sql: 'CREATE TABLE unreviewed(id INTEGER)' }); },
-    x => { x.migrations[0].checksum = 'changed-history'; },
-    x => { x.migrations[1].checksum = 'unreviewed'; },
-    x => { x.migrations[1].name = 'another-migration'; },
-    x => { x.migrations.push({ version: 3, name: 'unexpected', checksum: 'unknown' }); },
-    x => { x.migrations.pop(); },
-  ]) {
-    const changed = structuredClone(after);
-    mutate(changed);
-    assert.equal(recognizeMissionWorkspaceMigration(before, changed), false);
-    assert.equal(compare(before, changed).ok, false);
+    for (const mutate of [
+      x => { x.objects[0].sql += ' WHERE 1=1'; },
+      x => { x.objects.pop(); },
+      x => { x.objects.push({ type: 'table', name: 'unreviewed', tableName: 'unreviewed', sql: 'CREATE TABLE unreviewed(id INTEGER)' }); },
+      x => { x.migrations[0].checksum = 'changed-history'; },
+      x => { x.migrations[1].checksum = 'unreviewed'; },
+      x => { x.migrations[1].name = 'another-migration'; },
+      x => { x.migrations.push({ version: 3, name: 'unexpected', checksum: 'unknown' }); },
+      x => { x.migrations.pop(); },
+    ]) {
+      const changed = structuredClone(after);
+      mutate(changed);
+      assert.equal(recognizeMissionWorkspaceMigration(before, changed), false);
+      assert.equal(compare(before, changed).ok, false);
+    }
+    const existing = { type: 'table', name: 'other', tableName: 'other', sql: 'CREATE TABLE other(id INTEGER)' };
+    const extendedBefore = { ...before, objects: [...before.objects, existing] };
+    const extendedAfter = { ...after, objects: [...after.objects, existing] };
+    assert.equal(compare(extendedBefore, extendedAfter).ok, true);
+    extendedAfter.objects[extendedAfter.objects.length - 1] = { ...existing, sql: 'CREATE TABLE other(id TEXT)' };
+    assert.equal(compare(extendedBefore, extendedAfter).ok, false);
+    assert.throws(() => parseArgs(['--before', 'a', '--after', 'b', '--allow-mission-workspace-migration']), /requires --schema-only/);
   }
-  const existing = { type: 'table', name: 'other', tableName: 'other', sql: 'CREATE TABLE other(id INTEGER)' };
-  const extendedBefore = { ...before, objects: [...before.objects, existing] };
-  const extendedAfter = { ...after, objects: [...after.objects, existing] };
-  assert.equal(compare(extendedBefore, extendedAfter).ok, true);
-  extendedAfter.objects[extendedAfter.objects.length - 1] = { ...existing, sql: 'CREATE TABLE other(id TEXT)' };
-  assert.equal(compare(extendedBefore, extendedAfter).ok, false);
-  assert.throws(() => parseArgs(['--before', 'a', '--after', 'b', '--allow-mission-workspace-migration']), /requires --schema-only/);
+  assert.equal(recognizeMissionWorkspaceMigration(fixture.before, fixture.production.after), false, 'reviewed hashes are directional pairs, not interchangeable shapes');
 });
 
 function fixture() {

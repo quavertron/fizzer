@@ -74,16 +74,17 @@ const ROLLING_SCHEMA_TRANSITIONS = new Map([
 ]);
 
 // Actual old-release boot (461382ce) -> reviewed mission workspace boot.
+// Alternate hashes preserve production column order and legacy review columns.
 // This transition fences work and writes briefs; it is NEVER rolling-safe.
 const MISSION_WORKSPACE_SCHEMA_TRANSITION = new Map([
-  ['table:chat_mission_tasks', ['33b1e39de513ad50a87310b8fb08c032cc03ed6f27859c9711a30ef174b49e7e', '1f39d416fe9554b58cf75d7d096c7458f468cc9e2b00ecee609a01a669666617']],
-  ['table:chat_missions', ['295076a884512f48c0fdb397c9c2e878e1bb1aefd3e8e64b3687d2a8cdae5526', '51dc5b55c2a7b5e147f44fb3007b60c0a6e388b4a69df94f9140f2d0ab9ffbb9']],
-  ['table:notes', ['9bd0b8f5bd1a321dd2ed475329eaaabb01aabf0b2167584550342d853d4b72fd', '5a7c290bbde43be7ca74a2650286916d9c6bb15057b5c0d536ed407e45186ecc']],
-  ['index:chat_mission_cancellation_replays_mission_idx', [null, '04a96f71656bc5b645eb6785c6422eb1ea720766d6b55940d368ce3443a3c3a7']],
-  ['index:chat_mission_notes_parent_idx', [null, '010a66b38fcc5c10c4b65e08da59bc0e0ebedb0f04ff0545e508f674cd5e0b3b']],
-  ['table:chat_mission_cancellation_replays', [null, '94f6d8dbbad7b2e8bc9d09841df8b9ebeb8646625e66569a5f63ad0f08cb5547']],
-  ['table:chat_mission_migrations', [null, '265e3213c7aa1aa60c5768d48bd05623d4aaacb0cb6ca9a1d9358d80056a15df']],
-  ['table:chat_mission_notes', [null, '51b3ab915b2289e8db061712f3fe193ba49082c4726183bb8c8f03df098f6996']],
+  ['table:chat_mission_tasks', [['33b1e39de513ad50a87310b8fb08c032cc03ed6f27859c9711a30ef174b49e7e', '1f39d416fe9554b58cf75d7d096c7458f468cc9e2b00ecee609a01a669666617'], ['6dee158cd48767338b886689ebbbcfcb64d42a3cb8b4c506ffa3499195a48045', '92a7eb3272060a4255d800b57e928df020b960e41068b441ddf6f667ece12e2d']]],
+  ['table:chat_missions', [['295076a884512f48c0fdb397c9c2e878e1bb1aefd3e8e64b3687d2a8cdae5526', '51dc5b55c2a7b5e147f44fb3007b60c0a6e388b4a69df94f9140f2d0ab9ffbb9'], ['07b03b57d5347786b723f4ab2f211cb62ab874e6122639db4b5f2ff620aec013', '0b043e64bed589284c1f9246f387255979e326c1770dfa742ad7ebcaad4833e3']]],
+  ['table:notes', [['9bd0b8f5bd1a321dd2ed475329eaaabb01aabf0b2167584550342d853d4b72fd', '5a7c290bbde43be7ca74a2650286916d9c6bb15057b5c0d536ed407e45186ecc'], ['bfeb909f026ae136e7f2e6349ceb8e7b6235a718dbe76062ab428cf46487ef9c', '3dd9a3367f38a5be09a84b7917dd149c9712029baadde12ff186be52788fdef1']]],
+  ['index:chat_mission_cancellation_replays_mission_idx', [[null, '04a96f71656bc5b645eb6785c6422eb1ea720766d6b55940d368ce3443a3c3a7']]],
+  ['index:chat_mission_notes_parent_idx', [[null, '010a66b38fcc5c10c4b65e08da59bc0e0ebedb0f04ff0545e508f674cd5e0b3b']]],
+  ['table:chat_mission_cancellation_replays', [[null, '94f6d8dbbad7b2e8bc9d09841df8b9ebeb8646625e66569a5f63ad0f08cb5547']]],
+  ['table:chat_mission_migrations', [[null, '265e3213c7aa1aa60c5768d48bd05623d4aaacb0cb6ca9a1d9358d80056a15df']]],
+  ['table:chat_mission_notes', [[null, '51b3ab915b2289e8db061712f3fe193ba49082c4726183bb8c8f03df098f6996']]],
 ]);
 const NOTE_REVISION_LEDGER_ROW = {
   "version": 2,
@@ -446,11 +447,12 @@ export function recognizeMissionWorkspaceMigration(before, after) {
   const beforeObjects = new Map(before.objects.map(object => [`${object.type}:${object.name}`, object]));
   const afterObjects = new Map(after.objects.map(object => [`${object.type}:${object.name}`, object]));
   if (beforeObjects.size !== before.objects.length || afterObjects.size !== after.objects.length) return false;
-  for (const [key, [oldHash, newHash]] of MISSION_WORKSPACE_SCHEMA_TRANSITION) {
+  for (const [key, transitions] of MISSION_WORKSPACE_SCHEMA_TRANSITION) {
     const oldObject = beforeObjects.get(key);
     const nextObject = afterObjects.get(key);
-    if ((oldObject ? sha256(normalizedSql(oldObject.sql)) : null) !== oldHash
-        || !nextObject || sha256(normalizedSql(nextObject.sql)) !== newHash) return false;
+    const oldHash = oldObject ? sha256(normalizedSql(oldObject.sql)) : null;
+    const newHash = nextObject ? sha256(normalizedSql(nextObject.sql)) : null;
+    if (!nextObject || !transitions.some(([from, to]) => from === oldHash && to === newHash)) return false;
     if (oldObject && (oldObject.type !== nextObject.type || oldObject.name !== nextObject.name
         || oldObject.tableName !== nextObject.tableName)) return false;
     beforeObjects.delete(key);
