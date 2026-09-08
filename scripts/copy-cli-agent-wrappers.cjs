@@ -11,7 +11,7 @@ const wrappers = ['cascade-note', 'cascade-chat', 'cascade-scratchpad', 'auto-pa
 // while Electron deliberately loads the runtime from dist/cli-agents so it can
 // sit beside the helper executables outside app.asar. Refresh that runtime on
 // every build; otherwise source changes compile successfully but never run.
-const compiledArtifacts = ['cli-agent.js'];
+const compiledArtifacts = ['cli-agent.js', 'hermes-profile-command.js'];
 
 fs.mkdirSync(targetDir, { recursive: true });
 // The packaged copy lives outside app.asar, so it does not inherit the
