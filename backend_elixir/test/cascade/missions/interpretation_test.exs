@@ -175,6 +175,42 @@ defmodule Cascade.Missions.InterpretationTest do
     assert {:ok, _} = Dispatches.create(c.user.id, c.channel, newer, c.coordinator.id)
   end
 
+  test "closed delivery retains durable acknowledgment work without restarting workers", c do
+    finding(c, "Delivered work", "completed")
+    SQL.exec("UPDATE chat_missions SET phase='closed',status='completed',verification=? WHERE id=?",
+      ["Verified delivery", c.mission])
+    Interpretation.initialize(c.mission)
+
+    for {saved, pending, publication} <- [
+          {%{}, "", nil},
+          {%{"executionCompleted" => true}, "pending-evidence", nil},
+          {%{"executionCompleted" => true}, "", "pending-publication"},
+          {%{"executionCompleted" => true, "commitments" => [%{"id" => "owed", "status" => "open", "summary" => "Explain the result"}]}, "", nil},
+          {%{"executionCompleted" => true, "questions" => [%{"id" => "answer", "question" => "What did the checks demonstrate?"}]}, "", nil}
+        ] do
+      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,pending_fingerprint=?,publication_pending=? WHERE mission_id=?",
+        [Jason.encode!(saved), pending, publication, c.mission])
+      assert [c.mission, c.user.id] in Scheduler.maintenance_missions()
+    end
+
+    # Recovery selects only persisted rows, as it does after process restart.
+    assert %{dispatches: [], wakeDispatches: [wake]} = Scheduler.schedule(c.mission)
+    assert Interpretation.dispatch_prompt(wake.dispatch.id) =~ "What did the checks demonstrate?"
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    acknowledgment = run(c, wake.dispatch)
+    {{:ok, _}, _} = record(c, acknowledgment, %{
+      "body" => "The requested checks passed.",
+      "questions" => [%{"id" => "answer", "status" => "answered", "answer" => "The requested checks passed."}]
+    })
+    :ok = Runs.finish(acknowledgment.id, "completed", "Answered")
+    refute [c.mission, c.user.id] in Scheduler.maintenance_missions()
+
+    SQL.exec("UPDATE chat_missions SET status='canceled' WHERE id=?", [c.mission])
+    SQL.exec("UPDATE chat_mission_interpretations SET pending_fingerprint='still-pending' WHERE mission_id=?", [c.mission])
+    refute [c.mission, c.user.id] in Scheduler.maintenance_missions()
+    assert %{dispatches: [], wakeDispatches: []} = Scheduler.schedule(c.mission)
+  end
+
   test "completed research stays in planning while an unanswered question remains in maintenance",
        c do
     finding(c, "Research evidence")
