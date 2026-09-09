@@ -85,6 +85,34 @@ describe('chat sticky bottom intent', () => {
 });
 
 describe('agent steering presentation', () => {
+  it('omits interrupted progress rows while keeping the latest reply and Stop control', () => {
+    const rows = [
+      message('request', { body: '@sol fix the regression' }),
+      message('steered-1', { author: 'Sol', agentId: 'codex', status: 'canceled',
+        body: 'I will trace the issue.\n\n> ⚠️ Steered into the continuation below.', hasHarness: true }),
+      message('followup', { body: 'in the vault folder tree' }),
+      message('steered-2', { author: 'Sol', agentId: 'codex', status: 'canceled',
+        body: 'Understood.\n\n> ⚠️ Steered into the continuation below.' }),
+      message('followup-2', { body: 'also remove empty messages' }),
+      message('latest', { author: 'Sol', agentId: 'codex', runId: 42, status: 'running', body: 'Fixing both.' }),
+    ];
+    for (const status of ['running', undefined] as const) {
+      chatMessageStore.set('channel', rows.map(row => ({ ...row, createdAt: '2026-09-09T13:22:00Z', ...(row.id === 'latest' ? { status } : {}) })));
+      const html = renderToStaticMarkup(createElement(ChatView, {
+        channelId: 'channel', channelName: 'General', currentUser: 'owner',
+        presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [],
+        onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+      }));
+      expect(html.match(/class="chat-message-meta"/g)).toHaveLength(2);
+      expect(html).not.toContain('Steered into the continuation');
+      expect(html).not.toContain('I will trace the issue.');
+      expect(html).toContain('in the vault folder tree');
+      expect(html).toContain('also remove empty messages');
+      if (!status) expect(html).toContain('Fixing both.');
+      expect(html.includes('>Stop<')).toBe(status === 'running');
+    }
+  });
+
   it('tracks the newest active response', () => {
     const messages = [
       message('1', { author: 'Sol', agentId: 'codex', registrationId: agent.id, status: 'running', body: 'Thinking…' }),

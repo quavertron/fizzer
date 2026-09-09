@@ -381,6 +381,10 @@ export function segmentTranscript(
     missionTraces.set(identity.id, trace);
     return false;
   });
+  // Interrupted progress has no rendered body. Keep its stored run details (and
+  // mission trace above), but do not leave a standalone avatar/header behind.
+  messages = messages.filter((message) => !isSteeringContinuationMessage(message)
+    || isDurableWorkArtifact(message));
   const segments: TranscriptSegment[] = [];
   let index = 0;
 
