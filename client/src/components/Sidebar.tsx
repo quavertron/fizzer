@@ -125,6 +125,28 @@ export function sortSidebarNotes(notes: NoteSummary[]) {
   );
 }
 
+export function vaultSelectionTargetId(
+  note: Pick<NoteSummary, 'id' | 'folder_id' | 'content_preview'>,
+  folders: ReadonlyArray<Pick<Folder, 'id' | 'parent_id'>>,
+  expandedFolders: ReadonlySet<string>,
+) {
+  if (!note.folder_id || !note.content_preview.trim().startsWith(CHAT_NOTE_MARKER)) {
+    return `note-${note.id}`;
+  }
+
+  let target = note.folder_id;
+  let folder = folders.find((candidate) => candidate.id === target);
+  const visited = new Set<string>();
+  while (folder?.parent_id && !visited.has(folder.id)) {
+    visited.add(folder.id);
+    const parentId = folder.parent_id;
+    // A collapsed ancestor hides every row below it, including the direct folder.
+    if (!expandedFolders.has(parentId)) target = parentId;
+    folder = folders.find((candidate) => candidate.id === parentId);
+  }
+  return `folder-${target}`;
+}
+
 type ConnectorBox = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>;
 
 export function vaultSelectionConnectorPath(
@@ -300,6 +322,11 @@ export const Sidebar = memo(function Sidebar({
     (updateCounts.byTarget[note.id] || 0) > 0,
   ) !== null);
 
+  const activeNote = notes.find((note) => note.id === activeNoteId);
+  const selectionTargetId = activeNote
+    ? vaultSelectionTargetId(activeNote, folders, expandedFolders)
+    : `note-${activeNoteId}`;
+
   useLayoutEffect(() => {
     const sidebar = sidebarRef.current;
     if (!sidebar || !activeVaultId || !activeNoteId) {
@@ -311,15 +338,15 @@ export const Sidebar = memo(function Sidebar({
     let disposed = false;
     const updateConnector = () => {
       const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-      const noteButton = document.getElementById(`note-${activeNoteId}`);
-      if (!vaultButton || !noteButton || !sidebar.contains(noteButton)) {
+      const targetButton = document.getElementById(selectionTargetId);
+      if (!vaultButton || !targetButton || !sidebar.contains(targetButton)) {
         setSelectionConnector((current) => current === '' ? current : '');
         return;
       }
       const next = vaultSelectionConnectorPath(
         sidebar.getBoundingClientRect(),
         vaultButton.getBoundingClientRect(),
-        noteButton.getBoundingClientRect(),
+        targetButton.getBoundingClientRect(),
       );
       setSelectionConnector((current) => current === next ? current : next);
     };
@@ -341,9 +368,9 @@ export const Sidebar = memo(function Sidebar({
     const observer = new ResizeObserver(scheduleConnectorUpdate);
     observer.observe(sidebar);
     const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-    const noteButton = document.getElementById(`note-${activeNoteId}`);
+    const targetButton = document.getElementById(selectionTargetId);
     if (vaultButton) observer.observe(vaultButton);
-    if (noteButton && sidebar.contains(noteButton)) observer.observe(noteButton);
+    if (targetButton && sidebar.contains(targetButton)) observer.observe(targetButton);
     void document.fonts?.ready.then(scheduleConnectorUpdate);
     sidebar.addEventListener('scroll', scheduleConnectorUpdate, true);
     window.addEventListener('resize', scheduleConnectorUpdate);
@@ -354,7 +381,7 @@ export const Sidebar = memo(function Sidebar({
       sidebar.removeEventListener('scroll', scheduleConnectorUpdate, true);
       window.removeEventListener('resize', scheduleConnectorUpdate);
     };
-  }, [activeNoteId, activeVaultId, expandedFolders, folders, notes, vaults]);
+  }, [activeNoteId, activeVaultId, selectionTargetId, expandedFolders, folders, notes, vaults, showAgentMemory, editingFolderId, editingNoteId]);
 
   const visibleFolders = useMemo(() => {
     if (showAgentMemory) return folders;
