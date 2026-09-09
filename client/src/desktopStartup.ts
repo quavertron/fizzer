@@ -17,8 +17,7 @@ export function canRestoreDesktopSelection(selection: Selection | null, ownerId:
 
 /** A selection is navigation, never authority: authenticate and list vaults first. */
 export function useDesktopStartup(desktop: boolean, ownerId: string | null, activeVaultId: string | null, vaults: { id: string }[], listingReady: boolean) {
-  const [open, setOpen] = useState(desktop);
-  const resolvedOwner = useRef<string | null>(null);
+  const [state, setState] = useState<{ phase: 'pending' | 'chooser' | 'workspace'; ownerId: string | null }>({ phase: desktop ? 'pending' : 'workspace', ownerId: null });
   const selection = useRef(readDesktopSelection(localStorage));
   const remember = (vaultId: string | null) => {
     if (!desktop || !ownerId || !vaultId || !vaults.some(vault => vault.id === vaultId)) return;
@@ -29,24 +28,23 @@ export function useDesktopStartup(desktop: boolean, ownerId: string | null, acti
   useEffect(() => {
     if (!desktop) return;
     if (!ownerId) {
-      resolvedOwner.current = null;
-      setOpen(true);
+      if (state.ownerId || state.phase !== 'pending') setState({ phase: 'pending', ownerId: null });
       return;
     }
-    if (!listingReady || resolvedOwner.current === ownerId) return;
-    resolvedOwner.current = ownerId;
-    setOpen(!canRestoreDesktopSelection(selection.current, ownerId, window.location.origin, activeVaultId, vaults));
-  }, [desktop, ownerId, activeVaultId, vaults, listingReady]);
+    if (!listingReady || state.ownerId === ownerId) return;
+    setState({ ownerId, phase: canRestoreDesktopSelection(selection.current, ownerId, window.location.origin, activeVaultId, vaults) ? 'workspace' : 'chooser' });
+  }, [desktop, ownerId, activeVaultId, vaults, listingReady, state]);
   return {
-    open,
-    choose: () => setOpen(true),
-    continue: () => { remember(activeVaultId); setOpen(false); },
+    pending: desktop && (!ownerId || state.ownerId !== ownerId || state.phase === 'pending'),
+    open: state.phase === 'chooser',
+    choose: () => setState({ ownerId, phase: 'chooser' }),
+    continue: () => { remember(activeVaultId); setState({ ownerId, phase: 'workspace' }); },
     remember,
     reset: () => {
       selection.current = null;
-      resolvedOwner.current = null;
+
       try { localStorage.removeItem(DESKTOP_SELECTION_KEY); } catch { /* optional persistence */ }
-      setOpen(desktop);
+      setState({ ownerId: null, phase: desktop ? 'pending' : 'workspace' });
     },
   };
 }

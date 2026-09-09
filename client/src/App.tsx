@@ -2777,6 +2777,10 @@ export default function App() {
   const inDesktopApp = Boolean((window as unknown as { electronAPI?: unknown }).electronAPI);
   const showDesktopDownload = !inDesktopApp && runnerHealth != null && !runnerHealth.online;
 
+  if (desktopStartup.pending) {
+    return <main className="auth-shell" id="desktop-startup-pending"><StartupPending kind="vault" failed={Boolean(vaultListError)} onRetry={() => void loadVaults()} /></main>;
+  }
+
   if (inDesktopApp && desktopStartup.open) {
     return (
       <DesktopVaultChooser
