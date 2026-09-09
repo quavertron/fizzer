@@ -12,14 +12,33 @@ async function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-access-'));
   fs.chmodSync(directory, 0o700);
   const notes = new Map(), messages = new Map(), calls = [];
-  const state = { owner: 1, role: 'owner', corrupt: false, failWrite: false, posts: 0 };
+  const state = { owner: 1, role: 'owner', corrupt: false, failWrite: false, posts: 0,
+    visibility: 'private', creator: 1, members: [{ userId: 1, role: 'owner' }] };
+  const vaults = new Map([[vaultId, { id: vaultId, name: 'My Vault', role: 'owner' }]]);
   const upstream = http.createServer(async (req, res) => {
     let raw = ''; for await (const c of req) raw += c;
     const body = raw ? JSON.parse(raw) : null;
     calls.push({ path: req.url, method: req.method, body });
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.url === '/api/me') return send(200, { user: { id: state.owner } });
-    if (req.url === '/api/vaults') return send(200, { vaults: [{ id: vaultId, role: state.role }] });
+    if (req.url === '/api/vaults' && req.method === 'GET') return send(200,
+      { vaults: [...vaults.values()].map(v => ({ ...v, role: state.role })) });
+    if (req.url === '/api/vaults' && req.method === 'POST') {
+      assert.equal(req.headers['x-cascade-browser'], '1');
+      assert.equal(req.headers.authorization, undefined);
+      assert.deepEqual(body, { name: 'Along — shared wiki', visibility: 'private' });
+      state.posts++;
+      if (state.failWrite) return send(500, { error: 'SECRET' });
+      const vault = { id: randomUUID(), name: body.name, role: 'owner' };
+      vaults.set(vault.id, vault); return send(201, { vault });
+    }
+    const vaultPath = req.url.match(/^\/api\/vaults\/([^/]+)(\/members)?$/);
+    if (vaultPath && req.method === 'GET' && vaults.has(vaultPath[1])) {
+      assert.equal(req.headers.authorization, undefined);
+      return send(200, vaultPath[2] ? { role: state.role, members: state.members } :
+        { vault: { ...vaults.get(vaultPath[1]), created_by: state.creator,
+          visibility: state.visibility }, role: state.role });
+    }
     if (req.url === '/api/auth/agent-token') {
       assert.equal(req.headers['x-cascade-browser'], '1');
       assert.equal(req.method, 'POST'); return send(200, { token: 'fixture-agent-token' });
@@ -59,7 +78,7 @@ async function fixture(t) {
     allowFixtureHTTP: true, browserFetch: fetch, agentFetch: (url, init) => { assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error'); return fetch(url, init); } };
   let service = await startExternalAgentAccess(options);
   t.after(async () => { await service.close(); await new Promise(r => upstream.close(r)); fs.rmSync(directory, { recursive: true }); });
-  return { directory, options, notes, messages, state, calls, call: p => request(service.socketPath, p),
+  return { directory, options, notes, messages, vaults, state, calls, call: p => request(service.socketPath, p),
     restart: async () => { await service.close(); service = await startExternalAgentAccess(options); } };
 }
 test('real Unix + HTTP: permissions, bounded create/list/read/history/send, agent attribution and durable replay', async t => {
@@ -140,4 +159,59 @@ test('opt in, origin pin, endpoint collision and unsafe directory refusal', asyn
   const link = f.directory + '-link'; fs.symlinkSync(f.directory, link);
   try { await assert.rejects(startExternalAgentAccess({ ...f.options, directory: link }), /unsafe_directory/); }
   finally { fs.unlinkSync(link); }
+});
+
+test('private wiki: owner-only browser vault create, exact privacy readback and durable no-duplicate replay', async t => {
+  const f = await fixture(t);
+  const input = { op: 'createPrivateVault', requestId: 'wiki-vault' };
+  const created = await f.call(input);
+  assert.equal(created.status, 200);
+  assert.equal(created.vault.name, 'Along — shared wiki');
+  assert.equal(created.vault.visibility, 'private');
+  assert.equal(created.vault.ownerId, 1);
+  assert.deepEqual(created.vault.members, [{ userId: 1, role: 'owner' }]);
+  await f.restart(); assert.deepEqual(await f.call(input), created);
+  assert.equal(f.state.posts, 1);
+  assert.equal((await f.call({ ...input, requestId: 'another' })).error, 'wiki_already_exists');
+  f.state.visibility = 'public';
+  assert.equal((await f.call(input)).error, 'private_vault_required');
+  assert.equal(f.state.posts, 1);
+  assert.ok(!f.calls.some(c => /messages|agents/.test(c.path)));
+});
+
+test('private wiki notes: privacy and full membership before POST, exact body, no chat route or replay', async t => {
+  const f = await fixture(t);
+  const input = { op: 'createNote', requestId: 'home', title: 'Home', content: '# Home\nMaintained by John and Along (AI).' };
+  assert.equal((await f.call({ op: 'inspectPrivateVault' })).vault.visibility, 'private');
+  for (const [key, invalid] of [['visibility', 'public'], ['creator', 2],
+    ['members', [{ userId: 1, role: 'owner' }, { userId: 2, role: 'viewer' }]],
+    ['members', []], ['members', [{ userId: 2, role: 'owner' }]],
+    ['members', [{ userId: 1, role: 'editor' }]]]) {
+    const old = f.state[key]; f.state[key] = invalid;
+    assert.equal((await f.call(input)).error, 'private_vault_required');
+    assert.equal(f.state.posts, 0); f.state[key] = old;
+  }
+  assert.equal(fs.readdirSync(path.join(f.directory, 'receipts')).length, 0);
+  const created = await f.call(input);
+  assert.equal(created.status, 200);
+  assert.equal(created.note.content, input.content);
+  const post = f.calls.findIndex(c => c.path.endsWith('/notes') && c.method === 'POST');
+  assert.ok(f.calls.slice(0, post).some(c => c.path.endsWith('/members')));
+  assert.deepEqual(await f.call({ op: 'read', noteId: created.note.id }), created);
+  await f.restart(); assert.deepEqual(await f.call(input), created);
+  assert.equal(f.state.posts, 1);
+  f.notes.get(created.note.id).content = 'unexpected';
+  assert.equal((await f.call(input)).error, 'readback_mismatch');
+  assert.equal((await f.call({ ...input, requestId: 'channel', content: 'cascade://chat-channel' })).error, 'invalid_note_content');
+  assert.equal(f.state.posts, 1);
+  assert.ok(!f.calls.some(c => /messages|agents/.test(c.path)));
+});
+
+test('private vault unknown result survives restart without a second POST', async t => {
+  const f = await fixture(t); f.state.failWrite = true;
+  const input = { op: 'createPrivateVault', requestId: 'uncertain-vault' };
+  assert.equal((await f.call(input)).error, 'upstream_500');
+  await f.restart(); f.state.failWrite = false;
+  assert.equal((await f.call(input)).error, 'uncertain_write');
+  assert.equal(f.state.posts, 1);
 });

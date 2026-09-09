@@ -1,4 +1,6 @@
 import { LoadingIndicator } from './components/LoadingIndicator';
+import { StartupPending } from './components/StartupPending';
+import { hydrateNote } from './noteHydration';
 import { WorkspaceStore, reconcileWorkspaceNoteContent, type WorkspaceNote } from './workspace';
 import { findEmbeddedNote } from './docEmbeds';
 import { useEffect, useSyncExternalStore, useState, useCallback, useRef, useMemo, lazy, Suspense, type CSSProperties, type ReactNode } from 'react';
@@ -170,6 +172,9 @@ export default function App() {
   // Auth state. `user` starts null, so we must not treat "not yet checked"
   // as logged out or the desktop shell flashes the login form on every boot.
   const [authReady, setAuthReady] = useState(false);
+  const [authRetry, setAuthRetry] = useState(0);
+  const [authPendingError, setAuthPendingError] = useState(false);
+  const [noteLoadErrors, setNoteLoadErrors] = useState<Record<string, boolean>>({});
   const [user, setUser] = useState<User | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -316,6 +321,7 @@ export default function App() {
 
   const resetVaultWorkspaces = useCallback(() => {
     workspaceStore.reset();
+    setNoteLoadErrors({});
     loadVaultDataInflight.clear();
     vaultListingsRef.current = {};
     clearWorkspacePanels();
@@ -593,13 +599,15 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let succeeded = false;
+    const epoch = workspaceStore.epoch;
+    setAuthPendingError(false);
     let unauthorized = false;
     let attempt = 0;
     let timer: number | null = null;
     const tryAuth = () => {
       api<{ authenticated: boolean; user?: User; owner?: boolean }>('/api/session')
         .then((data) => {
-          if (cancelled) return;
+          if (cancelled || workspaceStore.epoch !== epoch) return;
           if (!data.authenticated || !data.user) {
             unauthorized = true;
             stopDesktopRunnerHost();
@@ -613,7 +621,7 @@ export default function App() {
           void loadVaults();
         })
         .catch((error) => {
-          if (cancelled) return;
+          if (cancelled || workspaceStore.epoch !== epoch) return;
           // A real 401 means no session. Transient network/deploy failures keep
           // retrying so an HttpOnly cookie is not mistaken for a logout.
           if (error instanceof ApiError && error.status === 401) {
@@ -623,6 +631,7 @@ export default function App() {
             return;
           }
           attempt += 1;
+          setAuthPendingError(true);
           if (attempt > 6) return;
           timer = window.setTimeout(tryAuth, Math.min(1000 * 2 ** (attempt - 1), 15000));
         });
@@ -642,7 +651,7 @@ export default function App() {
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener('online', onReconnect);
     };
-  }, [loadVaults]);
+  }, [loadVaults, authRetry]);
 
   useEffect(() => {
     if (user) {
@@ -1597,15 +1606,17 @@ export default function App() {
   // NOTE CONTENT
   // ═══════════════════════════════════════════════════════════════
 
-  /** Fetch a note body into `noteContents` (no layout change). Self-heals stale tabs. */
+  /** Preserve restored tabs on transient failures; close only definitively unavailable notes. */
   const loadNoteContent = useCallback(async (noteId: string) => {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return;
     const epoch = workspaceStore.epoch;
-    try {
-      const data = await api<{ note: WorkspaceNote }>(`/api/notes/${noteId}`);
-      if (workspaceStore.epoch !== epoch || activeVaultIdRef.current !== vaultId
-        || !workspaceStore.active.openTabs.some((tab) => tab.id === noteId)) return;
+    setNoteLoadErrors((prev) => ({ ...prev, [noteId]: false }));
+    await hydrateNote({
+      fetchNote: () => api<{ note: WorkspaceNote }>(`/api/notes/${noteId}`),
+      isCurrent: () => workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId
+        && workspaceStore.active.openTabs.some((tab) => tab.id === noteId),
+      apply: (data) => {
 
       // Shortcut URL check
       const content = data.note.content.trim();
@@ -1620,13 +1631,14 @@ export default function App() {
         [noteId]: reconcileWorkspaceNoteContent(prev[noteId], data.note),
       }));
       setOpenTabs((prev) => prev.map((t) => (t.id === noteId ? { ...t, title: data.note.title, type: 'note' } : t)));
-    } catch (error) {
-      if (workspaceStore.epoch !== epoch || activeVaultIdRef.current !== vaultId) return;
-      console.error('Error loading note:', error);
-      workspaceStore.closeTabs([noteId]);
-      setNotice('That note could not be opened — it may have been moved or deleted. Refreshing the list.');
-      if (activeVaultIdRef.current) void loadVaultData(activeVaultIdRef.current);
-    }
+      },
+      terminal: (status) => {
+        workspaceStore.closeTabs([noteId]);
+        setNotice(status === 403 ? 'Access to that note was denied.' : 'That note no longer exists.');
+        if (activeVaultIdRef.current) void loadVaultData(activeVaultIdRef.current);
+      },
+      retry: () => setNoteLoadErrors((prev) => ({ ...prev, [noteId]: true })),
+    });
   }, [loadVaultData, closeTab, openChatChannel]);
 
   /** Fetch every board body + live mission/work items for the aggregate tab. */
@@ -2422,11 +2434,11 @@ export default function App() {
   // After login/reload and every vault switch, hydrate the visible note tabs in
   // that vault's restored workspace.
   useEffect(() => {
-    if (!activeVaultId) return;
+    if (!user || !authReady || !activeVaultId) return;
     Layout.getActiveTabIds(workspaceStore.active.layout).forEach((id) => {
       if (workspaceStore.active.openTabs.find((t) => t.id === id)?.type === 'note') void loadNoteContent(id);
     });
-  }, [activeVaultId, loadNoteContent]);
+  }, [user?.id, authReady, activeVaultId, loadNoteContent]);
 
   // ═══════════════════════════════════════════════════════════════
   // AUTH
@@ -2668,6 +2680,7 @@ export default function App() {
       );
     }
     const entry = noteContents[tab.id];
+    if (!entry) return <StartupPending kind="note" failed={Boolean(noteLoadErrors[tab.id])} onRetry={() => void loadNoteContent(tab.id)} />;
     return (
       <ErrorBoundary label="Note">
         <Suspense fallback={<div className="editor-loading" />}>
@@ -2685,9 +2698,9 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData, renderMissionChat, missionRefreshToken]);
+  }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData, renderMissionChat, missionRefreshToken]);
 
-  if (!authReady) return <main className="auth-shell" id="auth-pending" />;
+  if (!authReady) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 
   if (!user) {
     const hasInvite = /^\/invite\/[^/]+$/.test(window.location.pathname);

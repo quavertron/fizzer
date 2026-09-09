@@ -54,7 +54,9 @@ service applies the narrower scope. Same-UID programs can access the socket.
 3. Launch this unpackaged source checkout with:
    - `FIZZER_EXTERNAL_AGENT_ACCESS=1`
    - `FIZZER_EXTERNAL_AGENT_DIRECTORY=/home/jt/.cascade/along-main-access`
-   - `FIZZER_EXTERNAL_AGENT_VAULT=5f57525b-4272-47aa-96ed-cc913a6563e8`
+   - `FIZZER_EXTERNAL_AGENT_VAULT=<verified-private-wiki-vault-id>`
+     (replace with the verified private vault ID; the formerly documented
+     `5f57525b-4272-47aa-96ed-cc913a6563e8` is a public user-group vault, not a wiki target).
    - `FIZZER_EXTERNAL_AGENT_OWNER=1`
    - normal app instance selection pinned to the intended HTTPS origin.
      The embedded HTTP backend is intentionally not accepted by this hook.
@@ -77,7 +79,36 @@ HTTP method, credential, registration, run ID, reply, attachment, or proxy route
 | read | noteId | scoped note with upstream agent privacy redaction |
 | history | channelId | last 40 messages, not full harness logs |
 | createChannel | requestId, title | listed note exactly `cascade://chat-channel` |
+| inspectPrivateVault | none | exact scoped private vault, owner and complete single-owner membership |
+| createPrivateVault | requestId | fixed name `Along — shared wiki`, explicit private input and exact privacy/owner/member readback |
+| createNote | requestId, title, content | ordinary listed note; privacy checked before POST and after exact body readback |
 | send | requestId, channelId, body | persisted attributed message; unsupported backends refused before message POST |
+
+### Private wiki extension (source-tested, not live)
+
+The three wiki operations above require the updated opt-in local desktop module;
+deploying master does not activate a running desktop. Six Node tests use actual private sockets and loopback HTTP;
+these are fixtures, not proof of signed-in Chromium or production writes.
+
+Prefer creating the vault in the normal signed-in app first, then pinning that
+verified ID for the approved API-enabled relaunch. `createPrivateVault` also
+supports bootstrap when the service is already enabled with an existing owned
+vault scope; its returned new ID does **not** silently broaden/rebind that scope.
+A safely arranged reconfiguration is required before `createNote` can target the
+new vault. Existing same-name vaults block duplicate creation; inspect them rather
+than guessing their identity. Unknown writes remain blocked by durable intent.
+The ordinary backend currently defaults new vaults to private and may seed a
+General channel note. No message is sent or agent invoked by these operations.
+
+Private checks require `visibility: private`, `created_by` equal to the pinned
+owner, owner role, and exactly one member with that same owner ID/role. Along
+accesses through John's authenticated service, not an invited second account.
+Checks are before/after network writes, **not** an atomic lock against a concurrent
+owner changing vault sharing. Do not change sharing during wiki creation.
+No invite, public toggle, generic fetch, note update/delete, or background writer
+was added. Conversational maintenance/editing is not yet a verified live feature.
+Wiki content rejects `cascade://` markers, is limited to 8000 characters, and must
+read back exactly; no transcript import or agent-message route is involved.
 
 Main's actual note wire shape remains **`is_listed`**, not `listed`; creation sends
 `is_listed: true`. The local view exposes `listed`. Linked-channel markers are

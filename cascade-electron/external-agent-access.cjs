@@ -52,9 +52,21 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
   privateDirectory(receiptDir);
   const scope = { origin, vaultId, ownerId, agentId, author };
   const base = `/api/vaults/${vaultId}`;
-  async function browser(route, method = 'GET') {
+  async function browser(route, method = 'GET', body) {
     return boundedJSON(await browserFetch(origin + route, { method, redirect: 'error',
-      headers: { 'x-cascade-browser': '1' }, signal: AbortSignal.timeout(10000) }));
+      headers: { 'x-cascade-browser': '1', 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) }));
+  }
+  async function privateVault(id) {
+    checkId(id);
+    const { vault, role } = await browser(`/api/vaults/${id}`);
+    const membership = await browser(`/api/vaults/${id}/members`);
+    if (vault?.id !== id || vault.visibility !== 'private' || vault.created_by !== ownerId ||
+        role !== 'owner' || membership.role !== 'owner' || !Array.isArray(membership.members) ||
+        membership.members.length !== 1 || membership.members[0].userId !== ownerId ||
+        membership.members[0].role !== 'owner') fail('private_vault_required');
+    return { id: vault.id, name: vault.name, visibility: vault.visibility, ownerId: vault.created_by,
+      role, members: membership.members.map(m => ({ userId: m.userId, role: m.role })) };
   }
   async function authorize() {
     const me = await browser('/api/me');
@@ -88,12 +100,20 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     const fields = {
       list: ['op'], read: ['op', 'noteId'], history: ['op', 'channelId'],
       createChannel: ['op', 'requestId', 'title'], send: ['op', 'requestId', 'channelId', 'body'],
+      inspectPrivateVault: ['op'], createPrivateVault: ['op', 'requestId'],
+      createNote: ['op', 'requestId', 'title', 'content'],
     }[input.op];
     if (!fields || Object.keys(input).some(k => !fields.includes(k)) || fields.some(k => !(k in input))) fail('invalid_request');
-    if (input.op === 'createChannel' && (typeof input.title !== 'string' || !input.title.trim() || input.title.length > 160)) fail('invalid_title');
+    if (['createChannel', 'createNote'].includes(input.op) && (typeof input.title !== 'string' || !input.title.trim() || input.title.length > 160)) fail('invalid_title');
+    if (input.op === 'createNote' && (typeof input.content !== 'string' || !input.content.trim() ||
+        input.content.length > 8000 || input.content.includes('cascade://'))) fail('invalid_note_content');
     if (input.op === 'send' && (typeof input.body !== 'string' || !input.body.trim() || input.body.length > 8000 || /@|\/compact/i.test(input.body))) fail('nonping_required');
     if (input.requestId !== undefined && !/^[A-Za-z0-9_-]{1,80}$/.test(input.requestId)) fail('invalid_request_id');
     const api = await authorize();
+    if (input.op === 'inspectPrivateVault') return { vault: await privateVault(vaultId) };
+    // Wiki text is admitted only after explicit privacy, immutable owner and full
+    // single-member readback. Along uses John's existing session, not another member.
+    if (input.op === 'createNote') await privateVault(vaultId);
     // Negotiate every send. The versioned POST route is also fail-safe across
     // mixed-version deployments; never fall back to legacy messages + a flag.
     const nonInvokeRoute = `${base}/channels/${input.channelId}/messages-no-invoke-v1`;
@@ -125,12 +145,22 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
       if (receipt.digest !== digest) fail('idempotency_conflict');
       if (!receipt.id) fail('uncertain_write');
     } else {
+      if (input.op === 'createPrivateVault') {
+        const { vaults } = await browser('/api/vaults');
+        if (!Array.isArray(vaults)) fail('readback_mismatch');
+        if (vaults.some(v => v.name === 'Along — shared wiki')) fail('wiki_already_exists');
+      }
       if (fs.readdirSync(receiptDir).length >= 1000) fail('receipt_limit');
       receipt = { digest };
       durableWrite(file, receipt, true); // Persist intent BEFORE a network write. Never automatically replay uncertainty.
       let result;
-      if (input.op === 'createChannel') {
-        result = (await api(`${base}/notes`, 'POST', { title: input.title, content: CHANNEL, is_listed: true })).note;
+      if (input.op === 'createPrivateVault') {
+        // Vault creation is user-only upstream: use normal Chromium session/CSRF,
+        // never the restricted agent bearer or a widened generic proxy.
+        result = (await browser('/api/vaults', 'POST', { name: 'Along — shared wiki', visibility: 'private' })).vault;
+      } else if (['createChannel', 'createNote'].includes(input.op)) {
+        result = (await api(`${base}/notes`, 'POST', { title: input.title,
+          content: input.op === 'createChannel' ? CHANNEL : input.content, is_listed: true })).note;
       } else {
         const response = await api(nonInvokeRoute, 'POST', {
           body: input.body, author, agentId, registrationId: null, status: 'completed', replyTo: null,
@@ -144,9 +174,16 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
       receipt.id = result.id;
       durableWrite(file, receipt);
     }
-    if (input.op === 'createChannel') {
-      const n = await note(api, receipt.id, true);
-      if (n.title !== input.title || !n.listed) fail('readback_mismatch');
+    if (input.op === 'createPrivateVault') {
+      const vault = await privateVault(receipt.id);
+      if (vault.name !== 'Along — shared wiki') fail('readback_mismatch');
+      return { vault };
+    }
+    if (['createChannel', 'createNote'].includes(input.op)) {
+      const n = await note(api, receipt.id, input.op === 'createChannel');
+      if (n.title !== input.title || !n.listed ||
+          (input.op === 'createNote' && n.content !== input.content)) fail('readback_mismatch');
+      if (input.op === 'createNote') await privateVault(vaultId);
       return { note: n };
     }
     const { message: m } = await api(`${base}/channels/${input.channelId}/messages/${receipt.id}`);
@@ -166,7 +203,7 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
       reply(200, await execute(input));
     } catch (error) {
       // Fixed vocabulary only: no upstream bodies, tokens, paths, or exception strings.
-      const code = /^(upstream_\d{3}|upstream_too_large|upstream_invalid_json|owner_scope_mismatch|agent_auth_unavailable|invalid_id|note_out_of_scope|invalid_request|invalid_title|nonping_required|nonping_backend_unsupported|invalid_request_id|readback_mismatch|unsafe_receipt|uncertain_write|idempotency_conflict|receipt_limit|unexpected_dispatch|request_too_large|invalid_json)$/.test(error.message) ? error.message : 'operation_failed';
+      const code = /^(upstream_\d{3}|upstream_too_large|upstream_invalid_json|owner_scope_mismatch|agent_auth_unavailable|invalid_id|note_out_of_scope|invalid_request|invalid_title|invalid_note_content|private_vault_required|wiki_already_exists|nonping_required|nonping_backend_unsupported|invalid_request_id|readback_mismatch|unsafe_receipt|uncertain_write|idempotency_conflict|receipt_limit|unexpected_dispatch|request_too_large|invalid_json)$/.test(error.message) ? error.message : 'operation_failed';
       reply(400, { error: code });
     } finally { busy = false; }
   });
