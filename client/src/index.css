@@ -5649,6 +5649,18 @@ button.chat-avatar.is-clickable:focus-visible {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.chat-paste-status {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 3px 4px;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-paste-status[role="alert"] { color: #ffb4ab; }
 .chat-paste-remove {
   position: absolute;
   top: -6px;
