@@ -1417,7 +1417,10 @@ defmodule Cascade.Content.Store do
         [vault_id, folder_id, is_listed]
       )
       |> List.flatten()
-      |> Enum.map(&(sanitize_path_segment(&1) |> String.downcase()))
+      # Legacy titles can contain characters that new path segments reject.
+      |> Enum.map(fn title ->
+        title |> sanitize_filename() |> String.trim_leading(".") |> String.trim() |> String.downcase()
+      end)
       |> MapSet.new()
 
     if not MapSet.member?(taken, sanitize_path_segment(desired) |> String.downcase()) do

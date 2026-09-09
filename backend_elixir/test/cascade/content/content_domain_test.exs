@@ -67,6 +67,29 @@ defmodule Cascade.ContentDomainTest do
     end
   end
 
+  test "legacy sibling titles cannot block new unlisted notes or bypass new title validation" do
+    vault = Store.create_vault(1, %{name: "Legacy titles"})
+
+    for title <- ["Harden Hermes/Akron runner reliability brief", "old\\brief", "..", " "] do
+      Query.execute(
+        "INSERT INTO notes (id, vault_id, title, content, is_listed, created_by) VALUES (?, ?, ?, '', 0, 1)",
+        [Ecto.UUID.generate(), vault.id, title]
+      )
+    end
+
+    note = Store.create_note(vault.id, 1, %{title: "New mission", is_listed: false})
+    assert note.title == "New mission"
+
+    collision = Store.create_note(vault.id, 1, %{title: "old_brief", is_listed: false})
+    assert collision.title == "old_brief 2"
+
+    for title <- ["bad/name", "bad\\name", ".."] do
+      assert_raise ArgumentError, "Invalid folder or file name", fn ->
+        Store.create_note(vault.id, 1, %{title: title, is_listed: false})
+      end
+    end
+  end
+
   test "only the owner can permanently delete a vault and its isolated files" do
     vault = Store.create_vault(1, %{name: "Disposable"})
     assert File.dir?(vault.root_path)
