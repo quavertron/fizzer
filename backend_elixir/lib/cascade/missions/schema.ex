@@ -272,6 +272,7 @@ defmodule Cascade.Missions.Schema do
     migrate_contract!()
     backfill_migration_decisions!()
     backfill_note_revisions!()
+    unlist_internal_notes!()
 
     repair_legacy_dependencies!()
     backfill_history!()
@@ -566,6 +567,34 @@ defmodule Cascade.Missions.Schema do
       _ -> nil
     end
   end
+
+  defp unlist_internal_notes! do
+    migration = "mission-internal-notes-unlisted-v1"
+
+    unless SQL.one("SELECT 1 FROM chat_mission_migrations WHERE name=?", [migration]) do
+      SQL.transaction(fn ->
+        # Repair only generated workspace resources, not user notes linked to a
+        # mission or documents deliberately placed in folders/pinned by a user.
+        SQL.exec("""
+        UPDATE notes SET is_listed=0
+        WHERE is_listed=1 AND folder_id IS NULL AND is_pinned=0 AND id IN (
+          SELECT n.id FROM notes n
+          JOIN chat_mission_notes mn ON mn.note_id=n.id AND mn.kind='mission'
+          JOIN chat_missions m ON m.id=mn.mission_id AND m.vault_id=n.vault_id
+          WHERE n.id='mission-brief-' || m.id
+             OR n.id='mission-migration-brief-' || m.id
+             OR n.id GLOB 'mission-migration-brief-' || m.id || '-*'
+          UNION
+          SELECT n.id FROM notes n
+          JOIN chat_missions m ON m.channel_id=n.id AND m.vault_id=n.vault_id
+          WHERE n.id='mission-channel-' || m.id
+        )
+        """)
+        SQL.exec("INSERT INTO chat_mission_migrations(name) VALUES(?)", [migration])
+      end)
+    end
+  end
+
   defp backfill_briefs! do
     SQL.all("""
     SELECT m.id,m.vault_id,m.title,m.objective,m.root_message_id,m.created_by,
@@ -627,7 +656,7 @@ defmodule Cascade.Missions.Schema do
       """
       INSERT OR IGNORE INTO notes
         (id,vault_id,folder_id,title,content,content_preview,is_pinned,is_archived,is_listed,position,word_count,created_by)
-      VALUES(?,?,NULL,?,?,?,0,0,1,
+      VALUES(?,?,NULL,?,?,?,0,0,0,
         COALESCE((SELECT MAX(position)+1 FROM notes WHERE vault_id=? AND folder_id IS NULL AND is_listed=1),0),
         ?,?)
       """,

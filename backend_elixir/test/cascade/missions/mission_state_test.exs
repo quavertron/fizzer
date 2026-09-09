@@ -1498,8 +1498,8 @@ defmodule Cascade.Missions.MissionStateTest do
                  "SELECT note_id FROM chat_mission_notes WHERE mission_id='legacy-mission' AND kind='mission'"
                )
 
-      assert SQL.one("SELECT content FROM notes WHERE id=?", [brief_id]) ==
-               ["Historical objective"]
+      assert SQL.one("SELECT content,is_listed FROM notes WHERE id=?", [brief_id]) ==
+               ["Historical objective", 0]
 
       assert SQL.one("SELECT title,status,summary FROM chat_mission_tasks WHERE id='legacy-task'") ==
                ["Child", "blocked", "Historical blocker"]
@@ -1522,6 +1522,42 @@ defmodule Cascade.Missions.MissionStateTest do
       assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'") ==
                before
     end)
+  end
+
+  test "mission workspace notes stay outside the vault folder tree", ctx do
+    state = approved_workspace(ctx, "Internal workspace")
+    [brief] = state.mission.notes
+    assert ContentStore.get_note(brief.noteId).is_listed == 0
+    assert ContentStore.get_note(state.channel_id).is_listed == 0
+    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{
+      title: "Internal milestone", kind: "milestone", content: "Keep in the mission"
+    })
+    assert [0] == SQL.one("SELECT n.is_listed FROM notes n JOIN chat_mission_notes mn ON mn.note_id=n.id WHERE mn.mission_id=? AND mn.kind='milestone'", [state.mission.id])
+
+    linked = ContentStore.create_note(ctx.vault.id, ctx.user.id, %{title: "User project document", is_listed: true})
+    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{
+      id: linked.id, title: linked.title, kind: "milestone"
+    })
+    assert ContentStore.get_note(linked.id).is_listed == 1
+  end
+
+  test "internal note listing repair preserves content and user documents and runs once", ctx do
+    state = approved_workspace(ctx, "Repair workspace")
+    [brief] = state.mission.notes
+    linked = ContentStore.create_note(ctx.vault.id, ctx.user.id, %{title: "User project document", is_listed: true})
+    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{id: linked.id, title: linked.title, kind: "milestone"})
+    SQL.exec("UPDATE notes SET is_listed=1 WHERE id IN (?,?)", [brief.noteId, state.channel_id])
+    before = SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
+    SQL.exec("DELETE FROM chat_mission_migrations WHERE name='mission-internal-notes-unlisted-v1'")
+    assert :ok == MissionSchema.ensure!()
+    assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [brief.noteId])
+    assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [state.channel_id])
+    assert before == SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
+    assert ContentStore.get_note(linked.id).is_listed == 1
+    # An explicit later choice to list a brief is not undone on every startup.
+    SQL.exec("UPDATE notes SET is_listed=1 WHERE id=?", [brief.noteId])
+    assert :ok == MissionSchema.ensure!()
+    assert ContentStore.get_note(brief.noteId).is_listed == 1
   end
 
   defp approved_workspace(ctx, title) do

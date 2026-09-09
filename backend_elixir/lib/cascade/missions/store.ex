@@ -262,7 +262,7 @@ defmodule Cascade.Missions.Store do
                id: clean(field(input, :id), 120),
                title: title,
                content: content,
-               is_listed: true
+               is_listed: false
              }
            ) do
       revision = Cascade.Content.Privacy.note_revision(note)
@@ -2809,7 +2809,7 @@ defmodule Cascade.Missions.Store do
                id: channel_id,
                title: title,
                content: "cascade://chat-channel\nmission_id=#{mission_id}",
-               is_listed: true
+               is_listed: false
              }
            ),
          :ok <- track_workspace_resource(:channel_id, channel.id, channel_created?),
@@ -2834,7 +2834,7 @@ defmodule Cascade.Missions.Store do
                id: brief_id,
                title: "#{title} brief",
                content: brief,
-               is_listed: true
+               is_listed: false
              }
            ),
          :ok <- track_workspace_resource(:brief_id, brief_note.id, brief_created?),
