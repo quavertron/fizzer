@@ -756,6 +756,23 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  // Explicitly provisioned owner-private API; never widen the TCP helper proxy.
+  if (!app.isPackaged && process.platform !== 'win32' && process.env.FIZZER_EXTERNAL_AGENT_ACCESS === '1') {
+    const { startExternalAgentAccess } = require('./external-agent-access.cjs');
+    void startExternalAgentAccess({
+      enabled: true,
+      directory: process.env.FIZZER_EXTERNAL_AGENT_DIRECTORY,
+      origin: INSTANCE_ORIGIN,
+      vaultId: process.env.FIZZER_EXTERNAL_AGENT_VAULT,
+      ownerId: Number(process.env.FIZZER_EXTERNAL_AGENT_OWNER),
+      agentId: 'hermes', author: 'Along (AI agent)',
+      browserFetch: (url, init) => session.defaultSession.fetch(url, init),
+      agentFetch: (url, init) => session.defaultSession.fetch(url, init),
+    }).then(service => {
+      app.once('will-quit', () => { void service.close(); });
+    }).catch(() => console.error('[external-agent-access] startup refused'));
+  }
+
   // Housekeeping after first paint. Reaping imports the CLI agent module and
   // prune walks every registered worktree — neither should hold the window.
   void reapOrphanedLocalAgentRuns().catch((error) => {

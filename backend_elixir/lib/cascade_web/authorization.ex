@@ -3,6 +3,7 @@ defmodule CascadeWeb.Authorization do
 
   @safe_methods ["GET", "HEAD", "OPTIONS"]
   @agent_rules [
+    {~w(GET POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages-no-invoke-v1$>},
     {~w(GET PUT), ~r<^/api/app-context$>},
     {~w(GET), ~r<^/api/vaults$>},
     {~w(GET DELETE), ~r<^/api/vaults/[^/]+$>},

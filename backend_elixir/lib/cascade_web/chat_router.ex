@@ -115,6 +115,64 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  # Versioned route, never a flag on the legacy endpoint: old servers cannot
+  # silently accept this operation and dispatch. No member/settings lookup, natural
+  # reply inference, clear-session command, or dispatch creation is reachable here.
+  get "/api/vaults/:vault_id/channels/:channel_id/messages-no-invoke-v1" do
+    authenticated(conn, :agent, nil, fn conn, user ->
+      with :ok <- no_invoke_owner(user, vault_id),
+           {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
+        JSON.send(conn, 200, %{
+          contract: "messages_no_invoke_v1",
+          actorUserId: user.id,
+          vaultId: vault_id,
+          channelId: channel_id
+        })
+      else
+        error -> domain_error(conn, error)
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/messages-no-invoke-v1" do
+    authenticated(conn, :agent, :vault, fn conn, user ->
+      case serialized_create_and_emit(
+             conn,
+             fn ->
+               Cascade.Accounts.SQL.transaction(fn ->
+                 with :ok <- no_invoke_owner(user, vault_id) do
+                   input =
+                     conn.body_params
+                     |> Map.take(["body", "author", "agentId", "registrationId"])
+                     |> Map.merge(%{"status" => "completed", "replyTo" => nil, "runId" => nil})
+
+                   Messages.create(user, vault_id, channel_id, input, access: :agent)
+                 end
+               end)
+             end,
+             fn message ->
+               %{
+                 event: "vault:chatMessageCreated",
+                 vaultId: vault_id,
+                 channelId: channel_id,
+                 message: message,
+                 dispatches: []
+               }
+             end
+           ) do
+        {:ok, message} ->
+          JSON.send(conn, 201, %{
+            contract: "messages_no_invoke_v1",
+            message: message,
+            dispatches: []
+          })
+
+        error ->
+          domain_error(conn, error)
+      end
+    end)
+  end
+
   post "/api/vaults/:vault_id/channels/:channel_id/messages" do
     authenticated(conn, :any, :vault, fn conn, user ->
       with {:ok, result} <-
@@ -655,6 +713,12 @@ defmodule CascadeWeb.ChatRouter do
         end)
       end)
     end
+  end
+
+  defp no_invoke_owner(user, vault_id) do
+    if VaultMembers.role(vault_id, user.id) == "owner",
+      do: :ok,
+      else: {:error, "Only the vault owner can post without invocation"}
   end
 
   defp access(conn), do: if(conn.assigns.auth_access == "agent", do: :agent, else: :user)
