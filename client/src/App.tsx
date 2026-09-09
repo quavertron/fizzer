@@ -120,6 +120,7 @@ import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
 import { DesktopVaultChooser } from './components/DesktopVaultChooser';
+import { useDesktopStartup } from './desktopStartup';
 
 /**
  * @file App.tsx — Root component for Cascade
@@ -194,7 +195,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
-  const [desktopChooserOpen, setDesktopChooserOpen] = useState(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI));
+
 
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
@@ -202,6 +203,7 @@ export default function App() {
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
   const activeVaultId = workspaceStore.activeVaultId;
+  const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError);
   const initialVaultListing = persistedSessionRef.current.activeVaultId
     ? persistedSessionRef.current.vaultListingsByVault[persistedSessionRef.current.activeVaultId]
     : undefined;
@@ -320,6 +322,7 @@ export default function App() {
   }, [workspaceStore, clearWorkspacePanels]);
 
   const resetVaultWorkspaces = useCallback(() => {
+    desktopStartup.reset();
     workspaceStore.reset();
     setNoteLoadErrors({});
     loadVaultDataInflight.clear();
@@ -2774,14 +2777,14 @@ export default function App() {
   const inDesktopApp = Boolean((window as unknown as { electronAPI?: unknown }).electronAPI);
   const showDesktopDownload = !inDesktopApp && runnerHealth != null && !runnerHealth.online;
 
-  if (inDesktopApp && desktopChooserOpen) {
+  if (inDesktopApp && desktopStartup.open) {
     return (
       <DesktopVaultChooser
         vaults={vaults}
         activeVaultId={activeVaultId}
         onSelect={switchVaultWorkspace}
         onCreate={handleCreateVault}
-        onContinue={() => setDesktopChooserOpen(false)}
+        onContinue={desktopStartup.continue}
       />
     );
   }
@@ -2844,6 +2847,7 @@ export default function App() {
           vaultListError={vaultListError}
           onRetryVaults={() => void loadVaults()}
           onSelectVault={(id) => {
+            desktopStartup.remember(id);
             switchVaultWorkspace(id);
             if (isMobileViewport()) setSidebarOpen(false);
           }}
@@ -2962,6 +2966,7 @@ export default function App() {
               </button>
             )}
             <NewsTicker />
+            {inDesktopApp && <button type="button" className="workspace-desktop-action" onClick={desktopStartup.choose}>Choose a vault</button>}
             {showDesktopDownload && (
               <a
                 className="workspace-desktop-action"
