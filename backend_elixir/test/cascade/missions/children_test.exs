@@ -93,6 +93,28 @@ defmodule Cascade.Missions.ChildrenTest do
     end
   end
 
+  test "integration and verification children inherit the parent's prerequisites", ctx do
+    {mission, parent, run} = parent(ctx)
+    {_, stages} = Enum.reduce(~w(implementation review integration), {[], %{}}, fn purpose, {deps, stages} ->
+      assignee = if purpose == "review", do: ctx.coordinator.id, else: ctx.worker.id
+      assert {:ok, added} = Store.add_task(ctx.user.id, ctx.channel.id, mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        assignee: assignee, anonymous: purpose == "review",
+        title: "Prerequisite #{purpose}", purpose: purpose, dependsOn: deps
+      })
+      SQL.exec("UPDATE chat_mission_tasks SET status='completed',review_outcome='accepted' WHERE id=?", [added.task.id])
+      {[added.task.id], Map.put(stages, purpose, added.task.id)}
+    end)
+
+    for {purpose, prerequisite} <- [{"integration", stages["review"]}, {"verification", stages["integration"]}] do
+      SQL.exec("UPDATE chat_mission_tasks SET purpose=?,depends_on_json=? WHERE id=?", [purpose, Jason.encode!([prerequisite]), parent.id])
+      assert {:ok, child} = Children.add(ctx.user.id, ctx.channel.id, mission.id, %{title: "Child #{purpose}"}, run.id)
+      assert child.task.purpose == purpose
+      assert child.task.dependsOn == [prerequisite]
+      assert Enum.any?(Store.schedulable(mission.id).candidates, &(&1.taskId == child.task.id))
+    end
+  end
+
   test "parallel children join once, resume their parent with artifacts, and gate completion",
        ctx do
     {mission, parent, run} = parent(ctx)

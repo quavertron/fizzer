@@ -25,6 +25,7 @@ defmodule Cascade.Missions.Children do
           title: field(input, :title),
           prompt: to_string(field(input, :prompt) || field(input, :title)),
           purpose: parent.purpose,
+          dependsOn: parent.dependencies,
           briefNoteId: field(input, :briefNoteId),
           briefRevisions: field(input, :briefRevisions, %{}),
           anonymous: true,
@@ -88,10 +89,10 @@ defmodule Cascade.Missions.Children do
 
   defp owner(user, channel, run_id) when is_integer(run_id) do
     with {:ok, route} <- Cascade.Chat.Channel.assert_channel(channel, user),
-         [id, mission, assignee, coordinator, purpose] <-
+         [id, mission, assignee, coordinator, purpose, dependencies] <-
            SQL.one(
              """
-             SELECT t.id,t.mission_id,t.assignee_registration_id,m.coordinator_registration_id,t.purpose
+             SELECT t.id,t.mission_id,t.assignee_registration_id,m.coordinator_registration_id,t.purpose,t.depends_on_json
              FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
              JOIN runs r ON r.id=t.run_id
              WHERE t.run_id=? AND t.status='running' AND r.status IN ('queued','running')
@@ -99,7 +100,7 @@ defmodule Cascade.Missions.Children do
              """,
              [run_id, user, route.sourceChannelId]
            ) do
-      {:ok, %{id: id, mission: mission, assignee: assignee, coordinator: coordinator, purpose: purpose}}
+      {:ok, %{id: id, mission: mission, assignee: assignee, coordinator: coordinator, purpose: purpose, dependencies: Jason.decode!(dependencies || "[]")}}
     else
       _ -> {:error, "A current worker run owned by this channel is required"}
     end
