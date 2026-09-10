@@ -35,7 +35,6 @@ try {
   ];
   const errors = [];
   const writes = [];
-  let approvalCalls = 0;
   let log = 'first hydrated tool output';
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/api/**', async route => {
@@ -47,16 +46,7 @@ try {
     if (method !== 'GET') writes.push({ pathname, method, body: request.postDataJSON() });
     if (pathname === '/api/session') data = { authenticated: true, user, owner: false };
     else if (pathname === '/api/vaults') data = { vaults: [{ id: 'v0', name: 'Fixture', role: 'owner' }] };
-    else if (pathname.endsWith('/missions/m1/approve')) {
-      approvalCalls++;
-      if (approvalCalls === 1) {
-        notes[0].revision = 'r2'; notes[0].content += '\nCollaborator update'; mission.notes[0].revision = 'r2';
-        status = 409; data = { error: 'Mission changed' };
-      } else {
-        assert.equal(request.postDataJSON().expectedRevisions.brief, 'r2');
-        mission.phase = 'executing'; data = { mission };
-      }
-    } else if (pathname.endsWith('/missions/m1/finish')) {
+    else if (pathname.endsWith('/missions/m1/finish')) {
       assert.equal(request.postDataJSON().status, 'canceled');
       mission.phase = 'closed'; mission.status = 'canceled'; tasks.forEach(task => { task.status = 'canceled'; });
       data = { mission };
@@ -90,7 +80,8 @@ try {
   await sidebarMissions.locator('summary').click();
   await liveRow.click();
   const workspace = page.getByRole('region', { name: 'Mission workspace: Mission fixture', exact: true });
-  await workspace.getByRole('button', { name: 'Approve mission', exact: true }).waitFor();
+  await workspace.waitFor();
+  assert.equal(await workspace.getByRole('button', { name: 'Approve mission', exact: true }).count(), 0);
   await workspace.locator('.mission-live-summary').click();
   assert.equal(await workspace.locator('.mission-milestone-summary').getAttribute('aria-expanded'), 'true');
   assert.equal(await workspace.locator('.mission-feature-summary').getAttribute('aria-expanded'), 'true');
@@ -111,10 +102,8 @@ try {
   await workspace.getByRole('button', { name: /Unlinked research/ }).click();
   await workspace.getByRole('region', { name: 'Worker trace for researcher', exact: true }).getByText('Research findings', { exact: true }).waitFor();
   await workspace.getByRole('button', { name: 'Brief', exact: true }).click();
-  await workspace.getByRole('button', { name: 'Approve mission', exact: true }).click();
-  await workspace.getByRole('button', { name: 'Mark updated note reviewed', exact: true }).click();
-  await workspace.getByRole('button', { name: 'Approve mission', exact: true }).click();
-  await workspace.locator('.mission-phase').filter({ hasText: 'executing' }).waitFor();
+  assert.equal(await workspace.getByRole('button', { name: 'Mark updated note reviewed', exact: true }).count(), 0);
+  assert.equal(writes.filter(write => write.pathname.endsWith('/approve')).length, 0);
   const editor = workspace.locator('.mission-brief-view .cm-content');
   await editor.focus();
   await page.keyboard.press('Control+End');
@@ -129,7 +118,7 @@ try {
   await workspace.locator('.mission-phase').filter({ hasText: 'closed' }).waitFor();
   assert.equal(writes.filter(write => write.pathname.endsWith('/finish')).length, 1);
   assert.deepEqual(errors, []);
-  console.log('PASS mission UI: nested navigation, inline exact-run traces, refresh, fullscreen/Escape, unlinked tasks, approval conflict recovery, and Stop');
+  console.log('PASS mission UI: nested navigation, inline exact-run traces, refresh, fullscreen/Escape, unlinked tasks, no redundant human approval, and Stop');
 } finally {
   await browser?.close();
   preview.kill('SIGTERM');

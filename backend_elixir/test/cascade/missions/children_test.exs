@@ -80,6 +80,19 @@ defmodule Cascade.Missions.ChildrenTest do
     }
   end
 
+  test "research children retain the server-owned parent purpose", ctx do
+    {mission, parent, run} = parent(ctx)
+    SQL.exec("UPDATE chat_mission_tasks SET purpose='research' WHERE id=?", [parent.id])
+    SQL.exec("UPDATE chat_missions SET phase='planning',approved_at=NULL WHERE id=?", [mission.id])
+
+    for input <- [%{title: "Omitted purpose"}, %{title: "Attempted escalation", purpose: "implementation"}] do
+      assert {:ok, child} = Children.add(ctx.user.id, ctx.channel.id, mission.id, input, run.id)
+      assert child.task.purpose == "research"
+      assert child.update.mission.phase == "planning"
+      assert child.update.mission.approvedAt == nil
+    end
+  end
+
   test "parallel children join once, resume their parent with artifacts, and gate completion",
        ctx do
     {mission, parent, run} = parent(ctx)

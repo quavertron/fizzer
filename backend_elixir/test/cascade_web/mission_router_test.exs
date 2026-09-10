@@ -348,7 +348,7 @@ defmodule CascadeWeb.MissionRouterTest do
              expectedRevisions: expected_revisions
            }).status == 403
   end
-  test "channel task lifecycle enforces research, approval, and implementation phases", ctx do
+  test "channel task lifecycle executes authorized work without manual approval", ctx do
     base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
 
     {:ok, created} =
@@ -418,15 +418,6 @@ defmodule CascadeWeb.MissionRouterTest do
     assert completed_research.status == 200
     assert json(completed_research)["mission"]["phase"] == "planning"
 
-    approved =
-      request(ctx, :post, "/api/vaults/#{ctx.vault.id}/missions/#{mission_id}/approve", %{
-        expectedRevisions: %{brief.id => Privacy.note_revision(brief)}
-      })
-
-    assert approved.status == 200
-    assert json(approved)["mission"]["phase"] == "executing"
-    assert is_binary(json(approved)["mission"]["approvedAt"])
-
     implementation =
       request(ctx, :post, base <> "/missions/#{mission_id}/tasks", %{
         coordinatorRegistrationId: ctx.coordinator.id,
@@ -457,7 +448,9 @@ defmodule CascadeWeb.MissionRouterTest do
     assert history.status == 200
     kinds = Enum.map(json(history)["events"], & &1["kind"])
     assert Enum.count(kinds, &(&1 == "task_added")) == 2
-    assert "mission_approved" in kinds
+    refute "mission_approved" in kinds
+    assert implementation_body["mission"]["phase"] == "executing"
+    assert implementation_body["mission"]["approvedAt"] == nil
     assert "task_status_changed" in kinds
 
     blocked_finish =

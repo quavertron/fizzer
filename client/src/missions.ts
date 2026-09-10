@@ -117,18 +117,6 @@ export async function createMissionNote(
   return result.mission;
 }
 
-export async function approveMission(
-  vaultId: string,
-  missionId: string,
-  expectedRevisions: Record<string, string>,
-): Promise<MissionRecord> {
-  const result = await api<{ mission: MissionRecord }>(
-    `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionId)}/approve`,
-    { method: 'POST', body: JSON.stringify({ expectedRevisions }) },
-  );
-  return result.mission;
-}
-
 export async function stopMission(
   vaultId: string,
   channelId: string,

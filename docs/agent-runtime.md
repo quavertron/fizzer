@@ -89,8 +89,8 @@ membership setting, not a separate project-management surface:
 - an explicit `@specialist` mention takes the direct zero-hop path instead;
 - the coordinator answers tiny Q&A and one-liner fixes itself;
 - for non-trivial work it creates a **mission** with a linked brief. Mission
-  planning starts with research; after the human approves the brief, the
-  coordinator explicitly assigns implementation, independent review, fixes,
+  planning includes research as needed; within the explicit user request or accepted
+  scope, the coordinator assigns implementation, independent agent review, fixes,
   integration, and verification tasks;
 - every assignment names a registered agent and declares its purpose:
   `research|implementation|review|fix|integration|verification`. The
@@ -119,7 +119,13 @@ cascade-chat mission history --mission <id>
 cascade-chat mission finish --mission <id> --summary "Delivered" --verification "Observed checks and artifact/live revision evidence"
 ```
 
-Mission approval is a human action against the current note revisions:
+Already authorized work needs no separate manual brief approval or repeated human
+review. Agents maintain the brief and own independent review and verification.
+Ask only when authority is missing or scope materially changes; preserve Stop.
+Historical missions with unresolved resumption decisions remain fenced.
+
+The optional human approval endpoint remains available for explicit decisions
+against current note revisions, including historical resumption:
 
 ```text
 cascade-chat mission approve --mission <id> --expected-revisions '{"<note-id>":1}'
@@ -166,8 +172,10 @@ is not proof execution stopped. Stop or withdrawn authority must not be undone
 by a retry. Use `mission diagnose --task <id>` and mission history to inspect
 current evidence before choosing recovery.
 
-Mission phase is `planning` until the human approves the linked brief, then
-`executing`; it is `closed` only after accepted review, completed integration,
+Mission phase starts as `planning` and becomes `executing` when the coordinator
+assigns work beyond research. Research can continue in either phase. Phase and
+approval metadata never grant user authority. The mission is `closed` only after
+accepted review, completed integration,
 and passed verification. A completed provider run never implies review
 acceptance or verification success. Failed or changes-requested work must
 follow the explicit fix/review path before downstream integration.

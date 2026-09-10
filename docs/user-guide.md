@@ -351,6 +351,8 @@ Enable coordination when the channel benefits from a single dispatcher—for exa
 
 A **mission** is a durable task record projected into the chat transcript. It is useful when a request has multiple steps, may take a long time, needs delegation, or requires review after workers finish.
 
+Once you authorize work in chat, the coordinator can proceed within that scope without another manual mission approval. Agents maintain the brief, independently review the work, and verify delivery. Material scope changes still need your decision, and Stop remains authoritative.
+
 Typical mission states are:
 
 - active while tasks are pending or running;

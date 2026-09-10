@@ -306,7 +306,6 @@ defmodule Cascade.Missions.DeliveryContractTest do
     {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id, Ecto.UUID.generate(), "Migrated plan")
     id = created.mission.id
     state = %{"questions" => [%{"id" => "migration-resumption", "question" => "Resume, revise, or close?", "status" => "open"}], "commitments" => [%{"id" => "old", "status" => "open", "summary" => "Retain responsibility"}]}
-    SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(state), id])
     {:ok, added} = Store.add_task(ctx.user_id, created.channelId, id, %{
       coordinatorRegistrationId: created.mission.coordinatorRegistrationId,
       assignee: created.mission.coordinatorRegistrationId,
@@ -314,6 +313,19 @@ defmodule Cascade.Missions.DeliveryContractTest do
       title: "Wait for migration decision",
       anonymous: true
     })
+    SQL.exec("UPDATE chat_mission_interpretations SET state_json=? WHERE mission_id=?", [Jason.encode!(state), id])
+    before_state = SQL.one("SELECT phase,status FROM chat_missions WHERE id=?", [id])
+    for purpose <- ~w(research implementation) do
+      assert {:error, "Historical mission requires an explicit resumption decision"} =
+        Store.add_task(ctx.user_id, created.channelId, id, %{
+          coordinatorRegistrationId: created.mission.coordinatorRegistrationId,
+          assignee: created.mission.coordinatorRegistrationId,
+          purpose: purpose, title: "Fenced #{purpose}", anonymous: true
+        })
+    end
+    assert SQL.one("SELECT phase,status FROM chat_missions WHERE id=?", [id]) == before_state
+    assert [1] == SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [id])
+    assert [nil] == SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [added.task.id])
     refute Enum.any?(Store.schedulable(id).candidates, &(&1.taskId == added.task.id))
     assert Cascade.Missions.Interpretation.migration_decision_pending?(id)
     assert {:ok, _} = Store.approve_workspace(ctx.user_id, ctx.vault.id, id, Map.new(created.mission.notes, &{&1.noteId, &1.revision}))
@@ -373,7 +385,7 @@ defmodule Cascade.Missions.DeliveryContractTest do
 
     assert [dispatch] = SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [research.task.id])
     assert is_binary(dispatch)
-    assert {:error, "Research tasks must be scheduled during planning"} =
+    assert {:ok, _} =
       add_task(ctx, created.channelId, created.mission.id, coordinator,
         "New research after approval", "research", coordinator, anonymous: true)
   end

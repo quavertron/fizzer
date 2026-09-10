@@ -15,7 +15,6 @@ import { mergeRemoteChatMessage } from '../chat/runBlocks';
 import { useChannelMessages } from '../chat/messageStore';
 import { NoteEditor } from './NoteEditor';
 import {
-  approveMission,
   createMissionNote,
   fetchMission,
   fetchMissionHistory,
@@ -143,7 +142,6 @@ function isMissionNote(value: unknown): value is MissionNote {
 export function MissionWorkspace({
   vaultId,
   missionId,
-  currentUser,
   onOpenNote,
   renderChat,
   onMissionChanged,
@@ -175,7 +173,6 @@ export function MissionWorkspace({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [saving, setSaving] = useState<Set<string>>(() => new Set());
   const [creating, setCreating] = useState(false);
-  const [approving, setApproving] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -185,8 +182,6 @@ export function MissionWorkspace({
   const dirtyRef = useRef<Set<string>>(new Set());
   const draftsRef = useRef<Record<string, string>>({});
   const draftBaseRef = useRef<Record<string, string>>({});
-  const reviewedRevisionsRef = useRef<Record<string, string>>({});
-  const initialLoadRef = useRef(true);
   const refreshTokenRef = useRef(refreshToken);
   const traceRequestRef = useRef<Record<string, number>>({});
   const historyRequestRef = useRef(0);
@@ -239,23 +234,6 @@ export function MissionWorkspace({
       setNotes(nextNotes);
       setNoteErrors(nextNoteErrors);
       setDrafts(nextDrafts);
-      // The first complete load is what the user reviewed. Later socket/
-      // reconnect refreshes may update the incoming view, but keep the
-      // previously reviewed revision so approval detects unseen changes.
-      if (initialLoadRef.current) {
-        reviewedRevisionsRef.current = Object.fromEntries(
-          loaded.notes.flatMap((ref) => nextNotes[ref.noteId]?.revision
-            ? [[ref.noteId, nextNotes[ref.noteId].revision!]]
-            : []),
-        );
-        initialLoadRef.current = false;
-      } else {
-        loaded.notes.forEach((ref) => {
-          if (!(ref.noteId in reviewedRevisionsRef.current) && nextNotes[ref.noteId]?.revision) {
-            reviewedRevisionsRef.current[ref.noteId] = nextNotes[ref.noteId].revision!;
-          }
-        });
-      }
       setHistory(null);
     } catch (cause) {
       if (sequence !== loadSequence.current) return;
@@ -272,8 +250,6 @@ export function MissionWorkspace({
     dirtyRef.current = new Set();
     draftsRef.current = {};
     draftBaseRef.current = {};
-    reviewedRevisionsRef.current = {};
-    initialLoadRef.current = true;
     saveSequence.current = {};
     traceRequestRef.current = {};
     historyRequestRef.current += 1;
@@ -338,7 +314,6 @@ export function MissionWorkspace({
     return grouped;
   }, [noteRefs]);
 
-  const dirtyNoteIds = [...dirtyRef.current];
   const tasks = mission?.tasks ?? [];
   const standaloneTasks = tasks.filter((task) => !noteRefs.some((note) => note.noteId === task.briefNoteId && note.kind !== 'mission'));
   const activeTasks = tasks.filter((task) => task.status === 'running').length;
@@ -392,7 +367,6 @@ export function MissionWorkspace({
       setDrafts((previous) => ({ ...previous, [noteId]: next.draft }));
       if (next.dirty) dirtyRef.current.add(noteId);
       else dirtyRef.current.delete(noteId);
-      if (saved.revision) reviewedRevisionsRef.current[noteId] = saved.revision;
       setConflicts((previous) => {
         const nextConflicts = { ...previous };
         delete nextConflicts[noteId];
@@ -434,44 +408,6 @@ export function MissionWorkspace({
       }
     }
   }, [mission, notes, onMissionChanged]);
-
-  const saveAllDirty = useCallback(async () => {
-    for (const noteId of [...dirtyRef.current]) {
-      if (!(await saveNote(noteId))) return false;
-    }
-    return true;
-  }, [saveNote]);
-
-  const handleApprove = useCallback(async () => {
-    if (!mission || mission.phase !== 'planning' || approving) return;
-    setApproving(true);
-    setError('');
-    try {
-      if (!(await saveAllDirty())) return;
-      // Approval must use the revisions rendered to this reviewer. A refresh
-      // deliberately leaves existing entries untouched until the user reviews
-      // the changed note, so the server can reject unseen collaborator edits.
-      const expectedRevisions = Object.fromEntries(
-        mission.notes.map((note) => [note.noteId, reviewedRevisionsRef.current[note.noteId] ?? note.revision]),
-      );
-      const approved = await approveMission(vaultId, mission.id, expectedRevisions);
-      setMission(approved);
-      approved.notes.forEach((note) => {
-        reviewedRevisionsRef.current[note.noteId] = note.revision;
-      });
-      setNotice(`Approved by ${currentUser.displayName || currentUser.username}`);
-      onMissionChanged?.();
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 409) {
-        setError('Mission changed since you reviewed it. Review the updated notes before approving.');
-        void loadMission(true);
-      } else {
-        setError(cause instanceof Error ? cause.message : 'Could not approve mission');
-      }
-    } finally {
-      setApproving(false);
-    }
-  }, [approving, currentUser.displayName, currentUser.username, loadMission, mission, onMissionChanged, saveAllDirty, vaultId]);
 
   const handleCreateNote = useCallback(async () => {
     if (!createNote || !mission || !createNote.title.trim() || creating) return;
@@ -711,15 +647,6 @@ export function MissionWorkspace({
           {!saving.has(reference.noteId) && dirtyRef.current.has(reference.noteId) && (
             <button type="button" className="mission-save-button" onClick={() => void saveNote(reference.noteId)}><Save size={13} /> Save</button>
           )}
-          {mission?.phase === 'planning' && !dirtyRef.current.has(reference.noteId)
-            && note.revision !== reviewedRevisionsRef.current[reference.noteId] && (
-            <button type="button" className="mission-save-button" onClick={() => {
-              if (note.revision) reviewedRevisionsRef.current[reference.noteId] = note.revision;
-              setNotes((previous) => ({ ...previous }));
-              setNotice('Updated note marked reviewed.');
-              setError('');
-            }}>Mark updated note reviewed</button>
-          )}
           <button type="button" className="mission-open-note" onClick={() => onOpenNote(reference.noteId)}>Open note</button>
         </div>
         {conflict && (
@@ -733,7 +660,6 @@ export function MissionWorkspace({
               draftsRef.current = { ...draftsRef.current, [reference.noteId]: server.content };
               if (server.revision) {
                 draftBaseRef.current = { ...draftBaseRef.current, [reference.noteId]: server.revision };
-                reviewedRevisionsRef.current[reference.noteId] = server.revision;
               }
               setNotes((previous) => ({ ...previous, [reference.noteId]: server }));
               setDrafts((previous) => ({ ...previous, [reference.noteId]: server.content }));
@@ -805,9 +731,6 @@ export function MissionWorkspace({
           {view === 'brief' && (
             <section className="mission-view mission-brief-view" aria-label="Mission brief">
               {briefRef ? renderNote(briefRef) : <div className="mission-empty">This mission has no brief note.</div>}
-              {mission.phase === 'planning' && (
-                <div className="mission-approval-bar"><div><strong>Planning revision ready?</strong><span>Approve this plan to let workers begin implementation.</span></div><button type="button" disabled={approving || dirtyNoteIds.length > 0 || !briefRef} onClick={() => void handleApprove()}>{approving ? 'Approving…' : 'Approve mission'}</button>{dirtyNoteIds.length > 0 && <small>Save your drafts before approving.</small>}</div>
-              )}
             </section>
           )}
           {view === 'work' && (

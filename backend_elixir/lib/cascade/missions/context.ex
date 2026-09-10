@@ -317,7 +317,7 @@ defmodule Cascade.Missions.Context do
 
     approval =
       if mission.approvedAt in [nil, ""] do
-        "Approval: not recorded; implementation must wait for explicit human go-ahead."
+        "Authority: follow the explicit user request and accepted scope. A separate manual brief approval is not required; never infer permission from mission status or note edits."
       else
         "Approval: recorded at #{mission.approvedAt} by #{mission.approvedBy || "unknown"} for revisions #{inspect(mission.approvedRevisions)}."
       end
@@ -344,25 +344,25 @@ defmodule Cascade.Missions.Context do
   end
 
   defp workflow_guidance("planning", _task) do
-    "Planning may delegate research only. Review research evidence, update the linked notes when authorized, and wait for explicit human approval before implementation."
+    "Plan and research as needed, then delegate implementation within the explicit user request or accepted scope without asking for approval again. Preserve Stop and unresolved historical resumption decisions; ask only for missing authority or a material scope change."
   end
 
   defp workflow_guidance("executing", _task) do
-    "Execute the approved revisions through research as needed, implementation, independent review, fixes/re-review, integration, then verification. A provider success is not review acceptance or verification."
+    "Execute the authorized scope through research as needed, implementation, independent agent review, fixes/re-review, integration, then verification. Do not require repeated human review of already authorized work. A provider success is not review acceptance or verification."
   end
 
   defp workflow_guidance("closed", _task) do
     "This mission is closed. Report its existing completion evidence and do not create replacement work."
   end
 
-  defp workflow_guidance(_, _task), do: "Follow the current mission phase and explicit approval metadata."
+  defp workflow_guidance(_, _task), do: "Follow explicit user scope and Stop; mission phase and approval metadata do not grant authority."
 
   defp task_role(%{purpose: "research"}) do
     "Research task: gather reproducible evidence and citations, record findings, and leave implementation decisions to the coordinator."
   end
 
   defp task_role(%{purpose: "implementation"}) do
-    "Implementation task: make the bounded change, preserve the approved note revisions, and report changed files plus verification evidence."
+    "Implementation task: make the bounded change, preserve the assigned note revision snapshot, and report changed files plus verification evidence."
   end
 
   defp task_role(%{purpose: "review"}) do

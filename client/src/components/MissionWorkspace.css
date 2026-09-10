@@ -72,7 +72,7 @@
 .mission-note-actions { display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 5px 10px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font: 500 .61rem var(--font-mono); }
 .mission-dirty { color: var(--warning); }
 .mission-muted { color: var(--text-tertiary); }
-.mission-save-button, .mission-open-note, .mission-approval-bar button, .mission-view-heading > button, .mission-feature-heading button, .mission-create-form button, .mission-conflict button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--bg-raised); color: var(--text-secondary); padding: 5px 8px; font-size: .65rem; }
+.mission-save-button, .mission-open-note, .mission-view-heading > button, .mission-feature-heading button, .mission-create-form button, .mission-conflict button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--bg-raised); color: var(--text-secondary); padding: 5px 8px; font-size: .65rem; }
 .mission-save-button:hover, .mission-open-note:hover, .mission-view-heading > button:hover, .mission-feature-heading button:hover { border-color: var(--accent); color: var(--accent-hover); }
 .mission-open-note { margin-left: auto; }
 .mission-conflict { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-top: 1px solid var(--danger); background: var(--danger-subtle); color: var(--danger); font-size: .7rem; }
@@ -85,12 +85,6 @@
 .mission-worker-completed { color: var(--success); }
 .mission-worker-failed, .mission-worker-blocked { color: var(--danger); }
 
-.mission-approval-bar { display: flex; align-items: center; gap: 15px; max-width: 980px; margin: 18px auto 0; padding: 12px 14px; border: 1px solid var(--border-active); background: var(--accent-subtle); }
-.mission-approval-bar > div { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-.mission-approval-bar strong { font-size: .75rem; }
-.mission-approval-bar span, .mission-approval-bar small { color: var(--text-secondary); font-size: .65rem; }
-.mission-approval-bar button { border-color: var(--accent); background: var(--accent); color: #17120a; font-weight: 700; }
-.mission-approval-bar button:disabled { cursor: not-allowed; opacity: .45; }
 
 .mission-work-view, .mission-history-view { max-width: 1060px; margin: 0 auto; }
 .mission-view-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 15px; margin: 0 auto 14px; max-width: 980px; }
@@ -161,7 +155,6 @@
   .mission-live-summary { order: 3; width: 100%; justify-content: center; margin-left: 0; }
   .mission-view { padding: 14px 10px 100px; }
   .mission-history-event { grid-template-columns: 1fr; gap: 4px; }
-  .mission-approval-bar { align-items: stretch; flex-direction: column; gap: 8px; }
   .mission-trace-body article { grid-template-columns: 1fr; gap: 3px; }
 }
 .cm-worker-mention {

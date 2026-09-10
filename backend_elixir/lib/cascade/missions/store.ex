@@ -550,6 +550,15 @@ defmodule Cascade.Missions.Store do
 
       result =
         SQL.transaction(fn ->
+          # Recheck under the write lock: Stop or a historical fence may have
+          # arrived while this delegation was waiting to commit.
+          current = mission_row(mission.id)
+          if current.status in ~w(completed canceled) or current.phase == "closed",
+            do: raise(ArgumentError, "Mission is already closed")
+
+          if Cascade.Missions.Interpretation.migration_decision_pending?(mission.id),
+            do: raise(ArgumentError, "Historical mission requires an explicit resumption decision")
+
           existing =
             SQL.one(
               """
@@ -612,8 +621,8 @@ defmodule Cascade.Missions.Store do
                 )
 
                 SQL.exec(
-                  "UPDATE chat_missions SET status='active',wake_sent=0,updated_at=datetime('now') WHERE id=?",
-                  [mission.id]
+                  "UPDATE chat_missions SET status='active',phase=CASE WHEN ?='research' THEN phase ELSE 'executing' END,wake_sent=0,updated_at=datetime('now') WHERE id=?",
+                  [purpose, mission.id]
                 )
 
                 if mission.status != "active" do
@@ -2262,10 +2271,7 @@ defmodule Cascade.Missions.Store do
 
   defp ensure_mission_open(_status), do: :ok
 
-  defp validate_task_purpose(%{phase: "planning"}, "research"), do: :ok
-  defp validate_task_purpose(%{phase: "planning"}, _), do: {:error, "Planning missions may schedule research tasks only"}
-  defp validate_task_purpose(%{phase: "executing"}, "research"), do: {:error, "Research tasks must be scheduled during planning"}
-  defp validate_task_purpose(%{phase: "executing"}, _), do: :ok
+  defp validate_task_purpose(%{phase: phase}, _) when phase in ~w(planning executing), do: :ok
   defp validate_task_purpose(%{phase: "closed"}, _), do: {:error, "Mission is already closed"}
   defp validate_task_purpose(_, _), do: {:error, "Mission phase is invalid"}
 
@@ -2419,10 +2425,6 @@ defmodule Cascade.Missions.Store do
       _ -> []
     end
   end
-  defp task_schedulable?(%{phase: "planning"}, %{purpose: purpose}, _by_id)
-       when purpose != "research",
-       do: false
-
   defp task_schedulable?(mission, task, by_id) do
     dependencies = dependencies(task)
 

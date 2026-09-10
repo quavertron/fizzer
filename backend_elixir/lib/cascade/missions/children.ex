@@ -24,7 +24,7 @@ defmodule Cascade.Missions.Children do
           assignee: parent.assignee,
           title: field(input, :title),
           prompt: to_string(field(input, :prompt) || field(input, :title)),
-          purpose: field(input, :purpose, "implementation"),
+          purpose: parent.purpose,
           briefNoteId: field(input, :briefNoteId),
           briefRevisions: field(input, :briefRevisions, %{}),
           anonymous: true,
@@ -88,10 +88,10 @@ defmodule Cascade.Missions.Children do
 
   defp owner(user, channel, run_id) when is_integer(run_id) do
     with {:ok, route} <- Cascade.Chat.Channel.assert_channel(channel, user),
-         [id, mission, assignee, coordinator] <-
+         [id, mission, assignee, coordinator, purpose] <-
            SQL.one(
              """
-             SELECT t.id,t.mission_id,t.assignee_registration_id,m.coordinator_registration_id
+             SELECT t.id,t.mission_id,t.assignee_registration_id,m.coordinator_registration_id,t.purpose
              FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
              JOIN runs r ON r.id=t.run_id
              WHERE t.run_id=? AND t.status='running' AND r.status IN ('queued','running')
@@ -99,7 +99,7 @@ defmodule Cascade.Missions.Children do
              """,
              [run_id, user, route.sourceChannelId]
            ) do
-      {:ok, %{id: id, mission: mission, assignee: assignee, coordinator: coordinator}}
+      {:ok, %{id: id, mission: mission, assignee: assignee, coordinator: coordinator, purpose: purpose}}
     else
       _ -> {:error, "A current worker run owned by this channel is required"}
     end
@@ -110,7 +110,7 @@ defmodule Cascade.Missions.Children do
   def guidance(id) do
     case SQL.one("SELECT parent_task_id,purpose FROM chat_mission_tasks WHERE id=?", [id]) do
       [nil, purpose] ->
-        "You are the root worker for this mission task (purpose=#{purpose || "implementation"}). The mission orchestrator owns phase changes, approval, independent review, integration and verification. Deliver your assigned artifacts and evidence; if you delegate bounded child work, integrate those child results in this workspace before reporting completion. Use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` for up to eight direct children, then `cascade-chat mission join` and continue after their results arrive."
+        "You are the root worker for this mission task (purpose=#{purpose || "implementation"}). The mission orchestrator owns scope, independent review, integration and verification. Deliver your assigned artifacts and evidence; if you delegate bounded child work, integrate those child results in this workspace before reporting completion. Use `cascade-chat mission child --task \"Title\" --message \"Bounded piece\"` for up to eight direct children, then `cascade-chat mission join` and continue after their results arrive."
 
       [_parent, purpose] ->
         "You are a bounded child worker for purpose=#{purpose || "implementation"}. Return artifacts and verification evidence to your parent. The parent integrates your result; the mission orchestrator owns lifecycle decisions, review disposition, integration and verification."
