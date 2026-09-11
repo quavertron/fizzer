@@ -15,7 +15,7 @@ defmodule CascadeWeb.Authorization do
     {~w(GET POST), ~r<^/api/vaults/[^/]+/scratchpad(?:/[^/]+)*(?:/close)?$>},
     {~w(GET POST PATCH), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages(?:/[^/]+)?$>},
     {~w(POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages/[^/]+/collaborate$>},
-    {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents$>},
+    {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents(?:/[^/]+)?$>},
     {~w(GET POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/continuation$>},
     {~w(GET PUT), ~r<^/api/vaults/[^/]+/vault-agents$>},
     {~w(GET DELETE), ~r<^/api/vaults/[^/]+/vault-agents/[^/]+$>},

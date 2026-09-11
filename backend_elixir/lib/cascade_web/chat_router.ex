@@ -452,6 +452,25 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  # Exact registration, or the named /agents/resolve?vaultAgentId=...&hermesProfile=...
+  # query. Both require existing owner-bound membership and never materialize it.
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+
+      case Cascade.Chat.RegistrationLookup.get(
+             user.id,
+             vault_id,
+             channel_id,
+             registration_id,
+             conn.query_params
+           ) do
+        {:ok, registration} -> JSON.send(conn, 200, %{registration: registration})
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
   get "/api/vaults/:vault_id/channels/:channel_id/agents" do
     authenticated(conn, :any, nil, fn conn, user ->
       respond(conn, Agents.ensure_vault_wide(user.id, vault_id, channel_id), :agents)
