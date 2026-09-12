@@ -543,14 +543,21 @@ defmodule Cascade.Realtime.Session do
   end
 
   defp apply_action(
-         {:refresh_chat_presence, source_vault_id, source_channel_id},
+         {:domain, action},
          _namespace,
          _ack_id,
          _identity,
          state
        ) do
-    Cascade.Realtime.Events.emit_presence(source_vault_id, source_channel_id)
-    {:ok, state}
+    case state.domain.handle_action(action) do
+      :ok -> {:ok, state}
+      {:error, _} = error -> error
+      _ -> {:error, "Invalid realtime domain action result"}
+    end
+  rescue
+    _ -> {:error, "Realtime domain action failed"}
+  catch
+    _, _ -> {:error, "Realtime domain action failed"}
   end
 
   defp apply_action({:ack, data}, namespace, ack_id, _identity, state) when is_integer(ack_id),

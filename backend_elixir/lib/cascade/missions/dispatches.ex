@@ -29,29 +29,7 @@ defmodule Cascade.Missions.Dispatches do
     end
   end
 
-  def retract_pending_reply(dispatch_id) do
-    SQL.transaction(fn ->
-      reply_id = "agent-dispatch-#{dispatch_id}"
-
-      with nil <- Cascade.Runs.Store.find_by_chat_dispatch(dispatch_id),
-           [vault_id, channel_id] <-
-             SQL.one(
-               "SELECT vault_id,channel_id FROM chat_messages WHERE id=? AND run_id IS NULL",
-               [reply_id]
-             ) do
-        SQL.exec("DELETE FROM chat_messages WHERE id=?", [reply_id])
-
-        Events.emit(%{
-          event: "vault:chatMessageDeleted",
-          vaultId: vault_id,
-          channelId: channel_id,
-          messageId: reply_id
-        })
-      else
-        _ -> :ok
-      end
-    end)
-  end
+  defdelegate retract_pending_reply(dispatch_id), to: Cascade.Chat.PendingReply, as: :retract
 
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
@@ -88,7 +66,7 @@ defmodule Cascade.Missions.Dispatches do
         )
       end)
 
-      Cascade.Missions.DispatchReannouncer.wake()
+      Cascade.Missions.WorkAvailable.notify()
 
       case SQL.one(
              "SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?",

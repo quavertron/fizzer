@@ -10,7 +10,7 @@ defmodule Cascade.Realtime.Events do
 
   @behaviour Cascade.Chat.Events
 
-  alias Cascade.Accounts.{CommunityActivity, SQL}
+  alias Cascade.Accounts.SQL
   alias Cascade.Chat.Channel
   alias Cascade.Realtime.{Hub, PresenceDispatcher}
 
@@ -38,11 +38,6 @@ defmodule Cascade.Realtime.Events do
 
   @doc "Options to mount on CascadeWeb.ContentRouter."
   def content_options, do: [events: __MODULE__]
-
-  @doc "Installs the storage-level note activity sink used by folder and tag mutations."
-  def install_note_mutation_sink do
-    Application.put_env(:cascade_elixir, :note_mutation_sink, &note_mutation/3)
-  end
 
   @impl true
   def emit(intent) when is_map(intent) do
@@ -194,21 +189,6 @@ defmodule Cascade.Realtime.Events do
   end
 
   def channel_created(_payload), do: :ok
-
-  def note_mutation(note_id, actor_user_id, _kind)
-      when is_binary(note_id) and is_integer(actor_user_id) do
-    CommunityActivity.record_note_change(note_id, actor_user_id)
-    Cascade.WikiMaintenance.note_changed(note_id)
-
-    case SQL.one("SELECT vault_id FROM notes WHERE id=?", [note_id]) do
-      [vault_id] -> community_changed_for_vault(vault_id)
-      _ -> :ok
-    end
-  rescue
-    _ -> :ok
-  end
-
-  def note_mutation(_note_id, _actor_user_id, _kind), do: :ok
 
   def vault_event(vault_id, event, payload)
       when is_binary(vault_id) and is_binary(event) and is_map(payload) do

@@ -2,8 +2,6 @@ defmodule Cascade.Runs.RunnerLifecycle do
   @moduledoc "Durable desktop-runner presence, reclaim, delegation, and ACK lifecycle."
   use GenServer
 
-  @behaviour Cascade.Realtime.RunnerCallbacks
-
   alias Cascade.Realtime.Hub
   alias Cascade.Runs.Store
 
@@ -140,14 +138,6 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   def accept_event?(run_id, owner_id), do: Store.delegated_owner(run_id) == owner_id
 
-  @impl true
-  # DomainAdapter owns registration because its reclaimed IDs are part of the
-  # runner:registered response. Hub owns transport replacement and invokes this
-  # callback only after that domain action has already committed.
-  def registered(_owner_id, _sid, _metadata, _previous),
-    do: Cascade.Missions.DispatchReannouncer.wake()
-
-  @impl true
   def disconnected(owner_id, sid, _metadata, reason) do
     if Process.whereis(__MODULE__),
       do: GenServer.cast(__MODULE__, {:disconnected, owner_id, sid, reason}),

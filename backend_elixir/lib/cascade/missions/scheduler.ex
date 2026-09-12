@@ -6,6 +6,76 @@ defmodule Cascade.Missions.Scheduler do
   alias Cascade.Missions.{Dispatches, Store}
   alias Cascade.Realtime.OrderedPublisher
 
+  # The scheduler holds the publisher lock and database transaction.
+  defp reconcile(mission_id) do
+    filter = if mission_id, do: " AND m.id=?", else: ""
+
+    SQL.all(
+      """
+      SELECT t.dispatch_id,r.id,r.status,COALESCE(r.summary,'')
+      FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
+      JOIN chat_agent_dispatches d ON d.id=t.dispatch_id
+      JOIN runs r ON r.chat_dispatch_id=d.id AND r.id=COALESCE(t.run_id,d.run_id)
+      WHERE m.status NOT IN ('completed','canceled') AND t.status IN ('pending','running')
+        AND r.status IN ('completed','failed','canceled') #{filter}
+      """,
+      if(mission_id, do: [mission_id], else: [])
+    )
+    |> Enum.each(fn [dispatch_id, run_id, status, summary] ->
+      {:ok, _} = Store.attach_run(dispatch_id, run_id)
+      {:ok, _} = Store.settle_run(run_id, status, summary)
+    end)
+  end
+
+  # Retry provider cancellation after crashes/disconnects, outside SQL locks.
+  def replay_cancellations(cancel \\ &cancel_run/2, mission_id \\ nil) do
+    filter = if mission_id, do: " AND m.id=?", else: ""
+    params = if mission_id, do: [mission_id], else: []
+
+    worker_rows = """
+    SELECT r.id AS run_id,m.created_by AS owner_user_id
+    FROM chat_mission_tasks t
+    JOIN chat_missions m ON m.id=t.mission_id
+    JOIN runs r ON r.id=t.run_id
+    WHERE t.status='canceled' AND r.status IN ('queued','running') #{filter}
+    """
+
+    rows =
+      if SQL.table_exists?("chat_mission_cancellation_replays") do
+        SQL.all(
+          """
+          SELECT run_id,MAX(owner_user_id)
+          FROM (
+            #{worker_rows}
+            UNION ALL
+            SELECT r.id,COALESCE(c.owner_user_id,r.owner_user_id,m.created_by)
+            FROM chat_mission_cancellation_replays c
+            JOIN chat_missions m ON m.id=c.mission_id
+            JOIN runs r ON r.id=c.run_id
+            WHERE r.status IN ('queued','running') #{filter}
+          )
+          GROUP BY run_id
+          """,
+          params ++ params
+        )
+      else
+        SQL.all(worker_rows, params)
+      end
+
+    Enum.each(rows, fn [run, user] ->
+      if cancel.(user, run) do
+        Cascade.Runs.Store.finish(run, "canceled", "Mission task canceled.")
+
+        Cascade.Runs.Store.publish(run, "status", %{
+          status: "canceled",
+          summary: "Mission task canceled."
+        })
+      end
+    end)
+  end
+
+  defp cancel_run(user, run), do: Cascade.Runs.RunnerLifecycle.cancel(user, run, 2_000)
+
   @doc "One maintenance selection for periodic and explicit recovery sweeps."
   def maintenance_missions do
     SQL.all("""
@@ -47,7 +117,7 @@ defmodule Cascade.Missions.Scheduler do
   defp do_schedule(mission_id, opts) do
     result =
       SQL.transaction(fn ->
-        Cascade.Missions.Recovery.reconcile(mission_id)
+        reconcile(mission_id)
         Cascade.Missions.Children.resume_ready(mission_id)
         scheduled = Store.schedulable(mission_id)
         dispatches = Enum.map(scheduled.candidates, &materialize_candidate!/1)

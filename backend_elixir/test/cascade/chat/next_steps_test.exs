@@ -85,6 +85,40 @@ defmodule Cascade.Chat.NextStepsTest do
              "af12c8dd3ec10c706cf57082568c0ff8b3ef8f9a1402ecc174d622a490e24767"
   end
 
+  test "message preparation failures roll back inserts, updates and checkpoint changes", c do
+    enable(c)
+    input = proposal_input(c)
+    {:ok, draft} = Messages.create(c.user, c.vault_id, c.channel.id,
+      %{input | status: "running"}, access: :agent)
+    saved_checks = checks(c)
+    previous = Application.fetch_env!(:cascade_elixir, :chat_message_preparer)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :chat_message_preparer, previous) end)
+    Application.put_env(:cascade_elixir, :chat_message_preparer, fn message, channel ->
+      previous.(message, channel)
+      raise "message preparation failed"
+    end)
+
+    fresh = %{input | id: Ecto.UUID.generate()}
+    assert_raise RuntimeError, "message preparation failed", fn ->
+      Messages.create(c.user, c.vault_id, c.channel.id, fresh, access: :agent)
+    end
+    assert SQL.one("SELECT id FROM chat_messages WHERE id=?", [fresh.id]) == nil
+    assert checks(c) == saved_checks
+
+    assert_raise RuntimeError, "message preparation failed", fn ->
+      Messages.update(c.user, c.vault_id, c.channel.id, draft.id,
+        %{body: input.body, status: "completed"}, access: :agent)
+    end
+    assert {:ok, ^draft} = Messages.get(c.channel.id, c.user.id, draft.id)
+    assert checks(c) == saved_checks
+
+    Application.delete_env(:cascade_elixir, :chat_message_preparer)
+    assert_raise ArgumentError, fn ->
+      Messages.create(c.user, c.vault_id, c.channel.id, fresh, access: :agent)
+    end
+    assert SQL.one("SELECT id FROM chat_messages WHERE id=?", [fresh.id]) == nil
+  end
+
   test "enabled checkpoints require creative suggestions after active answers", c do
     enable(c)
     prompt = context(c)
@@ -474,6 +508,37 @@ defmodule Cascade.Chat.NextStepsTest do
     assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "must offer exactly one"
     assert proposal(c).body == ""
     assert proposal(%{c | source: fresh}).body != ""
+  end
+
+  test "suggestion observer failure rolls back settings and checkpoint dispatches", c do
+    previous = Application.fetch_env!(:cascade_elixir, :agent_suggestions_observer)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :agent_suggestions_observer, previous) end)
+    Application.put_env(:cascade_elixir, :agent_suggestions_observer, fn channel, registration, enabled, was_enabled ->
+      previous.(channel, registration, enabled, was_enabled)
+      raise "suggestion observer failed"
+    end)
+
+    assert_raise RuntimeError, "suggestion observer failed", fn -> enable(c) end
+    assert checks(c) == []
+    assert {:ok, []} = Dispatches.list_pending(c.user.id, c.channel.id)
+    assert SQL.one("SELECT next_step_suggestions FROM chat_agent_members WHERE id=?", [c.member.id]) == [0]
+
+    Application.put_env(:cascade_elixir, :agent_suggestions_observer, previous)
+    enable(c)
+    saved_checks = checks(c)
+    assert {:ok, saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
+    Application.put_env(:cascade_elixir, :agent_suggestions_observer, fn channel, registration, enabled, was_enabled ->
+      previous.(channel, registration, enabled, was_enabled)
+      raise "suggestion observer failed"
+    end)
+    assert_raise RuntimeError, "suggestion observer failed", fn -> enable(c, false) end
+    assert checks(c) == saved_checks
+    assert {:ok, ^saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
+    assert SQL.one("SELECT next_step_suggestions FROM chat_agent_members WHERE id=?", [c.member.id]) == [1]
+
+    Application.delete_env(:cascade_elixir, :agent_suggestions_observer)
+    assert_raise ArgumentError, fn -> enable(c, false) end
+    assert {:ok, ^saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
   end
 
   test "enablement queues one durable check per transition and disablement removes pending wakes",

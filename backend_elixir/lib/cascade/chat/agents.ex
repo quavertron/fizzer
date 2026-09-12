@@ -356,26 +356,9 @@ defmodule Cascade.Chat.Agents do
             ]
           )
 
-          if next_step_suggestions and not was_enabled do
-            Cascade.Chat.NextSteps.enqueue(
-              route.sourceChannelId,
-              registration_id,
-              "sys-next-enable-#{Ecto.UUID.generate()}",
-              "enable",
-              "The owner enabled next-step suggestions for this coordinator in this channel."
-            )
-          end
-
-          if not next_step_suggestions do
-            SQL.exec(
-              """
-              DELETE FROM chat_agent_dispatches WHERE registration_id=? AND run_id IS NULL
-                AND message_id IN (SELECT source_id FROM chat_next_step_checks
-                  WHERE channel_id=? AND registration_id=? AND kind IN ('enable','completion'))
-              """,
-              [registration_id, route.sourceChannelId, registration_id]
-            )
-          end
+          # Scheduling and disabling suggestions must commit with the settings.
+          observer = Application.fetch_env!(:cascade_elixir, :agent_suggestions_observer)
+          observer.(route.sourceChannelId, registration_id, next_step_suggestions, was_enabled)
         end)
 
         [saved_registration_id] =

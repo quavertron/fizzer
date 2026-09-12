@@ -653,7 +653,7 @@ defmodule Cascade.Content.Store do
                 committed_revision = Cascade.Content.Privacy.note_revision(updated_note)
 
                 if mission_linked do
-                  Cascade.Missions.Store.note_changed(
+                  notify_linked_note_revision(
                     note_id,
                     actor_user_id,
                     :content,
@@ -742,7 +742,7 @@ defmodule Cascade.Content.Store do
           )
 
           if mission_note_linked?(note_id) do
-            Cascade.Missions.Store.note_changed(
+            notify_linked_note_revision(
               note_id,
               actor_user_id,
               :rename,
@@ -1821,6 +1821,13 @@ defmodule Cascade.Content.Store do
     rescue
       error -> {:error, error}
     end
+  end
+
+  # Unlike the best-effort activity sink, this observer runs synchronously
+  # inside the write transaction and must propagate failures to the caller.
+  defp notify_linked_note_revision(note_id, actor_user_id, kind, opts) do
+    observer = Application.fetch_env!(:cascade_elixir, :linked_note_revision_observer)
+    observer.(note_id, actor_user_id, kind, opts)
   end
 
   def notify_note_mutation(note_id, actor_user_id, kind) do

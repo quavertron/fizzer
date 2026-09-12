@@ -73,6 +73,46 @@ defmodule Cascade.Missions.NoteAwarenessTest do
     assert Enum.map(events, &get_in(&1, ["auth", "origin"])) == ["human", "human"]
   end
 
+  test "linked-note observer failure rolls back content, file and rename revisions" do
+    c = interpretation_fixture("observer-rollback")
+    note = Store.get_note(c.note)
+    file = Store.resolve_note_path(note.id)
+    previous = Application.fetch_env!(:cascade_elixir, :linked_note_revision_observer)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :linked_note_revision_observer, previous) end)
+    Application.put_env(:cascade_elixir, :linked_note_revision_observer, fn id, _, _, opts ->
+      assert id == note.id
+      assert opts[:in_transaction]
+      # Any observer writes must roll back along with the note itself.
+      SQL.exec("UPDATE chat_mission_notes SET revision='must-roll-back' WHERE note_id=?", [id])
+      raise "observer failed"
+    end)
+    linked_before = SQL.all("SELECT revision FROM chat_mission_notes WHERE note_id=?", [note.id])
+
+    assert_raise RuntimeError, "observer failed", fn ->
+      Store.update_note(note.id, "must not commit", c.user.id,
+        expected_revision: Privacy.note_revision(note), actor_origin: :human)
+    end
+    assert Store.get_note(note.id).content == note.content
+    assert Privacy.note_revision(Store.get_note(note.id)) == Privacy.note_revision(note)
+    assert File.read!(file) == note.content
+    assert SQL.all("SELECT revision FROM chat_mission_notes WHERE note_id=?", [note.id]) == linked_before
+
+    assert_raise RuntimeError, "observer failed", fn ->
+      Store.rename_note(note.id, "Must not rename", c.user.id)
+    end
+    assert Store.get_note(note.id).title == note.title
+    assert Privacy.note_revision(Store.get_note(note.id)) == Privacy.note_revision(note)
+    assert SQL.all("SELECT revision FROM chat_mission_notes WHERE note_id=?", [note.id]) == linked_before
+
+    Application.delete_env(:cascade_elixir, :linked_note_revision_observer)
+    assert_raise ArgumentError, fn ->
+      Store.update_note(note.id, "missing observer", c.user.id,
+        expected_revision: Privacy.note_revision(note), actor_origin: :human)
+    end
+    assert File.read!(file) == note.content
+    assert Store.get_note(note.id).content == note.content
+  end
+
   test "agent orbit caption restores private blocks from a redacted proposal" do
     owner = Cascade.TestHelpers.owner_vault("orbit-caption")
     note =

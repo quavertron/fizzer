@@ -179,7 +179,7 @@ defmodule Cascade.Missions.Children do
       children = results(id)
 
       if children != [] and Enum.all?(children, &(&1.status in @terminal)) and
-           not Cascade.Missions.Steering.pending_for_task?(id) do
+           not Cascade.Missions.PendingSteering.pending_for_task?(id) do
         SQL.exec(
           "UPDATE chat_mission_tasks SET joining_children=0,status='pending',attempt=attempt+1,updated_at=datetime('now') WHERE id=?",
           [id]

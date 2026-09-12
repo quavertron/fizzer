@@ -882,7 +882,7 @@ defmodule Cascade.Missions.Store do
 
             if instruction == "", do: raise("Steering needs a message")
 
-            if Cascade.Missions.Steering.pending_for_task?(task_id),
+            if Cascade.Missions.PendingSteering.pending_for_task?(task_id),
               do: raise("Task already has queued steering; inspect mission history")
 
             record_event(mission.id, %{
@@ -1173,7 +1173,7 @@ defmodule Cascade.Missions.Store do
   end
 
   def settle_run(run_id, status, summary) when status in ~w(completed failed canceled) do
-    if status == "canceled" and Cascade.Missions.Steering.interrupting?(run_id),
+    if status == "canceled" and Cascade.Missions.PendingSteering.interrupting?(run_id),
       do: {:ok, nil},
       else: do_settle_run(run_id, status, summary)
   end

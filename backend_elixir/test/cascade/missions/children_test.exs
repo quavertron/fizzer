@@ -364,7 +364,7 @@ defmodule Cascade.Missions.ChildrenTest do
     :ok = RunStore.finish(run.id, "canceled", "Stopped")
     {:ok, _} = Scheduler.settle_run(run.id, "canceled", "Stopped")
 
-    Cascade.Missions.Recovery.replay_cancellations(fn user, id ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn user, id ->
       assert user == ctx.user.id
       assert id == child_run.id
       false
@@ -372,7 +372,7 @@ defmodule Cascade.Missions.ChildrenTest do
 
     assert RunStore.get(child_run.id).status == child_run.status
 
-    Cascade.Missions.Recovery.replay_cancellations(fn user, id ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn user, id ->
       assert user == ctx.user.id
       assert id == child_run.id
       true
@@ -380,7 +380,7 @@ defmodule Cascade.Missions.ChildrenTest do
 
     assert RunStore.get(child_run.id).status == "canceled"
 
-    Cascade.Missions.Recovery.replay_cancellations(fn _, _ ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn _, _ ->
       flunk("Canceled children must not be replayed")
     end)
 
@@ -395,7 +395,7 @@ defmodule Cascade.Missions.ChildrenTest do
     {:ok, _} = Store.update_task(ctx.user.id, ctx.channel.id, parent.id, %{status: "canceled"})
 
     attempted = fn acknowledge ->
-      Cascade.Missions.Recovery.replay_cancellations(fn owner, id ->
+      Cascade.Missions.Scheduler.replay_cancellations(fn owner, id ->
         assert owner == ctx.user.id
         send(self(), {:stop, id})
         acknowledge
@@ -412,7 +412,7 @@ defmodule Cascade.Missions.ChildrenTest do
     attempted.(true)
     assert RunStore.get(run.id).status == "canceled"
     assert RunStore.get(child_run.id).status == "canceled"
-    Cascade.Missions.Recovery.replay_cancellations(fn _, _ -> flunk("Already stopped") end)
+    Cascade.Missions.Scheduler.replay_cancellations(fn _, _ -> flunk("Already stopped") end)
     assert Scheduler.schedule(mission.id).dispatches == []
   end
 

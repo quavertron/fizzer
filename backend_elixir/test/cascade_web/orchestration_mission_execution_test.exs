@@ -122,6 +122,130 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     }
   end
 
+  @tag :race_audit
+  test "two BEAM processes claim one dispatch without duplicate delegation", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    directory = Path.join(System.tmp_dir!(), "fizzer-process-race-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    script = Path.expand("../support/dispatch_process_probe.exs", __DIR__)
+    tasks = for index <- 1..2 do
+      Task.async(fn ->
+        System.cmd(System.find_executable("elixir"),
+          paths ++ [script, config, directory, to_string(index), ctx.dispatch.id, to_string(ctx.owner.id)],
+          env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true)
+      end)
+    end
+    try do
+      eventually(fn -> Enum.all?(1..2, &File.exists?(Path.join(directory, "ready-#{&1}"))) end, 1_500)
+    after
+      File.write!(Path.join(directory, "release"), "go")
+    end
+    for task <- tasks do
+      {output, status} = Task.await(task, 20_000)
+      assert status == 0, output
+    end
+    results = for index <- 1..2, do: directory |> Path.join("result-#{index}.json") |> File.read!() |> Jason.decode!()
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [ctx.dispatch.id]) == [1]
+    assert Enum.sum(Enum.map(results, & &1["delegations"])) == 1, inspect(results)
+  end
+
+  @tag :race_audit
+  test "revocation prevents queued runner work and delivery retries from reaching the runner", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    # The simulated runner has not polled or acknowledged the queued work.
+    SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    assert {:error, _} = Dispatches.for_execution(ctx.dispatch.id)
+    Cascade.Runs.RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    refute packet =~ "run:delegate", "Revoked guest work was still delivered to the owner's runner"
+  end
+
+  @tag :race_probe
+  test "concurrent dispatch callers create one run and send one delegation", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    parent = self()
+
+    tasks = for _ <- 1..8 do
+      Task.async(fn ->
+        send(parent, {:ready, self()})
+        receive do: (:go -> :ok)
+        CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      end)
+    end
+
+    for task <- tasks, do: assert_receive({:ready, pid} when pid == task.pid)
+    publisher = Process.whereis(Cascade.Realtime.OrderedPublisher)
+    :sys.suspend(publisher)
+    try do
+      for task <- tasks, do: send(task.pid, :go)
+      eventually(fn -> pending_dispatch_starts(publisher) == length(tasks) end)
+    after
+      :sys.resume(publisher)
+    end
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+    run = Store.find_by_chat_dispatch(ctx.dispatch.id)
+    assert run
+    assert Enum.any?(results, &match?({:ok, %{id: id}} when id == run.id, &1))
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [ctx.dispatch.id]) == [1]
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    {:ok, packets} = EngineIO.decode_payload(packet)
+    delegations = Enum.filter(packets, &String.contains?(&1.data, "run:delegate"))
+    assert length(delegations) == 1
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "revoking guest permission after admission blocks execution", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, _} = Dispatches.for_execution(ctx.dispatch.id)
+    SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    assert {:error, _} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    refute Store.find_by_chat_dispatch(ctx.dispatch.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "revocation while dispatch waits for its final transaction fails closed", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    publisher = Process.whereis(Cascade.Realtime.OrderedPublisher)
+    :sys.suspend(publisher)
+
+    task = Task.async(fn -> CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id) end)
+
+    try do
+      eventually(fn -> pending_dispatch_starts(publisher) == 1 end)
+
+      SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    after
+      :sys.resume(publisher)
+    end
+
+    assert {:error, _} = Task.await(task)
+    refute Store.find_by_chat_dispatch(ctx.dispatch.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "completion arriving after cancel acknowledgment cannot resurrect the run", ctx do
+    {:ok, run} = Store.start(ctx.owner_vault.id, nil, "Late completion race", "codex")
+    :ok = Store.record_delegated(run.id, ctx.owner.id)
+    cancel = Task.async(fn -> Store.cancel(run.id) end)
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
+    {:ok, %{id: ack_id, data: ["run:cancel", _]}} = SocketIO.decode(encoded)
+    send_socket!(ctx.sid, SocketIO.ack("/runners", ack_id, [%{success: true}]))
+    assert Task.await(cancel)
+    assert Store.get(run.id).status == "canceled"
+    assert :already_terminal = Store.finish(run.id, "completed", "Late provider response")
+    assert Store.get(run.id).status == "canceled"
+    assert Store.get(run.id).summary == "Run canceled by user."
+    refute Store.delegated_owner(run.id)
+  end
+
   for terminal <- ["canceled", "completed", "failed"] do
     @race_terminal terminal
     test "cancel tolerates #{@race_terminal} arriving before its acknowledgment", ctx do
@@ -724,6 +848,21 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [
              mission.mission.id
            ]) == [1]
+  end
+
+  defp pending_dispatch_starts(publisher) do
+    {:messages, messages} = Process.info(publisher, :messages)
+    Enum.count(messages, fn
+      {:"$gen_call", _, {:mutate, fun}} ->
+        {:name, name} = :erlang.fun_info(fun, :name)
+        String.contains?(Atom.to_string(name), "start_dispatch")
+      _ -> false
+    end)
+  end
+
+  defp queued_runner_packets(sid) do
+    {:ok, pid} = Cascade.Realtime.lookup(sid)
+    :sys.get_state(pid).queue |> :queue.to_list() |> Enum.join("\n")
   end
 
   defp approve_mission(ctx, mission) do

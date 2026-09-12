@@ -409,7 +409,7 @@ defmodule Cascade.Missions.DeliveryContractTest do
       scheduled = Cascade.Missions.Scheduler.schedule(created.mission.id)
       assert scheduled.dispatches == []
       assert scheduled.wakeDispatches == []
-      Cascade.Missions.Recovery.replay_cancellations(fn owner, id ->
+      Cascade.Missions.Scheduler.replay_cancellations(fn owner, id ->
         assert owner == ctx.user_id
         assert id == run
         acknowledged

@@ -18,7 +18,7 @@ defmodule Cascade.Application do
         CascadeWeb.RateLimiter
       ] ++
         qmd_children() ++
-        [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.RunnerLifecycle}] ++
+        [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.TransportCallbacks}] ++
         dispatch_children() ++ http_children()
 
     # Every child after the repository and write coordinator depends on their

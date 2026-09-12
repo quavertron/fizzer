@@ -181,6 +181,30 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
 
   # The existing dispatch outbox survives disconnects/restarts. Synthetic evidence
   # is scoped to this registration and never constitutes authority to start work.
+  @doc "Applies suggestion lifecycle changes inside the agent-settings transaction."
+  def settings_changed(channel, registration_id, enabled, was_enabled) do
+    if enabled and not was_enabled do
+      enqueue(
+        channel,
+        registration_id,
+        "sys-next-enable-#{Ecto.UUID.generate()}",
+        "enable",
+        "The owner enabled next-step suggestions for this coordinator in this channel."
+      )
+    end
+
+    if not enabled do
+      SQL.exec(
+        """
+        DELETE FROM chat_agent_dispatches WHERE registration_id=? AND run_id IS NULL
+          AND message_id IN (SELECT source_id FROM chat_next_step_checks
+            WHERE channel_id=? AND registration_id=? AND kind IN ('enable','completion'))
+        """,
+        [registration_id, channel, registration_id]
+      )
+    end
+  end
+
   def enqueue(channel, registration_id, source_id, kind, evidence) do
     SQL.transaction(fn ->
       with [owner, 1, 1] <- registration(channel, registration_id),

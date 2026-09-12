@@ -1004,7 +1004,7 @@ defmodule Cascade.Missions.Interpretation do
             [record.dispatch]
           )
 
-          Cascade.Missions.Dispatches.retract_pending_reply(record.dispatch)
+          Cascade.Chat.PendingReply.retract(record.dispatch)
         end
 
         {:ok, result}

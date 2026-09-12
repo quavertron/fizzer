@@ -12,6 +12,12 @@ defmodule Cascade.Realtime.SessionTestDomain do
   def handle_event("/vault", "probe:ack", args, _identity, _context),
     do: {:ok, [{:ack, %{success: true, args: args}}]}
 
+  def handle_event("/vault", "probe:domain", [room], _identity, context),
+    do: {:ok, [{:join, room}, {:domain, {:check_joined, context.metadata.sid, room}}, {:ack, %{success: true}}]}
+
+  def handle_event("/vault", "probe:domain-error", [], _identity, _context),
+    do: {:ok, [{:domain, :raise}, {:ack, %{success: true}}]}
+
   def handle_event("/runners", "runner:register", [metadata], _identity, _context),
     do: {:ok, [{:register_runner, metadata}, {:emit, "runner:registered", [%{success: true}]}]}
 
@@ -20,6 +26,14 @@ defmodule Cascade.Realtime.SessionTestDomain do
 
   @impl true
   def namespace_disconnected(_namespace, _identity, _context, _reason), do: :ok
+
+  @impl true
+  def handle_action({:check_joined, sid, room}) do
+    if sid in Cascade.Realtime.Hub.room_members(room, "/vault"),
+      do: :ok, else: {:error, "Domain effect ran before room join"}
+  end
+
+  def handle_action(:raise), do: raise("Domain effect failed")
 end
 
 defmodule Cascade.Realtime.SessionTest do
@@ -84,6 +98,20 @@ defmodule Cascade.Realtime.SessionTest do
 
     assert :ok = Hub.broadcast("vault:v1", "/vault", "vault:renamed", [%{name: "New"}])
     assert [%{type: :event, data: ["vault:renamed", %{"name" => "New"}]}] = socket_poll(sid)
+  end
+
+  test "domain effects follow transport actions and failures stop the action sequence", %{token: token} do
+    {:ok, sid, pid} = start_session()
+    poll_packets(sid)
+    connect(sid, "/vault", token)
+    assert_connected(sid, ["/vault"])
+    send_socket(sid, SocketIO.event("/vault", "probe:domain", ["domain-order"], 1))
+    assert [%{type: :ack, id: 1, data: [%{"success" => true}]}] = socket_poll(sid)
+    send_socket(sid, SocketIO.event("/vault", "probe:domain-error", [], 2))
+    assert [%{type: :ack, id: 2, data: [error]}] = socket_poll(sid)
+    refute error["success"]
+    assert error["error"] == "Realtime domain action failed"
+    assert Process.alive?(pid)
   end
 
   test "cookie token authenticates namespaces and agent tokens fail closed", %{

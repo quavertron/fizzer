@@ -15,7 +15,14 @@ defmodule Cascade.DomainBootstrap do
     :ok = Cascade.Evolution.ensure_schema()
     :ok = Cascade.Scratchpad.ensure_schema()
     :ok = Cascade.WikiMaintenance.ensure_schema()
-    :ok = Cascade.Realtime.Events.install_note_mutation_sink()
+    # Linked-note awareness participates in the content transaction. Missing
+    # wiring must fail the edit instead of losing a mission revision silently.
+    :ok = Application.put_env(:cascade_elixir, :linked_note_revision_observer, &Cascade.Missions.Store.note_changed/4)
+    :ok = Application.put_env(:cascade_elixir, :agent_suggestions_observer, &Cascade.Chat.NextSteps.settings_changed/4)
+    :ok = Application.put_env(:cascade_elixir, :chat_message_preparer, &Cascade.Chat.NextSteps.prepare/2)
+    :ok = Application.put_env(:cascade_elixir, :mission_work_available, &Cascade.Missions.DispatchReannouncer.wake/0)
+    :ok = Application.put_env(:cascade_elixir, :run_chat_projector, &Cascade.Runs.ChatProjection.sync/1)
+    :ok = Cascade.Content.Activity.install()
     {:ok, %{bootstrapped_at: DateTime.utc_now()}}
   end
 end

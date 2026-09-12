@@ -8,6 +8,14 @@ defmodule Cascade.Realtime.DomainAdapter do
   alias Cascade.Runs.{RunnerLifecycle, Store}
 
   @impl true
+  def handle_action({:refresh_chat_presence, vault_id, channel_id}) do
+    Events.emit_presence(vault_id, channel_id)
+    :ok
+  end
+
+  def handle_action(_action), do: {:error, "Invalid realtime domain action"}
+
+  @impl true
   def authorize_namespace(namespace, identity, metadata)
       when namespace in ["/vault", "/runs", "/runners"] do
     {:ok, %{identity: identity, sid: metadata.sid}}
@@ -50,7 +58,7 @@ defmodule Cascade.Realtime.DomainAdapter do
          [
            {:join, "chat:#{route.sourceChannelId}"},
            {:emit, "vault:chatPresence", [payload]},
-           {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}
+           {:domain, {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}}
          ]}
 
       _ ->
@@ -65,7 +73,7 @@ defmodule Cascade.Realtime.DomainAdapter do
         {:ok,
          [
            {:leave, "chat:#{route.sourceChannelId}"},
-           {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}
+           {:domain, {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}}
          ]}
 
       _ ->
