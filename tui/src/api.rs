@@ -681,6 +681,15 @@ impl CascadeClient {
         Err("Failed to parse updated agent response".to_string())
     }
 
+    pub async fn import_codex_page(&self, vault_id: &str, page: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("{}/api/vaults/{}/import-codex-session", self.base_url, vault_id);
+        let response = self.auth_header(self.client.post(url).json(page)).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(response.text().await.unwrap_or_else(|e| e.to_string()));
+        }
+        response.json().await.map_err(|e| e.to_string())
+    }
+
     /// Create a chat channel. Channels are notes tagged with the chat marker;
     /// the backend returns the created note, which we surface as a `ChannelItem`.
     pub async fn create_channel(&self, vault_id: &str, title: &str) -> Result<ChannelItem, String> {

@@ -854,6 +854,9 @@ ipcMain.handle('orbit:getLocalAgents', async (_event, { template } = {}) => {
   }
 });
 
+ipcMain.handle('codex:listSessions', (_event, options) => require('./codex-sessions.cjs').listCodexSessions(options));
+ipcMain.handle('codex:readSession', (_event, options) => require('./codex-sessions.cjs').readCodexSession(options));
+
 ipcMain.handle('clipboard:readImage', async () => {
   const image = clipboard.readImage();
   if (image.isEmpty()) return null;

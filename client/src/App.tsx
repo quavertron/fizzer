@@ -18,6 +18,7 @@ import {
 // actually open — keep it out of the initial chunk.
 // Keep run controls available when a deploy replaces unloaded menu chunks.
 import { SessionManager } from './components/SessionManager';
+import { useCodexImports } from './components/CodexSessionImport';
 const NoteEditor = lazy(() =>
   import('./components/NoteEditor').then((m) => ({ default: m.NoteEditor })),
 );
@@ -206,6 +207,7 @@ export default function App() {
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
   const activeVaultId = workspaceStore.activeVaultId;
+  const codexImports = useCodexImports(user ? String(user.id) : null);
   const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError);
   const initialVaultListing = persistedSessionRef.current.activeVaultId
     ? persistedSessionRef.current.vaultListingsByVault[persistedSessionRef.current.activeVaultId]
@@ -3190,6 +3192,8 @@ export default function App() {
       {sessionManagerOpen && (
         <SessionManager
           open
+          vaultId={activeVaultId}
+          onImportCodex={codexImports.importSession}
           runnerOnline={Boolean(runnerHealth?.online)}
           focusSessionId={focusSessionId}
           onFocusHandled={() => setFocusSessionId(null)}
@@ -3197,8 +3201,8 @@ export default function App() {
           onOpenChat={async (vaultId, channelId, channelTitle) => {
             if (activeVaultIdRef.current !== vaultId) {
               switchVaultWorkspace(vaultId);
-              await loadVaultData(vaultId);
             }
+            await loadVaultData(vaultId);
             openChatChannel(channelId, channelTitle);
             setSessionManagerOpen(false);
           }}

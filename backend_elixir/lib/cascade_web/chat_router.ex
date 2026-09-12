@@ -27,6 +27,12 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  post "/api/vaults/:vault_id/import-codex-session" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      respond(conn, Cascade.Chat.SessionImport.import(user, vault_id, conn.body_params), :imported)
+    end)
+  end
+
   put "/api/app-context" do
     authenticated(conn, :any, :account, fn conn, user ->
       case Cascade.Runs.AppContext.put(

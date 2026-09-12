@@ -1,4 +1,5 @@
 mod api;
+mod codex_sessions;
 mod server_sessions;
 mod remote_vaults;
 mod app;
@@ -38,6 +39,8 @@ use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT, UserSetting
 
 /// Results from background network tasks, folded back into `App` on the event loop.
 enum BackendEvent {
+    CodexList(Result<codex_sessions::SessionList, String>),
+    CodexImported { origin: String, vault_id: String, result: Result<ChannelItem, String> },
     HistoryPage { channel_id: String, before: Option<i64>, result: Result<api::MessagesResponse, String> },
     Agents { channel_id: String, agents: Vec<AgentItem> },
     Users { vault_id: String, result: Result<Vec<VaultMember>, String> },
@@ -455,6 +458,27 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                 app.status_message = "Connect to a server to access its vaults.".into();
             }
         }
+        BackendEvent::CodexList(result) => {
+            if let Some(picker) = app.codex_import.as_mut() {
+                picker.busy = false;
+                match result {
+                    Ok(page) => { picker.sessions = page.sessions; picker.next_offset = page.next_offset; picker.selected = 0; }
+                    Err(error) => picker.error = error,
+                }
+            }
+        }
+        BackendEvent::CodexImported { origin, vault_id, result } => {
+            if app.client.base_url != origin || app.vault_id.as_ref() != Some(&vault_id) { return; }
+            match result {
+                Ok(channel) => {
+                    app.codex_import = None;
+                    apply_backend_event(app, BackendEvent::ChannelCreated { vault_id, result: Ok(channel) }, tx);
+                    app.active_pane = ActivePane::ChatInput;
+                    app.status_message = "Codex history imported. Send a message to resume the session.".into();
+                }
+                Err(error) => if let Some(picker) = app.codex_import.as_mut() { picker.busy = false; picker.error = error; },
+            }
+        }
         BackendEvent::Connectivity(reachable) => {
             app.backend_online = reachable;
         }
@@ -466,8 +490,13 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
             match result {
             Ok(channel) => {
                 app.backend_online = true;
-                app.channels.push(channel.clone());
-                app.selected_channel_idx = app.channels.len().saturating_sub(1);
+                if let Some(index) = app.channels.iter().position(|item| item.id == channel.id) {
+                    app.channels[index] = channel.clone();
+                    app.selected_channel_idx = index;
+                } else {
+                    app.channels.push(channel.clone());
+                    app.selected_channel_idx = app.channels.len().saturating_sub(1);
+                }
                 app.active_channel_id = Some(channel.id.clone());
                 app.reset_agent_activity();
                 app.scroll_offset = 0;
@@ -903,6 +932,7 @@ async fn run_app(
                 let center_width = term_width.saturating_sub(channels_width + agents_width);
                 let is_input_tall = app.input_box_height_for_width(term_height, center_width) >= 20;
 
+                if app.codex_import.is_some() && !matches!(event, Event::Key(_) | Event::Resize(..)) { continue; }
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         // Global quit bindings
@@ -914,6 +944,8 @@ async fn run_app(
                             app.should_quit = true;
                             continue;
                         }
+
+                        if app.codex_import.is_some() && codex_sessions::key(app, key.code, &tx) { continue; }
 
                         if app.vault_action.is_some() {
                             let mut submit = false;
@@ -1374,6 +1406,8 @@ async fn run_app(
                             app.should_quit = true;
                             continue;
                         }
+
+                        if codex_sessions::key(app, key.code, &tx) { continue; }
 
                         // Panel toggle shortcuts: F1 or Ctrl+B for Channels (when not typing), F2 or Ctrl+G for Agents
                         if key.code == KeyCode::F(1) || (key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) && app.active_pane != ActivePane::ChatInput) {

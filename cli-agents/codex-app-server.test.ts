@@ -45,6 +45,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (message.method === 'thread/unsubscribe') return send({ id: message.id, result: { status: 'unsubscribed' } });
   if (message.method === 'turn/start') {
+    if (message.params.threadId === 'thread-raced') return send({ id: message.id, error: { message: 'thread already has an active writer' } });
     const id = 'turn-' + (++turn);
     const prompt = message.params.input[0].text;
     const threadId = message.params.threadId;
@@ -189,6 +190,25 @@ test('an idle writer that cannot be released falls back to a fresh thread', asyn
   assert.equal(result.sessionId, 'thread-1');
   assert.deepEqual(sessions, ['thread-1']);
   assert.match(harness.join('\n'), /continuing in a fresh session/);
+  shutdownPersistentCliAgents();
+});
+
+test('imported sessions resume their original thread and never interrupt another writer', async () => {
+  const start = fs.readFileSync(protocolLog, 'utf8').length;
+  const resumed = await runCliAgent({
+    agent: 'codex', context: '', userPrompt: 'continue imported session', cwd: scratch,
+    resumeSessionId: 'thread-imported', env: { CASCADE_IMPORTED_CODEX_SESSION: 'thread-imported' }, emit() {},
+  });
+  assert.equal(resumed.sessionId, 'thread-imported');
+  for (const id of ['thread-locked', 'thread-raced']) {
+    await assert.rejects(runCliAgent({
+      agent: 'codex', context: '', userPrompt: 'continue imported session', cwd: scratch,
+      resumeSessionId: id, env: { CASCADE_IMPORTED_CODEX_SESSION: id }, emit() {},
+    }), /active writer/i);
+  }
+  const protocol = fs.readFileSync(protocolLog, 'utf8').slice(start);
+  assert.match(protocol, /turn\/start:thread-imported/);
+  assert.doesNotMatch(protocol, /turn\/interrupt|thread\/start/);
   shutdownPersistentCliAgents();
 });
 

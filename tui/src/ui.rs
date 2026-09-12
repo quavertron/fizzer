@@ -13,6 +13,10 @@ use crate::app::{
 
 pub fn render(frame: &mut Frame, app: &App) {
     let size = frame.area();
+    if let Some(picker) = &app.codex_import {
+        crate::codex_sessions::render(frame, app, picker);
+        return;
+    }
 
     // Top-level vertical layout: Header, Main Area, Footer
     let vertical_chunks = Layout::default()
@@ -1403,12 +1407,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         ("F3", " Notes "),
         ("F4", " Vaults "),
         ("F5", " Users "),
+        ("F6", " Import Codex "),
         ("Esc", " Quit "),
     ];
 
     let compact_hints: &[(&str, &str)] = &[
         ("Tab", " Pane "),
         ("F1-F5", " Views "),
+        ("F6", " Import "),
         ("Esc", " Quit "),
     ];
 

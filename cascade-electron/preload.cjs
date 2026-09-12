@@ -66,6 +66,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRunnerPlanUsage: () => ipcRenderer.invoke('runner:planUsage'),
   /** Inspect local Claude/Codex sessions and caption them through local Ollama. */
   getLocalAgents: ({ template } = {}) => ipcRenderer.invoke('orbit:getLocalAgents', { template }),
+  listCodexSessions: (options = {}) => ipcRenderer.invoke('codex:listSessions', options),
+  readCodexSession: (options) => ipcRenderer.invoke('codex:readSession', options),
   readClipboardImage: () => ipcRenderer.invoke('clipboard:readImage'),
   // Local CLI execution (renderer hosts /runners; main spawns agents).
   startAgentRun: (opts) => ipcRenderer.invoke('agent:start', opts),

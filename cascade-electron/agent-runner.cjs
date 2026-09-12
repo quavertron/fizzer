@@ -1004,6 +1004,11 @@ async function startLocalAgentRun(opts, sendEvent) {
     const cwd = resolveAgentCwd(opts.cwd, opts.vaultRoot);
     const env = { ...process.env, ...helperEnv };
 
+    if (agent === 'codex' && opts.importedCodexSession && opts.resumeSessionId) {
+      require('./codex-sessions.cjs').assertCodexSessionIdle(opts.resumeSessionId);
+      env.CASCADE_IMPORTED_CODEX_SESSION = opts.resumeSessionId;
+    }
+
     const result = await runCliAgent({
       agent,
       context: isChatRun(opts) || selfContained ? '' : `${CLAUDE_AGENT_CONTEXT} ${noteCapabilityContext(opts)}`,
