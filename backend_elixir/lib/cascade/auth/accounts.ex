@@ -4,7 +4,7 @@ defmodule Cascade.Auth.Accounts do
   alias Cascade.DB.Repo
   alias Ecto.Adapters.SQL
 
-  @select_fields "id, username, password_hash, display_name, avatar_url, auth_version, created_at"
+  @select_fields "id, username, password_hash, display_name, avatar_url, color, auth_version, created_at"
 
   def fetch_by_username(username) when is_binary(username) do
     case SQL.query!(Repo, "SELECT #{@select_fields} FROM users WHERE username = ?", [username]).rows do
@@ -48,17 +48,28 @@ defmodule Cascade.Auth.Accounts do
       id: user.id,
       username: user.username,
       displayName: blank_default(user.display_name, user.username),
-      avatarUrl: user.avatar_url || ""
+      avatarUrl: user.avatar_url || "",
+      color: user.color || "FFFFFF"
     }
   end
 
-  defp from_row([id, username, password_hash, display_name, avatar_url, auth_version, created_at]) do
+  defp from_row([
+         id,
+         username,
+         password_hash,
+         display_name,
+         avatar_url,
+         color,
+         auth_version,
+         created_at
+       ]) do
     %{
       id: id,
       username: username,
       password_hash: password_hash,
       display_name: display_name,
       avatar_url: avatar_url,
+      color: color || "FFFFFF",
       auth_version: auth_version,
       created_at: created_at
     }

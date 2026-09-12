@@ -1,9 +1,13 @@
 {
   "name": "fizzer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Fizzer TUI — a terminal client for the Fizzer AI-native workspace",
   "author": "Fizzer",
   "license": "MIT",
+  "repository": "github:quavertron/fizzer",
+  "homepage": "https://github.com/quavertron/fizzer#readme",
+  "bugs": "https://github.com/quavertron/fizzer/issues",
+  "publishConfig": { "access": "public" },
   "bin": {
     "fizzer": "bin/fizzer.cjs"
   },
@@ -17,7 +21,7 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "fizzer-darwin-arm64": "0.2.0",
-    "fizzer-linux-x64": "0.2.0"
+    "fizzer-darwin-arm64": "0.2.1",
+    "fizzer-linux-x64": "0.2.1"
   }
 }

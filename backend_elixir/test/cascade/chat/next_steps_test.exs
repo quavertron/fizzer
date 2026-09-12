@@ -82,7 +82,7 @@ defmodule Cascade.Chat.NextStepsTest do
       SQL.table_sql("chat_agent_members") |> String.replace(~r/\s+/, " ") |> String.trim()
 
     assert Base.encode16(:crypto.hash(:sha256, normalized), case: :lower) ==
-             "cbad10329484a7a611ef7c9c5789bc88987431279e0fdd44d51817579d693676"
+             "af12c8dd3ec10c706cf57082568c0ff8b3ef8f9a1402ecc174d622a490e24767"
   end
 
   test "enabled checkpoints require creative suggestions after active answers", c do

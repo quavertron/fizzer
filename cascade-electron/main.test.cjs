@@ -10,7 +10,7 @@ test('desktop startup paints a window before housekeeping and does not HEAD the 
   assert.match(source, /backgroundColor: APP_BACKGROUND/);
   assert.match(source, /createWindow\(\);/);
   const backendAt = source.indexOf('await startEmbeddedBackend(');
-  const createAt = source.indexOf('createWindow();');
+  const createAt = source.indexOf('createWindow();', backendAt);
   const reapAt = source.indexOf('void reapOrphanedLocalAgentRuns()');
   const pruneAt = source.indexOf('void worktrees.pruneWorkspaces()');
   assert.ok(backendAt > 0 && createAt > backendAt && reapAt > createAt && pruneAt > createAt);

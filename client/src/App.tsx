@@ -81,7 +81,7 @@ import type { DiscoveryTab } from './components/DiscoveryDmsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
-import { api, ApiError, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
+import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import {
   createMission,
   fetchMissions,
@@ -120,7 +120,7 @@ import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
 import { DesktopVaultChooser } from './components/DesktopVaultChooser';
-import { useDesktopStartup } from './desktopStartup';
+import { useDesktopStartup, rememberDesktopSession, acceptAndOpenRemoteInvite } from './desktopStartup';
 
 /**
  * @file App.tsx — Root component for Cascade
@@ -195,10 +195,13 @@ export default function App() {
   const [resetToken, setResetToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
+  const [serverAuthRequested, setServerAuthRequested] = useState(false);
+  useEffect(() => { if (user) setServerAuthRequested(false); }, [user]);
 
 
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
+  const requestedVaultRef = useRef(new URLSearchParams(window.location.search).get('vault'));
   const [workspaceStore] = useState(() => new WorkspaceStore(persistedSessionRef.current));
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
@@ -317,6 +320,9 @@ export default function App() {
 
   const switchVaultWorkspace = useCallback((nextVaultId: string | null) => {
     if (workspaceStore.activeVaultId === nextVaultId) return;
+    // Point non-vault-scoped requests (notes/assets) at the open vault's origin.
+    const entry = nextVaultId ? getVaultOrigin(nextVaultId) : undefined;
+    setActiveVaultOrigin(entry?.origin, entry?.token);
     workspaceStore.switchVault(nextVaultId);
     clearWorkspacePanels();
   }, [workspaceStore, clearWorkspacePanels]);
@@ -453,10 +459,41 @@ export default function App() {
     setVaultListError('');
     const epoch = workspaceStore.epoch;
     try {
-      const data = await api<{ vaults: Vault[] }>('/api/vaults');
+      let localVaults: Vault[] = [];
+      try {
+        const data = await api<{ vaults: Vault[] }>('/api/vaults');
+        localVaults = data.vaults || [];
+      } catch (err) {
+        console.warn('Could not load local vaults:', err);
+      }
+
+      const remoteRecords = await getRemoteVaults();
+      const remoteVaults: Vault[] = remoteRecords.map((rv) => ({
+        id: rv.id,
+        name: rv.name,
+        root_path: '',
+        created_at: new Date().toISOString(),
+        role: rv.role,
+        origin: rv.origin,
+        token: rv.token,
+      }));
+
+      for (const rv of remoteVaults) {
+        if (rv.origin) registerVaultOrigin(rv.id, rv.origin, rv.token);
+      }
+
+      const mergedMap = new Map<string, Vault>();
+      for (const lv of localVaults) mergedMap.set(lv.id, lv);
+      for (const rv of remoteVaults) mergedMap.set(rv.id, rv);
+      const nextVaults = Array.from(mergedMap.values());
+
       if (workspaceStore.epoch !== epoch) return;
-      const nextVaults = data.vaults;
       setVaults(nextVaults);
+      const requestedVaultId = requestedVaultRef.current;
+      if (requestedVaultId && nextVaults.some(vault => vault.id === requestedVaultId)) {
+        switchVaultWorkspace(requestedVaultId);
+        requestedVaultRef.current = null;
+      }
       const restoredVaultId = activeVaultIdRef.current;
       const restoredVaultValid = restoredVaultId && nextVaults.some((vault) => vault.id === restoredVaultId);
       if (!restoredVaultValid) {
@@ -1298,12 +1335,35 @@ export default function App() {
     ensureChatChannelLoaded(channelId);
   }, [ensureChatChannelLoaded, workspaceStore]);
 
-  const acceptVaultInvite = useCallback(async (token: string): Promise<boolean> => {
+  const acceptVaultInvite = useCallback(async (token: string, origin?: string): Promise<boolean> => {
     try {
-      const data = await api<{ vaultId: string; name: string; role: string; alreadyMember?: boolean }>(
-        `/api/vault-invites/${encodeURIComponent(token)}/accept`,
-        { method: 'POST' },
-      );
+      let data: { vaultId: string; name: string; role: string; alreadyMember?: boolean };
+      const electronAPI = (window as unknown as {
+        electronAPI?: {
+          acceptRemoteInvite?: (input: { inviteUrl: string }) => Promise<{ success: boolean; vault?: Vault; error?: string }>;
+          openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
+        };
+      }).electronAPI;
+
+      if (origin && origin !== window.location.origin && electronAPI?.acceptRemoteInvite) {
+        const fullUrl = `${origin.replace(/\/+$/, '')}/vault-invite/${encodeURIComponent(token)}`;
+        await acceptAndOpenRemoteInvite(electronAPI, fullUrl);
+        return true;
+      } else {
+        data = await api<{ vaultId: string; name: string; role: string; alreadyMember?: boolean }>(
+          `/api/vault-invites/${encodeURIComponent(token)}/accept`,
+          { method: 'POST', origin },
+        );
+        if (origin && origin !== window.location.origin) {
+          await saveRemoteVault({
+            id: data.vaultId,
+            name: data.name,
+            origin,
+            token: '',
+            role: (data.role as any) || 'member',
+          });
+        }
+      }
       await loadVaults();
       switchVaultWorkspace(data.vaultId);
       await loadVaultData(data.vaultId);
@@ -1322,7 +1382,9 @@ export default function App() {
       const parsed = new URL(inviteLink, window.location.origin);
       const match = parsed.pathname.match(/^\/vault-invite\/([^/]+)$/);
       if (!match) throw new Error('Paste a valid vault invite link');
-      return await acceptVaultInvite(decodeURIComponent(match[1]));
+      const token = decodeURIComponent(match[1]);
+      const isRemote = parsed.origin !== window.location.origin;
+      return await acceptVaultInvite(token, isRemote ? parsed.origin : undefined);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Paste a valid vault invite link');
       return false;
@@ -1894,22 +1956,25 @@ export default function App() {
     });
   }, [layout, missions, openTabs]);
 
+  const visibleChatChannelIdsRef = useRef(visibleChatChannelIds);
+  visibleChatChannelIdsRef.current = visibleChatChannelIds;
+
   const syncChatPresenceRooms = useCallback((socket: ReturnType<typeof connectVaultSocket>) => {
     const joined = joinedChatChannelsRef.current;
-    const visible = new Set(visibleChatChannelIds);
+    const visible = new Set(visibleChatChannelIdsRef.current);
     for (const channelId of [...joined]) {
       if (!visible.has(channelId)) {
         socket.emit('leaveChatChannel', channelId);
         joined.delete(channelId);
       }
     }
-    for (const channelId of visibleChatChannelIds) {
+    for (const channelId of visible) {
       if (!joined.has(channelId)) {
         socket.emit('joinChatChannel', channelId);
         joined.add(channelId);
       }
     }
-  }, [visibleChatChannelIds]);
+  }, []);
 
   // ═══════════════════════════════════════════════════════════════
   // SOCKET SETUP
@@ -1917,8 +1982,9 @@ export default function App() {
 
   useEffect(() => {
     if (!activeVaultId || !user) return;
+    const activeVault = vaults.find((v) => v.id === activeVaultId);
     const controller = new AbortController();
-    const socket = connectVaultSocket();
+    const socket = connectVaultSocket(activeVault?.origin, activeVault?.token);
     vaultSocketRef.current = socket;
     const joinActiveVault = () => {
       socket.emit('joinVault', activeVaultId);
@@ -2138,13 +2204,13 @@ export default function App() {
       socket.off('vault:userProfileUpdated', handleUserProfileUpdated);
       socket.disconnect();
     };
-  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, loadChatPresence, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
+  }, [activeVaultId, vaults, user?.id, authEpoch, loadVaultData, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, loadChatPresence, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
 
   useEffect(() => {
     const socket = vaultSocketRef.current;
     if (!socket?.connected || !activeVaultId) return;
     syncChatPresenceRooms(socket);
-  }, [activeVaultId, syncChatPresenceRooms]);
+  }, [activeVaultId, visibleChatChannelIds, syncChatPresenceRooms]);
 
   // Vault events are not replayed; this also runs if the socket never connects.
   useEffect(() => {
@@ -2472,10 +2538,12 @@ export default function App() {
       }
       const inviteMatch = window.location.pathname.match(/^\/(?:invite|vault-invite)\/([^/]+)$/);
       const inviteToken = inviteMatch ? decodeURIComponent(inviteMatch[1]) : '';
-      const data = await api<{ user: User; owner?: boolean }>(`/api/auth/${authMode}`, {
+      const data = await api<{ user: User; owner?: boolean; token?: string }>(`/api/auth/${authMode}`, {
         method: 'POST',
         body: JSON.stringify({ username, password, ...(authMode === 'register' && inviteToken ? { inviteToken } : {}) }),
       });
+      await rememberDesktopSession((window as unknown as { electronAPI?: { rememberServerSession?: () => Promise<void> } })
+        .electronAPI?.rememberServerSession);
       // Account switch: never restore another user's activeVaultId / open tabs.
       localStorage.removeItem(SESSION_STORAGE_KEY);
       resetVaultWorkspaces();
@@ -2703,7 +2771,13 @@ export default function App() {
     );
   }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData, renderMissionChat, missionRefreshToken]);
 
-  if (!authReady) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
+  if ((window as unknown as { electronAPI?: unknown }).electronAPI && !user && !serverAuthRequested) {
+    return <DesktopVaultChooser vaults={[]} activeVaultId={null} onSelect={() => {}}
+      onCreate={async () => false} onContinue={() => {}}
+      onConnectLocal={() => { setAuthError(''); setServerAuthRequested(true); }} />;
+  }
+
+  if (!authReady && !serverAuthRequested) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 
   if (!user) {
     const hasInvite = /^\/invite\/[^/]+$/.test(window.location.pathname);
@@ -2718,8 +2792,8 @@ export default function App() {
           <div className="auth-decal" aria-hidden="true" />
           <div className="auth-intro">
             <span className="surface-kicker">Shared intelligence</span>
-            <strong>{authMode === 'register' ? 'Create your workspace' : authMode === 'reset' ? 'Recover your account' : 'Welcome back'}</strong>
-            <p>One calm place for your team, notes, and local agents.</p>
+            <strong>{inDesktopApp ? (['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) ? 'Connect to local server' : 'Connect to remote server') : authMode === 'register' ? 'Create your workspace' : authMode === 'reset' ? 'Recover your account' : 'Welcome back'}</strong>
+            <p>{inDesktopApp ? `Your account applies to vaults on ${window.location.host}.` : 'One calm place for your team, notes, and local agents.'}</p>
           </div>
           {authMode === 'reset' ? (
             <>
@@ -2747,10 +2821,11 @@ export default function App() {
           )}
           <p className="auth-desktop-note">
             {inDesktopApp
-              ? 'This desktop app can run your local agents after you sign in.'
+              ? 'Sign in or create an account on this server to access its vaults.'
               : 'Fizzer agents run on your own desktop app. You can join this invite here, then open it in Fizzer desktop to run agents.'}
             {!inDesktopApp && <> <a href="/download">Get Fizzer desktop</a></>}
           </p>
+          {inDesktopApp && <button type="button" onClick={() => setServerAuthRequested(false)}>Back to vault chooser</button>}
           {authNotice && <div className="auth-notice">{authNotice}</div>}
           {authError && <div className="error">{authError}</div>}
           <button id="auth-submit" type="submit">

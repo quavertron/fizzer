@@ -16,7 +16,7 @@ defmodule Cascade.Chat.Agents do
       agents =
         SQL.all(
           """
-          SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,
+          SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.color,va.mention,
             va.model,va.cwd,va.context_prompt,va.hermes_profile,va.hermes_safe_mode,
             va.identity_scope,va.expires_at,
             va.owner_user_id,u.username,va.created_at,va.updated_at
@@ -60,7 +60,7 @@ defmodule Cascade.Chat.Agents do
 
       existing =
         SQL.one(
-          "SELECT owner_user_id,avatar_url,identity_scope,expires_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
+          "SELECT owner_user_id,avatar_url,identity_scope,expires_at,color FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
           [id, user_id, vault_id]
         )
 
@@ -168,7 +168,7 @@ defmodule Cascade.Chat.Agents do
       members =
         SQL.all(
           """
-            SELECT m.id,m.vault_agent_id,va.owner_user_id,m.agent_id,m.display_name,m.avatar_url,
+            SELECT m.id,m.vault_agent_id,va.owner_user_id,m.agent_id,m.display_name,m.avatar_url,va.color,
               m.mention,m.model,m.reasoning_effort,m.priority_service_tier,m.cwd,m.context_prompt,
               m.taggable_by_agents,m.reply_to_every_message,m.orchestrator,m.pingable_by_others,
               m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode,m.next_step_suggestions FROM chat_agent_members m
@@ -219,6 +219,7 @@ defmodule Cascade.Chat.Agents do
            agent_id,
            display_name,
            avatar_url,
+           existing_color,
            default_mention,
            default_model,
            default_cwd,
@@ -226,7 +227,7 @@ defmodule Cascade.Chat.Agents do
            owner_id | _
          ] <-
            SQL.one(
-             "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
+             "SELECT id,vault_id,agent_id,display_name,avatar_url,color,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
              [identity_id, user_id, route.localVaultId, route.localVaultId]
            ),
          :ok <- authorize_channel_member(access, owner_id, user_id),
@@ -290,6 +291,24 @@ defmodule Cascade.Chat.Agents do
           if restore_excluded do
             SQL.exec("DELETE FROM vault_agent_exclusions WHERE vault_id=? AND vault_agent_id=?", [
               route.localVaultId,
+              identity_id
+            ])
+          end
+
+          # Color is a vault-agent-level property; the owner editing an existing
+          # agent must have it persisted here (add_to_channel otherwise only
+          # writes the channel registration).
+          if user_id == owner_id do
+            requested_color =
+              value(flags, "color", existing_color) |> to_string() |> String.trim() |> String.upcase()
+
+            new_color =
+              if Regex.match?(~r/^[0-9A-F]{6}$/, requested_color),
+                do: requested_color,
+                else: existing_color
+
+            SQL.exec("UPDATE vault_agents SET color=?,updated_at=datetime('now') WHERE id=?", [
+              new_color,
               identity_id
             ])
           end
@@ -560,6 +579,14 @@ defmodule Cascade.Chat.Agents do
   end
 
   defp persist_identity(user_id, vault_id, id, agent_id, mention, input, existing) do
+    color =
+      value(input, "color", existing_value(existing, 4, "FFFFFF"))
+      |> to_string()
+      |> String.trim()
+      |> String.upcase()
+
+    color = if Regex.match?(~r/^[0-9A-F]{6}$/, color), do: color, else: "FFFFFF"
+
     display_name =
       value(input, "displayName", "") |> to_string() |> String.trim() |> nonblank(agent_id)
 
@@ -583,10 +610,11 @@ defmodule Cascade.Chat.Agents do
     SQL.transaction(fn ->
       SQL.exec(
         """
-        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,
+        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,color,mention,model,cwd,context_prompt,
           hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
           agent_id=excluded.agent_id,display_name=excluded.display_name,avatar_url=excluded.avatar_url,
+          color=CASE WHEN ? THEN excluded.color ELSE vault_agents.color END,
           mention=excluded.mention,model=excluded.model,cwd=excluded.cwd,context_prompt=excluded.context_prompt,
           hermes_profile=excluded.hermes_profile,hermes_safe_mode=excluded.hermes_safe_mode,
           identity_scope=excluded.identity_scope,expires_at=excluded.expires_at,
@@ -598,6 +626,7 @@ defmodule Cascade.Chat.Agents do
           agent_id,
           display_name,
           avatar,
+          color,
           mention,
           model,
           cwd,
@@ -606,7 +635,8 @@ defmodule Cascade.Chat.Agents do
           bool_int(hermes_safe_mode),
           identity_scope,
           expires_at,
-          user_id
+          user_id,
+          bool_int(Map.has_key?(input, "color") or Map.has_key?(input, :color))
         ]
       )
 
@@ -633,6 +663,7 @@ defmodule Cascade.Chat.Agents do
          agent_id,
          display_name,
          avatar,
+         color,
          mention,
          model,
          cwd,
@@ -652,6 +683,7 @@ defmodule Cascade.Chat.Agents do
       agentId: agent_id,
       displayName: display_name,
       avatarUrl: avatar || "",
+      color: color || "FFFFFF",
       mention: mention,
       model: model || "",
       cwd: cwd || "",
@@ -674,6 +706,7 @@ defmodule Cascade.Chat.Agents do
          agent_id,
          name,
          avatar,
+         color,
          mention,
          model,
          effort,
@@ -699,6 +732,7 @@ defmodule Cascade.Chat.Agents do
       agentId: agent_id,
       displayName: name,
       avatarUrl: avatar || "",
+      color: color || "FFFFFF",
       mention: mention,
       model: model || "",
       reasoningEffort: effort || "",

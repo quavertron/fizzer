@@ -1,6 +1,20 @@
 const HOSTED_ORIGIN = 'https://cscd.online';
 const DEVELOPMENT_ORIGIN = 'http://localhost:5173';
 
+function isPrivateHostname(hostname) {
+  return isLoopbackHostname(hostname) || /^10\.\d+\.\d+\.\d+$/.test(hostname)
+    || /^192\.168\.\d+\.\d+$/.test(hostname) || /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(hostname);
+}
+
+function normalizeInstanceOrigin(value) {
+  let raw = String(value || '').trim();
+  if (!/^https?:\/\//i.test(raw)) {
+    const hostname = new URL(`https://${raw}`).hostname;
+    raw = `${isPrivateHostname(hostname) ? 'http' : 'https'}://${raw}`;
+  }
+  return parseInstanceOrigin(raw);
+}
+
 function isLoopbackHostname(hostname) {
   const normalized = String(hostname || '').toLowerCase();
   return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '[::1]';
@@ -26,6 +40,9 @@ function parseInstanceOrigin(value, label = 'instance URL') {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new Error(`${label} must use HTTPS or HTTP`);
+  }
+  if (parsed.protocol === 'http:' && !isPrivateHostname(parsed.hostname)) {
+    throw new Error(`${label} must use HTTPS outside loopback or private LAN addresses`);
   }
   return parsed.origin;
 }
@@ -74,6 +91,7 @@ module.exports = {
   isLoopbackHostname,
   isSameOrigin,
   parseInstanceOrigin,
+  normalizeInstanceOrigin,
   rendererUrlForOrigin,
   resolveInstanceOrigin,
   shouldUseEmbeddedBackend,

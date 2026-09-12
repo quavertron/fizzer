@@ -4,6 +4,7 @@ const {
   HOSTED_ORIGIN,
   isSameOrigin,
   parseInstanceOrigin,
+  normalizeInstanceOrigin,
   rendererUrlForOrigin,
   resolveInstanceOrigin,
   shouldUseEmbeddedBackend,
@@ -35,11 +36,20 @@ test('source desktop can opt into the embedded instance', () => {
   assert.equal(shouldUseEmbeddedBackend({ packaged: true, env: { FIZZER_EMBEDDED_BACKEND: '0' }, argv: [] }), false);
 });
 
-test('instance validation allows HTTP only on loopback', () => {
+test('instance validation allows HTTP only on loopback and private LAN IPs', () => {
   assert.equal(parseInstanceOrigin('http://localhost:3000'), 'http://localhost:3000');
   assert.equal(parseInstanceOrigin('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
   assert.equal(parseInstanceOrigin('http://[::1]:3000'), 'http://[::1]:3000');
   assert.throws(() => parseInstanceOrigin('http://fizzer.example.test'), /must use HTTPS/u);
+  assert.equal(parseInstanceOrigin('http://192.168.1.20:4000'), 'http://192.168.1.20:4000');
+});
+
+test('bare public addresses default to HTTPS and private IPs support local HTTP', () => {
+  assert.equal(normalizeInstanceOrigin('example.com'), 'https://example.com');
+  assert.equal(normalizeInstanceOrigin('example.com:8443'), 'https://example.com:8443');
+  assert.equal(normalizeInstanceOrigin('127.0.0.1:3000'), 'http://127.0.0.1:3000');
+  assert.equal(normalizeInstanceOrigin('192.168.1.20:4000'), 'http://192.168.1.20:4000');
+  assert.throws(() => normalizeInstanceOrigin('http://example.com'), /must use HTTPS/);
 });
 
 test('instance validation rejects malformed or authority-expanding values', () => {

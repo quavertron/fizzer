@@ -1,6 +1,9 @@
 mod api;
+mod server_sessions;
+mod remote_vaults;
 mod app;
 mod ui;
+mod news_headlines;
 mod emacs;
 #[cfg(test)]
 mod tests;
@@ -30,13 +33,15 @@ use serde::{Deserialize, Serialize};
 
 use tokio::sync::mpsc;
 
-use crate::api::{ActiveSession, AgentItem, CascadeClient, ChannelItem, ChatMessage, Vault};
-use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT};
+use crate::api::{ActiveSession, AgentItem, CascadeClient, ChannelItem, ChatMessage, Vault, VaultMember};
+use crate::app::{ActivePane, AgentSettingsField, App, HEADER_HEIGHT, UserSettingsField, VaultActionField, VaultActionState};
 
 /// Results from background network tasks, folded back into `App` on the event loop.
 enum BackendEvent {
-    Messages { channel_id: String, messages: Vec<ChatMessage> },
+    HistoryPage { channel_id: String, before: Option<i64>, result: Result<api::MessagesResponse, String> },
     Agents { channel_id: String, agents: Vec<AgentItem> },
+    Users { vault_id: String, result: Result<Vec<VaultMember>, String> },
+    UserSaved { user_idx: usize, result: Result<VaultMember, String> },
     ActiveSessions { vault_id: String, sessions: Vec<ActiveSession> },
     Notes { vault_id: String, result: Result<Vec<crate::api::NoteSummary>, String> },
     Vaults(Result<Vec<Vault>, String>),
@@ -56,23 +61,49 @@ enum BackendEvent {
         is_new: bool,
         result: Result<AgentItem, String>,
     },
+    Session { origin: String, result: Result<Option<(String, String)>, String> },
 }
 
 /// Spawn a fetch of the active channel's messages + agents. Never blocks the loop.
-fn spawn_channel_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+fn spawn_channel_sync(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let (Some(vault_id), Some(channel_id)) = (app.vault_id.clone(), app.active_channel_id.clone())
     else {
         return;
     };
+    if app.receiving_messages.as_deref() == Some(channel_id.as_str()) {
+        return;
+    }
+    app.receiving_messages = Some(channel_id.clone());
+    if app.history_channel.as_ref() != Some(&channel_id) || app.messages.is_empty() {
+        app.history_channel = Some(channel_id.clone());
+        app.history_before = None;
+        app.history_has_more = false;
+        app.history_loading = false;
+    }
+    app.message_load_error = None;
     let client = app.client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
-        if let Ok(messages) = client.fetch_messages(&vault_id, &channel_id).await {
-            let _ = tx.send(BackendEvent::Messages { channel_id: channel_id.clone(), messages });
-        }
+        let result = client.fetch_message_page(&vault_id, &channel_id, None).await;
+        let _ = tx.send(BackendEvent::HistoryPage { channel_id: channel_id.clone(), before: None, result });
         if let Ok(agents) = client.fetch_agents(&vault_id, &channel_id).await {
             let _ = tx.send(BackendEvent::Agents { channel_id, agents });
         }
+    });
+}
+
+fn spawn_older_messages(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    if app.history_loading || !app.history_has_more { return; }
+    let (Some(vault_id), Some(channel_id), Some(before)) =
+        (app.vault_id.clone(), app.active_channel_id.clone(), app.history_before) else { return; };
+    if app.history_channel.as_ref() != Some(&channel_id) { return; }
+    app.history_loading = true;
+    app.status_message = "Receiving older messages…".into();
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.fetch_message_page(&vault_id, &channel_id, Some(before)).await;
+        let _ = tx.send(BackendEvent::HistoryPage { channel_id, before: Some(before), result });
     });
 }
 
@@ -106,11 +137,32 @@ fn spawn_notes_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     });
 }
 
-fn spawn_vault_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+fn spawn_users_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let Some(vault_id) = app.vault_id.clone() else {
+        return;
+    };
     let client = app.client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
+        let result = client.fetch_vault_members(&vault_id).await;
+        let _ = tx.send(BackendEvent::Users { vault_id, result });
+    });
+}
+
+fn spawn_vault_sync(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let client = app.default_client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
         let _ = tx.send(BackendEvent::Vaults(client.fetch_vaults().await));
+    });
+}
+
+fn spawn_session_check(app: &App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.check_session().await;
+        let _ = tx.send(BackendEvent::Session { origin: client.base_url, result });
     });
 }
 
@@ -247,7 +299,7 @@ fn spawn_rename_channel(
     });
 }
 
-/// Spawn a channel-list refresh (used while the UI is live; startup uses the blocking path).
+/// Refresh vault contents without blocking terminal input or rendering.
 fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let Some(vault_id) = app.vault_id.clone() else {
         return;
@@ -255,6 +307,7 @@ fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent
     app.is_loading = true;
     app.status_message = "Refreshing channels...".to_string();
     spawn_notes_sync(app, tx);
+    spawn_users_sync(app, tx);
     let client = app.client.clone();
     let channel_tx = tx.clone();
     tokio::spawn(async move {
@@ -267,17 +320,81 @@ fn spawn_refresh_channels(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent
 /// while in flight) are ignored via the `channel_id` guard.
 fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedSender<BackendEvent>) {
     match event {
-        BackendEvent::Messages { channel_id, messages } => {
-            if app.active_channel_id.as_deref() == Some(channel_id.as_str())
-            {
-                app.messages = messages;
-                app.clamp_message_selection();
+        BackendEvent::HistoryPage { channel_id, before, result } => {
+            if app.active_channel_id.as_ref() != Some(&channel_id) { return; }
+            if before.is_some() && before != app.history_before { return; }
+            if before.is_some() { app.history_loading = false; }
+            else { app.receiving_messages = None; }
+            match result {
+                Ok(page) => {
+                    app.message_load_error = None;
+                    if before.is_some() || app.history_before.is_none() {
+                        app.history_before = page.before_seq;
+                        app.history_has_more = page.has_more && page.before_seq.is_some() && page.before_seq != before;
+                    }
+                    if before.is_some() {
+                        let width = app.chat_cache.read().unwrap().wrap_width.max(10);
+                        ui::ensure_chat_cache(app, width);
+                        let old_chars = app.chat_cache.read().unwrap().char_count;
+                        let mut older = page.messages;
+                        older.retain(|message| !app.messages.iter().any(|existing| existing.id == message.id));
+                        older.append(&mut app.messages);
+                        app.messages = older;
+                        ui::ensure_chat_cache(app, width);
+                        let added = app.chat_cache.read().unwrap().char_count.saturating_sub(old_chars);
+                        app.chat_cursor = app.chat_cursor.map(|cursor| cursor + added);
+                        app.chat_selection_anchor = app.chat_selection_anchor.map(|anchor| anchor + added);
+                        app.status_message = if app.history_has_more { "Older messages loaded" } else { "Beginning of channel history" }.into();
+                    } else {
+                        if page.messages.is_empty() && page.before_seq.is_none() {
+                            app.messages.clear();
+                        }
+                        // Preserve previously fetched history when refreshing the latest page.
+                        if let Some(first) = page.messages.first() {
+                            if let Some(index) = app.messages.iter().position(|message| message.id == first.id) {
+                                app.messages.truncate(index);
+                            }
+                        }
+                        app.messages.extend(page.messages);
+                    }
+                    app.clamp_message_selection();
+                }
+                Err(error) => {
+                    app.message_load_error = Some(format!("Could not receive messages: {error}"));
+                    app.status_message = app.message_load_error.clone().unwrap();
+                }
             }
         }
         BackendEvent::Agents { channel_id, agents } => {
             if app.active_channel_id.as_deref() == Some(channel_id.as_str())
             {
                 app.agents = agents;
+            }
+        }
+        BackendEvent::Users { vault_id, result } => {
+                if app.vault_id.as_deref() == Some(vault_id.as_str()) {
+                    if let Ok(users) = result {
+                        app.users = users;
+                        app.selected_user_idx = app.selected_user_idx.min(app.users.len().saturating_sub(1));
+                    }
+                }
+        }
+        BackendEvent::UserSaved { user_idx, result } => {
+            match result {
+                Ok(user) => {
+                    if let Some(existing) = app.users.get_mut(user_idx) {
+                        *existing = user.clone();
+                    }
+                    app.author = user.username.clone();
+                    app.author_color = user.color.clone().unwrap_or_else(|| "FFFFFF".to_string());
+                    app.status_message = "Profile saved".to_string();
+                    app.close_user_settings();
+                }
+                Err(err) => {
+                    if let Some(modal) = app.user_settings_modal.as_mut() {
+                        modal.error_message = Some(format!("Failed to save profile: {}", err));
+                    }
+                }
             }
         }
         BackendEvent::ActiveSessions { vault_id, sessions } => {
@@ -293,13 +410,51 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
             }
         }
         BackendEvent::Vaults(result) => match result {
-            Ok(vaults) => {
+            Ok(mut vaults) => {
+                app.local_authenticated = true;
                 app.backend_online = true;
+                for record in load_remote_vaults() {
+                    if !vaults.iter().any(|v| v.id == record.id && v.origin.as_deref().unwrap_or(&app.default_client.base_url) == record.origin) {
+                        vaults.push(Vault {
+                            id: record.id,
+                            name: record.name,
+                            origin: Some(record.origin),
+                            token: Some(record.token),
+                            role: record.role,
+                        });
+                    }
+                }
                 app.vaults = vaults;
+                if let Some(vault_id) = &app.vault_id {
+                    if let Some(idx) = app.vaults.iter().position(|v| &v.id == vault_id && v.origin.as_deref().unwrap_or(&app.default_client.base_url) == app.client.base_url) {
+                        app.selected_vault_idx = idx;
+                    }
+                } else if !app.vaults.is_empty() {
+                    app.selected_vault_idx = 0;
+                    app.show_vaults = true;
+                    app.active_pane = ActivePane::Vaults;
+                    app.status_message = "Select a vault to open (↑/↓, Enter)".to_string();
+                }
                 app.clamp_vault_selection();
             }
-            Err(err) => app.status_message = format!("Vault refresh error: {}", err),
+            Err(_) => {
+                app.local_authenticated = false;
+                app.status_message = "Connect to a server to access its vaults.".into();
+            }
         },
+        BackendEvent::Session { origin, result } => {
+            if origin != app.client.base_url { return; }
+            if let Ok(Some((username, color))) = result {
+                app.author = username;
+                app.author_color = color;
+            } else {
+                app.author.clear();
+                app.author_color.clear();
+                app.show_vaults = true;
+                app.active_pane = ActivePane::Vaults;
+                app.status_message = "Connect to a server to access its vaults.".into();
+            }
+        }
         BackendEvent::Connectivity(reachable) => {
             app.backend_online = reachable;
         }
@@ -347,7 +502,6 @@ fn apply_backend_event(app: &mut App, event: BackendEvent, tx: &mpsc::UnboundedS
                     apply_channels(app, channels);
                     spawn_channel_sync(app, tx);
                     spawn_active_sessions(app, tx);
-                    spawn_notes_sync(app, tx);
                 }
                 Err(err) => app.mark_offline(format!("Backend unreachable: {}", err)),
             }
@@ -405,68 +559,59 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let saved_state = load_tui_state();
-    let base_url = configured_instance_url(&saved_state);
+    let mut base_url = configured_instance_url(&saved_state);
+    let explicit_instance = ["CASCADE_URL", "CASCADE_NOTE_URL", "CASCADE_APP_URL", "FIZZER_INSTANCE_URL"]
+        .iter().any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()));
+    if !explicit_instance && CascadeClient::new(base_url.clone(), None).is_local_instance() {
+        let data_dir = std::env::var_os("CASCADE_DATA_DIR").map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".fizzer")));
+        if let Some(data_dir) = data_dir {
+            if let Some(origin) = discover_local_backend(&data_dir.join("local-backend.json")).await {
+                base_url = origin;
+            }
+        }
+    }
 
-    let token = resolve_token();
+    let token = ["CASCADE_NOTE_TOKEN", "CASCADE_TOKEN"].iter()
+        .find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()))
+        .or_else(|| server_sessions().get(&server_session_key(&base_url)).cloned())
+        .or_else(|| load_remote_vaults().into_iter().find(|record| record.origin == base_url).map(|record| record.token))
+        .or_else(|| CascadeClient::new(base_url.clone(), None).is_local_instance().then(resolve_token).flatten());
     let explicit_vault = std::env::var("CASCADE_NOTE_VAULT")
         .ok()
         .or(saved_state.vault_id.clone());
 
-    // Keep the TUI's agent execution path independent of Electron. If a
-    // runner already exists, the helper leaves it alone; otherwise it starts
-    // the repository's shared headless runner with this TUI's credentials.
-    let mut native_runner = start_native_runner(&base_url, token.as_deref()).await;
-
-    let client = CascadeClient::new(base_url.clone(), token);
+    let client = CascadeClient::new(base_url.clone(), token.clone());
     let mut app = App::new(client);
+    app.show_vaults = true;
+    app.active_pane = ActivePane::Vaults;
 
-    // Initial backend discovery
-    app.status_message = format!("Connecting to {}...", base_url);
-
-    // Verify session identity with Elixir backend
-    if let Ok(Some(username)) = app.client.check_session().await {
-        app.author = username;
+    // Initial state from saved configuration so the UI has structure immediately
+    if let Some(name) = saved_state.vault_name.clone() {
+        app.vault_name = name;
     }
+    let target_vault_id = explicit_vault.or_else(|| saved_state.vault_id.clone());
+    app.status_message = "Choose a vault or connect to a server".into();
 
-    if let Some(vault_id) = explicit_vault {
-        app.vault_id = Some(vault_id.clone());
-        if saved_state.vault_id.as_deref() == Some(vault_id.as_str()) {
-            if let Some(name) = saved_state.vault_name.clone() {
-                app.vault_name = name;
-            }
+    // Populate remote vaults from local cache immediately (no network needed)
+    for record in load_remote_vaults() {
+        if !app.vaults.iter().any(|v| v.id == record.id && v.origin.as_deref().unwrap_or(&app.default_client.base_url) == record.origin) {
+            app.vaults.push(Vault {
+                id: record.id,
+                name: record.name,
+                origin: Some(record.origin),
+                token: Some(record.token),
+                role: record.role,
+            });
         }
-        refresh_channels_and_messages(&mut app).await;
-    } else {
-        match app.client.fetch_vaults().await {
-            Ok(vaults) if !vaults.is_empty() => {
-                // No saved/explicit vault: let the user pick instead of silently
-                // defaulting to the first one. Opens the vaults chooser; the vault
-                // is only activated (and channels loaded) on the user's Enter.
-                app.vaults = vaults;
-                app.selected_vault_idx = 0;
-                app.show_vaults = true;
-                app.active_pane = ActivePane::Vaults;
-                app.status_message = "Select a vault to open (↑/↓, Enter)".to_string();
-            }
-            Ok(_) => {
-                app.status_message = "No vaults found on server.".to_string();
-            }
-            Err(err) => {
-                app.mark_offline(format!("Backend unreachable: {}", err));
-            }
+    }
+    if let Some(vault_id) = &target_vault_id {
+        if let Some(idx) = app.vaults.iter().position(|v| &v.id == vault_id && v.origin.as_deref().unwrap_or(&base_url) == saved_state.vault_origin.as_deref().unwrap_or(&base_url)) {
+            app.selected_vault_idx = idx;
         }
     }
 
-
-    // Seed active-agent state before the first frame so running agents show
-    // their spinners immediately instead of after the first poll round-trip.
-    if let Some(vault_id) = app.vault_id.clone() {
-        if let Ok(sessions) = app.client.fetch_active_sessions(&vault_id).await {
-            app.apply_active_sessions(sessions);
-        }
-    }
-
-    // Terminal initialization
+    // Terminal initialization immediately so the user never sees a frozen console
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(
@@ -479,7 +624,12 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let app_result = run_app(&mut terminal, &mut app).await;
+    // Draw initial frame immediately so the UI is visible before any background work
+    let _ = terminal.draw(|frame| ui::render(frame, &app));
+
+    let mut native_runner = None;
+
+    let app_result = run_app(&mut terminal, &mut app, &mut native_runner).await;
 
     // Terminal restoration
     disable_raw_mode()?;
@@ -515,6 +665,8 @@ struct TuiSaveState {
     vault_id: Option<String>,
     #[serde(default)]
     vault_name: Option<String>,
+    #[serde(default)]
+    vault_origin: Option<String>,
 }
 
 fn tui_state_path() -> Option<PathBuf> {
@@ -529,6 +681,108 @@ fn load_tui_state() -> TuiSaveState {
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteVaultRecord {
+    pub id: String,
+    pub name: String,
+    pub origin: String,
+    pub token: String,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+fn remote_vaults_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".fizzer").join("remote-vaults.json"))
+}
+
+fn server_sessions_path() -> Option<PathBuf> {
+    std::env::var_os("CASCADE_DATA_DIR").map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".fizzer")))
+        .map(|directory| directory.join("server-sessions.json"))
+}
+
+fn server_session_key(origin: &str) -> String {
+    let local_origin = server_sessions_path().and_then(|path| fs::read(path.with_file_name("local-backend.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|record| record.get("origin").and_then(|value| value.as_str()).map(str::to_owned));
+    if local_origin.as_deref() == Some(origin) { "local".into() } else { origin.into() }
+}
+
+fn server_sessions() -> std::collections::HashMap<String, String> {
+    server_sessions_path().map(|path| server_sessions::read(path.parent().unwrap())).unwrap_or_default()
+}
+
+fn remember_server_session(origin: &str, token: &str) -> Result<(), String> {
+    let path = server_sessions_path().ok_or("Local settings directory unavailable")?;
+    server_sessions::remember(path.parent().unwrap(), &server_session_key(origin), token)
+}
+
+fn load_remote_vaults() -> Vec<RemoteVaultRecord> {
+    let Some(path) = remote_vaults_path() else {
+        return Vec::new();
+    };
+    remote_vaults::read(path.parent().unwrap())
+}
+
+fn save_remote_vault(record: RemoteVaultRecord) -> Result<(), String> {
+    let Some(path) = remote_vaults_path() else {
+        return Ok(());
+    };
+    let parent = path.parent().ok_or_else(|| "Remote vaults path has no parent".to_string())?;
+    remote_vaults::save(parent, record)
+}
+
+fn normalize_remote_origin(input: &str) -> Result<String, String> {
+    let input = input.trim();
+    let explicit = input.starts_with("http://") || input.starts_with("https://");
+    let mut url = reqwest::Url::parse(&if explicit { input.to_string() } else { format!("https://{input}") })
+        .map_err(|_| "Enter a valid server origin".to_string())?;
+    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+    let private = host == "localhost" || match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local(),
+        Err(_) => false,
+    };
+    if !explicit && private { let _ = url.set_scheme("http"); }
+    if !url.username().is_empty() || url.password().is_some() || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err("Use a server origin without credentials or a path".into());
+    }
+    if url.scheme() == "http" && !private { return Err("Remote servers outside the private LAN must use HTTPS".into()); }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn parse_origin_and_invite(input: &str) -> Result<(String, Option<String>), String> {
+    let trimmed = input.trim();
+    if let Some(idx) = trimmed.find("/vault-invite/") {
+        let origin = trimmed[..idx].trim_end_matches('/').to_string();
+        let token = trimmed[idx + "/vault-invite/".len()..]
+            .split(['?', '#', '/'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Ok((normalize_remote_origin(&origin)?, if token.is_empty() { None } else { Some(token) }))
+    } else {
+        Ok((normalize_remote_origin(trimmed)?, None))
+    }
+}
+
+async fn discover_local_backend(path: &std::path::Path) -> Option<String> {
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let origin = record.get("origin")?.as_str()?;
+    let url = reqwest::Url::parse(origin).ok()?;
+    if url.scheme() != "http" || url.host_str() != Some("127.0.0.1")
+        || !url.username().is_empty() || url.password().is_some()
+        || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    let response = reqwest::Client::builder().timeout(Duration::from_millis(750))
+        .redirect(reqwest::redirect::Policy::none()).build().ok()?
+        .get(url.join("/api/health").ok()?).send().await.ok()?;
+    if !response.status().is_success() { return None; }
+    let health: serde_json::Value = response.json().await.ok()?;
+    (health.get("status")?.as_str()? == "ok").then(|| origin.trim_end_matches('/').to_string())
 }
 
 fn configured_instance_url(saved: &TuiSaveState) -> String {
@@ -558,6 +812,7 @@ fn save_tui_state(base_url: &str, app: &App) -> Result<(), String> {
         instance_url: Some(base_url.trim_end_matches('/').to_string()),
         vault_id: Some(vault_id),
         vault_name: Some(app.vault_name.clone()),
+        vault_origin: Some(app.client.base_url.clone()),
     };
     let content = serde_json::to_vec_pretty(&state).map_err(|err| err.to_string())?;
     let temp_path = path.with_extension("json.tmp");
@@ -568,13 +823,41 @@ fn save_tui_state(base_url: &str, app: &App) -> Result<(), String> {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    native_runner: &mut Option<tokio::process::Child>,
 ) -> Result<()> {
+    let mut runner_connection = None;
     let mut event_stream = EventStream::new();
-    let mut poll_interval = tokio::time::interval(Duration::from_secs(3));
+    // Start the first poll one full period out so its ~5 concurrent sync requests
+    // don't pile onto the sequential startup discovery burst (which trips the
+    // shared-peer API rate limit -> 429 on launch).
+    let mut poll_interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(3),
+        Duration::from_secs(3),
+    );
+    poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut animation_interval = tokio::time::interval(Duration::from_millis(ui::ANIMATION_TICK_MS));
     let (tx, mut rx) = mpsc::unbounded_channel::<BackendEvent>();
 
+    // Initial background discovery so UI starts immediately without blocking
+    spawn_session_check(app, &tx);
+    spawn_vault_sync(app, &tx);
+    spawn_health_check(app, &tx);
+    spawn_runner_check(&tx);
+    if app.vault_id.is_some() {
+        spawn_refresh_channels(app, &tx);
+        spawn_active_sessions(app, &tx);
+        spawn_users_sync(app, &tx);
+    }
+
     loop {
+        if app.vault_id.is_some() && !app.author.is_empty() {
+            let connection = (app.client.base_url.clone(), app.client.token.clone());
+            if runner_connection.as_ref() != Some(&connection) {
+                if let Some(mut child) = native_runner.take() { let _ = child.kill().await; }
+                *native_runner = start_native_runner(&connection.0, connection.1.as_deref()).await;
+                runner_connection = Some(connection);
+            }
+        }
         terminal.draw(|frame| ui::render(frame, app))?;
 
         if app.should_quit {
@@ -594,6 +877,7 @@ async fn run_app(
                 spawn_channel_sync(app, &tx);
                 spawn_active_sessions(app, &tx);
                 spawn_notes_sync(app, &tx);
+                spawn_users_sync(app, &tx);
             }
 
             _ = animation_interval.tick() => {
@@ -608,13 +892,14 @@ async fn run_app(
                     .map(|size| (size.width, size.height))
                     .unwrap_or((100, 24));
                 let show_agents = app.show_agents && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
+                let show_users = app.show_users && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
                 let show_notes = app.show_notes;
                 let channels_width = if app.show_channels || show_notes {
                     if show_agents { 26 } else { 28 }
                 } else {
                     0
                 };
-                let agents_width = if show_agents { 28 } else { 0 };
+                let agents_width = if show_agents || show_users { 28 } else { 0 };
                 let center_width = term_width.saturating_sub(channels_width + agents_width);
                 let is_input_tall = app.input_box_height_for_width(term_height, center_width) >= 20;
 
@@ -630,6 +915,253 @@ async fn run_app(
                             continue;
                         }
 
+                        if app.vault_action.is_some() {
+                            let mut submit = false;
+                            match key.code {
+                                KeyCode::Esc => app.vault_action = None,
+                                KeyCode::Enter => submit = true,
+                                KeyCode::Tab | KeyCode::Down | KeyCode::Up => {
+                                    if let Some(VaultActionState::ConnectRemote { field, .. }) = app.vault_action.as_mut() {
+                                        *field = match (key.code, *field) {
+                                            (KeyCode::Up, VaultActionField::NameOrOrigin) => VaultActionField::Password,
+                                            (KeyCode::Up, VaultActionField::Username) => VaultActionField::NameOrOrigin,
+                                            (KeyCode::Up, VaultActionField::Password) => VaultActionField::Username,
+                                            (_, VaultActionField::NameOrOrigin) => VaultActionField::Username,
+                                            (_, VaultActionField::Username) => VaultActionField::Password,
+                                            (_, VaultActionField::Password) => VaultActionField::NameOrOrigin,
+                                        };
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if let Some(action) = app.vault_action.as_mut() {
+                                        action.active_input().pop();
+                                    }
+                                },
+                                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if let Some(action) = app.vault_action.as_mut() {
+                                        action.active_input().push(c);
+                                    }
+                                },
+                                _ => {}
+                            }
+                            if submit {
+                                if let Some(action) = app.vault_action.take() {
+                                    match action {
+                                        VaultActionState::CreateLocal { name } if !name.trim().is_empty() => {
+                                            match app.default_client.create_vault(name.trim()).await {
+                                                Ok(vault) => {
+                                                    app.vaults.push(vault);
+                                                    app.selected_vault_idx = app.vaults.len().saturating_sub(1);
+                                                    app.status_message = "Local vault created. Press Enter to open it.".into();
+                                                }
+                                                Err(err) => app.status_message = format!("Could not create vault: {}", err),
+                                            }
+                                        }
+                                        VaultActionState::ConnectRemote { origin, username, password, .. } => {
+                                            let (target_origin, invite_token) = match parse_origin_and_invite(&origin) {
+                                                Ok(value) => value,
+                                                Err(error) => { app.status_message = error; continue; }
+                                            };
+                                            if target_origin.is_empty() {
+                                                app.status_message = "Please enter an origin or invite URL.".into();
+                                                continue;
+                                            }
+
+                                            if let Some(token) = invite_token {
+                                                let client_opt = if !username.trim().is_empty() && !password.is_empty() {
+                                                    match CascadeClient::login_remote(&target_origin, username.trim(), &password).await {
+                                                        Ok((client, user)) => {
+                                                            app.author_color = user.color;
+                                                            Some(client)
+                                                        }
+                                                        Err(err) => {
+                                                            app.status_message = format!("Remote login failed: {}", err);
+                                                            None
+                                                        }
+                                                    }
+                                                } else if let Some(existing) = load_remote_vaults().into_iter().find(|r| r.origin == target_origin) {
+                                                    Some(CascadeClient::new(target_origin.clone(), Some(existing.token)))
+                                                } else {
+                                                    Some(CascadeClient::new(target_origin.clone(), None))
+                                                };
+
+                                                if let Some(client) = client_opt {
+                                                    match client.accept_vault_invite(&token).await {
+                                                        Ok(res) => {
+                                                            let record = RemoteVaultRecord {
+                                                                id: res.vault_id.clone(),
+                                                                name: res.name.clone(),
+                                                                origin: target_origin.clone(),
+                                                                token: client.token.clone().unwrap_or_default(),
+                                                                role: Some(res.role.clone()),
+                                                            };
+                                                            let _ = save_remote_vault(record.clone());
+                                                            let new_vault = Vault {
+                                                                id: record.id.clone(),
+                                                                name: record.name.clone(),
+                                                                origin: Some(record.origin),
+                                                                token: Some(record.token),
+                                                                role: record.role,
+                                                            };
+                                                            if let Some(idx) = app.vaults.iter().position(|v| v.id == new_vault.id && v.origin == new_vault.origin) {
+                                                                app.vaults[idx] = new_vault;
+                                                                app.selected_vault_idx = idx;
+                                                            } else {
+                                                                app.vaults.push(new_vault);
+                                                                app.selected_vault_idx = app.vaults.len().saturating_sub(1);
+                                                            }
+                                                            app.activate_selected_vault();
+                                                            spawn_session_check(app, &tx);
+                                                            spawn_refresh_channels(app, &tx);
+                                                            spawn_notes_sync(app, &tx);
+                                                            spawn_active_sessions(app, &tx);
+                                                            app.status_message = format!("Joined remote vault: {}", res.name);
+                                                        }
+                                                        Err(err) => {
+                                                            app.status_message = format!("Could not accept invite: {}", err);
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                match CascadeClient::login_remote(&target_origin, &username, &password).await {
+                                                    Ok((client, user)) => {
+                                                        if let Some(token) = &client.token {
+                                                            if let Err(error) = remember_server_session(&target_origin, token) {
+                                                                app.status_message = format!("Could not remember server login: {error}");
+                                                            }
+                                                        }
+                                                        if target_origin == app.default_client.base_url {
+                                                            app.default_client = client.clone();
+                                                            app.local_authenticated = true;
+                                                        }
+                                                        app.author = user.username;
+                                                        app.author_color = user.color;
+                                                        match client.fetch_vaults().await {
+                                                            Ok(remote_vaults) => {
+                                                                for v in &remote_vaults {
+                                                                    let record = RemoteVaultRecord {
+                                                                        id: v.id.clone(),
+                                                                        name: v.name.clone(),
+                                                                        origin: target_origin.clone(),
+                                                                        token: client.token.clone().unwrap_or_default(),
+                                                                        role: None,
+                                                                    };
+                                                                    let _ = save_remote_vault(record);
+                                                                }
+                                                                for v in remote_vaults {
+                                                                    let new_vault = Vault {
+                                                                        id: v.id,
+                                                                        name: v.name,
+                                                                        origin: Some(target_origin.clone()),
+                                                                        token: client.token.clone(),
+                                                                        role: None,
+                                                                    };
+                                                                    if let Some(idx) = app.vaults.iter().position(|x| x.id == new_vault.id && x.origin == new_vault.origin) {
+                                                                        app.vaults[idx] = new_vault;
+                                                                    } else {
+                                                                        app.vaults.push(new_vault);
+                                                                    }
+                                                                }
+                                                                if let Some(idx) = app.vaults.iter().position(|v| v.origin.as_deref() == Some(&target_origin)) {
+                                                                    app.selected_vault_idx = idx;
+                                                                    app.activate_selected_vault();
+                                                                    spawn_session_check(app, &tx);
+                                                                    spawn_refresh_channels(app, &tx);
+                                                                    spawn_notes_sync(app, &tx);
+                                                                    spawn_active_sessions(app, &tx);
+                                                                }
+                                                                app.status_message = format!("Connected to {}", target_origin);
+                                                            }
+                                                            Err(err) => app.status_message = format!("Connected, but vaults failed: {}", err),
+                                                        }
+                                                    }
+                                                    Err(err) => app.status_message = format!("Could not connect: {}", err),
+                                                }
+                                            }
+                                        }
+                                        _ => app.status_message = "Enter a value first.".into(),
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        if app.user_settings_modal.is_some() {
+                            if key.code == KeyCode::Esc {
+                                if let Some(modal) = app.user_settings_modal.as_mut() {
+                                    if modal.editing_display_name {
+                                        modal.editing_display_name = false;
+                                        modal.user.display_name = modal.display_name_input.trim().to_string();
+                                    } else {
+                                        app.close_user_settings();
+                                    }
+                                }
+                                continue;
+                            }
+                            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                save_user_settings(app, &tx);
+                                continue;
+                            }
+                            if app.user_settings_modal.as_ref().map(|modal| modal.editing_display_name).unwrap_or(false) {
+                                if let Some(modal) = app.user_settings_modal.as_mut() {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            modal.editing_display_name = false;
+                                            modal.user.display_name = modal.display_name_input.trim().to_string();
+                                        }
+                                        KeyCode::Backspace => {
+                                            modal.display_name_input.pop();
+                                            modal.user.display_name = modal.display_name_input.clone();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            modal.display_name_input.push(c);
+                                            modal.user.display_name = modal.display_name_input.clone();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue;
+                            }
+                            let mut should_save = false;
+                            let mut should_close = false;
+                            if let Some(modal) = app.user_settings_modal.as_mut() {
+                                match key.code {
+                                    KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
+                                    KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        if modal.selected_field.is_color_slider() {
+                                            let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                            modal.adjust_slider(modal.selected_field, -step);
+                                        } else if modal.selected_field == UserSettingsField::Cancel {
+                                            modal.selected_field = UserSettingsField::Save;
+                                        }
+                                    }
+                                    KeyCode::Right | KeyCode::Char('l') => {
+                                        if modal.selected_field.is_color_slider() {
+                                            let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                            modal.adjust_slider(modal.selected_field, step);
+                                        } else if modal.selected_field == UserSettingsField::Save {
+                                            modal.selected_field = UserSettingsField::Cancel;
+                                        }
+                                    }
+                                    KeyCode::Char('[') | KeyCode::PageDown => modal.adjust_slider(modal.selected_field, -5),
+                                    KeyCode::Char(']') | KeyCode::PageUp => modal.adjust_slider(modal.selected_field, 5),
+                                    KeyCode::Enter | KeyCode::Char(' ') => match modal.toggle_or_action() {
+                                        Some(true) => should_save = true,
+                                        Some(false) => should_close = true,
+                                        None => {}
+                                    },
+                                    _ => {}
+                                }
+                            }
+                            if should_save {
+                                save_user_settings(app, &tx);
+                            } else if should_close {
+                                app.close_user_settings();
+                            }
+                            continue;
+                        }
+
                         // Modal key handling (if Agent Settings Modal is open)
                         if app.agent_settings_modal.is_some() {
                             if key.code == KeyCode::Esc {
@@ -637,6 +1169,12 @@ async fn run_app(
                                     if modal.editing_custom_model {
                                         modal.editing_custom_model = false;
                                         modal.sync_model_from_choice();
+                                    } else if modal.editing_name {
+                                        modal.editing_name = false;
+                                        modal.agent.display_name = modal.name_input.trim().to_string();
+                                    } else if modal.editing_handle {
+                                        modal.editing_handle = false;
+                                        modal.agent.mention = crate::app::sanitize_handle(&modal.handle_input);
                                     } else {
                                         app.close_agent_settings();
                                     }
@@ -665,6 +1203,48 @@ async fn run_app(
                                         KeyCode::Char(c) => {
                                             modal.custom_model_input.push(c);
                                             modal.sync_model_from_choice();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue;
+                            }
+
+                            // If user is editing the agent's display name
+                            let is_editing_name = app.agent_settings_modal.as_ref().map(|m| m.editing_name).unwrap_or(false);
+                            if is_editing_name {
+                                if let Some(ref mut modal) = app.agent_settings_modal {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            modal.editing_name = false;
+                                            modal.agent.display_name = modal.name_input.trim().to_string();
+                                        }
+                                        KeyCode::Backspace => {
+                                            modal.name_input.pop();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            modal.name_input.push(c);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue;
+                            }
+
+                            // If user is editing the agent's @handle
+                            let is_editing_handle = app.agent_settings_modal.as_ref().map(|m| m.editing_handle).unwrap_or(false);
+                            if is_editing_handle {
+                                if let Some(ref mut modal) = app.agent_settings_modal {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            modal.editing_handle = false;
+                                            modal.agent.mention = crate::app::sanitize_handle(&modal.handle_input);
+                                        }
+                                        KeyCode::Backspace => {
+                                            modal.handle_input.pop();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            modal.handle_input.push(c);
                                         }
                                         _ => {}
                                     }
@@ -815,6 +1395,10 @@ async fn run_app(
                             }
                             continue;
                         }
+                        if key.code == KeyCode::F(5) {
+                            app.toggle_users();
+                            continue;
+                        }
 
                         // Input composer height toggle (Alt+E, or Ctrl+E when not typing) and adjustment (Ctrl/Alt+Up/Down)
                         if (key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::ALT))
@@ -907,6 +1491,7 @@ async fn run_app(
                                 }
                                 KeyCode::PageUp => {
                                     app.scroll_up_by(5);
+                                    spawn_older_messages(app, &tx);
                                     continue;
                                 }
                                 KeyCode::PageDown => {
@@ -930,10 +1515,25 @@ async fn run_app(
                                     KeyCode::Down | KeyCode::Char('j') => app.next_vault(),
                                     KeyCode::Char('r') => spawn_vault_sync(app, &tx),
                                     KeyCode::Enter => {
+                                        if app.selected_vault_idx == app.vaults.len() {
+                                            app.vault_action = Some(if app.local_authenticated {
+                                                VaultActionState::CreateLocal { name: String::new() }
+                                            } else {
+                                                VaultActionState::ConnectRemote { origin: app.default_client.base_url.clone(), username: String::new(), password: String::new(), field: VaultActionField::Username }
+                                            });
+                                            continue;
+                                        }
+                                        if app.selected_vault_idx == app.vaults.len() + 1 {
+                                            app.vault_action = Some(VaultActionState::ConnectRemote {
+                                                origin: String::new(), username: String::new(), password: String::new(), field: VaultActionField::NameOrOrigin,
+                                            });
+                                            continue;
+                                        }
                                         let had_active_vault = app.vault_id.is_some();
                                         app.show_vaults = false;
                                         if app.activate_selected_vault() || !had_active_vault {
-                                            refresh_channels_and_messages(app).await;
+                                            spawn_session_check(app, &tx);
+                                            spawn_refresh_channels(app, &tx);
                                             spawn_notes_sync(app, &tx);
                                             spawn_active_sessions(app, &tx);
                                         }
@@ -994,6 +1594,14 @@ async fn run_app(
                                     _ => {}
                                 }
                             }
+                            ActivePane::Users => {
+                                match key.code {
+                                    KeyCode::Up | KeyCode::Char('k') => app.prev_user(),
+                                    KeyCode::Down | KeyCode::Char('j') => app.next_user(),
+                                    KeyCode::Enter => app.open_user_settings(),
+                                    _ => {}
+                                }
+                            }
                             ActivePane::Notes => {
                                 match key.code {
                                     KeyCode::Up | KeyCode::Char('k') => app.prev_note(),
@@ -1018,17 +1626,18 @@ async fn run_app(
 
                                 match key.code {
                                     KeyCode::Up => {
-                                        if is_input_tall {
+                                        if is_input_tall || app.input.contains('\n') {
                                             app.move_cursor_up_line();
                                         } else {
-                                            app.scroll_up();
+                                            // The composer owns vertical arrows while selected;
+                                            // do not unexpectedly move the chat log underneath it.
                                         }
                                     }
                                     KeyCode::Down => {
-                                        if is_input_tall {
+                                        if is_input_tall || app.input.contains('\n') {
                                             app.move_cursor_down_line();
                                         } else {
-                                            app.scroll_down();
+                                            // The composer owns vertical arrows while selected.
                                         }
                                     }
                                     KeyCode::PageUp => {
@@ -1036,6 +1645,7 @@ async fn run_app(
                                             app.input_scroll_up();
                                         } else {
                                             app.scroll_up_by(5);
+                                            spawn_older_messages(app, &tx);
                                         }
                                     }
                                     KeyCode::PageDown => {
@@ -1101,6 +1711,21 @@ async fn run_app(
                         }
                     }
                     Event::Paste(ref text) => {
+                        if let Some(action) = app.vault_action.as_mut() {
+                            action.paste(text);
+                            continue;
+                        }
+                        if let Some(ref mut modal) = app.user_settings_modal {
+                            if modal.editing_display_name {
+                                for c in text.chars() {
+                                    if c != '\r' && c != '\n' {
+                                        modal.display_name_input.push(c);
+                                        modal.user.display_name = modal.display_name_input.clone();
+                                    }
+                                }
+                                continue;
+                            }
+                        }
                         if let Some(ref mut modal) = app.agent_settings_modal {
                             if modal.editing_custom_model {
                                 for c in text.chars() {
@@ -1109,6 +1734,22 @@ async fn run_app(
                                     }
                                 }
                                 modal.sync_model_from_choice();
+                                continue;
+                            }
+                            if modal.editing_name {
+                                for c in text.chars() {
+                                    if c != '\r' && c != '\n' {
+                                        modal.name_input.push(c);
+                                    }
+                                }
+                                continue;
+                            }
+                            if modal.editing_handle {
+                                for c in text.chars() {
+                                    if c != '\r' && c != '\n' {
+                                        modal.handle_input.push(c);
+                                    }
+                                }
                                 continue;
                             }
                         }
@@ -1125,28 +1766,66 @@ async fn run_app(
                     }
                     Event::Mouse(mouse) => {
                         let term_width = terminal.size().map(|s| s.width).unwrap_or(80);
-                        if let Some(ref mut modal) = app.agent_settings_modal {
-                            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                                let modal_area = ui::agent_modal_rect(Rect::new(0, 0, term_width, term_height));
-                                if mouse.column >= modal_area.x
-                                    && mouse.column < modal_area.x + modal_area.width
-                                    && mouse.row >= modal_area.y
-                                    && mouse.row < modal_area.y + modal_area.height
-                                {
-                                    let rel_row = (mouse.row - modal_area.y) as usize;
-                                    let rel_col = mouse.column - modal_area.x;
-                                    match modal.click_row(rel_row, rel_col) {
-                                        Some(true) => {
-                                            save_agent_settings(app, &tx);
+                        if let Some(ref mut modal) = app.user_settings_modal {
+                            let modal_area = ui::user_modal_rect(Rect::new(0, 0, term_width, term_height));
+                            let in_modal = mouse.column >= modal_area.x
+                                && mouse.column < modal_area.x + modal_area.width
+                                && mouse.row >= modal_area.y
+                                && mouse.row < modal_area.y + modal_area.height;
+                            let rel_row = mouse.row.saturating_sub(modal_area.y) as usize;
+                            let rel_col = mouse.column.saturating_sub(modal_area.x);
+                            match mouse.kind {
+                                MouseEventKind::Down(MouseButton::Left) => {
+                                    if in_modal {
+                                        match modal.click_row(rel_row, rel_col) {
+                                            Some(true) => save_user_settings(app, &tx),
+                                            Some(false) => app.close_user_settings(),
+                                            None => {}
                                         }
-                                        Some(false) => {
-                                            app.close_agent_settings();
-                                        }
-                                        None => {}
+                                    } else {
+                                        app.close_user_settings();
                                     }
-                                } else {
-                                    app.close_agent_settings();
                                 }
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    if in_modal {
+                                        if let Some(field) = modal.color_slider_at_row(rel_row) {
+                                            modal.set_slider_from_col(field, rel_col, modal_area.width);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        if let Some(ref mut modal) = app.agent_settings_modal {
+                            let modal_area = ui::agent_modal_rect(Rect::new(0, 0, term_width, term_height));
+                            let in_modal = mouse.column >= modal_area.x
+                                && mouse.column < modal_area.x + modal_area.width
+                                && mouse.row >= modal_area.y
+                                && mouse.row < modal_area.y + modal_area.height;
+                            let rel_row = mouse.row.saturating_sub(modal_area.y) as usize;
+                            let rel_col = mouse.column.saturating_sub(modal_area.x);
+                            match mouse.kind {
+                                MouseEventKind::Down(MouseButton::Left) => {
+                                    if in_modal {
+                                        match modal.click_row(rel_row, rel_col, modal_area.width) {
+                                            Some(true) => save_agent_settings(app, &tx),
+                                            Some(false) => app.close_agent_settings(),
+                                            None => {}
+                                        }
+                                    } else {
+                                        app.close_agent_settings();
+                                    }
+                                }
+                                // Dragging over a slider row scrubs that channel.
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    if in_modal {
+                                        if let Some(field) = modal.color_slider_at_row(rel_row) {
+                                            modal.set_slider_from_col(field, rel_col, modal_area.width);
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                             continue;
                         }
@@ -1156,6 +1835,7 @@ async fn run_app(
 
                         let show_channels = app.show_channels;
                         let show_agents = app.show_agents && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
+                        let show_users = app.show_users && term_width >= ui::MIN_WIDTH_FOR_AGENTS;
                         let show_notes = app.show_notes;
 
                         let channels_width: u16 = match (show_channels || show_notes, show_agents) {
@@ -1164,7 +1844,7 @@ async fn run_app(
                             _ => 0,
                         };
 
-                        let agents_width: u16 = if show_agents { 28 } else { 0 };
+                        let agents_width: u16 = if show_agents || show_users { 28 } else { 0 };
                         let center_end_x = term_width.saturating_sub(agents_width);
                         let is_in_main_area = mouse.row < term_height.saturating_sub(1);
                         let sidebar_list_top = HEADER_HEIGHT + 1;
@@ -1210,11 +1890,20 @@ async fn run_app(
                                             }
                                         }
                                     } else if mouse.column >= center_end_x {
-                                        app.active_pane = ActivePane::Agents;
-                                        if mouse.row >= sidebar_list_top {
+                                        app.active_pane = if show_users && (!show_agents || mouse.row >= sidebar_split_y) {
+                                            ActivePane::Users
+                                        } else {
+                                            ActivePane::Agents
+                                        };
+                                        if app.active_pane == ActivePane::Agents && mouse.row >= sidebar_list_top {
                                             let agent_idx = ((mouse.row - sidebar_list_top) / 2) as usize;
                                             if agent_idx < app.agents.len() {
                                                 app.selected_agent_idx = agent_idx;
+                                            }
+                                        } else if mouse.row >= sidebar_list_top {
+                                            let user_idx = ((mouse.row.saturating_sub(if show_agents { sidebar_split_y + 1 } else { sidebar_list_top })) / 2) as usize;
+                                            if user_idx < app.users.len() {
+                                                app.selected_user_idx = user_idx;
                                             }
                                         }
                                     } else {
@@ -1266,6 +1955,10 @@ async fn run_app(
                                 }
                             }
                             MouseEventKind::ScrollUp => {
+                                if mouse.column >= channels_width && mouse.column < center_end_x
+                                    && app.scroll_offset + usize::from(term_height) >= app.chat_cache.read().unwrap().lines.len() {
+                                    spawn_older_messages(app, &tx);
+                                }
                                 if mouse.column < channels_width {
                                     if show_notes && (!show_channels || mouse.row >= sidebar_split_y) {
                                         app.prev_note();
@@ -1416,37 +2109,6 @@ fn apply_channels(app: &mut App, channels: Vec<ChannelItem>) {
     };
 }
 
-async fn refresh_channels_and_messages(app: &mut App) {
-    if let Some(vault_id) = app.vault_id.clone() {
-        app.is_loading = true;
-        app.status_message = "Refreshing channels...".to_string();
-        if let Ok(notes) = app.client.fetch_notes(&vault_id).await {
-            app.notes = notes
-                .into_iter()
-                .filter(|note| !note.content_preview.trim().starts_with("cascade://chat-channel"))
-                .collect();
-            app.clamp_note_selection();
-        }
-        match app.client.fetch_channels(&vault_id).await {
-            Ok(channels) => {
-                apply_channels(app, channels);
-                if let Some(channel_id) = &app.active_channel_id {
-                    if let Ok(msgs) = app.client.fetch_messages(&vault_id, channel_id).await {
-                        app.messages = msgs;
-                    }
-                    if let Ok(agents) = app.client.fetch_agents(&vault_id, channel_id).await {
-                        app.agents = agents;
-                    }
-                }
-            }
-            Err(err) => {
-                app.mark_offline(format!("Backend unreachable: {}", err));
-            }
-        }
-        app.is_loading = false;
-    }
-}
-
 fn chat_offset_at_position(
     app: &App,
     row: u16,
@@ -1489,6 +2151,14 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
             modal.editing_custom_model = false;
             modal.sync_model_from_choice();
         }
+        if modal.editing_name {
+            modal.editing_name = false;
+            modal.agent.display_name = modal.name_input.trim().to_string();
+        }
+        if modal.editing_handle {
+            modal.editing_handle = false;
+            modal.agent.mention = crate::app::sanitize_handle(&modal.handle_input);
+        }
         modal.error_message = None;
         (modal.agent_idx, modal.agent.clone(), modal.is_new)
     };
@@ -1528,6 +2198,30 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
             is_new,
             result,
         });
+    });
+}
+
+fn save_user_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let (user_idx, display_name, color) = {
+        let Some(modal) = app.user_settings_modal.as_mut() else { return; };
+        if modal.editing_display_name {
+            modal.editing_display_name = false;
+            modal.user.display_name = modal.display_name_input.trim().to_string();
+        }
+        if modal.user.display_name.trim().is_empty() {
+            modal.error_message = Some("Display name cannot be empty".to_string());
+            return;
+        }
+        modal.error_message = None;
+        (modal.user_idx, modal.user.display_name.clone(), modal.user.color.clone().unwrap_or_else(|| "FFFFFF".to_string()))
+    };
+
+    app.status_message = format!("Saving profile for @{}...", app.author);
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.update_profile(&display_name, &color).await;
+        let _ = tx.send(BackendEvent::UserSaved { user_idx, result });
     });
 }
 

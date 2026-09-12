@@ -29,6 +29,7 @@ defmodule Cascade.Chat.Schema do
     {"agent_id", "TEXT NOT NULL DEFAULT 'agent'"},
     {"display_name", "TEXT NOT NULL DEFAULT ''"},
     {"avatar_url", "TEXT NOT NULL DEFAULT ''"},
+    {"color", "TEXT NOT NULL DEFAULT 'FFFFFF'"},
     {"mention", "TEXT NOT NULL DEFAULT ''"},
     {"model", "TEXT NOT NULL DEFAULT ''"},
     {"reasoning_effort", "TEXT NOT NULL DEFAULT ''"},
@@ -52,6 +53,7 @@ defmodule Cascade.Chat.Schema do
     {"agent_id", "TEXT NOT NULL DEFAULT 'agent'"},
     {"display_name", "TEXT NOT NULL DEFAULT ''"},
     {"avatar_url", "TEXT NOT NULL DEFAULT ''"},
+    {"color", "TEXT NOT NULL DEFAULT 'FFFFFF'"},
     {"mention", "TEXT NOT NULL DEFAULT ''"},
     {"model", "TEXT NOT NULL DEFAULT ''"},
     {"cwd", "TEXT NOT NULL DEFAULT ''"},
@@ -114,7 +116,8 @@ defmodule Cascade.Chat.Schema do
       [20, "conversation_id", "TEXT", 1, "''", 0],
       [21, "created_at", "TEXT", 1, "datetime('now')", 0],
       [22, "updated_at", "TEXT", 1, "datetime('now')", 0],
-      [23, "vault_agent_id", "TEXT", 1, "''", 0]
+      [23, "vault_agent_id", "TEXT", 1, "''", 0],
+      [24, "color", "TEXT", 1, "'FFFFFF'", 0]
     ],
     "chat_channel_links" => [
       [0, "local_channel_id", "TEXT", 0, nil, 1],
@@ -245,7 +248,8 @@ defmodule Cascade.Chat.Schema do
       final_reply_only INTEGER NOT NULL DEFAULT 0, yolo INTEGER NOT NULL DEFAULT 0,
       next_step_suggestions INTEGER NOT NULL DEFAULT 0,
       conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT ''
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT 'FFFFFF'
     )
     """
   end
@@ -260,6 +264,7 @@ defmodule Cascade.Chat.Schema do
       hermes_safe_mode INTEGER NOT NULL DEFAULT 0, identity_scope TEXT NOT NULL DEFAULT 'network',
       expires_at TEXT, owner_user_id INTEGER REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      color TEXT NOT NULL DEFAULT 'FFFFFF',
       UNIQUE(owner_user_id,mention)
     )
     """
@@ -383,7 +388,7 @@ defmodule Cascade.Chat.Schema do
 
     select =
       if table == "chat_agent_members" do
-        "id,channel_id,vault_id,COALESCE(agent_id,'agent'),COALESCE(display_name,''),COALESCE(avatar_url,''),COALESCE(mention,''),COALESCE(model,''),COALESCE(reasoning_effort,''),COALESCE(priority_service_tier,0),COALESCE(cwd,''),COALESCE(context_prompt,''),COALESCE(taggable_by_agents,0),COALESCE(reply_to_every_message,0),COALESCE(orchestrator,0),COALESCE(pingable_by_others,0),COALESCE(ambient_group_chat,0),COALESCE(final_reply_only,0),COALESCE(yolo,0),COALESCE(next_step_suggestions,0),COALESCE(conversation_id,''),COALESCE(created_at,datetime('now')),COALESCE(updated_at,datetime('now')),COALESCE(vault_agent_id,'')"
+        "id,channel_id,vault_id,COALESCE(agent_id,'agent'),COALESCE(display_name,''),COALESCE(avatar_url,''),COALESCE(mention,''),COALESCE(model,''),COALESCE(reasoning_effort,''),COALESCE(priority_service_tier,0),COALESCE(cwd,''),COALESCE(context_prompt,''),COALESCE(taggable_by_agents,0),COALESCE(reply_to_every_message,0),COALESCE(orchestrator,0),COALESCE(pingable_by_others,0),COALESCE(ambient_group_chat,0),COALESCE(final_reply_only,0),COALESCE(yolo,0),COALESCE(next_step_suggestions,0),COALESCE(conversation_id,''),COALESCE(created_at,datetime('now')),COALESCE(updated_at,datetime('now')),COALESCE(vault_agent_id,''),COALESCE(color,'FFFFFF')"
       else
         target
       end
@@ -463,7 +468,7 @@ defmodule Cascade.Chat.Schema do
               SQL.exec(create_table_sql("vault_agents", "vault_agents_owner_scoped"))
 
               SQL.exec(
-                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,created_at,updated_at FROM vault_agents"
+                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,created_at,updated_at,color FROM vault_agents"
               )
 
               SQL.exec("DROP TABLE vault_agents")

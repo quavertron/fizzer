@@ -462,6 +462,30 @@ export function recognizeMissionWorkspaceMigration(before, after) {
   return same([...beforeObjects], [...afterObjects]);
 }
 
+const PROFILE_COLOR_TABLES = new Set(['users', 'chat_agent_members', 'vault_agents']);
+const PROFILE_COLOR_LEDGER_ROW = {
+  version: 3,
+  name: 'profile_colors',
+  checksum: 'd3e46239f158d82455643c652333e60247448736e49ff71251a494e3c9a43ac7',
+};
+
+function exactProfileColorAddition(before, after) {
+  if (!after || before.type !== 'table' || after.type !== 'table'
+      || before.name !== after.name || before.tableName !== after.tableName
+      || !PROFILE_COLOR_TABLES.has(before.name)) return false;
+  const db = new Database(':memory:');
+  try {
+    // Let SQLite produce the exact ALTER result, including legacy constraints
+    // and column ordering. No other schema difference is authorized.
+    db.exec(before.sql);
+    db.exec(`ALTER TABLE ${before.name} ADD COLUMN color TEXT NOT NULL DEFAULT 'FFFFFF'`);
+    const { sql } = db.prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?').get('table', before.name);
+    return normalizedSql(sql) === normalizedSql(after.sql);
+  } catch {
+    return false;
+  } finally { db.close(); }
+}
+
 export function compareSchemaFingerprints(before, after) {
   const failures = [];
   const beforeObjects = new Map(before.objects.map((object) => [`${object.type}:${object.name}`, object]));
@@ -476,6 +500,7 @@ export function compareSchemaFingerprints(before, after) {
   for (const [key, oldObject] of beforeObjects) {
     const nextObject = afterObjects.get(key);
     if (nextObject && same(oldObject, nextObject)) continue;
+    if (exactProfileColorAddition(oldObject, nextObject)) continue;
     const transitions = ROLLING_SCHEMA_TRANSITIONS.get(key);
     if (!nextObject || oldObject.type !== nextObject.type
         || oldObject.name !== nextObject.name || oldObject.tableName !== nextObject.tableName
@@ -493,7 +518,9 @@ export function compareSchemaFingerprints(before, after) {
     }
   }
   if (!objectsMatch) failures.push('database schema changed');
-  if (!same(before.migrations, after.migrations)) failures.push('migration ledger changed');
+  const colorsRecorded = !before.migrations.some(row => row.version === 3)
+    && same(after.migrations, [...before.migrations, PROFILE_COLOR_LEDGER_ROW]);
+  if (!same(before.migrations, after.migrations) && !colorsRecorded) failures.push('migration ledger changed');
   return failures;
 }
 

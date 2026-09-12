@@ -7,6 +7,151 @@ use tokio::task::{JoinHandle, JoinSet};
 
 type Requests = Arc<Mutex<Vec<(String, Value)>>>;
 
+#[test]
+fn remote_origins_default_to_https_and_reject_public_plaintext() {
+    assert_eq!(normalize_remote_origin("example.com:8443").unwrap(), "https://example.com:8443");
+    assert_eq!(normalize_remote_origin("127.0.0.1:3000").unwrap(), "http://127.0.0.1:3000");
+    assert_eq!(normalize_remote_origin("192.168.1.20:4000").unwrap(), "http://192.168.1.20:4000");
+    assert!(normalize_remote_origin("http://example.com").is_err());
+    assert!(normalize_remote_origin("https://user:pass@example.com").is_err());
+}
+
+#[test]
+fn selecting_a_cloned_vault_on_another_server_clears_previous_workspace() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:3000".into(), None));
+    app.vault_id = Some("clone".into());
+    app.active_channel_id = Some("old-channel".into());
+    app.vaults = vec![serde_json::from_value(json!({"id":"clone", "name":"Remote clone", "origin":"http://127.0.0.1:4000"})).unwrap()];
+    assert!(app.activate_selected_vault());
+    assert_eq!(app.client.base_url, "http://127.0.0.1:4000");
+    assert_eq!(app.active_channel_id, None);
+}
+
+#[test]
+fn identity_follows_selected_server_and_rejects_late_previous_session() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:3000".into(), None));
+    app.client = CascadeClient::new("https://remote.example".into(), None);
+    let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::Session { origin: "https://remote.example".into(), result: Ok(Some(("remote-user".into(), "ABCDEF".into()))) }, &tx);
+    apply_backend_event(&mut app, BackendEvent::Session { origin: "http://127.0.0.1:3000".into(), result: Ok(Some(("local-user".into(), "123456".into()))) }, &tx);
+    assert_eq!(app.author, "remote-user");
+    apply_backend_event(&mut app, BackendEvent::Session { origin: "https://remote.example".into(), result: Ok(None) }, &tx);
+    assert!(app.author.is_empty());
+    assert!(app.show_vaults);
+    assert_eq!(app.active_pane, ActivePane::Vaults);
+}
+
+#[tokio::test]
+async fn local_backend_discovery_requires_a_healthy_loopback_service() {
+    let server = MockServer::new(|request, _| {
+        assert!(request.starts_with("GET /api/health "));
+        (200, json!({"status":"ok"}), Duration::ZERO)
+    }).await;
+    let path = std::env::temp_dir().join(format!("fizzer-discovery-{}.json", std::process::id()));
+    fs::write(&path, json!({"origin": server.client.base_url}).to_string()).unwrap();
+    assert_eq!(discover_local_backend(&path).await, Some(server.client.base_url.clone()));
+    for origin in ["https://cscd.online", "http://127.0.0.1:1", "http://127.0.0.1:3000/other"] {
+        fs::write(&path, json!({"origin":origin}).to_string()).unwrap();
+        assert_eq!(discover_local_backend(&path).await, None);
+    }
+    fs::write(&path, "broken metadata").unwrap();
+    assert_eq!(discover_local_backend(&path).await, None);
+    fs::remove_file(&path).unwrap();
+    assert_eq!(discover_local_backend(&path).await, None);
+}
+
+fn empty_history(channel_id: &str) -> BackendEvent {
+    BackendEvent::HistoryPage { channel_id: channel_id.into(), before: None,
+        result: Ok(api::MessagesResponse { messages: vec![], before_seq: None, has_more: false }) }
+}
+
+#[tokio::test]
+async fn history_pages_load_on_demand_and_survive_refresh() {
+    let server = MockServer::new(|request, _| {
+        let body = if request.contains("beforeSeq=30") {
+            assert!(request.contains("limit=20"));
+            json!({"messages":[{"id":"old"},{"id":"recent"}],"beforeSeq":10,"hasMore":false})
+        } else if request.contains("/messages?") {
+            assert!(request.contains("limit=8"));
+            json!({"messages":[{"id":"recent"}],"beforeSeq":30,"hasMore":true})
+        } else { json!([]) };
+        (200, body, Duration::from_millis(10))
+    }).await;
+    let mut app = server.app();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    spawn_channel_sync(&mut app, &tx);
+    while app.receiving_messages.is_some() {
+        apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
+    }
+    assert_eq!(app.messages.len(), 1);
+    assert!(app.history_has_more);
+    assert!(!server.requests.lock().unwrap().iter().any(|(r, _)| r.contains("beforeSeq")));
+    spawn_older_messages(&mut app, &tx);
+    spawn_older_messages(&mut app, &tx); // Do not duplicate an in-flight request.
+    while app.history_loading {
+        apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
+    }
+    assert_eq!(app.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["old", "recent"]);
+    assert!(!app.history_has_more);
+    assert_eq!(server.requests.lock().unwrap().iter().filter(|(r, _)| r.contains("beforeSeq")).count(), 1);
+    spawn_channel_sync(&mut app, &tx);
+    while app.receiving_messages.is_some() {
+        apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
+    }
+    assert_eq!(app.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["old", "recent"]);
+    assert_eq!(app.history_before, Some(10));
+    apply_backend_event(&mut app, BackendEvent::HistoryPage {
+        channel_id: "previous-channel".into(), before: None,
+        result: Ok(api::MessagesResponse { messages: vec![], before_seq: None, has_more: false }),
+    }, &tx);
+    assert_eq!(app.messages.len(), 2);
+}
+
+#[test]
+fn vault_dialog_paste_targets_selected_field() {
+    let mut action = VaultActionState::ConnectRemote {
+        origin: String::new(), username: String::new(), password: String::new(),
+        field: VaultActionField::NameOrOrigin,
+    };
+    action.paste("https://cscd.online/vault-invite/example?x=1&y=2\r\n");
+    if let VaultActionState::ConnectRemote { field, .. } = &mut action {
+        *field = VaultActionField::Username;
+    }
+    action.paste("diégo");
+    if let VaultActionState::ConnectRemote { field, .. } = &mut action {
+        *field = VaultActionField::Password;
+    }
+    action.paste("p@ss word");
+    if let VaultActionState::ConnectRemote { origin, username, password, .. } = action {
+        assert_eq!(origin, "https://cscd.online/vault-invite/example?x=1&y=2");
+        assert_eq!(username, "diégo");
+        assert_eq!(password, "p@ss word");
+    }
+    let mut local = VaultActionState::CreateLocal { name: "My ".into() };
+    local.paste("Vault\n");
+    assert_eq!(local.active_input(), "My Vault");
+}
+
+#[tokio::test]
+#[ignore = "requires the configured running backend"]
+async fn startup_timing() {
+    let saved = load_tui_state();
+    let client = CascadeClient::new(configured_instance_url(&saved), resolve_token());
+    let vault = saved.vault_id.unwrap();
+    let start = std::time::Instant::now();
+    let channels = client.fetch_channels(&vault).await.unwrap();
+    eprintln!("channels: {:?}", start.elapsed());
+    let mut app = App::new(client);
+    apply_channels(&mut app, channels);
+    let start = std::time::Instant::now();
+    app.messages = app.client.fetch_messages(&vault, app.active_channel_id.as_ref().unwrap()).await.unwrap();
+    eprintln!("messages: {:?}", start.elapsed());
+    let start = std::time::Instant::now();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    eprintln!("first render: {:?}", start.elapsed());
+}
+
 struct MockServer {
     client: CascadeClient,
     requests: Requests,
@@ -89,6 +234,50 @@ async fn finish_send(app: &mut App) {
 }
 
 #[tokio::test]
+async fn vault_history_load_keeps_terminal_responsive() {
+    let server = MockServer::new(|request, _| {
+        if request.contains("/messages?") {
+            (200, json!({"messages":[{"id":"history"}]}), Duration::from_millis(200))
+        } else if request.contains("/notes ") {
+            (200, json!({"notes":[{"id":"real-channel","title":"Chat","content_preview":"cascade://chat-channel"}]}), Duration::ZERO)
+        } else {
+            (200, json!([]), Duration::ZERO)
+        }
+    }).await;
+    let mut app = server.app();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    spawn_refresh_channels(&mut app, &tx);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !server.requests.lock().unwrap().iter().any(|(r, _)| r.contains("/messages?")) {
+            tokio::select! {
+                Some(event) = rx.recv() => apply_backend_event(&mut app, event, &tx),
+                _ = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+    }).await.unwrap();
+    // History is still pending, but editing and drawing can run immediately.
+    assert!(app.messages.is_empty());
+    app.input = "typing while loading".into();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    assert!(app.chat_cache.read().unwrap().chat_text.contains("Receiving messages…"));
+    assert!(!app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while app.messages.is_empty() {
+            apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
+        }
+    }).await.unwrap();
+    assert_eq!(app.messages[0].id, "history");
+    assert_eq!(app.input, "typing while loading");
+    apply_backend_event(&mut app, empty_history("real-channel"), &tx);
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    assert!(app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    apply_backend_event(&mut app, BackendEvent::HistoryPage { channel_id: "real-channel".into(), before: None, result: Err("offline".into()) }, &tx);
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    assert!(app.chat_cache.read().unwrap().chat_text.contains("Could not receive messages: offline"));
+}
+
+#[tokio::test]
 async fn failed_send_preserves_draft_and_images_for_retry() {
     let attempts = std::sync::atomic::AtomicUsize::new(0);
     let server = MockServer::new(move |_, body| {
@@ -154,9 +343,9 @@ fn stale_channel_results_are_ignored_and_empty_results_clear_lists() {
     app.active_channel_id = Some("current".into());
     app.messages = vec![serde_json::from_value(json!({"id":"m"})).unwrap()];
     let (tx, _) = mpsc::unbounded_channel();
-    apply_backend_event(&mut app, BackendEvent::Messages { channel_id: "old".into(), messages: vec![] }, &tx);
+    apply_backend_event(&mut app, empty_history("old"), &tx);
     assert_eq!(app.messages.len(), 1);
-    apply_backend_event(&mut app, BackendEvent::Messages { channel_id: "current".into(), messages: vec![] }, &tx);
+    apply_backend_event(&mut app, empty_history("current"), &tx);
     assert!(app.messages.is_empty());
 }
 

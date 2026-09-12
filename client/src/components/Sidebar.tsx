@@ -19,7 +19,7 @@ import { LoadingIndicator } from './LoadingIndicator';
  */
 
 import { memo, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { vaultDetailsLabel, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
+import { vaultDetailsLabel, vaultOriginBadge, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
 import { NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
 import {
@@ -1062,7 +1062,11 @@ export const Sidebar = memo(function Sidebar({
                       className={vault.id === activeVaultId ? 'is-active' : ''}
                       onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
                       <span className="vault-manager-copy">
-                        <span className="vault-manager-title-line"><strong>{vault.name}</strong>{vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}</span>
+                        <span className="vault-manager-title-line">
+                          <strong>{vault.name}</strong>
+                          <span style={{ opacity: 0.75, fontSize: '0.8em', marginLeft: 6, fontWeight: 500 }}>{vaultOriginBadge(vault)}</span>
+                          {vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}
+                        </span>
                         <small>{vaultDetailsLabel(vault)}</small>
                       </span>
                       <span>Open</span>

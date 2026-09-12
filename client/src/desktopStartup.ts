@@ -1,6 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 
 export const DESKTOP_SELECTION_KEY = 'fizzer_desktop_selection_v1';
+
+export async function rememberDesktopSession(remember?: () => Promise<void>): Promise<void> {
+  try { await remember?.(); }
+  catch { console.warn('Signed in, but the desktop could not save this server session.'); }
+}
+
+type RemoteInviteBridge = {
+  acceptRemoteInvite?: (input: { inviteUrl: string }) => Promise<{ success: boolean; vault?: { id: string }; error?: string }>;
+  openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
+};
+
+export async function acceptAndOpenRemoteInvite(bridge: RemoteInviteBridge, inviteUrl: string): Promise<void> {
+  if (!bridge.acceptRemoteInvite || !bridge.openConnection) throw new Error('Remote connections are unavailable in this desktop.');
+  const result = await bridge.acceptRemoteInvite({ inviteUrl });
+  if (!result.success || !result.vault) throw new Error(result.error || 'Failed to accept remote invite');
+  const opened = await bridge.openConnection({ id: result.vault.id, origin: new URL(inviteUrl).origin });
+  if (!opened.success) throw new Error(opened.error || 'Could not open the remote vault');
+}
+
 type Selection = { ownerId: string; origin: string; vaultId: string };
 
 export function readDesktopSelection(storage: Pick<Storage, 'getItem'>): Selection | null {
@@ -32,7 +51,10 @@ export function useDesktopStartup(desktop: boolean, ownerId: string | null, acti
       return;
     }
     if (!listingReady || state.ownerId === ownerId) return;
-    setState({ ownerId, phase: canRestoreDesktopSelection(selection.current, ownerId, window.location.origin, activeVaultId, vaults) ? 'workspace' : 'chooser' });
+    const params = new URLSearchParams(window.location.search);
+    const requestedVaultId = params.get('vault');
+    const requestedVaultReady = requestedVaultId === activeVaultId && vaults.some(vault => vault.id === requestedVaultId);
+    setState({ ownerId, phase: params.get('chooser') !== '1' && (requestedVaultReady || canRestoreDesktopSelection(selection.current, ownerId, window.location.origin, activeVaultId, vaults)) ? 'workspace' : 'chooser' });
   }, [desktop, ownerId, activeVaultId, vaults, listingReady, state]);
   return {
     pending: desktop && (!ownerId || state.ownerId !== ownerId || state.phase === 'pending'),

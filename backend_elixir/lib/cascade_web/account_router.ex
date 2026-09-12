@@ -69,7 +69,8 @@ defmodule CascadeWeb.AccountRouter do
       case AccountDomain.update_profile(
              user.id,
              body(conn, "displayName", ""),
-             body(conn, "avatarUrl", "")
+             body(conn, "avatarUrl", ""),
+             body(conn, "color", "FFFFFF")
            ) do
         {:ok, profile} ->
           notify(conn, :on_profile_updated, %{userId: user.id, profile: profile})

@@ -33,6 +33,37 @@ test('new tables roll forward without a data audit while destructive schema chan
   } finally { db.close(); }
 });
 
+test('profile colors permit only the additive column and pinned ledger entry', () => {
+  const db = new Database(':memory:');
+  try {
+    for (const table of ['users', 'chat_agent_members', 'vault_agents']) {
+      db.exec(`CREATE TABLE ${table}(id INTEGER PRIMARY KEY, name TEXT NOT NULL, UNIQUE(name))`);
+      db.prepare(`INSERT INTO ${table}(name) VALUES (?)`).run('existing');
+    }
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    for (const table of ['users', 'chat_agent_members', 'vault_agents']) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN color TEXT NOT NULL DEFAULT 'FFFFFF'`);
+      assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(), [{ id: 1, name: 'existing', color: 'FFFFFF' }]);
+    }
+    const after = fingerprint();
+    after.migrations = [{ version: 3, name: 'profile_colors', checksum: 'd3e46239f158d82455643c652333e60247448736e49ff71251a494e3c9a43ac7' }];
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.notDeepEqual(compareSchemaFingerprints(after, before), []);
+    for (const mutate of [
+      x => { x.objects[0].sql = x.objects[0].sql.replace('FFFFFF', '000000'); },
+      x => { x.objects[0].sql = x.objects[0].sql.replace('name TEXT NOT NULL', 'name TEXT'); },
+      x => { x.migrations[0].checksum = 'unknown'; },
+      x => { x.migrations[0].name = 'unknown'; },
+      x => { x.migrations.push({ version: 4 }); },
+    ]) {
+      const changed = structuredClone(after);
+      mutate(changed);
+      assert.notDeepEqual(compareSchemaFingerprints(before, changed), []);
+    }
+  } finally { db.close(); }
+});
+
 test('rolling schema classification permits only the pinned agent flag transitions', () => {
   const base = { type: 'table', name: 'chat_agent_members', tableName: 'chat_agent_members', sql: "CREATE TABLE \"chat_agent_members\" ( id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, agent_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', mention TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '', priority_service_tier INTEGER NOT NULL DEFAULT 0, cwd TEXT NOT NULL DEFAULT '', context_prompt TEXT NOT NULL DEFAULT '', taggable_by_agents INTEGER NOT NULL DEFAULT 0, reply_to_every_message INTEGER NOT NULL DEFAULT 0, orchestrator INTEGER NOT NULL DEFAULT 0, pingable_by_others INTEGER NOT NULL DEFAULT 0, yolo INTEGER NOT NULL DEFAULT 0, conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT '' )" };
   const ambient = { ...base, sql: base.sql.replace('yolo INTEGER', 'ambient_group_chat INTEGER NOT NULL DEFAULT 0, yolo INTEGER') };

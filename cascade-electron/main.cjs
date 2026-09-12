@@ -19,6 +19,10 @@
 const { app, BrowserWindow, ipcMain, session, Menu, shell, clipboard, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { createHash } = require('node:crypto');
+const { remoteRequest } = require('./remote-request.cjs');
+const { readRemoteVaults, saveRemoteVault } = require('./remote-vaults.cjs');
 const { spawn } = require('child_process');
 const {
   isSameOrigin,
@@ -28,6 +32,9 @@ const {
   shouldUseEmbeddedBackend,
 } = require('./instance-origin.cjs');
 const { startEmbeddedBackend } = require('./embedded-backend.cjs');
+const { resumeInstanceSession } = require('./instance-session.cjs');
+const { readSessions, rememberSession, listConnections } = require('./server-sessions.cjs');
+const { normalizeInstanceOrigin } = require('./instance-origin.cjs');
 const { launchMacOSInstaller, prepareMacOSUpdate } = require('./macos-updater.cjs');
 const { installDesktopShellPath } = require('./shell-path.cjs');
 
@@ -56,6 +63,17 @@ let APP_URL = INSTANCE_ORIGIN ? rendererUrlForOrigin(INSTANCE_ORIGIN) : null;
 // shell is never Chromium's default white while the hosted page is loading.
 const APP_BACKGROUND = '#101014';
 app.setName(APP_NAME);
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 // Suppress GLib-GObject and GTK warnings on Linux.
 if (process.platform === 'linux') {
@@ -105,6 +123,9 @@ function buildApplicationMenu() {
 
   return Menu.buildFromTemplate([
     { role: 'appMenu' },
+    { label: 'Vault', submenu: [{ label: 'Choose a vault', accelerator: 'CmdOrCtrl+Shift+V', click: () => {
+      if (embeddedBackend) void openInstance(embeddedBackend.origin, undefined, true);
+    } }] },
     { role: 'editMenu' },
     { role: 'windowMenu' },
   ]);
@@ -249,32 +270,43 @@ function isSafeExternalUrl(url) {
   }
 }
 
-async function loginToRemoteInstance(origin, username, password) {
-  const response = await fetch(`${origin}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-cascade-browser': '1' },
-    body: JSON.stringify({ username, password }),
-    redirect: 'manual',
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(typeof body.error === 'string' ? body.error : `Remote login failed (${response.status})`);
+const configuredSessions = new Set();
+function instanceSession(origin) {
+  const selectedOrigin = parseInstanceOrigin(origin);
+  const partition = `persist:fizzer-${createHash('sha256').update(selectedOrigin).digest('hex')}`;
+  const selected = session.fromPartition(partition);
+  if (!configuredSessions.has(partition)) {
+    configuredSessions.add(partition);
+    selected.setPermissionCheckHandler(() => true);
+    selected.setPermissionRequestHandler((_contents, _permission, callback) => callback(true));
+    if (embeddedBackend) {
+      for (const scheme of ['http', 'https']) {
+        selected.protocol.handle(scheme, request => {
+          const url = new URL(request.url);
+          const bundledAsset = request.method === 'GET' && url.origin === selectedOrigin
+            && url.origin !== embeddedBackend.origin
+            && (url.pathname === '/app' || url.pathname.startsWith('/assets/') || url.pathname === '/gem.svg');
+          return selected.fetch(bundledAsset ? `${embeddedBackend.origin}${url.pathname}${url.search}` : request,
+            { bypassCustomProtocolHandlers: true });
+        });
+      }
+    }
   }
+  return selected;
+}
 
-  const setCookies = typeof response.headers.getSetCookie === 'function'
-    ? response.headers.getSetCookie()
-    : (response.headers.get('set-cookie') || '').split(/,(?=[^;]+?=)/u).filter(Boolean);
-  for (const setCookie of setCookies) {
-    const first = setCookie.split(';', 1)[0];
-    const separator = first.indexOf('=');
-    if (separator < 1) continue;
-    await session.defaultSession.cookies.set({
-      url: `${origin}/`,
-      name: first.slice(0, separator),
-      value: decodeURIComponent(first.slice(separator + 1)),
-      path: '/',
-      secure: origin.startsWith('https://'),
-    });
+/** Resume the real local owner's existing session; never invent an account. */
+async function ensureLocalSession(origin) {
+  if (!origin) return;
+  try {
+    const existing = await instanceSession(origin).fetch(`${origin}/api/session`, { signal: AbortSignal.timeout(5_000) });
+    if (existing.ok && (await existing.json()).authenticated) return;
+    const directory = process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer');
+    const token = readSessions(directory).local || fs.readFileSync(path.join(directory, 'token'), 'utf8').trim();
+    if (!token) return;
+    await resumeInstanceSession(origin, token, { cookies: instanceSession(origin).cookies });
+  } catch (error) {
+    console.error('[Main] Could not resume local session:', error?.message || error);
   }
 }
 
@@ -395,10 +427,9 @@ function createWindow() {
     // Never show a menu bar on Linux/Windows (Debug used to live here in
     // unpackaged launches). macOS uses the system menu bar via setApplicationMenu.
     autoHideMenuBar: process.platform !== 'darwin',
-    // Keep the renderer warm while unfocused so alt-tab back doesn't wait on
-    // Chromium's background timer/rAF throttle before first paint.
-    backgroundThrottling: false,
     webPreferences: {
+      session: instanceSession(INSTANCE_ORIGIN),
+      backgroundThrottling: true,
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs')
@@ -414,17 +445,19 @@ function createWindow() {
   mainWindow.loadURL(baseUrl);
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (!isMainFrame || (app.isPackaged && !USE_EMBEDDED_BACKEND)) return;
+    if (createdWindow !== mainWindow || !isMainFrame || (app.isPackaged && !USE_EMBEDDED_BACKEND)) return;
     console.error('[Main] Failed to load app URL:', errorCode, errorDescription, validatedURL);
     setTimeout(() => {
-      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (createdWindow !== mainWindow || !mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.loadURL(getAppBaseUrl());
     }, 1000);
   });
 
+  const createdWindow = mainWindow;
   mainWindow.on('closed', () => {
-    mainWindow = null;
+    if (mainWindow === createdWindow) mainWindow = null;
   });
+  return createdWindow;
 }
 
 /**
@@ -441,8 +474,9 @@ function createPaneWindow(descriptor, bounds) {
     icon: APP_ICON,
     backgroundColor: APP_BACKGROUND,
     autoHideMenuBar: process.platform !== 'darwin',
-    backgroundThrottling: false,
     webPreferences: {
+      session: instanceSession(INSTANCE_ORIGIN),
+      backgroundThrottling: true,
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs')
@@ -614,6 +648,186 @@ ipcMain.handle('runner:clearToken', async () => {
   }
 });
 
+function remoteVaultsPath() {
+  const home = os.homedir();
+  return path.join(home, '.fizzer', 'remote-vaults.json');
+}
+
+function loadRemoteVaults() {
+  return readRemoteVaults(path.dirname(remoteVaultsPath()));
+}
+
+function saveRemoteVaults(vaults) {
+  try {
+    for (const vault of vaults) saveRemoteVault(path.dirname(remoteVaultsPath()), vault);
+    return true;
+  } catch (error) {
+    console.error('[IPC] Failed to save remote vaults:', error);
+    return false;
+  }
+}
+
+ipcMain.handle('desktop:instance', async () => ({
+  origin: INSTANCE_ORIGIN,
+}));
+
+async function openInstance(origin, vaultId, chooser = false) {
+  disconnectDesktopRunner();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win !== mainWindow) win.destroy();
+  }
+  const changedServer = INSTANCE_ORIGIN !== origin;
+  INSTANCE_ORIGIN = origin;
+  APP_URL = rendererUrlForOrigin(origin) + (chooser ? '?chooser=1' : vaultId ? `?vault=${encodeURIComponent(vaultId)}` : '');
+  if (changedServer) {
+    const previous = mainWindow;
+    const bounds = previous.getBounds();
+    const next = createWindow();
+    next.setBounds(bounds);
+    next.webContents.once('did-finish-load', () => previous.destroy());
+  } else {
+    await mainWindow.loadURL(APP_URL);
+  }
+}
+
+ipcMain.handle('desktop:rememberSession', async (event) => {
+  if (!isSameOrigin(event.senderFrame.url, INSTANCE_ORIGIN)) throw new Error('Unexpected server.');
+  const cookies = await instanceSession(INSTANCE_ORIGIN).cookies.get({ url: INSTANCE_ORIGIN });
+  const token = cookies.find(cookie => cookie.name === (INSTANCE_ORIGIN.startsWith('https:') ? '__Host-cascade_session' : 'cascade_session'))?.value;
+  rememberSession(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'),
+    INSTANCE_ORIGIN === embeddedBackend?.origin ? 'local' : INSTANCE_ORIGIN, token);
+});
+
+ipcMain.handle('desktop:listConnections', async () => listConnections(
+  process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'), loadRemoteVaults(),
+));
+ipcMain.handle('desktop:openConnection', async (_event, { id, origin }) => {
+  try {
+    const selectedOrigin = parseInstanceOrigin(origin);
+    const record = loadRemoteVaults().find(v => v.id === id && v.origin === selectedOrigin);
+    const stored = readSessions(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'));
+    const token = stored[selectedOrigin] || record?.token;
+    if (!token) throw new Error('Connect to this instance before opening it.');
+    await resumeInstanceSession(selectedOrigin, token, { cookies: instanceSession(selectedOrigin).cookies });
+    await openInstance(selectedOrigin, id || undefined);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('desktop:getRemoteVaults', async () => {
+  // Workspace data must never merge identities from other instances.
+  return [];
+});
+
+ipcMain.handle('desktop:saveRemoteVaults', async (_event, vaults) => {
+  if (Array.isArray(vaults)) {
+    saveRemoteVaults(vaults);
+  }
+  return loadRemoteVaults();
+});
+
+ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, password }) => {
+  try {
+    const trimmed = normalizeInstanceOrigin(origin);
+    const res = await remoteRequest(`${trimmed}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { success: false, error: `Login failed (${res.status}): ${body}` };
+    }
+    const data = await res.json();
+    rememberSession(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'),
+      trimmed === embeddedBackend?.origin ? 'local' : trimmed, data.token);
+    const vaultsRes = await remoteRequest(`${trimmed}/api/vaults`, {
+      headers: { Authorization: `Bearer ${data.token}` },
+    });
+    const vaultsData = vaultsRes.ok ? await vaultsRes.json() : { vaults: [] };
+    const remoteVaults = (vaultsData.vaults || []).map((v) => ({
+      id: v.id,
+      name: v.name,
+      origin: trimmed,
+      token: data.token,
+      role: v.role || 'member',
+    }));
+
+    saveRemoteVaults(remoteVaults);
+
+    return { success: true, origin: trimmed, user: data.user, vaults: remoteVaults };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('desktop:acceptRemoteInvite', async (_event, { inviteUrl, username, password }) => {
+  try {
+    const trimmed = String(inviteUrl || '').trim();
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(trimmed);
+    } catch {
+      return { success: false, error: 'Invalid invite URL' };
+    }
+    const origin = parseInstanceOrigin(parsedUrl.origin);
+    const match = /\/vault-invite\/([^/?#]+)/.exec(parsedUrl.pathname);
+    if (!match) {
+      return { success: false, error: 'Invite URL must contain /vault-invite/<token>' };
+    }
+    const token = decodeURIComponent(match[1]);
+
+    const current = loadRemoteVaults();
+    let authToken = readSessions(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'))[origin]
+      || current.find((v) => v.origin === origin)?.token;
+
+    if (username && password) {
+      const loginRes = await remoteRequest(`${origin}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!loginRes.ok) {
+        const body = await loginRes.text();
+        return { success: false, error: `Login to ${origin} failed: ${body}` };
+      }
+      const loginData = await loginRes.json();
+      authToken = loginData.token;
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+
+    const acceptRes = await remoteRequest(`${origin}/api/vault-invites/${encodeURIComponent(token)}/accept`, {
+      method: 'POST',
+      headers,
+    });
+    if (!acceptRes.ok) {
+      const body = await acceptRes.text();
+      return { success: false, error: `Accept invite failed (${acceptRes.status}): ${body}` };
+    }
+    const acceptData = await acceptRes.json();
+    if (authToken) rememberSession(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'), origin, authToken);
+    const newVault = {
+      id: acceptData.vaultId,
+      name: acceptData.name,
+      origin,
+      token: authToken || '',
+      role: acceptData.role || 'member',
+    };
+
+    saveRemoteVaults([newVault]);
+
+    return { success: true, vault: newVault };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('runner:status', async () => ({
   // Token present means main is configured; socket online is renderer-side.
   connected: isDesktopRunnerConnected(),
@@ -739,7 +953,10 @@ app.whenReady().then(async () => {
     });
     INSTANCE_ORIGIN = embeddedBackend.origin;
     APP_URL = rendererUrlForOrigin(INSTANCE_ORIGIN);
-    embeddedBackend.process.once('exit', (code, signal) => {
+    // Sign the shell into its local instance so the first screen is the vault
+    // chooser, not a login prompt. Accounts are for connecting to vaults.
+    await ensureLocalSession(INSTANCE_ORIGIN);
+    embeddedBackend.process?.once('exit', (code, signal) => {
       if (appQuitting) return;
       dialog.showErrorBox(
         'Fizzer local service stopped',
@@ -747,12 +964,6 @@ app.whenReady().then(async () => {
       );
     });
   }
-
-  // Allow app-shell permissions needed by the selected app instance.
-  session.defaultSession.setPermissionCheckHandler(() => true);
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(true);
-  });
 
   createWindow();
 
@@ -766,8 +977,8 @@ app.whenReady().then(async () => {
       vaultId: process.env.FIZZER_EXTERNAL_AGENT_VAULT,
       ownerId: Number(process.env.FIZZER_EXTERNAL_AGENT_OWNER),
       agentId: 'hermes', author: 'Along (AI agent)',
-      browserFetch: (url, init) => session.defaultSession.fetch(url, init),
-      agentFetch: (url, init) => session.defaultSession.fetch(url, init),
+      browserFetch: (url, init) => instanceSession(INSTANCE_ORIGIN).fetch(url, init),
+      agentFetch: (url, init) => instanceSession(INSTANCE_ORIGIN).fetch(url, init),
     }).then(service => {
       app.once('will-quit', () => { void service.close(); });
     }).catch(() => console.error('[external-agent-access] startup refused'));
@@ -809,3 +1020,7 @@ app.on('will-quit', () => {
 app.on('activate', () => {
   if (mainWindow === null) createWindow();
 });
+
+// Terminal/service stops must close Electron renderer helpers too.
+process.on('SIGTERM', () => app.quit());
+process.on('SIGINT', () => app.quit());

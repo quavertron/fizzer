@@ -1,7 +1,11 @@
 [package]
-name = "fizzer-tui"
+name = "fizzer"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "fizzer"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = { path = "vendor/ratatui/ratatui", version = "0.30" }
@@ -9,11 +13,11 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 color-eyre = "0.6"
 futures-util = "0.3"
 unicode-width = "0.2"
 arboard = "3"
 base64 = "0.22"
 png = "0.17"
-

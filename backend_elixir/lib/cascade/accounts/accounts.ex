@@ -51,9 +51,10 @@ defmodule Cascade.Accounts.Accounts do
     end
   end
 
-  def update_profile(user_id, display_name_raw, avatar_url_raw) do
+  def update_profile(user_id, display_name_raw, avatar_url_raw, color_raw \\ "FFFFFF") do
     display_name = display_name_raw |> to_string() |> String.trim()
     avatar_url = avatar_url_raw |> to_string() |> String.trim()
+    color = color_raw |> to_string() |> String.trim() |> String.upcase()
 
     cond do
       String.length(display_name) < 1 or String.length(display_name) > 48 or
@@ -63,6 +64,9 @@ defmodule Cascade.Accounts.Accounts do
       String.length(avatar_url) > 2_800_000 ->
         {:error, 400, "Profile picture must be smaller than 2 MB"}
 
+      not Regex.match?(~r/^[0-9A-F]{6}$/, color) ->
+        {:error, 400, "Color must be exactly six hexadecimal characters"}
+
       avatar_url != "" and
           not Regex.match?(
             ~r/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+\/=]+$/i,
@@ -71,9 +75,10 @@ defmodule Cascade.Accounts.Accounts do
         {:error, 400, "Profile picture must be a PNG, JPEG, WebP, or GIF image"}
 
       true ->
-        SQL.exec("UPDATE users SET display_name = ?, avatar_url = ? WHERE id = ?", [
+        SQL.exec("UPDATE users SET display_name = ?, avatar_url = ?, color = ? WHERE id = ?", [
           display_name,
           avatar_url,
+          color,
           user_id
         ])
 
@@ -140,14 +145,15 @@ defmodule Cascade.Accounts.Accounts do
     if Accounts.owner?(actor_user_id) do
       users =
         SQL.all(
-          "SELECT id, username, display_name, avatar_url, created_at FROM users ORDER BY id ASC"
+          "SELECT id, username, display_name, avatar_url, color, created_at FROM users ORDER BY id ASC"
         )
-        |> Enum.map(fn [id, username, display_name, avatar_url, created_at] ->
+        |> Enum.map(fn [id, username, display_name, avatar_url, color, created_at] ->
           %{
             id: id,
             username: username,
             displayName: blank(display_name, username),
             avatarUrl: avatar_url || "",
+            color: color || "FFFFFF",
             created_at: created_at
           }
         end)
@@ -188,7 +194,14 @@ defmodule Cascade.Accounts.Accounts do
                 [invite_hash, id]
               )
 
-          %{id: id, username: username, display_name: "", avatar_url: "", auth_version: 0}
+          %{
+            id: id,
+            username: username,
+            display_name: "",
+            avatar_url: "",
+            color: "FFFFFF",
+            auth_version: 0
+          }
         end)
 
       {:ok, user, Token.sign_user(user)}

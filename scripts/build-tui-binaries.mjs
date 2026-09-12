@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Build the cascade-tui binary for one or more Rust targets and stage each into
-// its npm platform package (npm/<pkg>/bin/cascade-tui). Publishing those
+// Build the fizzer binary for one or more Rust targets and stage each into
+// its npm platform package (npm/<pkg>/bin/fizzer). Publishing those
 // packages is what feeds the esbuild-style optionalDependencies in the root
 // package.json. Run with no args to build the host target only.
 //
@@ -50,7 +50,7 @@ for (const target of targets) {
   const build = spawnSync('cargo', buildArgs, { stdio: 'inherit' });
   if (build.status !== 0) process.exit(build.status ?? 1);
 
-  const binName = target.includes('windows') ? 'fizzer-tui.exe' : 'fizzer-tui';
+  const binName = target.includes('windows') ? 'fizzer.exe' : 'fizzer';
   const from = path.join(repoRoot, 'tui', 'target', target, 'release', binName);
   const destDir = path.join(repoRoot, 'npm', pkg, 'bin');
   mkdirSync(destDir, { recursive: true });
@@ -88,6 +88,13 @@ for (const target of targets) {
     copyFileSync(from, path.join(hostBinDir, compatBinName));
     chmodSync(path.join(hostBinDir, compatBinName), 0o755);
     console.error(`staged host binary ${hostBin}`);
+
+    const fizzerBinDir = path.join(repoRoot, 'npm', 'fizzer', 'bin');
+    mkdirSync(fizzerBinDir, { recursive: true });
+    copyFileSync(from, path.join(fizzerBinDir, binName));
+    chmodSync(path.join(fizzerBinDir, binName), 0o755);
+    copyFileSync(from, path.join(fizzerBinDir, compatBinName));
+    chmodSync(path.join(fizzerBinDir, compatBinName), 0o755);
   }
 }
 

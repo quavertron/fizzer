@@ -5,7 +5,7 @@ defmodule Cascade.Application do
 
   @impl true
   def start(_type, _args) do
-    children =
+    children = Cascade.DB.InstanceOwner.children() ++
       [
         Cascade.DB.Repo,
         Cascade.DB.WriteCoordinator,

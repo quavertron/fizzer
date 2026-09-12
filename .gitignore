@@ -45,6 +45,8 @@ android/app/src/main/jniLibs/arm64-v8a/libcodex.so
 *.svg
 
 # Rust / TUI
+bin/fizzer
+bin/fizzer.exe
 target/
 tui/target/
 bin/fizzer-tui
@@ -53,6 +55,7 @@ bin/cascade-tui
 bin/cascade-tui.exe
 
 # Packaging artifacts
+.DS_Store
+*.owner.sqlite*
 .package/
 *.tgz
-

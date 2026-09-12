@@ -5,11 +5,54 @@ pub struct Vault {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+impl Vault {
+    #[allow(dead_code)]
+    pub fn is_remote(&self) -> bool {
+        self.origin.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptInviteResponse {
+    #[serde(rename = "vaultId")]
+    pub vault_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(rename = "alreadyMember", default)]
+    pub already_member: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultsResponse {
     pub vaults: Vec<Vault>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultMember {
+    #[serde(rename = "userId", alias = "id", default)]
+    pub user_id: serde_json::Value,
+    #[serde(default)]
+    pub username: String,
+    #[serde(rename = "displayName", default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultMembersResponse {
+    pub members: Vec<VaultMember>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +97,7 @@ pub struct ChatMessage {
     pub body: String,
     #[serde(rename = "createdAt", default)]
     pub created_at: String,
-    #[serde(rename = "agentId")]
+    #[serde(alias = "agent_id", rename = "agentId", default)]
     pub agent_id: Option<String>,
     /// Data-URL images attached to the message. The list API strips heavy
     /// data-URLs and instead sets `has_images`, so use `has_image()`.
@@ -128,6 +171,10 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
     pub messages: Vec<ChatMessage>,
+    #[serde(rename = "beforeSeq", default)]
+    pub before_seq: Option<i64>,
+    #[serde(rename = "hasMore", default)]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +182,12 @@ pub struct SessionUser {
     pub id: serde_json::Value,
     #[serde(default)]
     pub username: String,
+    #[serde(default = "default_user_color")]
+    pub color: String,
+}
+
+fn default_user_color() -> String {
+    "FFFFFF".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +246,8 @@ pub struct ActiveSession {
     #[serde(default)]
     pub agent: String,
     #[serde(default)]
+    pub author: String,
+    #[serde(default)]
     pub mention: String,
     #[serde(rename = "registration_id", alias = "registrationId", default)]
     pub registration_id: Option<String>,
@@ -212,10 +267,36 @@ pub struct CascadeClient {
     client: reqwest::Client,
 }
 
+fn format_status_error(method: &str, endpoint: &str, status: reqwest::StatusCode) -> String {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        "Rate limited (429: Too Many Requests)".to_string()
+    } else {
+        format!("{} {} returned {}", method, endpoint, status)
+    }
+}
+
+fn format_status_body_error(
+    method: &str,
+    endpoint: &str,
+    status: reqwest::StatusCode,
+    err_body: &str,
+) -> String {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        "Rate limited (429: Too Many Requests)".to_string()
+    } else {
+        let trimmed = err_body.trim();
+        if trimmed.is_empty() {
+            format!("{} {} returned {}", method, endpoint, status)
+        } else {
+            format!("{} {} returned {} ({})", method, endpoint, status, trimmed)
+        }
+    }
+}
+
 impl CascadeClient {
     pub fn new(base_url: String, token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
 
@@ -224,6 +305,27 @@ impl CascadeClient {
             token,
             client,
         }
+    }
+
+    pub fn is_local_instance(&self) -> bool {
+        let origin = self.base_url.trim().to_ascii_lowercase();
+        let authority = origin
+            .strip_prefix("http://")
+            .or_else(|| origin.strip_prefix("https://"))
+            .unwrap_or(&origin)
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .rsplit('@')
+            .next()
+            .unwrap_or_default();
+
+        authority == "localhost"
+            || authority.starts_with("localhost:")
+            || authority == "127.0.0.1"
+            || authority.starts_with("127.0.0.1:")
+            || authority == "[::1]"
+            || authority.starts_with("[::1]:")
     }
 
     fn auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -235,17 +337,17 @@ impl CascadeClient {
         req
     }
 
-    pub async fn check_session(&self) -> Result<Option<String>, String> {
+    pub async fn check_session(&self) -> Result<Option<(String, String)>, String> {
         let url = format!("{}/api/session", self.base_url);
         let req = self.auth_header(self.client.get(&url));
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET /api/session returned {}", res.status()));
+            return Err(format_status_error("GET", "/api/session", res.status()));
         }
         let sess = res.json::<SessionResponse>().await
             .map_err(|e| format!("Failed to parse session response: {}", e))?;
-        Ok(if sess.authenticated { sess.user.map(|u| u.username) } else { None })
+        Ok(if sess.authenticated { sess.user.map(|u| (u.username, u.color)) } else { None })
     }
 
     pub async fn fetch_vaults(&self) -> Result<Vec<Vault>, String> {
@@ -254,7 +356,7 @@ impl CascadeClient {
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET /api/vaults returned {}", res.status()));
+            return Err(format_status_error("GET", "/api/vaults", res.status()));
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
@@ -266,6 +368,97 @@ impl CascadeClient {
         }
 
         Err("Failed to parse vaults response".into())
+    }
+
+    pub async fn create_vault(&self, name: &str) -> Result<Vault, String> {
+        let url = format!("{}/api/vaults", self.base_url);
+        let req = self.auth_header(self.client.post(&url).json(&serde_json::json!({ "name": name })));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format_status_body_error("POST", "/api/vaults", res.status(), &res.text().await.unwrap_or_default()));
+        }
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        #[derive(Deserialize)]
+        struct Response { vault: Vault }
+        serde_json::from_str::<Response>(&body)
+            .map(|response| response.vault)
+            .map_err(|e| format!("Failed to parse created vault: {}", e))
+    }
+
+    pub async fn login_remote(origin: &str, username: &str, password: &str) -> Result<(Self, SessionUser), String> {
+        let base_url = crate::normalize_remote_origin(origin)?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
+        let res = client
+            .post(format!("{}/api/auth/login", base_url))
+            .json(&serde_json::json!({ "username": username, "password": password }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = res.status();
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format_status_body_error("POST", "/api/auth/login", status, &body));
+        }
+        #[derive(Deserialize)]
+        struct Response { token: String, user: SessionUser }
+        let response = serde_json::from_str::<Response>(&body)
+            .map_err(|e| format!("Failed to parse remote login response: {}", e))?;
+        Ok((Self::new(base_url, Some(response.token)), response.user))
+    }
+
+    pub async fn accept_vault_invite(&self, token: &str) -> Result<AcceptInviteResponse, String> {
+        let url = format!("{}/api/vault-invites/{}/accept", self.base_url, token);
+        let req = self.auth_header(self.client.post(&url));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+        let status = res.status();
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format_status_body_error("POST", "/api/vault-invites/:token/accept", status, &body));
+        }
+        serde_json::from_str::<AcceptInviteResponse>(&body)
+            .map_err(|e| format!("Failed to parse accept invite response: {}", e))
+    }
+
+    pub async fn fetch_vault_members(&self, vault_id: &str) -> Result<Vec<VaultMember>, String> {
+        let url = format!("{}/api/vaults/{}/members", self.base_url, vault_id);
+        let req = self.auth_header(self.client.get(&url));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+
+        if !res.status().is_success() {
+            return Err(format_status_error("GET", "/api/vaults/:id/members", res.status()));
+        }
+
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        if let Ok(resp) = serde_json::from_str::<VaultMembersResponse>(&body) {
+            return Ok(resp.members);
+        }
+        serde_json::from_str::<Vec<VaultMember>>(&body)
+            .map_err(|e| format!("Failed to parse vault members response: {}", e))
+    }
+
+    pub async fn update_profile(&self, display_name: &str, color: &str) -> Result<VaultMember, String> {
+        let url = format!("{}/api/me/profile", self.base_url);
+        let req = self.auth_header(self.client.put(&url).json(&serde_json::json!({
+            "displayName": display_name,
+            "avatarUrl": "",
+            "color": color,
+        })));
+        let res = req.send().await.map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format_status_error("PUT", "/api/me/profile", res.status()));
+        }
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        #[derive(Deserialize)]
+        struct ProfileResponse {
+            user: VaultMember,
+        }
+        serde_json::from_str::<ProfileResponse>(&body)
+            .map(|response| response.user)
+            .map_err(|e| format!("Failed to parse updated profile: {}", e))
     }
 
     pub async fn fetch_channels(&self, vault_id: &str) -> Result<Vec<ChannelItem>, String> {
@@ -288,7 +481,7 @@ impl CascadeClient {
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET {} returned {}", url, res.status()));
+            return Err(format_status_error("GET", "/api/notes", res.status()));
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
@@ -307,7 +500,7 @@ impl CascadeClient {
             .await
             .map_err(|e| e.to_string())?;
         if !res.status().is_success() {
-            return Err(format!("GET {} returned {}", url, res.status()));
+            return Err(format_status_error("GET", "/api/notes", res.status()));
         }
         let body = res.text().await.map_err(|e| e.to_string())?;
         serde_json::from_str::<NoteDetailResponse>(&body)
@@ -323,29 +516,38 @@ impl CascadeClient {
             .await
             .map_err(|e| e.to_string())?;
         if !res.status().is_success() {
-            return Err(format!("PUT {} returned {}", url, res.status()));
+            return Err(format_status_error("PUT", "/api/notes", res.status()));
         }
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn fetch_messages(&self, vault_id: &str, channel_id: &str) -> Result<Vec<ChatMessage>, String> {
-        let url = format!("{}/api/vaults/{}/channels/{}/messages?limit=60", self.base_url, vault_id, channel_id);
+        self.fetch_message_page(vault_id, channel_id, None).await.map(|page| page.messages)
+    }
+
+    pub async fn fetch_message_page(&self, vault_id: &str, channel_id: &str, before: Option<i64>) -> Result<MessagesResponse, String> {
+        let limit = if before.is_some() { 20 } else { 8 };
+        let mut url = format!("{}/api/vaults/{}/channels/{}/messages?limit={limit}", self.base_url, vault_id, channel_id);
+        if let Some(seq) = before { url.push_str(&format!("&beforeSeq={seq}")); }
         let req = self.auth_header(self.client.get(&url));
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET {} returned {}", url, res.status()));
+            return Err(format_status_error("GET", "/api/messages", res.status()));
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
-        if let Ok(resp) = serde_json::from_str::<MessagesResponse>(&body) {
-            return Ok(resp.messages);
+        match serde_json::from_str::<MessagesResponse>(&body) {
+            Ok(resp) => Ok(resp),
+            Err(resp_err) => match serde_json::from_str::<Vec<ChatMessage>>(&body) {
+                Ok(messages) => Ok(MessagesResponse { messages, before_seq: None, has_more: false }),
+                Err(vec_err) => Err(format!(
+                    "Failed to parse messages response: {}; as list: {}",
+                    resp_err, vec_err
+                )),
+            },
         }
-        if let Ok(messages) = serde_json::from_str::<Vec<ChatMessage>>(&body) {
-            return Ok(messages);
-        }
-
-        Err("Failed to parse messages response".into())
     }
 
     pub async fn fetch_agents(&self, vault_id: &str, channel_id: &str) -> Result<Vec<AgentItem>, String> {
@@ -354,7 +556,7 @@ impl CascadeClient {
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET {} returned {}", url, res.status()));
+            return Err(format_status_error("GET", "/api/agents", res.status()));
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
@@ -374,7 +576,7 @@ impl CascadeClient {
         let res = req.send().await.map_err(|e| e.to_string())?;
 
         if !res.status().is_success() {
-            return Err(format!("GET {} returned {}", url, res.status()));
+            return Err(format_status_error("GET", "/api/active-sessions", res.status()));
         }
 
         let body = res.text().await.map_err(|e| e.to_string())?;
@@ -412,7 +614,7 @@ impl CascadeClient {
         if !res.status().is_success() {
             let status = res.status();
             let err = res.text().await.unwrap_or_default();
-            return Err(format!("POST {} returned {} ({})", url, status, err));
+            return Err(format_status_body_error("POST", "/api/messages", status, &err));
         }
 
         if let Ok(resp) = res.json::<CreateMessageResponse>().await {
@@ -460,7 +662,7 @@ impl CascadeClient {
         if !res.status().is_success() {
             let status = res.status();
             let err = res.text().await.unwrap_or_default();
-            return Err(format!("PUT {} returned {} ({})", url, status, err));
+            return Err(format_status_body_error("PUT", "/api/agents", status, &err));
         }
 
         #[derive(Deserialize)]
@@ -494,7 +696,7 @@ impl CascadeClient {
         if !res.status().is_success() {
             let status = res.status();
             let err = res.text().await.unwrap_or_default();
-            return Err(format!("POST {} returned {} ({})", url, status, err));
+            return Err(format_status_body_error("POST", "/api/notes", status, &err));
         }
 
         #[derive(Deserialize)]
@@ -523,7 +725,7 @@ impl CascadeClient {
         if !res.status().is_success() {
             let status = res.status();
             let err = res.text().await.unwrap_or_default();
-            return Err(format!("POST {} returned {} ({})", url, status, err));
+            return Err(format_status_body_error("POST", "/api/notes/rename", status, &err));
         }
 
         #[derive(Deserialize)]
@@ -586,6 +788,50 @@ mod tests {
         client
     }
 
+    #[test]
+    fn identifies_loopback_instances_as_local() {
+        for origin in [
+            "http://localhost",
+            "https://localhost:4000/",
+            "http://127.0.0.1:4000",
+            "http://[::1]:4000",
+        ] {
+            assert!(CascadeClient::new(origin.into(), None).is_local_instance(), "{origin}");
+        }
+        for origin in ["https://cscd.online", "http://192.168.1.20:4000"] {
+            assert!(
+                !CascadeClient::new(origin.into(), None).is_local_instance(),
+                "{origin}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn history_negotiates_and_decodes_gzip() {
+        // gzip-encoded {"messages":[]}.
+        let body: &[u8] = &[31,139,8,0,0,0,0,0,0,19,171,86,202,77,45,46,78,76,79,45,86,178,138,142,173,5,0,145,195,48,0,15,0,0,0];
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = CascadeClient::new(format!("http://{}", listener.local_addr().unwrap()), None);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 4096];
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            }
+            let request = String::from_utf8(request).unwrap().to_lowercase();
+            assert!(request.lines().any(|line| line.starts_with("accept-encoding:") && line.contains("gzip")));
+            let headers = format!("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+        assert!(client.fetch_messages("v", "c").await.unwrap().is_empty());
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn malformed_collections_are_errors_instead_of_empty_snapshots() {
         for body in ["not json", "{}", r#"{"error":"backend failure"}"#] {
@@ -606,6 +852,17 @@ mod tests {
         assert!(server(200, "{}").await.check_session().await.is_err());
         assert_eq!(server(200, r#"{"authenticated":false}"#).await.check_session().await.unwrap(), None);
         assert_eq!(server(200, r#"{"authenticated":true,"user":{"id":1,"username":"human"}}"#)
-            .await.check_session().await.unwrap(), Some("human".into()));
+            .await.check_session().await.unwrap(), Some(("human".into(), "FFFFFF".into())));
+    }
+
+    #[tokio::test]
+    async fn user_messages_without_agent_id_deserialize_successfully() {
+        let json = r#"{"messages":[{"id":"msg-1","author":"diego","body":"hello","createdAt":"2026-09-09T00:00:00Z"}]}"#;
+        let messages = server(200, json).await.fetch_messages("v", "c").await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "msg-1");
+        assert_eq!(messages[0].author, "diego");
+        assert_eq!(messages[0].body, "hello");
+        assert_eq!(messages[0].agent_id, None);
     }
 }

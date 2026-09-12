@@ -6,7 +6,8 @@ defmodule Cascade.DB.Migrator do
 
   @migrations [
     Cascade.DB.Migrations.V1CoreCompatibility,
-    Cascade.DB.Migrations.V2NoteRevisionCounter
+    Cascade.DB.Migrations.V2NoteRevisionCounter,
+    Cascade.DB.Migrations.V3ProfileColors
   ]
 
   def run! do
@@ -42,6 +43,13 @@ defmodule Cascade.DB.Migrator do
         migrate!(migration, checksum)
 
       [[_name, ^checksum]] ->
+        :ok
+
+      # A local desktop build added color directly to v1 before v3 existed.
+      # Accept only that exact known variant; retain its audit record and let
+      # v3 perform the additive upgrade. All other checksum drift still fails.
+      [["core_node_schema_compatibility", "aa0c4bced8a63120f9dc7ac8e3a4a6361f0cd0565e91835b38698aafef85e113"]]
+      when version == 1 and checksum == "b844b7f41e5377d5ce8ff5dd3c3cc0951cab766773f5bf0816aaec45864d338a" ->
         :ok
 
       [[name, recorded]] ->
