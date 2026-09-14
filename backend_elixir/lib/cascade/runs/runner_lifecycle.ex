@@ -2,6 +2,8 @@ defmodule Cascade.Runs.RunnerLifecycle do
   @moduledoc "Durable desktop-runner presence, reclaim, delegation, and ACK lifecycle."
   use GenServer
 
+  @behaviour Cascade.Realtime.RunnerCallbacks
+
   alias Cascade.Realtime.Hub
   alias Cascade.Runs.Store
 
@@ -42,8 +44,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
   def delegate(owner_id, payload) when is_map(payload) do
     with {:ok, %{sid: sid}} <- Hub.runner(owner_id),
          {:ok, _pid} <- Cascade.Realtime.lookup(sid),
-         run_id when is_integer(run_id) <- field(payload, :runId),
-         true <- delivery_allowed?(run_id, owner_id) do
+         run_id when is_integer(run_id) <- field(payload, :runId) do
       if Store.record_delegated(run_id, owner_id, payload) == :ok do
         Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
         true
@@ -56,26 +57,6 @@ defmodule Cascade.Runs.RunnerLifecycle do
   rescue
     _ -> false
   end
-
-  # A delivery is revocable until transport handoff. Do not use for_execution/1:
-  # a claimed dispatch already has a run and must not be admitted a second time.
-  def delivery_allowed?(run_id, owner_id) when is_integer(run_id) and is_integer(owner_id) do
-    case Cascade.Accounts.SQL.one(
-           "SELECT chat_dispatch_id,owner_user_id FROM runs WHERE id=? AND status IN ('queued','running')",
-           [run_id]
-         ) do
-      [dispatch, owner] when owner in [nil, owner_id] ->
-        dispatch in [nil, ""] or
-          Cascade.Missions.Dispatches.delivery_allowed?(dispatch, run_id, owner_id)
-
-      _ ->
-        false
-    end
-  rescue
-    _ -> false
-  end
-
-  def delivery_allowed?(_, _), do: false
 
   def replay_delivery(run_id, owner_id) do
     if online?(owner_id) do
@@ -159,6 +140,14 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   def accept_event?(run_id, owner_id), do: Store.delegated_owner(run_id) == owner_id
 
+  @impl true
+  # DomainAdapter owns registration because its reclaimed IDs are part of the
+  # runner:registered response. Hub owns transport replacement and invokes this
+  # callback only after that domain action has already committed.
+  def registered(_owner_id, _sid, _metadata, _previous),
+    do: Cascade.Missions.DispatchReannouncer.wake()
+
+  @impl true
   def disconnected(owner_id, sid, _metadata, reason) do
     if Process.whereis(__MODULE__),
       do: GenServer.cast(__MODULE__, {:disconnected, owner_id, sid, reason}),

@@ -39,12 +39,9 @@ defmodule Cascade.Accounts.SQL do
 
   def changes(statement, params \\ []), do: exec(statement, params).num_rows
 
-  # Request :immediate at the OUTERMOST read-then-write scope. Nested Ecto
-  # transactions share that transaction/rollback; they cannot upgrade its mode.
-  # Keep the default unchanged for unrelated callers and SELECT-only work.
-  def transaction(fun, opts \\ []) do
+  def transaction(fun) do
     WriteCoordinator.with_lock(fn ->
-      case Repo.transaction(fun, Keyword.put_new(opts, :timeout, :infinity)) do
+      case Repo.transaction(fun, timeout: :infinity) do
         {:ok, result} -> result
         {:error, reason} -> raise "account transaction rolled back: #{inspect(reason)}"
       end

@@ -88,8 +88,18 @@ defmodule Cascade.Realtime.PresenceDispatcher do
       max_concurrency: Keyword.get(opts, :max_concurrency, @default_max_concurrency),
       queue: :queue.new(),
       queued: MapSet.new(),
-      refresh: Keyword.fetch!(opts, :refresh),
-      refresh_channel: Keyword.fetch!(opts, :refresh_channel),
+      refresh:
+        Keyword.get(
+          opts,
+          :refresh,
+          &Cascade.Realtime.Events.emit_presence_now(&1, &2, :dispatcher)
+        ),
+      refresh_channel:
+        Keyword.get(
+          opts,
+          :refresh_channel,
+          &Cascade.Realtime.Events.emit_presence_for_channel_now(&1, :dispatcher)
+        ),
       refreshed: 0,
       noop: 0,
       task_failed: 0,

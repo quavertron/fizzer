@@ -14,7 +14,7 @@ defmodule Cascade.Realtime.Domain do
           | {:leave, binary()}
           | {:emit, binary(), list()}
           | {:broadcast, binary(), binary(), list()}
-          | {:domain, term()}
+          | {:refresh_chat_presence, binary(), binary()}
           | {:ack, term()}
           | {:register_runner, term()}
 
@@ -24,13 +24,8 @@ defmodule Cascade.Realtime.Domain do
               {:ok, [action()]} | {:error, binary()}
   @callback namespace_connected(namespace(), identity(), term(), map()) :: any()
   @callback namespace_disconnected(namespace(), identity(), term(), term()) :: any()
-  @doc "Runs a domain effect after preceding transport actions have succeeded."
-  @callback handle_action(term()) :: :ok | {:error, binary()}
 
-  @doc "Rechecks revocable runner work at transport handoff; absence fails closed."
-  @callback authorize_delivery(integer(), integer()) :: boolean()
-
-  @optional_callbacks namespace_connected: 4, handle_action: 1, authorize_delivery: 2
+  @optional_callbacks namespace_connected: 4
 end
 
 defmodule Cascade.Realtime.Domain.FailClosed do

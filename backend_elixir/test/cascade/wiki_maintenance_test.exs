@@ -27,12 +27,6 @@ defmodule Cascade.WikiMaintenanceTest do
     Map.merge(ctx, %{room: room, params: params})
   end
 
-  test "storage mutations enqueue wiki maintenance through the installed activity sink", ctx do
-    note = Store.create_note(ctx.vault_id, ctx.user_id, %{title: "Automatic activity", content: "New evidence"})
-    assert %{pending: pending} = Wiki.status(ctx.user_id, ctx.vault_id)
-    assert "note:#{note.id}" in pending
-  end
-
   test "coalesces changes into one durable dispatch, preserves in-flight changes, and settles without self triggers",
        ctx do
     note = Store.create_note(ctx.vault_id, ctx.user_id, %{title: "Topic", content: "Old claim"})
@@ -125,8 +119,7 @@ defmodule Cascade.WikiMaintenanceTest do
                })
              )
 
-    current = Store.get_note(private.id)
-    redacted = Privacy.redact_note(current, true)
+    redacted = Privacy.redact_note(private, true)
 
     assert {:ok, 1} =
              Wiki.apply_result(
@@ -136,7 +129,7 @@ defmodule Cascade.WikiMaintenanceTest do
                  updates: [
                    %{
                      noteId: private.id,
-                     revision: Wiki.revision(current.content),
+                     revision: redacted.revision,
                      content: redacted.content <> "\nEvidence"
                    }
                  ]

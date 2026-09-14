@@ -577,10 +577,8 @@ defmodule Cascade.ChatDomainTest do
       end
     end)
 
-    SQL.ensure_column("vault_agents", "color", "TEXT NOT NULL DEFAULT 'FFFFFF'")
-    SQL.exec("UPDATE vault_agents SET color='56CD78' WHERE id='old-a'")
     assert :ok = Schema.ensure!()
-    assert [["old-a", 1, "sol", "56CD78"]] = SQL.all("SELECT id,owner_user_id,mention,color FROM vault_agents")
+    assert [["old-a", 1, "sol"]] = SQL.all("SELECT id,owner_user_id,mention FROM vault_agents")
     assert SQL.all("SELECT DISTINCT vault_agent_id FROM chat_agent_members") == [["old-a"]]
     assert SQL.table_sql("vault_agents") =~ "UNIQUE(owner_user_id,mention)"
   end
@@ -744,18 +742,6 @@ defmodule Cascade.ChatDomainTest do
 
     assert {:ok, ^system} =
              Messages.create(alice, source.id, source_channel.id, system, access: :system)
-  end
-
-  test "identity edits preserve omitted colors and accept explicit color changes" do
-    {vault, _channel} = chat_vault(1, "Colors", "Colors")
-    input = %{agentId: "codex", mention: "colored", color: "12ab34"}
-    assert {:ok, original} = Agents.upsert_identity(1, vault.id, input)
-    assert original.color == "12AB34"
-    edit = %{id: original.id, agentId: "codex", mention: "colored", displayName: "Renamed"}
-    assert {:ok, updated} = Agents.upsert_identity(1, vault.id, edit)
-    assert updated.color == "12AB34"
-    assert {:ok, recolored} = Agents.upsert_identity(1, vault.id, Map.put(edit, :color, "abcdef"))
-    assert recolored.color == "ABCDEF"
   end
 
   test "another vault member materializes the roster without changing channel settings" do
@@ -1279,11 +1265,8 @@ defmodule Cascade.ChatDomainTest do
 
   test "chat route catalog is complete and has no duplicates" do
     catalog = CascadeWeb.ChatRoutes.catalog()
-    assert length(catalog) == 35
-    for {method, suffix} <- [{"GET", "execution-v1"}, {"GET", "settings-v1"}, {"PATCH", "settings-v1"}] do
-      assert {method, "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/" <> suffix} in catalog
-    end
-    assert length(Enum.uniq(catalog)) == length(catalog)
+    assert length(catalog) == 29
+    assert length(Enum.uniq(catalog)) == 29
     assert {"DELETE", "/api/vaults/:vault_id/vault-agents/:agent_id/profile"} in catalog
 
     assert {"POST", "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id/collaborate"} in catalog

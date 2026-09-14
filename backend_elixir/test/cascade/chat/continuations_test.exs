@@ -348,14 +348,11 @@ defmodule Cascade.Chat.ContinuationsTest do
         control_plane: true
       )
 
-    approve_mission(c, mission)
-
     {:ok, task} =
       Cascade.Missions.Store.add_task(c.user.id, c.channel, mission.mission.id, %{
         coordinatorRegistrationId: c.coordinator.id,
         assignee: c.coordinator.id,
         anonymous: true,
-        purpose: "implementation",
         title: "Worker"
       })
 
@@ -377,32 +374,4 @@ defmodule Cascade.Chat.ContinuationsTest do
              c.coordinator.id
            ]) == ["pending"]
   end
-  defp approve_mission(c, mission) do
-    content = "Approved mission brief."
-    note_id = "mission-brief-#{mission.mission.id}"
-
-    note =
-      Cascade.Content.Store.create_note(c.vault, c.user.id, %{
-        id: note_id,
-        title: "Mission brief",
-        content: content,
-        is_listed: true
-      })
-
-    revision = Cascade.Content.Privacy.note_revision(note)
-
-    SQL.exec(
-      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
-      [mission.mission.id, note.id, revision]
-    )
-
-    assert {:ok, _} =
-             Cascade.Missions.Store.approve_workspace(
-               c.user.id,
-               c.vault,
-               mission.mission.id,
-               %{note.id => revision}
-             )
-  end
-
 end

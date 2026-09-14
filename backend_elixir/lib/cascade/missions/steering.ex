@@ -2,19 +2,35 @@ defmodule Cascade.Missions.Steering do
   @moduledoc "Task-scoped interrupt/resume using the mission event outbox and provider session."
   alias Cascade.Accounts.SQL
   alias Cascade.Missions.Scheduler
-  alias Cascade.Missions.PendingSteering
   alias Cascade.Runs.Store, as: Runs
   alias Cascade.Runs.RunnerLifecycle
 
-  defdelegate pending_for_task?(id), to: PendingSteering
-  defdelegate interrupting?(run_id), to: PendingSteering
+  @pending """
+  SELECT e.id,e.task_id,e.run_id,e.attempt,e.summary,e.mission_id
+  FROM chat_mission_events e
+  WHERE e.kind='steering_requested' AND NOT EXISTS
+    (SELECT 1 FROM chat_mission_events result WHERE result.source_key='steering-result:' || e.id)
+  """
 
-  defdelegate cancel_pending(run_id), to: PendingSteering
+  def pending_for_task?(id), do: SQL.one(@pending <> " AND e.task_id=?", [id]) != nil
+
+  def interrupting?(run_id) do
+    SQL.one(
+      @pending <>
+        " AND e.run_id=? AND EXISTS (SELECT 1 FROM chat_mission_events i WHERE i.source_key='steering-interrupt:' || e.id)",
+      [run_id]
+    ) != nil
+  end
+
+  def cancel_pending(run_id) do
+    SQL.all(@pending <> " AND e.run_id=?", [run_id])
+    |> Enum.each(&reject(&1, "Worker stopped; queued steering was canceled"))
+  end
 
   def replay(mission_id \\ nil) do
     filter = if mission_id, do: " AND e.mission_id=?", else: ""
 
-    PendingSteering.all(filter, if(mission_id, do: [mission_id], else: []))
+    SQL.all(@pending <> filter, if(mission_id, do: [mission_id], else: []))
     |> Enum.each(fn [id | _] -> deliver(id) end)
   end
 
@@ -25,7 +41,7 @@ defmodule Cascade.Missions.Steering do
   end
 
   defp do_deliver(id, opts) do
-    case PendingSteering.get(id) do
+    case SQL.one(@pending <> " AND e.id=?", [id]) do
       nil ->
         acknowledgment(id)
 
@@ -87,7 +103,7 @@ defmodule Cascade.Missions.Steering do
           when status in ~w(pending running) and mission_status not in ~w(completed canceled) ->
             run = run_id && Runs.get(run_id)
 
-            if is_nil(PendingSteering.get(id)) or
+            if is_nil(SQL.one(@pending <> " AND e.id=?", [id])) or
                  (not is_nil(run) and run.status in ~w(completed failed)) do
               :stale
             else
@@ -149,7 +165,7 @@ defmodule Cascade.Missions.Steering do
 
   defp schedule(mission) do
     Scheduler.schedule(mission, events: Cascade.Realtime.Events)
-    Cascade.Missions.WorkAvailable.notify()
+    Cascade.Missions.DispatchReannouncer.wake()
   end
 
   def acknowledgment(id) do
@@ -191,7 +207,7 @@ defmodule Cascade.Missions.Steering do
   defp queued(id, reason), do: %{id: id, status: "queued", detail: reason}
 
   defp reject([id | _] = request, reason) do
-    PendingSteering.reject(request, reason)
+    event(request, "steering_rejected", "steering-result:#{id}", reason)
     acknowledgment(id)
   end
 

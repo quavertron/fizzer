@@ -85,40 +85,6 @@ defmodule Cascade.Chat.NextStepsTest do
              "af12c8dd3ec10c706cf57082568c0ff8b3ef8f9a1402ecc174d622a490e24767"
   end
 
-  test "message preparation failures roll back inserts, updates and checkpoint changes", c do
-    enable(c)
-    input = proposal_input(c)
-    {:ok, draft} = Messages.create(c.user, c.vault_id, c.channel.id,
-      %{input | status: "running"}, access: :agent)
-    saved_checks = checks(c)
-    previous = Application.fetch_env!(:cascade_elixir, :chat_message_preparer)
-    on_exit(fn -> Application.put_env(:cascade_elixir, :chat_message_preparer, previous) end)
-    Application.put_env(:cascade_elixir, :chat_message_preparer, fn message, channel ->
-      previous.(message, channel)
-      raise "message preparation failed"
-    end)
-
-    fresh = %{input | id: Ecto.UUID.generate()}
-    assert_raise RuntimeError, "message preparation failed", fn ->
-      Messages.create(c.user, c.vault_id, c.channel.id, fresh, access: :agent)
-    end
-    assert SQL.one("SELECT id FROM chat_messages WHERE id=?", [fresh.id]) == nil
-    assert checks(c) == saved_checks
-
-    assert_raise RuntimeError, "message preparation failed", fn ->
-      Messages.update(c.user, c.vault_id, c.channel.id, draft.id,
-        %{body: input.body, status: "completed"}, access: :agent)
-    end
-    assert {:ok, ^draft} = Messages.get(c.channel.id, c.user.id, draft.id)
-    assert checks(c) == saved_checks
-
-    Application.delete_env(:cascade_elixir, :chat_message_preparer)
-    assert_raise ArgumentError, fn ->
-      Messages.create(c.user, c.vault_id, c.channel.id, fresh, access: :agent)
-    end
-    assert SQL.one("SELECT id FROM chat_messages WHERE id=?", [fresh.id]) == nil
-  end
-
   test "enabled checkpoints require creative suggestions after active answers", c do
     enable(c)
     prompt = context(c)
@@ -359,8 +325,6 @@ defmodule Cascade.Chat.NextStepsTest do
         title: "Fix updater"
       })
 
-    approve_mission(c, mission)
-
     # No simulated provider feedback marker: exercise the actual mission link.
     assert SQL.one("SELECT feedback FROM chat_next_step_checks WHERE message_id=?", [proposed.id]) ==
              [nil]
@@ -372,13 +336,12 @@ defmodule Cascade.Chat.NextStepsTest do
 
     {:ok, worker} = Agents.add_to_channel(c.user.id, c.vault_id, c.channel.id, worker_identity.id)
 
-    {:ok, implementation} =
+    {:ok, _} =
       Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
         coordinatorRegistrationId: c.member.id,
         title: "Repair updater",
         prompt: "Accepted proposal unchanged:\n" <> proposed.body,
-        assignee: worker.id,
-        purpose: "implementation"
+        assignee: worker.id
       })
 
     [%{dispatch: dispatch}] = Cascade.Missions.Scheduler.schedule(mission.mission.id).dispatches
@@ -390,56 +353,6 @@ defmodule Cascade.Chat.NextStepsTest do
     {:ok, _} = Missions.attach_run(dispatch.id, run.id)
     :ok = Cascade.Runs.Store.finish(run.id, "completed", "Fixture worker result")
     {:ok, _} = Cascade.Missions.Scheduler.settle_run(run.id, "completed", "Fixture worker result")
-    {:ok, review} =
-      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
-        coordinatorRegistrationId: c.member.id,
-        assignee: c.member.id,
-        anonymous: true,
-        title: "Independent review",
-        purpose: "review",
-        dependsOn: [implementation.task.id]
-      })
-
-    assert {:ok, _} =
-             Missions.update_task(c.user.id, c.channel.id, review.task.id, %{
-               status: "completed",
-               summary: "Review accepted",
-               reviewOutcome: "accepted"
-             })
-
-    {:ok, integration} =
-      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
-        coordinatorRegistrationId: c.member.id,
-        assignee: c.member.id,
-        anonymous: true,
-        title: "Integrate repair",
-        purpose: "integration",
-        dependsOn: [review.task.id]
-      })
-
-    assert {:ok, _} =
-             Missions.update_task(c.user.id, c.channel.id, integration.task.id, %{
-               status: "completed",
-               summary: "Repair integrated"
-             })
-
-    {:ok, verification} =
-      Missions.add_task(c.user.id, c.channel.id, mission.mission.id, %{
-        coordinatorRegistrationId: c.member.id,
-        assignee: c.member.id,
-        anonymous: true,
-        title: "Verify repair",
-        purpose: "verification",
-        dependsOn: [integration.task.id]
-      })
-
-    assert {:ok, _} =
-             Missions.update_task(c.user.id, c.channel.id, verification.task.id, %{
-               status: "completed",
-               summary: "Regression passed",
-               verificationPassed: true
-             })
-
     # Reproduce the pre-obligation deployment: plain owner authority and no check
     # row, with the accepted proposal carried unchanged in the worker handoff.
     SQL.exec("UPDATE chat_missions SET authority_json=? WHERE id=?", [
@@ -508,37 +421,6 @@ defmodule Cascade.Chat.NextStepsTest do
     assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "must offer exactly one"
     assert proposal(c).body == ""
     assert proposal(%{c | source: fresh}).body != ""
-  end
-
-  test "suggestion observer failure rolls back settings and checkpoint dispatches", c do
-    previous = Application.fetch_env!(:cascade_elixir, :agent_suggestions_observer)
-    on_exit(fn -> Application.put_env(:cascade_elixir, :agent_suggestions_observer, previous) end)
-    Application.put_env(:cascade_elixir, :agent_suggestions_observer, fn channel, registration, enabled, was_enabled ->
-      previous.(channel, registration, enabled, was_enabled)
-      raise "suggestion observer failed"
-    end)
-
-    assert_raise RuntimeError, "suggestion observer failed", fn -> enable(c) end
-    assert checks(c) == []
-    assert {:ok, []} = Dispatches.list_pending(c.user.id, c.channel.id)
-    assert SQL.one("SELECT next_step_suggestions FROM chat_agent_members WHERE id=?", [c.member.id]) == [0]
-
-    Application.put_env(:cascade_elixir, :agent_suggestions_observer, previous)
-    enable(c)
-    saved_checks = checks(c)
-    assert {:ok, saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
-    Application.put_env(:cascade_elixir, :agent_suggestions_observer, fn channel, registration, enabled, was_enabled ->
-      previous.(channel, registration, enabled, was_enabled)
-      raise "suggestion observer failed"
-    end)
-    assert_raise RuntimeError, "suggestion observer failed", fn -> enable(c, false) end
-    assert checks(c) == saved_checks
-    assert {:ok, ^saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
-    assert SQL.one("SELECT next_step_suggestions FROM chat_agent_members WHERE id=?", [c.member.id]) == [1]
-
-    Application.delete_env(:cascade_elixir, :agent_suggestions_observer)
-    assert_raise ArgumentError, fn -> enable(c, false) end
-    assert {:ok, ^saved_dispatches} = Dispatches.list_pending(c.user.id, c.channel.id)
   end
 
   test "enablement queues one durable check per transition and disablement removes pending wakes",
@@ -626,32 +508,32 @@ defmodule Cascade.Chat.NextStepsTest do
              nil
   end
 
-  test "mission cancellation does not launch a suggestion-only run", c do
+  test "mission completion does not launch a suggestion-only run", c do
     enable(c)
 
     {:ok, mission} =
       Missions.create(c.user.id, c.vault_id, c.channel.id, %{
         rootMessageId: c.source.id,
         coordinatorRegistrationId: c.member.id,
-        title: "Canceled work"
+        title: "Finished work"
       })
 
     {:ok, update} =
       Missions.finish(c.user.id, c.channel.id, mission.mission.id, %{
         coordinatorRegistrationId: c.member.id,
-        status: "canceled",
-        summary: "Stopped by owner"
+        status: "completed",
+        summary: "Done"
       })
 
     Cascade.Missions.Scheduler.emit_projection(update)
     Cascade.Missions.Scheduler.emit_projection(update)
 
     assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [
-             "sys-next-canceled-#{mission.mission.id}"
+             "sys-next-completed-#{mission.mission.id}"
            ]) == [0]
 
     assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [
-             "sys-next-canceled-#{mission.mission.id}"
+             "sys-next-completed-#{mission.mission.id}"
            ]) == [0]
   end
 
@@ -920,32 +802,5 @@ defmodule Cascade.Chat.NextStepsTest do
       Messages.create(c.user, c.vault_id, c.channel.id, proposal_input(c), access: :agent)
 
     message
-  end
-  defp approve_mission(c, mission) do
-    content = "Approved mission brief."
-    note_id = "mission-brief-#{mission.mission.id}"
-
-    note =
-      Store.create_note(c.vault_id, c.user.id, %{
-        id: note_id,
-        title: "Mission brief",
-        content: content,
-        is_listed: true
-      })
-
-    revision = Cascade.Content.Privacy.note_revision(note)
-
-    SQL.exec(
-      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
-      [mission.mission.id, note.id, revision]
-    )
-
-    assert {:ok, _} =
-             Missions.approve_workspace(
-               c.user.id,
-               c.vault_id,
-               mission.mission.id,
-               %{note.id => revision}
-             )
   end
 end

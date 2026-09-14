@@ -639,7 +639,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     assert get_in(await_event(bob, "vault", "vault:visibilityChanged"), ["args", Access.at(0)]) ==
              stringify(settings)
 
-    Cascade.Content.Activity.install()
+    Events.install_note_mutation_sink()
     note = Store.create_note(vault.id, 1, %{title: "Realtime note", content: "body"})
     assert Store.get_note(note.id).id == note.id
     assert await_event(bob, "vault", "community:changed")

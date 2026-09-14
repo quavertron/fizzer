@@ -3,7 +3,6 @@ defmodule CascadeWeb.Authorization do
 
   @safe_methods ["GET", "HEAD", "OPTIONS"]
   @agent_rules [
-    {~w(GET POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages-no-invoke-v1$>},
     {~w(GET PUT), ~r<^/api/app-context$>},
     {~w(GET), ~r<^/api/vaults$>},
     {~w(GET DELETE), ~r<^/api/vaults/[^/]+$>},
@@ -15,16 +14,14 @@ defmodule CascadeWeb.Authorization do
     {~w(GET POST), ~r<^/api/vaults/[^/]+/scratchpad(?:/[^/]+)*(?:/close)?$>},
     {~w(GET POST PATCH), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages(?:/[^/]+)?$>},
     {~w(POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/messages/[^/]+/collaborate$>},
-    {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents(?:/[^/]+)?$>},
+    {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents$>},
     {~w(GET POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/continuation$>},
     {~w(GET PUT), ~r<^/api/vaults/[^/]+/vault-agents$>},
     {~w(GET DELETE), ~r<^/api/vaults/[^/]+/vault-agents/[^/]+$>},
     {~w(PUT), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents$>},
     {~w(POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents/from-vault$>},
     {~w(DELETE), ~r<^/api/vaults/[^/]+/channels/[^/]+/agents/[^/]+$>},
-    {~w(GET POST), ~r<^/api/vaults/[^/]+/missions$>},
-    {~w(GET), ~r<^/api/vaults/[^/]+/missions/[^/]+$>},
-    {~w(POST), ~r<^/api/vaults/[^/]+/missions/[^/]+/notes$>},
+    {~w(POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions/[^/]+$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions/[^/]+/(?:history|interpretation)$>},

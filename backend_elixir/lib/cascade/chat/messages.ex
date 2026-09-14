@@ -411,15 +411,8 @@ defmodule Cascade.Chat.Messages do
     :ok
   end
 
-  # Policy runs before activity accounting and persistence on both write paths.
-  # Missing wiring or policy failures must never bypass validation.
-  defp prepare_for_persistence(message, channel_id) do
-    prepare = Application.fetch_env!(:cascade_elixir, :chat_message_preparer)
-    prepare.(message, channel_id)
-  end
-
   defp insert_message(route, message) do
-    message = prepare_for_persistence(message, route.sourceChannelId)
+    message = Cascade.Chat.NextSteps.prepare(message, route.sourceChannelId)
     activity = if countable?(message), do: now(), else: nil
 
     SQL.exec(
@@ -442,7 +435,7 @@ defmodule Cascade.Chat.Messages do
   end
 
   defp persist(route, message) do
-    message = prepare_for_persistence(message, route.sourceChannelId)
+    message = Cascade.Chat.NextSteps.prepare(message, route.sourceChannelId)
     activity = if countable?(message), do: now(), else: nil
 
     rows =
@@ -1045,8 +1038,7 @@ defmodule Cascade.Chat.Messages do
           id: note.id,
           title: note.title,
           content: note.content || "",
-          content_preview: note.content_preview || "",
-          revision_counter: note.revision_counter
+          content_preview: note.content_preview || ""
         }
     end
   end

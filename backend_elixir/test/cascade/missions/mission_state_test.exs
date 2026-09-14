@@ -65,11 +65,26 @@ defmodule Cascade.Missions.MissionStateTest do
       channel: channel,
       root: root,
       coordinator: coordinator,
-      coordinator_identity: coordinator_identity,
       worker: worker,
-      worker_identity: worker_identity,
       suffix: suffix
     }
+  end
+
+  test "rollback mission creation stays in its existing room without a virtual channel", ctx do
+    before = SQL.all("SELECT id FROM notes WHERE content='cascade://chat-channel' ORDER BY id")
+    {:ok, created} = mission(ctx, "Existing room rollback")
+
+    assert SQL.one("SELECT channel_id FROM chat_missions WHERE id=?", [created.mission.id]) == [
+             ctx.channel.id
+           ]
+
+    assert SQL.all("SELECT id FROM notes WHERE content='cascade://chat-channel' ORDER BY id") ==
+             before
+
+    assert SQL.one("SELECT id FROM notes WHERE id=?", ["mission-channel-#{created.mission.id}"]) ==
+             nil
+
+    assert {:ok, _} = Store.get(ctx.user.id, ctx.channel.id, created.mission.id)
   end
 
   test "a worker reporting a blocker can be interpreted before its run settles", ctx do
@@ -294,7 +309,6 @@ defmodule Cascade.Missions.MissionStateTest do
         title: "Implement",
         assignee: ctx.worker.id,
         prompt: "Implement the native state machine.",
-        purpose: "research",
         priority: 20,
         reasoningEffort: "high",
         workspaceMode: "isolated"
@@ -306,7 +320,6 @@ defmodule Cascade.Missions.MissionStateTest do
         title: "Verify",
         assignee: ctx.worker.id,
         prompt: "Verify the native state machine.",
-        purpose: "research",
         dependsOn: [first.task.id],
         reasoningEffort: "low"
       })
@@ -518,7 +531,6 @@ defmodule Cascade.Missions.MissionStateTest do
       coordinatorRegistrationId: ctx.coordinator.id,
       title: "One assignment",
       assignee: ctx.worker.id,
-      purpose: "research",
       prompt: "Do it"
     }
 
@@ -540,83 +552,133 @@ defmodule Cascade.Missions.MissionStateTest do
     assert error =~ "different scheduling options"
   end
 
+  test "refresh preserves semantically identical historical mission JSON bytes but writes real changes",
+       ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Stable projection"
+      })
 
+    [encoded] =
+      SQL.one("SELECT mission_json FROM chat_messages WHERE id=?", [ctx.root.id])
 
-  test "approved missions require the complete implementation delivery chain", ctx do
-    state = approved_workspace(ctx, "Complete delivery")
-    assert state.mission.phase == "executing"
-    assert is_binary(state.mission.approvedAt)
+    historical = " \n" <> encoded <> "\n"
+    SQL.exec("UPDATE chat_messages SET mission_json=? WHERE id=?", [historical, ctx.root.id])
 
-    {:ok, implementation} =
-      workspace_task(ctx, state, "Implement approved change", "implementation", state.worker_id)
+    assert {:ok, _update} = Store.refresh(created.mission.id)
 
-    implementation_done =
-      run_workspace_task(ctx, state, implementation.task, "Changed files and implementation checks.")
+    assert [^historical] =
+             SQL.one("SELECT mission_json FROM chat_messages WHERE id=?", [ctx.root.id])
 
-    assert implementation_done.mission.status == "reviewing"
+    assert {:ok, _added} =
+             Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               title: "Material projection change",
+               assignee: ctx.worker.id
+             })
 
-    {:ok, review} =
-      workspace_task(
-        ctx,
-        state,
-        "Review implementation",
-        "review",
-        state.coordinator_id,
-        depends_on: [implementation.task.id],
-        anonymous: true
+    [changed] = SQL.one("SELECT mission_json FROM chat_messages WHERE id=?", [ctx.root.id])
+    refute changed == historical
+    assert {:ok, projection} = Jason.decode(changed)
+    assert Enum.any?(projection["tasks"], &(&1["title"] == "Material projection change"))
+  end
+
+  test "legacy worker evidence repair chooses the first task row for a shared run", ctx do
+    {:ok, created} =
+      Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Deterministic repair"
+      })
+
+    run_id = 8_000_000 + ctx.suffix
+    first_id = "repair-first-#{ctx.suffix}"
+    second_id = "repair-second-#{ctx.suffix}"
+
+    SQL.exec(
+      "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,run_id) VALUES(?,?,?,?,?)",
+      [first_id, created.mission.id, "First", ctx.worker.id, run_id]
+    )
+
+    SQL.exec(
+      "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,run_id) VALUES(?,?,?,?,?)",
+      [second_id, created.mission.id, "Second", ctx.worker.id, run_id]
+    )
+
+    SQL.exec("UPDATE chat_messages SET run_id=?,mission_task_id=NULL WHERE id=?", [
+      run_id,
+      ctx.root.id
+    ])
+
+    MissionSchema.ensure!()
+
+    assert [^first_id] =
+             SQL.one("SELECT mission_task_id FROM chat_messages WHERE id=?", [ctx.root.id])
+  end
+
+  test "a successful shared worker wakes its coordinator exactly once", ctx do
+    {:ok, created} = mission(ctx, "Thin delegation")
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        title: "Run directly",
+        assignee: ctx.worker.id
+      })
+
+    assert added.task.workspaceMode == "shared"
+    scheduled = Scheduler.schedule(created.mission.id)
+    assert [%{dispatch: dispatch}] = scheduled.dispatches
+
+    assert {:ok, run} =
+             RunStore.start(ctx.vault.id, nil, "thin worker", "codex",
+               conversation_id: "thin-worker-session",
+               chat_dispatch_id: dispatch.id
+             )
+
+    assert :ok = Dispatches.attach_run(dispatch.id, run.id)
+    assert {:ok, _running} = Store.attach_run(dispatch.id, run.id)
+    assert :ok = RunStore.finish(run.id, "completed", "Finished directly.")
+
+    assert {:ok, result} = Scheduler.settle_run(run.id, "completed", "Finished directly.")
+    assert result.settled.update.mission.status == "reviewing"
+    assert result.wakeDispatch.dispatch.registration.id == ctx.coordinator.id
+    assert length(result.scheduled.wakeDispatches) == 1
+    rows = wake_rows(created.mission.id)
+
+    assert {:ok, replay} = Scheduler.settle_run(run.id, "completed", "Finished directly.")
+    assert replay.settled.update.mission.status == "reviewing"
+    assert replay.wakeDispatch == nil
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+
+    review_dispatch = result.wakeDispatch.dispatch
+
+    {:ok, review_run} =
+      RunStore.start(ctx.vault.id, nil, "Coordinator follow-through", "codex",
+        chat_dispatch_id: review_dispatch.id
       )
 
-    review_done =
-      run_workspace_task(ctx, state, review.task, "Independent review accepted.",
-        reviewOutcome: "accepted"
-      )
+    assert :ok = Dispatches.attach_run(review_dispatch.id, review_run.id)
+    assert :ok = RunStore.finish(review_run.id, "completed", "Integrated and verified.")
 
-    assert Enum.find(review_done.mission.tasks, &(&1.id == review.task.id)).reviewOutcome ==
-             "accepted"
+    assert {:ok, nil} =
+             Scheduler.settle_run(review_run.id, "completed", "Integrated and verified.")
 
-    {:ok, integration} =
-      workspace_task(
-        ctx,
-        state,
-        "Integrate approved change",
-        "integration",
-        state.worker_id,
-        depends_on: [review.task.id]
-      )
-
-    _integration_done =
-      run_workspace_task(ctx, state, integration.task, "Integrated the reviewed change.")
-
-    {:ok, verification} =
-      workspace_task(
-        ctx,
-        state,
-        "Verify delivered change",
-        "verification",
-        state.worker_id,
-        depends_on: [integration.task.id]
-      )
-
-    verification_done =
-      run_workspace_task(ctx, state, verification.task, "All approved checks passed.",
-        verificationPassed: true
-      )
-
-    assert Enum.find(verification_done.mission.tasks, &(&1.id == verification.task.id)).verificationPassed ==
-             true
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    assert wake_rows(created.mission.id) == rows
 
     assert {:ok, finished} =
-             Store.finish(ctx.user.id, state.channel_id, state.mission.id, %{
-               coordinatorRegistrationId: state.coordinator_id,
+             Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
                status: "completed",
-               summary: "Delivered the approved change.",
-               verification: "Independent review, integration, and verification evidence recorded."
+               summary: "Integrated and verified.",
+               verification: "Observed test output and inspected resulting artifact."
              })
 
     assert finished.mission.status == "completed"
-    assert finished.mission.phase == "closed"
-    assert Enum.map(finished.mission.tasks, & &1.purpose) ==
-             ["implementation", "review", "integration", "verification"]
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
   end
 
   test "periodic recovery leaves disconnected owners unchanged until a runner reconnects", ctx do
@@ -748,8 +810,74 @@ defmodule Cascade.Missions.MissionStateTest do
            ]) == [0]
   end
 
+  test "unchanged failed closure and read-only blockers do not schedule ceremonial reviews",
+       ctx do
+    {:ok, created} = mission(ctx, "Review once")
+    {:ok, added} = task(ctx, created.mission.id, "Worker")
 
-  test "authorized cross-mission recovery links evidence without rewriting history", ctx do
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+        status: "blocked",
+        summary: "Read-only Git authority; existing tests passed"
+      })
+
+    [wake] = Scheduler.schedule(created.mission.id).wakeDispatches
+
+    {:ok, review} =
+      RunStore.start(ctx.vault.id, nil, "review", "codex", chat_dispatch_id: wake.dispatch.id)
+
+    :ok = Dispatches.attach_run(wake.dispatch.id, review.id)
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    acknowledge(ctx, created.mission.id, review)
+    :ok = RunStore.finish(review.id, "completed", "Cannot close without authority")
+    SQL.exec("UPDATE runs SET finished_at=datetime('now','-2 minutes') WHERE id=?", [review.id])
+
+    for _ <- 1..3 do
+      assert {:error, "Mission still has active workers"} =
+               Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+                 coordinatorRegistrationId: ctx.coordinator.id,
+                 status: "completed",
+                 verification: "Existing tests passed"
+               })
+
+      {:ok, _} =
+        Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+          status: "blocked",
+          summary: "Read-only Git authority; existing tests passed"
+        })
+
+      assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    end
+
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [
+             created.mission.id
+           ]) == [1]
+
+    {:ok, _} =
+      Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+        status: "blocked",
+        summary: "New owner authorization received; integration can resume"
+      })
+
+    [next] = Scheduler.schedule(created.mission.id).wakeDispatches
+    refute next.message.id == wake.message.id
+
+    {:ok, interrupted} =
+      RunStore.start(ctx.vault.id, nil, "review", "codex", chat_dispatch_id: next.dispatch.id)
+
+    :ok = Dispatches.attach_run(next.dispatch.id, interrupted.id)
+    :ok = RunStore.finish(interrupted.id, "failed", "Interrupted after unchanged blocker")
+
+    SQL.exec("UPDATE runs SET finished_at=datetime('now','-2 minutes') WHERE id=?", [
+      interrupted.id
+    ])
+
+    assert Scheduler.schedule(created.mission.id).wakeDispatches == []
+    assert {:ok, nil} = Scheduler.enqueue_wake(%{mission: created.mission, generation: "stale"})
+  end
+
+  test "authorized cross-mission recovery satisfies the failed original without rewriting history",
+       ctx do
     {original, target, failed, source, recovered, input} = recovery_fixture(ctx)
     assert {:ok, linked} = Store.link_recovery(ctx.user.id, ctx.channel.id, target.id, input)
     assert linked.mission.status == "reviewing"
@@ -762,9 +890,8 @@ defmodule Cascade.Missions.MissionStateTest do
              [original.id]
            ) == [1]
 
-    assert {:error, _reason} =
-             finish_recovered(ctx, original)
-
+    assert {:ok, closed} = finish_recovered(ctx, original)
+    assert closed.mission.status == "completed"
     assert SQL.one("SELECT status FROM runs WHERE id=?", [failed.id]) == ["failed"]
 
     assert SQL.one("SELECT run_id,status FROM chat_mission_tasks WHERE id=?", [target.id]) == [
@@ -833,7 +960,6 @@ defmodule Cascade.Missions.MissionStateTest do
                coordinatorRegistrationId: ctx.coordinator.id,
                title: "Worker",
                assignee: ctx.worker.id,
-               purpose: "research",
                workspaceMode: "isolated"
              })
 
@@ -883,6 +1009,13 @@ defmodule Cascade.Missions.MissionStateTest do
     [source_mission] =
       SQL.one("SELECT mission_id FROM chat_mission_tasks WHERE id=?", [source.id])
 
+    assert {:ok, _} =
+             Store.finish(ctx.user.id, ctx.channel.id, source_mission, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               status: "completed",
+               verification:
+                 "Independently checked live revision abc123 and recovered disk capacity"
+             })
 
     elsewhere =
       ContentStore.create_note(ctx.vault.id, ctx.user.id, %{
@@ -899,12 +1032,12 @@ defmodule Cascade.Missions.MissionStateTest do
     )
 
     assert Scheduler.schedule(original.id).wakeDispatches == []
-    SQL.exec(
-      "UPDATE chat_missions SET status='completed',verification='recovered disk capacity',updated_at=datetime('now') WHERE id=?",
-      [source_mission]
-    )
+    SQL.exec("UPDATE chat_missions SET updated_at=datetime('now') WHERE id=?", [source_mission])
 
     [wake] = Scheduler.schedule(original.id).wakeDispatches
+    # The historical scheduler publishes a short carrier; DispatchPrompt.build/3
+    # obtains recovery evidence from this durable dispatch projection instead.
+    assert wake.message.body == "Reviewing updates for mission #{original.id}: #{original.title}"
     prompt = Cascade.Missions.Interpretation.dispatch_prompt(wake.dispatch.id)
     assert prompt =~ source_mission
     assert prompt =~ "recovered disk capacity"
@@ -938,6 +1071,12 @@ defmodule Cascade.Missions.MissionStateTest do
     [source_mission] =
       SQL.one("SELECT mission_id FROM chat_mission_tasks WHERE id=?", [source.id])
 
+    assert {:ok, _} =
+             Store.finish(ctx.user.id, ctx.channel.id, source_mission, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               status: "completed",
+               verification: "Observed capacity and deployment recovery"
+             })
 
     assert Scheduler.schedule(original.id).wakeDispatches == []
 
@@ -1020,9 +1159,9 @@ defmodule Cascade.Missions.MissionStateTest do
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Finish from runner",
         assignee: ctx.worker.id,
-        purpose: "research",
         workspaceMode: "isolated"
       })
+
     assert {:ok, _bound} =
              Cascade.WorkItems.bind_workspace(ctx.user.id, added.task.workItemId, %{
                repository: "/repo/#{ctx.suffix}",
@@ -1075,6 +1214,39 @@ defmodule Cascade.Missions.MissionStateTest do
            )
   end
 
+  for review <- [false, true] do
+    @review review
+    test "control-plane worker settlement respects review=#{review}", ctx do
+      {:ok, created} =
+        Store.create(
+          ctx.user.id,
+          ctx.vault.id,
+          ctx.channel.id,
+          %{
+            rootMessageId: ctx.root.id,
+            coordinatorRegistrationId: ctx.coordinator.id,
+            title: "Background work",
+            reviewRequested: @review
+          },
+          control_plane: true
+        )
+
+      {:ok, _added} = task(ctx, created.mission.id, "Worker")
+      [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
+
+      {:ok, run} =
+        RunStore.start(ctx.vault.id, nil, "worker", "codex", chat_dispatch_id: dispatch.id)
+
+      :ok = Dispatches.attach_run(dispatch.id, run.id)
+      {:ok, _} = Store.attach_run(dispatch.id, run.id)
+      :ok = RunStore.finish(run.id, "completed", "Requested change verified")
+      assert {:ok, result} = Store.settle_run(run.id, "completed", "Requested change verified")
+      assert result.update.mission.status == if(@review, do: "reviewing", else: "completed")
+      assert is_nil(result.wake) == not @review
+      {:ok, repeated} = Store.settle_run(run.id, "completed", "Requested change verified")
+      assert repeated.update.mission.status == result.update.mission.status
+    end
+  end
 
   test "a bound mission worker cannot start, delegate, or finish missions", ctx do
     {:ok, created} = mission(ctx, "Control plane")
@@ -1084,7 +1256,6 @@ defmodule Cascade.Missions.MissionStateTest do
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Do the work",
         assignee: ctx.coordinator.id,
-        purpose: "research",
         anonymous: true
       })
 
@@ -1130,13 +1301,12 @@ defmodule Cascade.Missions.MissionStateTest do
                  coordinatorRegistrationId: ctx.coordinator.id,
                  title: "Another clone",
                  assignee: ctx.coordinator.id,
-                 purpose: "research",
                  anonymous: true
                },
                current_run_id: worker_run.id
              )
 
-    assert {:error, _reason} =
+    assert {:error, "Mission workers cannot finish the mission"} =
              Store.finish(
                ctx.user.id,
                ctx.channel.id,
@@ -1176,7 +1346,6 @@ defmodule Cascade.Missions.MissionStateTest do
         coordinatorRegistrationId: ctx.coordinator.id,
         title: title,
         assignee: ctx.coordinator.id,
-        purpose: "research",
         anonymous: true,
         workspaceMode: "isolated"
       }
@@ -1294,7 +1463,7 @@ defmodule Cascade.Missions.MissionStateTest do
     assert ["completed", ^evidence] =
              SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id=?", [added.task.id])
 
-    assert {:error, _reason} =
+    assert {:error, "Mission workers cannot finish the mission"} =
              Store.finish(
                ctx.user.id,
                ctx.channel.id,
@@ -1307,12 +1476,55 @@ defmodule Cascade.Missions.MissionStateTest do
                current_run_id: run.id
              )
 
-    assert {:error, _reason} =
-             finish_recovered(ctx, created.mission)
-
+    SQL.exec("UPDATE runs SET status='running' WHERE id=?", [run.id])
+    assert {:error, "Mission still has active workers"} = finish_recovered(ctx, created.mission)
+    SQL.exec("UPDATE runs SET status='failed' WHERE id=?", [run.id])
+    assert {:ok, closed} = finish_recovered(ctx, created.mission)
+    assert closed.mission.status == "completed"
     assert ["failed"] == SQL.one("SELECT status FROM runs WHERE id=?", [run.id])
   end
 
+  test "coordinator can close settled work without a separate evidence ceremony", ctx do
+    {:ok, created} = mission(ctx, "No borrowed evidence")
+    {:ok, added} = task(ctx, created.mission.id, "Pending worker")
+
+    assert {:ok, updated} =
+             Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{
+               status: "completed",
+               summary: "Unrelated preexisting commit deadbeef"
+             })
+
+    assert updated.mission.status == "attention"
+
+    assert {:ok, closed} =
+             Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               status: "completed",
+               summary: "Looks done"
+             })
+
+    assert closed.mission.status == "completed"
+  end
+
+  test "canceling every task closes the mission without manufacturing completion evidence", ctx do
+    {:ok, created} = mission(ctx, "Canceled without evidence")
+    {:ok, added} = task(ctx, created.mission.id, "Never ran")
+
+    assert {:ok, update} =
+             Store.update_task(ctx.user.id, ctx.channel.id, added.task.id, %{status: "canceled"})
+
+    assert update.mission.status == "attention"
+
+    assert {:ok, closed} =
+             Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
+               coordinatorRegistrationId: ctx.coordinator.id,
+               status: "completed",
+               summary: "Nothing ran"
+             })
+
+    assert closed.mission.status == "canceled"
+    assert closed.mission.summary == "Nothing ran"
+  end
 
   test "completion cannot cover active work and cancellation removes pending dispatches", ctx do
     {:ok, created} = mission(ctx, "Cancelable")
@@ -1321,7 +1533,7 @@ defmodule Cascade.Missions.MissionStateTest do
     assert length(scheduled.dispatches) == 1
     assert {:ok, [_]} = Dispatches.list_pending(ctx.user.id, ctx.channel.id)
 
-    assert {:error, _reason} =
+    assert {:error, "Mission still has active workers"} =
              Store.finish(ctx.user.id, ctx.channel.id, created.mission.id, %{
                coordinatorRegistrationId: ctx.coordinator.id,
                status: "completed",
@@ -1343,7 +1555,6 @@ defmodule Cascade.Missions.MissionStateTest do
              Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
                coordinatorRegistrationId: ctx.coordinator.id,
                title: "Too late",
-               purpose: "research",
                assignee: ctx.worker.id
              })
 
@@ -1422,22 +1633,19 @@ defmodule Cascade.Missions.MissionStateTest do
         coordinatorRegistrationId: guest_coordinator.id,
         title: "Guest-owned mission"
       })
+
     assert created.mission.coordinator == "Guest Sol"
 
     assert {:error, "Vault not writable"} =
              Store.add_task(guest_id, guest_channel.id, created.mission.id, %{
                coordinatorRegistrationId: guest_coordinator.id,
                title: "Guest work",
-               purpose: "research",
                assignee: guest_worker.id
              })
   end
 
-  test "schema migration retains historical mission data and does not auto-resume work", ctx do
-    schema_before = SQL.all("SELECT name,sql FROM sqlite_master ORDER BY name")
-    # This deliberately installs an incomplete historical schema. Roll back the
-    # entire fixture (including DDL), not only its rows, before other tests run.
-    assert_raise RuntimeError, "account transaction rolled back: :migration_fixture_complete", fn ->
+  test "schema creates every table and index with one-statement execution and upgrades legacy rows",
+       ctx do
     SQL.transaction(fn ->
       for table <-
             ~w(chat_mission_interpretations chat_mission_recovery_evidence chat_mission_events chat_mission_tasks chat_missions chat_agent_dispatches) do
@@ -1472,48 +1680,31 @@ defmodule Cascade.Missions.MissionStateTest do
       """)
 
       SQL.exec(
-        "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,objective,status,created_by) VALUES('legacy-mission',?,?,?,?,?,?,?,?)",
-        [
-          ctx.vault.id,
-          ctx.channel.id,
-          ctx.root.id,
-          ctx.coordinator.id,
-          "Legacy",
-          "Historical objective",
-          "blocked",
-          ctx.user.id
-        ]
+        "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,status,created_by) VALUES('legacy-mission',?,?,?,?,?,'blocked',?)",
+        [ctx.vault.id, ctx.channel.id, ctx.root.id, ctx.coordinator.id, "Legacy", ctx.user.id]
       )
 
       SQL.exec(
-        "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,summary) VALUES('legacy-task','legacy-mission','Child',?,'blocked','Historical blocker')",
+        "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status,summary) VALUES('legacy-task','legacy-mission','Child',?,'blocked','Dependency “Parent” ended failed.')",
         [ctx.worker.id]
       )
 
-      SQL.exec("DELETE FROM chat_mission_migrations WHERE name=?", ["mission-workspace-fence-v2"])
       assert :ok == MissionSchema.ensure!()
 
+      assert Enum.sort(SQL.columns("chat_mission_tasks")) |> Enum.member?("depends_on_json")
+      assert "reasoning_effort" in SQL.columns("chat_agent_dispatches")
 
-      assert SQL.one("SELECT objective,phase FROM chat_missions WHERE id='legacy-mission'") ==
-               ["Historical objective", "planning"]
+      for object <-
+            ~w(chat_agent_dispatches_pending_idx chat_missions_channel_idx chat_mission_tasks_mission_idx chat_mission_tasks_dispatch_idx chat_mission_tasks_run_idx chat_mission_events_mission_idx) do
+        assert SQL.one("SELECT 1 FROM sqlite_master WHERE name=?", [object]) == [1]
+      end
 
-      assert [brief_id] =
-               SQL.one(
-                 "SELECT note_id FROM chat_mission_notes WHERE mission_id='legacy-mission' AND kind='mission'"
-               )
+      assert SQL.one("SELECT status,summary FROM chat_mission_tasks WHERE id='legacy-task'") == [
+               "pending",
+               ""
+             ]
 
-      assert SQL.one("SELECT content,is_listed FROM notes WHERE id=?", [brief_id]) ==
-               ["Historical objective", 0]
-
-      assert SQL.one("SELECT title,status,summary FROM chat_mission_tasks WHERE id='legacy-task'") ==
-               ["Child", "blocked", "Historical blocker"]
-
-      assert SQL.one(
-               "SELECT COUNT(*) FROM chat_agent_dispatches WHERE channel_id=?",
-               [ctx.channel.id]
-             ) == [0]
-
-      assert Store.schedulable("legacy-mission").candidates == []
+      assert SQL.one("SELECT status FROM chat_missions WHERE id='legacy-mission'") == ["active"]
 
       assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'")
              |> hd() >= 2
@@ -1525,113 +1716,7 @@ defmodule Cascade.Missions.MissionStateTest do
 
       assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'") ==
                before
-      Cascade.DB.Repo.rollback(:migration_fixture_complete)
     end)
-    end
-    assert SQL.all("SELECT name,sql FROM sqlite_master ORDER BY name") == schema_before
-  end
-
-  test "mission workspace notes stay outside the vault folder tree", ctx do
-    state = approved_workspace(ctx, "Internal workspace")
-    [brief] = state.mission.notes
-    assert ContentStore.get_note(brief.noteId).is_listed == 0
-    assert ContentStore.get_note(state.channel_id).is_listed == 0
-    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{
-      title: "Internal milestone", kind: "milestone", content: "Keep in the mission"
-    })
-    assert [0] == SQL.one("SELECT n.is_listed FROM notes n JOIN chat_mission_notes mn ON mn.note_id=n.id WHERE mn.mission_id=? AND mn.kind='milestone'", [state.mission.id])
-
-    linked = ContentStore.create_note(ctx.vault.id, ctx.user.id, %{title: "User project document", is_listed: true})
-    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{
-      id: linked.id, title: linked.title, kind: "milestone"
-    })
-    assert ContentStore.get_note(linked.id).is_listed == 1
-  end
-
-  test "internal note listing repair preserves content and user documents and runs once", ctx do
-    state = approved_workspace(ctx, "Repair workspace")
-    [brief] = state.mission.notes
-    linked = ContentStore.create_note(ctx.vault.id, ctx.user.id, %{title: "User project document", is_listed: true})
-    assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{id: linked.id, title: linked.title, kind: "milestone"})
-    SQL.exec("UPDATE notes SET is_listed=1 WHERE id IN (?,?)", [brief.noteId, state.channel_id])
-    before = SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
-    SQL.exec("DELETE FROM chat_mission_migrations WHERE name='mission-internal-notes-unlisted-v1'")
-    assert :ok == MissionSchema.ensure!()
-    assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [brief.noteId])
-    assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [state.channel_id])
-    assert before == SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
-    assert ContentStore.get_note(linked.id).is_listed == 1
-    # An explicit later choice to list a brief is not undone on every startup.
-    SQL.exec("UPDATE notes SET is_listed=1 WHERE id=?", [brief.noteId])
-    assert :ok == MissionSchema.ensure!()
-    assert ContentStore.get_note(brief.noteId).is_listed == 1
-  end
-
-  defp approved_workspace(ctx, title) do
-    {:ok, created} =
-      Store.create_workspace(ctx.user.id, ctx.vault.id, %{
-        id: Ecto.UUID.generate(),
-        title: title,
-        coordinatorIdentityId: ctx.coordinator_identity.id,
-        briefContent: "Approved delivery brief."
-      })
-
-    {:ok, worker} =
-      Agents.add_to_channel(
-        ctx.user.id,
-        ctx.vault.id,
-        created.channelId,
-        ctx.worker_identity.id
-      )
-
-    revisions = Map.new(created.mission.notes, &{&1.noteId, &1.revision})
-    {:ok, approved} = Store.approve_workspace(ctx.user.id, ctx.vault.id, created.mission.id, revisions)
-
-    %{
-      mission: approved,
-      channel_id: created.channelId,
-      coordinator_id: approved.coordinatorRegistrationId,
-      worker_id: worker.id
-    }
-  end
-
-  defp workspace_task(ctx, state, title, purpose, assignee, opts \\ []) do
-    Store.add_task(ctx.user.id, state.channel_id, state.mission.id, %{
-      coordinatorRegistrationId: state.coordinator_id,
-      title: title,
-      assignee: assignee,
-      purpose: purpose,
-      dependsOn: Keyword.get(opts, :depends_on, []),
-      anonymous: Keyword.get(opts, :anonymous, false),
-      workspaceMode: "shared"
-    })
-  end
-
-  defp run_workspace_task(ctx, state, task, summary, fields \\ []) do
-    scheduled = Scheduler.schedule(state.mission.id)
-
-    %{dispatch: dispatch} =
-      Enum.find(scheduled.dispatches, fn item -> item.message.missionTaskId == task.id end)
-
-    {:ok, run} =
-      RunStore.start(ctx.vault.id, nil, task.title, "codex",
-        chat_dispatch_id: dispatch.id
-      )
-
-    :ok = Dispatches.attach_run(dispatch.id, run.id)
-    {:ok, _} = Store.attach_run(dispatch.id, run.id)
-    :ok = RunStore.finish(run.id, "completed", summary)
-    {:ok, _} = Scheduler.settle_run(run.id, "completed", summary)
-
-    {:ok, updated} =
-      Store.update_task(
-        ctx.user.id,
-        state.channel_id,
-        task.id,
-        Map.merge(%{status: "completed", summary: summary}, Map.new(fields))
-      )
-
-    updated
   end
 
   defp recovery_fixture(ctx) do
@@ -1882,7 +1967,6 @@ defmodule Cascade.Missions.MissionStateTest do
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Steer worker",
         assignee: ctx.worker.id,
-        purpose: "research",
         prompt: "Original large instruction payload"
       })
 
@@ -1944,11 +2028,10 @@ defmodule Cascade.Missions.MissionStateTest do
     })
   end
 
-  defp task(ctx, mission_id, title, opts \\ []) do
+  defp task(ctx, mission_id, title) do
     Store.add_task(ctx.user.id, ctx.channel.id, mission_id, %{
       coordinatorRegistrationId: ctx.coordinator.id,
       title: title,
-      purpose: Keyword.get(opts, :purpose, "research"),
       assignee: ctx.worker.id
     })
   end

@@ -13,7 +13,6 @@ defmodule Cascade.Realtime.PresenceDispatcherTest do
          name: nil,
          task_supervisor: task_supervisor,
          debounce_ms: 20,
-         refresh_channel: fn _ -> flunk("Unexpected channel lookup") end,
          refresh: fn vault_id, channel_id ->
            send(test_pid, {:refreshed, vault_id, channel_id})
          end}
@@ -50,7 +49,6 @@ defmodule Cascade.Realtime.PresenceDispatcherTest do
         {PresenceDispatcher,
          name: nil,
          task_supervisor: task_supervisor,
-         refresh_channel: fn _ -> flunk("Unexpected channel lookup") end,
          refresh: fn vault_id, channel_id ->
            send(test_pid, {:train_refreshed, vault_id, channel_id})
          end}
@@ -91,7 +89,6 @@ defmodule Cascade.Realtime.PresenceDispatcherTest do
          task_supervisor: task_supervisor,
          debounce_ms: 10,
          max_concurrency: 1,
-         refresh_channel: fn _ -> flunk("Unexpected channel lookup") end,
          refresh: fn vault_id, channel_id ->
            send(test_pid, {:started, self(), vault_id, channel_id})
 
@@ -135,7 +132,6 @@ defmodule Cascade.Realtime.PresenceDispatcherTest do
          name: nil,
          task_supervisor: task_supervisor,
          debounce_ms: 20,
-         refresh: fn _, _ -> flunk("Unexpected source refresh") end,
          refresh_channel: fn channel_id -> send(test_pid, {:looked_up, channel_id}) end}
       )
 
@@ -160,7 +156,6 @@ defmodule Cascade.Realtime.PresenceDispatcherTest do
          name: nil,
          task_supervisor: task_supervisor,
          debounce_ms: 5,
-         refresh_channel: fn _ -> flunk("Unexpected channel lookup") end,
          refresh: fn _vault_id, channel_id ->
            send(test_pid, {:attempted, channel_id})
            if channel_id == "missing", do: :noop, else: :refreshed

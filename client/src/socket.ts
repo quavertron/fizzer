@@ -76,12 +76,9 @@ type ClientEvents = {
  * Callers should `emit('joinVault', vaultId)` on every `connect` event
  * (including reconnects) so room membership is restored after backgrounding.
  */
-export function connectVaultSocket(origin?: string, token?: string): Socket<ServerEvents, ClientEvents> {
-  const base = origin ? origin.replace(/\/+$/, '') : API_BASE;
-  return io(`${base}/vault`, {
+export function connectVaultSocket(): Socket<ServerEvents, ClientEvents> {
+  return io(`${API_BASE}/vault`, {
     withCredentials: true,
-    auth: token ? { token } : undefined,
-    extraHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
     // Polling first: some networks/middleboxes break the websocket upgrade
     // while HTTPS long-poll still works. engine.io upgrades to WS when able.
     transports: ['polling', 'websocket'],
@@ -96,12 +93,9 @@ export function connectVaultSocket(origin?: string, token?: string): Socket<Serv
  * Callers should `emit('joinRun', runId)` on every `connect` event
  * (including reconnects) to receive streamed agent events.
  */
-export function connectRunsSocket(origin?: string, token?: string): Socket {
-  const base = origin ? origin.replace(/\/+$/, '') : API_BASE;
-  return io(`${base}/runs`, {
+export function connectRunsSocket(): Socket {
+  return io(`${API_BASE}/runs`, {
     withCredentials: true,
-    auth: token ? { token } : undefined,
-    extraHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
     transports: ['polling', 'websocket'],
     reconnection: true,
     reconnectionAttempts: Infinity,
