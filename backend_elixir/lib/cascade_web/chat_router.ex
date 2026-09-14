@@ -452,6 +452,36 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/execution-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      case Cascade.Chat.RegistrationSettings.execution(user.id, vault_id, channel_id, registration_id) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.get(user.id, vault_id, channel_id, registration_id, conn.query_params) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  patch "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.update(user.id, vault_id, channel_id, registration_id, conn.query_params, conn.body_params) do
+        {:ok, settings} ->
+          JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
   # Exact registration, or the named /agents/resolve?vaultAgentId=...&hermesProfile=...
   # query. Both require existing owner-bound membership and never materialize it.
   get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id" do

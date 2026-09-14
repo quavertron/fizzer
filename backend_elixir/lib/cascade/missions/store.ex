@@ -1467,6 +1467,7 @@ defmodule Cascade.Missions.Store do
         base = %{
           id: task.id,
           title: task.title,
+          assigneeRegistrationId: task.assignee_registration_id,
           assignee:
             if(anonymous,
               do: "#{agent_name(assignee)} subagent",

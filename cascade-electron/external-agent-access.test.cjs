@@ -43,6 +43,38 @@ async function fixture(t) {
       assert.equal(req.headers['x-cascade-browser'], '1');
       assert.equal(req.method, 'POST'); return send(200, { token: 'fixture-agent-token' });
     }
+    if (!req.headers.authorization) {
+      assert.equal(req.headers['x-cascade-browser'], '1');
+      state.folders ||= [];
+      if (req.url === `/api/vaults/${vaultId}/folders`) {
+        if (req.method === 'GET') return send(200, { folders: state.folders });
+        state.posts++;
+        const folder = { id: randomUUID(), vault_id: vaultId, ...body };
+        state.folders.push(folder);
+        if (state.failWrite) return send(500, {});
+        return send(201, { folder });
+      }
+      if (req.url === `/api/vaults/${vaultId}/notes`) return send(200, { notes: [...notes.values()] });
+      if (req.url.endsWith('/move')) {
+        state.posts++;
+        const n = notes.get(req.url.split('/')[3]);
+        n.folder_id = body.folder_id;
+        if (state.corrupt) n.content = 'corrupted';
+        if (state.failWrite) return send(500, {});
+        return send(200, { ok: true });
+      }
+      if (req.url.startsWith('/api/notes/')) {
+        const note = notes.get(req.url.split('/').pop());
+        if (req.method === 'PUT') {
+          assert.deepEqual(Object.keys(body), ['content', 'expectedRevision']);
+          if (body.expectedRevision !== note.revision) return send(409, {});
+          state.posts++; note.content = state.corrupt ? 'corrupted' : body.content;
+          if (state.failWrite) return send(500, {});
+        }
+        return send(200, { note });
+      }
+      assert.fail('unexpected browser route');
+    }
     assert.equal(req.headers.authorization, 'Bearer fixture-agent-token');
     assert.equal(req.headers.cookie, undefined);
     if (req.method === 'GET' && req.url.endsWith('/messages-no-invoke-v1')) {
@@ -205,6 +237,63 @@ test('private wiki notes: privacy and full membership before POST, exact body, n
   assert.equal((await f.call({ ...input, requestId: 'channel', content: 'cascade://chat-channel' })).error, 'invalid_note_content');
   assert.equal(f.state.posts, 1);
   assert.ok(!f.calls.some(c => /messages|agents/.test(c.path)));
+});
+
+test('organization: real folders, reversible exact-content moves, private guard, no mint, durable uncertainty', async t => {
+  const f = await fixture(t);
+  const create = { op: 'createFolder', requestId: 'ideas', name: 'Ideas' };
+  f.state.members.push({ userId: 2, role: 'viewer' });
+  assert.equal((await f.call(create)).error, 'private_vault_required');
+  assert.equal(f.state.posts, 0); f.state.members.pop();
+  const made = await f.call(create); assert.equal(made.status, 200);
+  assert.equal((await f.call({ ...create, requestId: 'duplicate' })).error, 'wiki_already_exists');
+  await f.restart(); assert.deepEqual(await f.call(create), made); assert.equal(f.state.posts, 1);
+  assert.equal((await f.call({ op: 'listFolders' })).folders.length, 1);
+  const id = randomUUID(), content = '# Idea\nSources: exact ID';
+  f.notes.set(id, { id, vault_id: vaultId, title: 'Idea', content, folder_id: null, is_listed: 1 });
+  const move = { op: 'moveNote', requestId: 'move', noteId: id, folderId: made.folder.id, expectedFolderId: null,
+    expectedContentHash: require('node:crypto').createHash('sha256').update(content).digest('hex') };
+  assert.equal((await f.call({ ...move, folderId: randomUUID() })).error, 'note_out_of_scope');
+  assert.equal((await f.call({ ...move, expectedContentHash: '0'.repeat(64) })).error, 'readback_mismatch');
+  const moved = await f.call(move); assert.equal(moved.status, 200); assert.equal(moved.note.content, content);
+  await f.restart(); assert.deepEqual(await f.call(move), moved); assert.equal(f.state.posts, 2);
+  assert.equal((await f.call({ ...move, requestId: 'undo', expectedFolderId: made.folder.id, folderId: null })).status, 200);
+  f.state.failWrite = true;
+  assert.equal((await f.call({ ...move, requestId: 'uncertain' })).error, 'upstream_500');
+  const count = f.state.posts; await f.restart(); f.state.failWrite = false;
+  assert.equal((await f.call({ ...move, requestId: 'uncertain' })).error, 'uncertain_write');
+  assert.equal(f.state.posts, count);
+  f.state.corrupt = true;
+  assert.equal((await f.call({ ...move, requestId: 'corrupt', expectedFolderId: made.folder.id, folderId: null })).error, 'readback_mismatch');
+  assert.ok(!f.calls.some(c => /agent-token|messages|agents/.test(c.path)));
+});
+
+test('long wiki create and content-only update: exact bytes, guards, CSRF, durable uncertainty', async t => {
+  const f = await fixture(t);
+  const content = '界'.repeat(11000) + '\nSources: https://example.org';
+  const create = { op: 'createNote', requestId: 'long', title: 'Reference', content };
+  const made = await f.call(create); assert.equal(made.status, 200); assert.equal(made.note.content, content);
+  assert.equal((await f.call({ ...create, requestId: 'oversize', content: 'x'.repeat(65537) })).error, 'invalid_note_content');
+  const n = f.notes.get(made.note.id); n.folder_id = null; n.revision = 'note-v1:1';
+  const update = { op: 'updateNote', requestId: 'editorial', noteId: n.id, content: content + '\nAn idea, directly explained.', expectedFolderId: null,
+    expectedContentHash: require('node:crypto').createHash('sha256').update(content).digest('hex') };
+  f.calls.length = 0;
+  assert.equal((await f.call({ ...update, expectedContentHash: '0'.repeat(64) })).error, 'readback_mismatch');
+  f.state.members.push({ userId: 2, role: 'viewer' });
+  assert.equal((await f.call(update)).error, 'private_vault_required'); f.state.members.pop();
+  assert.equal((await f.call({ ...update, content: 'cascade://chat-channel' })).error, 'invalid_note_content');
+  const result = await f.call(update); assert.equal(result.status, 200);
+  assert.equal(result.note.id, n.id); assert.equal(result.note.title, 'Reference'); assert.equal(result.note.content, update.content);
+  await f.restart(); assert.deepEqual(await f.call(update), result); assert.equal(f.state.posts, 2);
+  const next = { ...update, requestId: 'uncertain-edit', content: 'Revised\nSources: https://example.org',
+    expectedContentHash: require('node:crypto').createHash('sha256').update(update.content).digest('hex') };
+  f.state.failWrite = true; assert.equal((await f.call(next)).error, 'upstream_500');
+  await f.restart(); f.state.failWrite = false;
+  assert.equal((await f.call(next)).error, 'uncertain_write'); assert.equal(f.state.posts, 3);
+  assert.equal(n.content, next.content);
+  const corrupt = { ...next, requestId: 'corrupt-edit', expectedContentHash: require('node:crypto').createHash('sha256').update(next.content).digest('hex') };
+  f.state.corrupt = true; assert.equal((await f.call(corrupt)).error, 'readback_mismatch');
+  assert.ok(!f.calls.some(c => /agent-token|messages|agents/.test(c.path)));
 });
 
 test('private vault unknown result survives restart without a second POST', async t => {
