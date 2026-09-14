@@ -46,7 +46,8 @@ export interface ChatMessage {
   hasHarness?: boolean;
   /** List API stripped heavy data-URL images — hydrate full message to show them. */
   hasImages?: boolean;
-  images?: string[];
+  /** Human uploads use URLs; no-invoke agent publication retains asset metadata. */
+  images?: Array<string | ChatMediaAttachment>;
   attachments?: Array<{ name: string; media_type: string; url: string }>;
   replyTo?: ChatReplyRef;
   forwardedFrom?: ChatForwardRef;

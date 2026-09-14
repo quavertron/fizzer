@@ -53,3 +53,18 @@ corrupt bytes/metadata). The second crosses the actual backend router and storag
 (upload/readback, cookie CSRF and agent restrictions, exact media persistence,
 foreign/missing/inline/oversize-count refusal and no new dispatches/runs with
 ambient agents enabled). Neither fixture by itself is live delivery evidence.
+
+The persisted `images` entries in this contract are `{url, name, media_type,
+data: ""}` objects, unlike ordinary human-upload URL strings. `ChatGroupRow`
+uses the object's `url` for both thumbnail and lightbox without changing persisted
+metadata or upload/send receipts. This also renders messages published before
+the renderer understood the contract; do not repost or rewrite them.
+
+Run `node scripts/test-chat-images-browser.mjs` for actual Chromium decoding and
+rendering of both wire formats through the real component. Optional
+`CHAT_IMAGE_EVIDENCE` points to a private JSON `{messages, assets}` capture, where
+assets have `url, path, headers`; `CHAT_IMAGE_OUTPUT` saves screenshots and decode
+receipts. Never commit private captures. Delivery acceptance requires exact
+message readback, authenticated bytes, and actual image decoding/rendering, not
+just successful upload/download hashes. Label isolated component verification
+separately from a live signed-in application observation.

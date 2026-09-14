@@ -327,6 +327,18 @@ describe('quiet conversation activity', () => {
     onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
   }));
 
+  it('renders persisted agent image metadata and human upload URLs identically', () => {
+    const url = '/api/notes/channel/assets/existing-image';
+    const image = { url, data: '', media_type: 'image/png', name: 'existing.png' };
+    const row = message('image', { body: 'Published image', images: [image] });
+    const metadataHtml = renderRow(row);
+    expect(metadataHtml).toContain(`src="${url}"`);
+    expect(metadataHtml).toContain(`href="${url}"`);
+    expect(metadataHtml).not.toContain('[object Object]');
+    expect(metadataHtml).toBe(renderRow({ ...row, images: [url] }));
+    expect(row.images).toEqual([image]); // Rendering does not rewrite durable receipts.
+  });
+
   it('omits mission reply previews while preserving ordinary replies and source identity', () => {
     const replyTo = { messageId: 'root', author: 'Owner', mention: '', preview: 'Original request preview' };
     const normal = message('reply', { body: 'A normal reply', replyTo });
