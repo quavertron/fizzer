@@ -124,6 +124,7 @@ defmodule CascadeWeb.ChatRouter do
            {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
         JSON.send(conn, 200, %{
           contract: "messages_no_invoke_v1",
+          mediaContract: "channel_png_assets_v1",
           actorUserId: user.id,
           vaultId: vault_id,
           channelId: channel_id
@@ -140,11 +141,19 @@ defmodule CascadeWeb.ChatRouter do
              conn,
              fn ->
                Cascade.Accounts.SQL.transaction(fn ->
-                 with :ok <- no_invoke_owner(user, vault_id) do
+                 with :ok <- no_invoke_owner(user, vault_id),
+                      {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+                      {:ok, images} <-
+                        Cascade.Chat.NoInvokeMedia.validate(conn.body_params, channel_id) do
                    input =
                      conn.body_params
                      |> Map.take(["body", "author", "agentId", "registrationId"])
-                     |> Map.merge(%{"status" => "completed", "replyTo" => nil, "runId" => nil})
+                     |> Map.merge(%{
+                       "status" => "completed",
+                       "replyTo" => nil,
+                       "runId" => nil,
+                       "images" => images
+                     })
 
                    Messages.create(user, vault_id, channel_id, input, access: :agent)
                  end

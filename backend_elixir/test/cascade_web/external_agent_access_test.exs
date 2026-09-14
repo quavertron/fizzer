@@ -98,6 +98,7 @@ defmodule CascadeWeb.ExternalAgentAccessTest do
 
     assert api(:get, quiet, nil, token) == %{
              "contract" => "messages_no_invoke_v1",
+             "mediaContract" => "channel_png_assets_v1",
              "actorUserId" => user.id,
              "vaultId" => ctx.vault_id,
              "channelId" => note["id"]
@@ -133,6 +134,65 @@ defmodule CascadeWeb.ExternalAgentAccessTest do
              SQL.one("SELECT count(*) FROM chat_agent_dispatches WHERE channel_id=?", [note["id"]])
 
     assert SQL.one("SELECT count(*) FROM runs") == runs_before
+
+    # The normal authenticated browser upload is reused without weakening CSRF.
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+      )
+
+    upload_path = "/api/notes/#{note["id"]}/assets"
+    upload_body = %{media_type: "image/png", data: Base.encode64(png)}
+
+    assert (json_conn(:post, upload_path, upload_body)
+            |> put_req_header("cookie", cookie)
+            |> route()).status == 403
+
+    assert (json_conn(:post, upload_path, upload_body, token) |> route()).status == 403
+
+    uploaded =
+      json_conn(:post, upload_path, upload_body)
+      |> put_req_header("cookie", cookie)
+      |> put_req_header("x-cascade-browser", "1")
+      |> route()
+
+    assert uploaded.status == 201
+    asset = Jason.decode!(uploaded.resp_body)
+    image = %{name: "fixture.png", media_type: "image/png", data: "", url: asset["url"]}
+    media_sent = api(:post, quiet, %{payload | images: [image]}, token)
+    assert media_sent["dispatches"] == []
+    assert media_sent["message"]["images"] == [Jason.decode!(Jason.encode!(image))]
+
+    assert api(:get, channel <> "/#{media_sent["message"]["id"]}", nil, token)["message"] ==
+             media_sent["message"]
+
+    downloaded = json_conn(:get, asset["url"]) |> put_req_header("cookie", cookie) |> route()
+    assert downloaded.status == 200
+    assert downloaded.resp_body == png
+    assert (json_conn(:get, asset["url"]) |> route()).status == 401
+    before_bad = SQL.one("SELECT count(*) FROM chat_messages")
+
+    for bad <- [
+          Map.put(image, :url, "https://example.com/image.png"),
+          Map.put(image, :url, "/api/notes/#{Ecto.UUID.generate()}/assets/#{asset["asset_id"]}"),
+          Map.put(image, :url, "/api/notes/#{note["id"]}/assets/abcdefghijklmnop"),
+          Map.put(image, :data, Base.encode64(png)),
+          Map.put(image, :media_type, "image/svg+xml")
+        ] do
+      assert (json_conn(:post, quiet, %{payload | images: [bad]}, token) |> route()).status == 400
+    end
+
+    assert (json_conn(:post, quiet, %{payload | images: List.duplicate(image, 5)}, token)
+            |> route()).status == 400
+
+    assert (json_conn(:post, quiet, %{payload | attachments: [image]}, token) |> route()).status ==
+             400
+
+    assert SQL.one("SELECT count(*) FROM chat_messages") == before_bad
+    assert SQL.one("SELECT count(*) FROM runs") == runs_before
+
+    assert [0] ==
+             SQL.one("SELECT count(*) FROM chat_agent_dispatches WHERE channel_id=?", [note["id"]])
 
     # Concurrent settings writes cannot turn the dedicated operation into dispatch.
     tasks =
