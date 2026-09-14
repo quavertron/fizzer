@@ -19,7 +19,11 @@ may create coordinator awareness. Plans expose these effects. Direct starts set
 `yolo:false` and are limited to explicit Codex/Claude Code, with an explicit model,
 prompt and sandbox. Mission scheduling previews read exact owner registrations
 through the new SELECT-only `execution-v1` route and refuse yolo-enabled members.
-Do not claim those prechecks atomically pin later scheduler settings.
+Mission-note edits also preview and recheck the coordinator and current assignee
+execution settings, since editing can produce coordinator awareness even without
+an explicit approval call. Changed execution snapshots refuse before the note PUT.
+Do not claim those prechecks atomically pin later scheduler settings. Mission
+creation still uses native identity defaults, not an explicit model snapshot.
 
 The new `settings-v1` GET/PATCH uses exact owner/registration/identity/Hermes-profile
 binding; PATCH is human-authenticated and accepts only model, reasoningEffort,

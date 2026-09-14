@@ -69,7 +69,7 @@ async function fixture(t) {
       if(!get){assert.equal(body.expectedRevision,note.revision);note.content=body.content;note.revision='2';missions.get(m).notes[0].revision='2';return changed({note});}return reply(200,{note});
     }
     if(p.endsWith('/execution-v1')) {
-      const parts=p.split('/');return reply(200,{contract:'registration_execution_select_only_v1',ownerUserId:1,vaultId:v,channelId:parts[5],registrationId:parts[7],agentId:'codex',yolo:false,model:'fixture-model'});
+      const parts=p.split('/');return reply(200,{contract:'registration_execution_select_only_v1',ownerUserId:1,vaultId:v,channelId:parts[5],registrationId:parts[7],agentId:'codex',yolo:state.yolo === true,model:state.executionModel || 'fixture-model'});
     }
     if(p===`/api/vaults/${v}/channels/${channelId}/agents/${registrationId}/settings-v1`) {
       assert.equal(u.searchParams.get('hermesProfile'),'along');
@@ -112,6 +112,22 @@ test('named lifecycle over real private Unix socket and HTTP fixtures; all task 
   for(const [action,fields] of Object.entries(reads)){const r=await f.call({op:'appRead',action,args:Object.fromEntries(fields.map(k=>[k,values[k]]))});assert.equal(r.status,200,action+JSON.stringify(r));}
   const stop=await f.plan('cancelRun',{vaultId:f.v,runId:1});f.grant(stop);f.runs.get(1).summary='stream changed after preview';assert.equal((await f.apply(stop)).result.run.status,'canceled');
   assert.ok(!f.calls.some(c=>/agent-token|\/search|\/agents$/.test(c.path)));
+});
+test('mission-note editing previews execution settings and refuses unsafe or changed dispatch context', async t => {
+  const f = await fixture(t);
+  const create = await f.plan('createMission', missionArgs(f)); f.grant(create);
+  assert.equal((await f.apply(create)).state, 'verified');
+  const args = {vaultId:f.v, missionId:f.m, noteId:'mission-brief-'+f.m, content:'New authorized brief'};
+  const n = count(f);
+  f.state.yolo = true;
+  assert.equal((await f.plan('updateMission', args)).error, 'specific_approval_required');
+  f.state.yolo = false;
+  const edit = await f.plan('updateMission', args);
+  assert.equal(edit.before.executionSettings[0].yolo, false); f.grant(edit);
+  f.state.executionModel = 'concurrently-changed';
+  assert.equal((await f.apply(edit)).error, 'stale_plan');
+  assert.equal(count(f), n);
+  assert.equal(f.notes.get(args.noteId).content, 'Synthetic brief');
 });
 test('consequential actions refuse missing, expired, wrong owner grants and booleans; no network mutation',async t=>{
   const f=await fixture(t);

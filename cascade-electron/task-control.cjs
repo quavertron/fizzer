@@ -148,7 +148,14 @@ async function control(input, c) {
     if (!m.notes?.some(n => n.noteId === a.noteId)) fail('note_out_of_scope');
     const d = await c.browser(`/api/notes/${a.noteId}`);
     if (d.note?.id !== a.noteId || d.note.vault_id !== a.vaultId || !d.note.revision) fail('readback_mismatch');
-    return {note:d.note, missionId:m.id};
+    const executionSettings = [];
+    for (const registrationId of [...new Set([m.coordinatorRegistrationId, ...(m.tasks || []).map(t => t.assigneeRegistrationId)])]) {
+      id(m.channelId); id(registrationId);
+      const e = await execution(m.channelId, registrationId);
+      if (e.yolo !== false) fail('specific_approval_required');
+      executionSettings.push(e);
+    }
+    return {note:d.note, missionId:m.id, executionSettings};
   }
   async function execution(channelId, registrationId) {
     const d = await c.browser(base+`/channels/${channelId}/agents/${registrationId}/execution-v1`);
