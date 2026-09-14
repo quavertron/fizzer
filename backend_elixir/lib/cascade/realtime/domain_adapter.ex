@@ -8,6 +8,12 @@ defmodule Cascade.Realtime.DomainAdapter do
   alias Cascade.Runs.{RunnerLifecycle, Store}
 
   @impl true
+  def authorize_delivery(run_id, owner_id) do
+    Store.delegated_owner(run_id) == owner_id and
+      RunnerLifecycle.delivery_allowed?(run_id, owner_id)
+  end
+
+  @impl true
   def handle_action({:refresh_chat_presence, vault_id, channel_id}) do
     Events.emit_presence(vault_id, channel_id)
     :ok

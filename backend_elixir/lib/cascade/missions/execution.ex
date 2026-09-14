@@ -37,14 +37,17 @@ defmodule Cascade.Missions.Execution do
 
   defp retract_deferred_reply(dispatch_id) do
     OrderedPublisher.mutate(fn ->
-      SQL.transaction(fn ->
-        with nil <- Store.find_by_chat_dispatch(dispatch_id),
-             {:deferred, _} <- Dispatches.for_execution(dispatch_id) do
-          Dispatches.retract_pending_reply(dispatch_id)
-        else
-          _ -> :ok
-        end
-      end)
+      SQL.transaction(
+        fn ->
+          with nil <- Store.find_by_chat_dispatch(dispatch_id),
+               {:deferred, _} <- Dispatches.for_execution(dispatch_id) do
+            Dispatches.retract_pending_reply(dispatch_id)
+          else
+            _ -> :ok
+          end
+        end,
+        mode: :immediate
+      )
     end)
   end
 
@@ -101,15 +104,18 @@ defmodule Cascade.Missions.Execution do
           })
 
         built =
-          SQL.transaction(fn ->
-            with {:ok, current, current_execution} <- refresh_execution(dispatch.id),
-                 true <- current_execution == execution do
-              Cascade.Chat.DispatchPrompt.build(current, current_execution, resume)
-            else
-              false -> {:retry, "Agent settings changed during prompt preparation."}
-              error -> error
-            end
-          end)
+          SQL.transaction(
+            fn ->
+              with {:ok, current, current_execution} <- refresh_execution(dispatch.id),
+                   true <- current_execution == execution do
+                Cascade.Chat.DispatchPrompt.build(current, current_execution, resume)
+              else
+                false -> {:retry, "Agent settings changed during prompt preparation."}
+                error -> error
+              end
+            end,
+            mode: :immediate
+          )
 
         with %{prompt: _} = built <- built do
           {context, inline_svgs} =
@@ -185,34 +191,40 @@ defmodule Cascade.Missions.Execution do
   defp start_dispatch(dispatch, execution, built, resume, inline_svgs) do
     result =
       OrderedPublisher.mutate(fn ->
-        SQL.transaction(fn ->
-          with {:ok, _current, current_execution} <- refresh_execution(dispatch.id),
-               true <- current_execution == execution,
-               {:ok, run} <-
-                 start_chat_run(
-                   execution,
-                   nil,
-                   built.prompt,
-                   dispatch.conversationId,
-                   resume,
-                   dispatch.id
-                 ) do
-            attach_dispatch(dispatch.id, run.id)
+        SQL.transaction(
+          fn ->
+            with {:ok, _current, current_execution} <- refresh_execution(dispatch.id),
+                 true <- current_execution == execution,
+                 {:ok, run} <-
+                   start_chat_run(
+                     execution,
+                     nil,
+                     built.prompt,
+                     dispatch.conversationId,
+                     resume,
+                     dispatch.id
+                   ) do
+              attach_dispatch(dispatch.id, run.id)
 
-            ensure_agent_message(
-              execution,
-              "agent-dispatch-#{dispatch.id}",
-              dispatch_message_value(dispatch, :missionTaskId, ""),
-              run,
-              built.reply_to
-            )
+              ensure_agent_message(
+                execution,
+                "agent-dispatch-#{dispatch.id}",
+                dispatch_message_value(dispatch, :missionTaskId, ""),
+                run,
+                built.reply_to
+              )
 
-            {:ok, run}
-          else
-            false -> {:retry, "Agent settings changed during startup; this turn remains queued."}
-            error -> error
-          end
-        end)
+              {:ok, run}
+            else
+              false ->
+                {:retry, "Agent settings changed during startup; this turn remains queued."}
+
+              error ->
+                error
+            end
+          end,
+          mode: :immediate
+        )
       end)
 
     case result do
@@ -721,5 +733,4 @@ defmodule Cascade.Missions.Execution do
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), fallback))
 
   defp field(_map, _key, fallback), do: fallback
-
 end

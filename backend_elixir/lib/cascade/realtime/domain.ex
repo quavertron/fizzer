@@ -27,7 +27,10 @@ defmodule Cascade.Realtime.Domain do
   @doc "Runs a domain effect after preceding transport actions have succeeded."
   @callback handle_action(term()) :: :ok | {:error, binary()}
 
-  @optional_callbacks namespace_connected: 4, handle_action: 1
+  @doc "Rechecks revocable runner work at transport handoff; absence fails closed."
+  @callback authorize_delivery(integer(), integer()) :: boolean()
+
+  @optional_callbacks namespace_connected: 4, handle_action: 1, authorize_delivery: 2
 end
 
 defmodule Cascade.Realtime.Domain.FailClosed do

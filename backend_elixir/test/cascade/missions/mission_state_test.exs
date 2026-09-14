@@ -1434,6 +1434,10 @@ defmodule Cascade.Missions.MissionStateTest do
   end
 
   test "schema migration retains historical mission data and does not auto-resume work", ctx do
+    schema_before = SQL.all("SELECT name,sql FROM sqlite_master ORDER BY name")
+    # This deliberately installs an incomplete historical schema. Roll back the
+    # entire fixture (including DDL), not only its rows, before other tests run.
+    assert_raise RuntimeError, "account transaction rolled back: :migration_fixture_complete", fn ->
     SQL.transaction(fn ->
       for table <-
             ~w(chat_mission_interpretations chat_mission_recovery_evidence chat_mission_events chat_mission_tasks chat_missions chat_agent_dispatches) do
@@ -1521,7 +1525,10 @@ defmodule Cascade.Missions.MissionStateTest do
 
       assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id='legacy-mission'") ==
                before
+      Cascade.DB.Repo.rollback(:migration_fixture_complete)
     end)
+    end
+    assert SQL.all("SELECT name,sql FROM sqlite_master ORDER BY name") == schema_before
   end
 
   test "mission workspace notes stay outside the vault folder tree", ctx do

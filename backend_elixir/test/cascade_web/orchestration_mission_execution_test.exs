@@ -133,9 +133,11 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     script = Path.expand("../support/dispatch_process_probe.exs", __DIR__)
     tasks = for index <- 1..2 do
       Task.async(fn ->
-        System.cmd(System.find_executable("elixir"),
+        {output, status} = System.cmd(System.find_executable("elixir"),
           paths ++ [script, config, directory, to_string(index), ctx.dispatch.id, to_string(ctx.owner.id)],
           env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true)
+        if status != 0, do: IO.puts(output)
+        {output, status}
       end)
     end
     try do
@@ -156,12 +158,98 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
   test "revocation prevents queued runner work and delivery retries from reaching the runner", ctx do
     SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
     assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    # Ensure this is an already-enqueued packet, not merely an in-flight cast.
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
     # The simulated runner has not polled or acknowledged the queued work.
     SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
     assert {:error, _} = Dispatches.for_execution(ctx.dispatch.id)
     Cascade.Runs.RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
     assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
     refute packet =~ "run:delegate", "Revoked guest work was still delivered to the owner's runner"
+  end
+
+  for transport <- [:enqueue, :waiting_poll, :websocket, :upgrade] do
+    @tag delivery_transport: transport
+    test "revocation blocks stale delivery at #{transport}", ctx do
+      alias Cascade.Runs.RunnerLifecycle
+      SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+      assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+      [encoded, attempts] = Store.pending_delivery(run.id, ctx.owner.id)
+      payload = Jason.decode!(encoded)
+      assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+
+      if ctx.delivery_transport != :upgrade do
+        assert {:ok, initial} = Session.poll(ctx.sid, 1_000)
+        assert initial =~ "run:delegate"
+      end
+
+      if ctx.delivery_transport in [:upgrade, :websocket] do
+        assert {:ok, []} = Session.attach_websocket(ctx.sid, self(), :upgrade)
+        assert {:ok, _} = Session.websocket_packet(ctx.sid, "2probe", self())
+      end
+      if ctx.delivery_transport == :websocket do
+        assert {:ok, []} = Session.websocket_packet(ctx.sid, "5", self())
+      end
+      poll = if ctx.delivery_transport == :waiting_poll do
+        task = Task.async(fn -> Session.poll(ctx.sid, 2_000) end)
+        {:ok, pid} = Cascade.Realtime.lookup(ctx.sid)
+        eventually(fn -> :sys.get_state(pid).poll_waiter != nil end)
+        task
+      end
+
+      SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+      refute RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+      refute RunnerLifecycle.delegate(ctx.owner.id, payload)
+      RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+      assert Store.pending_delivery(run.id, ctx.owner.id) == [encoded, attempts]
+      # A stale producer bypassing the lifecycle is still checked by transport.
+      Session.emit(ctx.sid, "/runners", "run:delegate", [payload])
+      case ctx.delivery_transport do
+        :upgrade ->
+          assert {:ok, packets} = Session.websocket_packet(ctx.sid, "5", self())
+          refute Enum.join(packets) =~ "run:delegate"
+        :websocket ->
+          assert_receive {:socket_io_packets, packets}
+          refute Enum.join(packets) =~ "run:delegate"
+          refute_receive {:socket_io_packets, _}, 50
+        :waiting_poll ->
+          assert {:ok, packet} = Task.await(poll)
+          refute packet =~ "run:delegate"
+        :enqueue ->
+          assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+          refute packet =~ "run:delegate"
+      end
+    end
+  end
+
+  for revocation <- [:requester_membership, :owner_membership, :expiry, :exclusion, :target_identity, :agent_permission, :terminal] do
+    @tag delivery_revocation: revocation
+    test "claimed delivery rechecks #{revocation} without writes", ctx do
+      alias Cascade.Runs.RunnerLifecycle
+      SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+      assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+      case ctx.delivery_revocation do
+        :requester_membership -> SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=?", [ctx.guest_vault.id, ctx.guest.id])
+        :owner_membership -> SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=?", [ctx.owner_vault.id, ctx.owner.id])
+        :expiry -> SQL.exec("UPDATE vault_agents SET identity_scope='session',expires_at=datetime('now','-1 minute') WHERE id=?", [ctx.registration.vaultAgentId])
+        :exclusion -> SQL.exec("INSERT INTO vault_agent_exclusions(vault_id,vault_agent_id) VALUES(?,?)", [ctx.owner_vault.id, ctx.registration.vaultAgentId])
+        :target_identity -> SQL.exec("UPDATE chat_agent_dispatches SET target_identity_id='different' WHERE id=?", [ctx.dispatch.id])
+        :agent_permission -> SQL.exec("UPDATE chat_messages SET agent_id='guest-agent' WHERE id=?", [ctx.dispatch.messageId])
+        :terminal -> Store.finish(run.id, "canceled", "Fixture cancellation")
+      end
+      Cascade.DB.Repo.checkout(fn ->
+        Ecto.Adapters.SQL.query!(Cascade.DB.Repo, "PRAGMA query_only=ON", [])
+        try do
+          refute RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+        after
+          Ecto.Adapters.SQL.query!(Cascade.DB.Repo, "PRAGMA query_only=OFF", [])
+        end
+      end)
+      assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+      refute packet =~ "run:delegate"
+    end
   end
 
   @tag :race_probe
