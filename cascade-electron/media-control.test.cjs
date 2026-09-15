@@ -43,6 +43,8 @@ async function fixture(t) {
       assert.deepEqual(body.attachments, []); assert.ok(body.images.every(i => state.assets.has(i.url)));
       const message = { ...body, images: body.images.length ? body.images : null, attachments: null,
         id: randomUUID(), actorUserId: 1, channelId }; state.messages.set(message.id, message);
+      if (!body.images.length) delete message.images;
+      delete message.attachments;
       if (state.loseSend) return send(500, {});
       return send(201, { contract: 'messages_no_invoke_v1', message, dispatches: [] });
     }
@@ -97,8 +99,16 @@ test('explicit-vault text-only send uses no upload, retains scope and reconciles
   assert.equal(result.status, 200, JSON.stringify(result));
   assert.equal(result.message.id, [...f.state.messages.keys()][0]);
   assert.equal(result.message.body, s.body); assert.equal(result.message.channelId, f.channelId);
-  assert.equal(result.message.images, null); assert.deepEqual(result.verifiedUploads, []);
+  assert.equal(result.message.images, undefined); assert.deepEqual(result.verifiedUploads, []);
   assert.deepEqual(await f.call(s), result);
+  const persisted = f.state.messages.get(result.message.id);
+  for (const images of [null, []]) {
+    persisted.images = images;
+    assert.equal((await f.call({ ...s, mode: 'reconcile' })).status, 200);
+  }
+  persisted.images = [{ url: '/unexpected.png' }];
+  assert.equal((await f.call({ ...s, mode: 'reconcile' })).error, 'readback_mismatch');
+  delete persisted.images;
   assert.equal((await f.call({ ...s, body: 'Changed' })).error, 'idempotency_conflict');
   assert.equal(f.state.posts, 1); assert.equal(f.state.uploads, 0);
   assert.ok(!f.state.calls.some(([, route]) => /assets|agents|runs|dispatch/.test(route)));

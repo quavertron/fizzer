@@ -127,7 +127,7 @@ async function control(input, ctx) {
   const { message: m } = await api(route + '/messages/' + r.id);
   if (!m || m.id !== r.id || m.channelId !== input.channelId || m.body !== input.body || m.actorUserId !== ownerId ||
       m.agentId !== agentId || m.author !== author || m.registrationId != null || m.runId != null || m.replyTo != null ||
-      m.status !== 'completed' || !isDeepStrictEqual(m.images === null && !images.length ? [] : m.images, images) || (m.attachments || []).length) fail('readback_mismatch');
+      m.status !== 'completed' || !isDeepStrictEqual(m.images ?? [], images) || (m.attachments || []).length) fail('readback_mismatch');
   return { contract: 'fizzer_media_control_v1', message: m, verifiedUploads: input.uploads };
 }
 module.exports = { control, png };
