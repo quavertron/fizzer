@@ -183,6 +183,9 @@ defmodule Cascade.Missions.Scheduler do
           |> List.flatten()
 
     Enum.each(ids, &Cascade.Missions.Interpretation.flush(&1, events))
+    # Reconcile terminal evidence even if the coordinator acknowledges quietly.
+    # Periodic independent notification jobs also cover offline/startup failures.
+    if mission_id, do: Cascade.Missions.Notifications.reconcile(mission_id, events)
     result
   end
 

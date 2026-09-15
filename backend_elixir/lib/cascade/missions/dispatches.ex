@@ -337,6 +337,16 @@ defmodule Cascade.Missions.Dispatches do
     end)
   end
 
+  @doc "Classifies persisted admission diagnostics without changing task state."
+  def waiting_kind(error, failed_at) do
+    cond do
+      not is_nil(failed_at) -> "dispatch-attention"
+      String.starts_with?(error || "", "Mission task needs a repository cwd") -> "workspace-preparation"
+      String.contains?(error || "", "session is busy") -> "capacity"
+      true -> "provider"
+    end
+  end
+
   def retry(dispatch_id, error) do
     SQL.exec("UPDATE chat_agent_dispatches SET error=? WHERE id=? AND run_id IS NULL", [
       error,

@@ -1515,6 +1515,7 @@ defmodule Cascade.Missions.Store do
                 nil
             end,
           queueReason: queue_reason(task, waiting_for, attention),
+          waitingReason: waiting_reason(task, mission, by_task),
           updatedAt: task.updated_at
         }
 
@@ -1708,6 +1709,29 @@ defmodule Cascade.Missions.Store do
   defp task_to_work_item_status("completed"), do: "done"
   defp task_to_work_item_status("canceled"), do: "canceled"
   defp task_to_work_item_status(_), do: "open"
+
+  @doc "SELECT-only notification evidence; never refreshes status or grants execution."
+  def notification_state(id) do
+    case mission_row(id) do
+      nil -> nil
+      mission ->
+        tasks = task_rows(id)
+        by_id = Map.new(tasks, &{&1.id, &1})
+
+        %{mission: mission, tasks: Enum.map(tasks, fn task ->
+          waiting = Enum.filter(dependencies(task), fn id ->
+            is_nil(by_id[id]) or not dependency_ready_for?(task, by_id[id])
+          end)
+
+          Map.merge(task, %{
+            evidence_ready: completion_evidence_ready?(task, mission),
+            waiting_for: waiting,
+            dependency_attention: dependency_attention?(task, by_id),
+            stage_ready: required_stage_dependency?(task, dependencies(task), by_id)
+          })
+        end)}
+    end
+  end
 
   defp completion_evidence_ready?(task, mission),
     do: direct_evidence_ready?(task, mission) or recovered_evidence_ready?(task, mission)
@@ -2519,6 +2543,32 @@ defmodule Cascade.Missions.Store do
          task.brief_note_id != brief_note_id or
          decode_json_map(task.brief_revisions_json) != brief_revisions do
       raise "A task with this title already exists with different scheduling options; use a distinct title"
+    end
+  end
+
+  defp waiting_reason(%{status: status}, _mission, _tasks) when status != "pending", do: nil
+  defp waiting_reason(task, mission, tasks) do
+    waiting = Enum.filter(dependencies(task), fn id ->
+      is_nil(tasks[id]) or not dependency_ready_for?(task, tasks[id])
+    end)
+
+    cond do
+      Cascade.Missions.Interpretation.migration_decision_pending?(mission.id) ->
+        %{kind: "approval", detail: "Owner migration decision required"}
+      waiting != [] ->
+        %{kind: "dependency", detail: Enum.join(waiting, ", ")}
+      not required_stage_dependency?(task, dependencies(task), tasks) ->
+        %{kind: "dependency", detail: "Required accepted review/integration stage is missing"}
+      Cascade.Missions.Children.joining?(task.id) ->
+        %{kind: "dependency", detail: "Waiting for child task results"}
+      task.dispatch_id != nil ->
+        case SQL.one("SELECT error,failed_at FROM chat_agent_dispatches WHERE id=?", [task.dispatch_id]) do
+          [error, failed] when is_binary(error) and error != "" ->
+            %{kind: Cascade.Missions.Dispatches.waiting_kind(error, failed), detail: error}
+          _ -> %{kind: "dispatch", detail: "Queued for the authorized runner; no terminal outcome yet"}
+        end
+      true ->
+        %{kind: "capacity", detail: "Awaiting scheduler/assignee capacity; no terminal outcome yet"}
     end
   end
 

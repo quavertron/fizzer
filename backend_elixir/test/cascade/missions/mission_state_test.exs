@@ -619,7 +619,7 @@ defmodule Cascade.Missions.MissionStateTest do
              ["implementation", "review", "integration", "verification"]
   end
 
-  test "periodic recovery leaves disconnected owners unchanged until a runner reconnects", ctx do
+  test "periodic recovery reports failure offline without dispatch until a runner reconnects", ctx do
     {:ok, created} = mission(ctx, "Wait for reconnect")
     {:ok, added} = task(ctx, created.mission.id, "Worker")
 
@@ -629,7 +629,9 @@ defmodule Cascade.Missions.MissionStateTest do
         summary: "Needs review"
       })
 
-    before = SQL.one("SELECT COUNT(*) FROM chat_messages WHERE channel_id=?", [ctx.channel.id])
+    before = SQL.all("SELECT id FROM chat_messages WHERE channel_id=? ORDER BY id", [ctx.channel.id])
+    dispatches = SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [ctx.channel.id])
+    runs = SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [ctx.user.id])
 
     {:ok, state} = Cascade.Missions.DispatchReannouncer.init(interval: 60_000)
     {:noreply, state} = Cascade.Missions.DispatchReannouncer.handle_info(:dispatch, state)
@@ -640,8 +642,17 @@ defmodule Cascade.Missions.MissionStateTest do
 
     assert SQL.one("SELECT wake_sent FROM chat_missions WHERE id=?", [created.mission.id]) == [0]
 
-    assert SQL.one("SELECT COUNT(*) FROM chat_messages WHERE channel_id=?", [ctx.channel.id]) ==
-             before
+    notice_id = "task-notification:#{added.task.id}:0:failed"
+    assert {:ok, message} = Messages.get(ctx.channel.id, ctx.user.id, notice_id)
+    assert message.author == "Fizzer task status"
+    assert message.body =~ "Task failed"
+    assert message.body =~ "Needs review"
+    assert message[:registrationId] == nil
+    assert SQL.all("SELECT id FROM chat_messages WHERE channel_id=? AND id<>? ORDER BY id", [ctx.channel.id, notice_id]) == before
+    assert SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [ctx.channel.id]) == dispatches
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [ctx.user.id]) == runs
+    Cascade.Missions.Notifications.reconcile(created.mission.id, Cascade.Chat.Events.Noop)
+    assert SQL.one("SELECT COUNT(*) FROM chat_messages WHERE id=?", [notice_id]) == [1]
 
     assert [_] = Scheduler.schedule(created.mission.id).wakeDispatches
   end
