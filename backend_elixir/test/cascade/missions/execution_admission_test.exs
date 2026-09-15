@@ -120,11 +120,14 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     {:ok, next} = Store.add_task(c.user.id, c.channel, c.mission, %{title: "Implement original research", assignee: c.worker.id, coordinatorRegistrationId: c.coordinator.id, purpose: "implementation", workspaceMode: "isolated", dependsOn: [c.task]})
     assert Enum.all?(Store.schedulable(c.mission).candidates, &(&1.taskId != next.task.id))
     {:ok, _} = Store.update_task(c.user.id, c.channel, c.task, %{status: "completed", summary: "Research evidence, not delivered implementation"})
+    {:ok, held} = Dispatches.create(c.user.id, c.channel, c.root, c.coordinator.id)
+    refute ExecutionAdmission.dispatch_allowed?(held.id)
     scheduled = Scheduler.schedule(c.mission)
     [item] = scheduled.dispatches
     assert item.message.missionTaskId == next.task.id
     [wake] = scheduled.wakeDispatches
     assert ExecutionAdmission.dispatch_allowed?(wake.dispatch.id)
+    assert {:ok, _} = Dispatches.for_execution(wake.dispatch.id)
     {:ok, run} = Cascade.Runs.Store.start(c.vault, nil, "Inert coordinator", "codex", owner_user_id: c.user.id, chat_dispatch_id: wake.dispatch.id, conversation_id: wake.dispatch.conversationId)
     :ok = Dispatches.attach_run(wake.dispatch.id, run.id)
     {:ok, current} = Cascade.Missions.Interpretation.get(c.user.id, c.channel, c.mission, c.coordinator.id)
