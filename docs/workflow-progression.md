@@ -17,7 +17,7 @@ The optional `CASCADE_DATA_DIR/execution-admission.json` remains a boot-loaded f
 
 - `workflows`: exact `{missionId, vaultId, channelId, rootMessageId}` bindings. Descendants remain inside that persisted objective; other objectives/vaults are not admitted.
 - `futureOwnerMessageAfterSeq`: a one-time captured persisted message sequence fence, not a date filter. Only newer owner-authored messages without agent/registration attribution and with the authenticated owner's author identity qualify. Event-bound server notices cannot qualify. Subsequent objectives rooted in those new instructions can progress; old backlog is still held.
-- `maxConcurrent`: existing one-or-two claim cap.
+- `maxConcurrent`: existing one-or-two claim cap. A request for two simultaneous workers means this concurrency limit, not a two-start lifetime allowance. Authorized sequential dependency stages continue after earlier runs settle.
 - `qualificationBudget`: optional `{afterRunId, maxStarts}` for a bounded real recovery qualification. It limits claims for explicitly recovered workflows, counts persisted starts even after completion/reboot, and does **not** block genuinely new owner requests. This is an operator testing limit, not a normal long-running workflow default. A retained running delivery remains deliverable after the start budget is exhausted. Removing/changing this limit is an explicit operational decision, never an automatic test cleanup.
 
 Do not remove the admission file to fix chat or resume work. Update its content under the deployment procedure, then independently compare the authenticated `/api/execution-admission-v1` policy to the intended complete object. On-disk replacement alone is not runtime activation.
