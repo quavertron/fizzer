@@ -88,6 +88,56 @@ defmodule Cascade.Missions.NotificationsTest do
     run
   end
 
+  test "historical state stays silent across runner reconnect; exact backfill is notification-only", c do
+    {:ok, _} = block(c)
+    SQL.exec("UPDATE chat_mission_events SET created_at='2026-08-09T00:00:00Z' WHERE task_id=?", [c.task])
+    SQL.exec("UPDATE chat_mission_tasks SET created_at='2026-08-09 00:00:00' WHERE id=?", [c.task])
+    before_runs = SQL.all("SELECT id FROM runs ORDER BY id")
+    before_dispatches = SQL.all("SELECT id FROM chat_agent_dispatches ORDER BY id")
+    sink = fn _ -> flunk("historical notification was replayed") end
+    Notifications.reconcile(c.mission, sink)
+    assert receipts(c) == []
+    sid = "historical-notification-#{c.task}"
+    {:ok, ^sid, pid} = Cascade.Realtime.start_session(sid: sid, domain: Cascade.Realtime.DomainAdapter)
+    Cascade.Realtime.Hub.register_runner(c.user.id, sid, "/runners", %{})
+    on_exit(fn ->
+      Cascade.Realtime.Hub.unregister_runner(c.user.id, sid)
+      if Process.alive?(pid), do: DynamicSupervisor.terminate_child(Cascade.Realtime.SessionSupervisor, pid)
+    end)
+    assert Cascade.Runs.RunnerLifecycle.online?(c.user.id)
+    Notifications.reconcile(c.mission, sink)
+    Cascade.Realtime.Hub.unregister_runner(c.user.id, sid)
+    Notifications.reconcile(c.mission, sink)
+    assert receipts(c) == []
+    assert SQL.all("SELECT id FROM runs ORDER BY id") == before_runs
+    assert SQL.all("SELECT id FROM chat_agent_dispatches ORDER BY id") == before_dispatches
+
+    previous = Application.get_env(:cascade, :task_notification_backfill, [])
+    on_exit(fn -> Application.put_env(:cascade, :task_notification_backfill, previous) end)
+    Application.put_env(:cascade, :task_notification_backfill, [{c.task, 0}])
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert [[id, _]] = receipts(c)
+    # Removing admission also suppresses a committed but never delivered receipt.
+    Application.put_env(:cascade, :task_notification_backfill, [])
+    Notifications.flush(c.mission, sink)
+    assert [[^id, _]] = receipts(c)
+    assert SQL.all("SELECT id FROM runs ORDER BY id") == before_runs
+    assert SQL.all("SELECT id FROM chat_agent_dispatches ORDER BY id") == before_dispatches
+  end
+
+  test "explicit future retry admits old task without replaying the prior attempt", c do
+    {:ok, _} = block(c)
+    SQL.exec("UPDATE chat_mission_events SET created_at='2026-08-09T00:00:00Z' WHERE task_id=?", [c.task])
+    refute Notifications.eligible?(c.task, 0)
+    SQL.exec("UPDATE chat_mission_tasks SET attempt=1 WHERE id=?", [c.task])
+    SQL.exec("INSERT INTO chat_mission_events(mission_id,task_id,kind,attempt) VALUES(?,?,'task_retried',1)", [c.mission, c.task])
+    assert Notifications.eligible?(c.task, 1)
+    refute Notifications.eligible?(c.task, 0)
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert [[id, _]] = receipts(c)
+    assert id == "task-notification:#{c.task}:1:blocked"
+  end
+
   test "offline coordinator cannot prevent durable blocker receipt; independent maintenance selects it",
        c do
     {:ok, _} = block(c)

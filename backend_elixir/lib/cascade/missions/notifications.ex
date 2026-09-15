@@ -5,8 +5,12 @@ defmodule Cascade.Missions.Notifications do
   alias Cascade.Missions.Store
   alias Cascade.Realtime.OrderedPublisher
 
-  # Do not replay every historical completed mission on deployment. Active backlog
-  # is reconciled, and a committed receipt remains drainable after completion.
+  # Stable feature activation boundary, NOT process boot time: restarts must not
+  # discard legitimate undelivered work or opt old task state into notification.
+  @activated_at "2026-09-15T16:26:00Z"
+
+  # Discovery may scan existing missions, but creation AND delivery are admitted
+  # per task below. Existing records are retained even when replay is suppressed.
   def jobs do
     SQL.all("""
     SELECT m.id,m.created_by FROM chat_missions m
@@ -38,7 +42,9 @@ defmodule Cascade.Missions.Notifications do
             case Store.notification_state(id) do
               %{mission: mission, tasks: tasks} ->
                 Enum.each(tasks, fn task ->
-                  if notice = notice(task, mission), do: save!(mission, task, notice)
+                  if eligible?(task.id, task.attempt) do
+                    if notice = notice(task, mission), do: save!(mission, task, notice)
+                  end
                 end)
 
               _ ->
@@ -61,6 +67,23 @@ defmodule Cascade.Missions.Notifications do
       """,
       [id]
     ) == [1]
+  end
+
+  # Only a new task/explicit retry or an actually new run admits an attempt.
+  # Polling, reconnecting, timestamp refreshes and old completion evidence do not.
+  # An operator may explicitly opt exact {task_id, attempt} pairs into backfill;
+  # this is notification-only and never execution authorization.
+  def eligible?(task_id, attempt) do
+    {task_id, attempt} in Application.get_env(:cascade, :task_notification_backfill, []) or
+      SQL.one("""
+      SELECT 1 FROM chat_mission_tasks t WHERE t.id=? AND t.attempt=? AND (
+        EXISTS (SELECT 1 FROM chat_mission_events e WHERE e.task_id=t.id
+          AND e.attempt=t.attempt AND e.kind IN ('task_added','task_retried')
+          AND julianday(e.created_at)>=julianday(?))
+        OR EXISTS (SELECT 1 FROM runs r WHERE r.id=t.run_id
+          AND julianday(r.started_at)>=julianday(?))
+      )
+      """, [task_id, attempt, @activated_at, @activated_at]) == [1]
   end
 
   # Temporary capacity/ordinary dependencies remain waiting, never terminal
@@ -165,16 +188,21 @@ defmodule Cascade.Missions.Notifications do
     if allowed?(id) do
       SQL.all(
         """
-        SELECT e.id,json_extract(e.summary,'$.messageId'),m.created_by,m.vault_id,m.channel_id
+        SELECT e.id,json_extract(e.summary,'$.messageId'),m.created_by,m.vault_id,m.channel_id,
+          e.task_id,t.attempt
         FROM chat_mission_events e JOIN chat_missions m ON m.id=e.mission_id
-        WHERE m.id=? AND e.kind='task_notification' AND NOT EXISTS (
+        JOIN chat_mission_tasks t ON t.id=e.task_id
+        WHERE m.id=? AND e.kind='task_notification'
+          AND json_extract(e.summary,'$.messageId') = 'task-notification:' || t.id || ':' || t.attempt || ':' || json_extract(e.summary,'$.category')
+          AND NOT EXISTS (
           SELECT 1 FROM chat_mission_events s WHERE s.source_key='task-notification-sent:' || e.id)
         ORDER BY e.id
         """,
         [id]
       )
-      |> Enum.each(fn [event_id, message_id, owner, vault, channel] ->
+      |> Enum.each(fn [event_id, message_id, owner, vault, channel, task_id, attempt] ->
         with true <- allowed?(id),
+             true <- eligible?(task_id, attempt),
              {:ok, route} <- Store.owner_route(owner, vault, channel),
              {:ok, message} <- Messages.get(route.localChannelId, owner, message_id) do
           result =
