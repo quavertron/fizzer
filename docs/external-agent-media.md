@@ -10,7 +10,12 @@ file alone does not update an existing request closure.
 - `mediaUpload`: exact keys `op, mode, requestId, vaultId, channelId, name, data`.
   `data` is canonical base64 of PNG bytes; `name` is a plain `.png` filename.
 - `mediaSend`: exact keys `op, mode, requestId, vaultId, channelId, body, uploads`.
-  `uploads` is one to four prior verified upload request IDs, never URLs/paths.
+  `uploads` is zero to four prior verified upload request IDs, never URLs/paths.
+  Use `uploads: []` for explicit-vault text-only publication; the same owner,
+  channel, no-invoke negotiation, body validation and durable receipts apply.
+  `mediaCapabilities` advertises `textOnly: true` and `minImages: 0` when activated.
+  No upload is performed for text-only sends. The backend already accepts empty
+  images on its dedicated route; this extension requires only desktop activation.
 - `mode`: `apply` or read-only `reconcile`. Reconciliation repeats the original
   intent with only mode changed. No new intent is admitted in reconcile mode.
 

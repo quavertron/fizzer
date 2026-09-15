@@ -52,7 +52,7 @@ async function control(input, ctx) {
     if (Object.keys(input).length !== 1) fail('invalid_request');
     await authorize(true);
     return { contract: 'fizzer_media_control_v1', actions: ['mediaUpload', 'mediaSend'], modes: ['apply', 'reconcile'],
-      maxBytes: MAX, maxImages: 4, formats: ['PNG RGB/RGBA 8-bit noninterlaced'], backendContract: 'channel_png_assets_v1' };
+      maxBytes: MAX, minImages: 0, maxImages: 4, textOnly: true, formats: ['PNG RGB/RGBA 8-bit noninterlaced'], backendContract: 'channel_png_assets_v1' };
   }
   const fields = input.op === 'mediaUpload' ? ['op', 'mode', 'requestId', 'vaultId', 'channelId', 'name', 'data'] :
     input.op === 'mediaSend' ? ['op', 'mode', 'requestId', 'vaultId', 'channelId', 'body', 'uploads'] : null;
@@ -66,7 +66,7 @@ async function control(input, ctx) {
     if (typeof input.name !== 'string' || !NAME.test(input.name)) fail('invalid_media');
     image = png(input.data);
   } else if (typeof input.body !== 'string' || !input.body.trim() || input.body.length > 8000 || /@|\/compact/i.test(input.body) ||
-      !Array.isArray(input.uploads) || !input.uploads.length || input.uploads.length > 4 ||
+      !Array.isArray(input.uploads) || input.uploads.length > 4 ||
       input.uploads.some(r => typeof r !== 'string' || !RID.test(r)) || new Set(input.uploads).size !== input.uploads.length) fail('invalid_request');
   const api = await authorize(false, input.vaultId);
   const { notes } = await api(`/api/vaults/${input.vaultId}/notes`);
