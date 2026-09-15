@@ -879,7 +879,7 @@ defmodule CascadeWeb.ChatRouter do
           "Vault agent not found",
           "Agent member not found",
           "Invite not found"
-        ] or String.starts_with?(message, "Agent not found:") ->
+        ] ->
           404
 
         String.starts_with?(message, "Only ") or String.contains?(message, "can only") or

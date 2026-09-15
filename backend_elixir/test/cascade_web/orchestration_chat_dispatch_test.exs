@@ -120,19 +120,6 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     }
   end
 
-  test "unknown typed agent mention returns an error to the chat client", ctx do
-    response =
-      post_message(
-        ctx.guest,
-        ctx.guest_vault,
-        ctx.guest_channel,
-        "@does-not-exist please respond"
-      )
-
-    assert response.status == 404
-    assert Jason.decode!(response.resp_body) == %{"error" => "Agent not found: does-not-exist"}
-  end
-
   test "coordinator reviews are claimed without a chat page and repeated claims reuse the run",
        ctx do
     first = event!(ctx.sid, "run:delegate")
