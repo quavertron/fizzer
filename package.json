@@ -31,6 +31,7 @@
     "dev-client-staging": "dotenv -e client/.env.staging -- npm --workspace=client run dev -- --mode staging",
     "dev-staging-headless": "concurrently \"npm run dev-backend-staging\" \"npm run dev-client-staging\"",
     "sub:electron": "cd cascade-electron && npm run start:watch",
+    "prebuild": "npm install --ignore-scripts --include=dev --no-audit --no-fund",
     "build": "tsc && node scripts/copy-cli-agent-wrappers.cjs && npm run build:html-preview",
     "build:html-preview": "node scripts/build-html-preview.mjs",
     "build:vps": "npm run build && npm run build:client",
