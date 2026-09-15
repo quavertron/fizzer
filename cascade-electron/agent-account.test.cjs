@@ -9,6 +9,15 @@ const { PassThrough } = require('node:stream');
 const account = require('./agent-account.cjs');
 const { offerAgentAccountSetup } = require('./agent-account-setup.cjs');
 
+test('account runner resolves stale fizzer workspace through legacy cascade path', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'account-legacy-root-'));
+  const legacy = path.join(parent, '.cascade', 'vaults', 'one');
+  fs.mkdirSync(legacy, { recursive: true });
+  try {
+    assert.equal(account.resolveWorkspace(path.join(parent, '.fizzer', 'vaults', 'one')), fs.realpathSync(legacy));
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
+
 test('explicit Settings setup remains available after TUI decline without changing installation state', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'account-state-'));
   const previous = process.env.CASCADE_DATA_DIR;

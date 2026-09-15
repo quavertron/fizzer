@@ -8,6 +8,15 @@ const { startReadOnlyApi } = require('./agent-account-api.cjs');
 const writeAccess = require('./agent-write-access.cjs');
 
 const active = new Map();
+function resolveWorkspace(selected) {
+  let expanded = selected === '~' ? os.homedir()
+    : selected.startsWith('~/') ? path.join(os.homedir(), selected.slice(2)) : selected;
+  if (!fs.existsSync(expanded)) {
+    const legacy = expanded.replace(`${path.sep}.fizzer${path.sep}`, `${path.sep}.cascade${path.sep}`);
+    if (legacy !== expanded && fs.existsSync(legacy)) expanded = legacy;
+  }
+  return fs.realpathSync(expanded);
+}
 const installedAlock = '/usr/local/libexec/fizzer/alock';
 function stateDirectory() { return process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'); }
 function enabled() { return ['darwin', 'linux'].includes(process.platform) && fs.existsSync(path.join(stateDirectory(), 'agent-writes-enabled')); }
@@ -60,10 +69,8 @@ async function run(opts, sendEvent, api) {
     sendEvent({ runId: Number(opts.runId), seq: ++sequence, type: 'status', payload_json: JSON.stringify({ status: value, summary }) });
   };
   try {
-    const selected = String(opts.cwd || '').trim() || opts.vaultRoot || process.cwd();
-    const expanded = selected === '~' ? os.homedir()
-      : selected.startsWith('~/') ? path.join(os.homedir(), selected.slice(2)) : selected;
-    const root = fs.realpathSync(expanded);
+    const selected = String(opts.cwd || '').trim() || String(opts.vaultRoot || '').trim() || process.cwd();
+    const root = resolveWorkspace(selected);
     if (!fs.statSync(root).isDirectory()) throw new Error(`Agent workspace is not a directory: ${root}`);
     // Resolve once as the human; the worker's HOME belongs to the fizzer account.
     opts = { ...opts, cwd: root };
@@ -139,4 +146,4 @@ async function run(opts, sendEvent, api) {
   }
 }
 function cancel(id) { const record = active.get(Number(id)); if (!record) return false; record.canceled = true; record.child.kill('SIGTERM'); return true; }
-module.exports = { enabled, shouldOffer, decline, setupCommand, launchArguments, run, cancel };
+module.exports = { enabled, shouldOffer, decline, setupCommand, launchArguments, resolveWorkspace, run, cancel };
