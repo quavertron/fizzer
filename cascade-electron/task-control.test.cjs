@@ -94,6 +94,32 @@ const startArgs=f=>({vaultId:f.v,workItemId:f.w,agent:'codex',model:'test-model'
 const settingArgs=f=>({vaultId:f.v,channelId:f.channelId,registrationId:f.registrationId,vaultAgentId:f.identityId,hermesProfile:'along'});
 const missionArgs=f=>({vaultId:f.v,missionId:f.m,title:'Synthetic mission',coordinatorIdentityId:f.identityId,briefContent:'Synthetic brief',channelId:f.channelId,rootMessageId:'existing-root',coordinatorRegistrationId:f.registrationId});
 const count=f=>f.calls.filter(c=>c.method!=='GET').length;
+const repositoryArgs=f=>{
+  const repository=path.join(f.directory,'repo');fs.mkdirSync(repository);fs.mkdirSync(path.join(repository,'.git'));
+  Object.assign(f.items.get(f.w),{sourceKind:'mission',sourceId:randomUUID(),workspaceMode:'isolated',repository:'',worktreePath:'',baseCommit:'',channelId:f.channelId,assigneeRegistrationId:f.registrationId,updatedAt:'revision-1'});
+  return {vaultId:f.v,workItemId:f.w,patch:{repository}};
+};
+test('repository-only binding requires owner grant and reconciles a lost response without replay',async t=>{
+  const f=await fixture(t),args=repositoryArgs(f),p=await f.plan('updateWorkItem',args);
+  assert.equal(p.requiresGrant,true);assert.equal(p.atomicPrecondition,false);assert.match(p.effects,/existing pending dispatch/);
+  assert.equal((await f.apply(p)).error,'specific_approval_required');assert.equal(count(f),0);
+  f.grant(p);f.state.lost=true;assert.equal((await f.apply(p)).error,'upstream_500');
+  f.state.lost=false;await f.restart();const n=count(f),r=await f.apply(p,'appReconcile');
+  assert.equal(r.state,'verified');assert.equal(r.result.item.repository,args.patch.repository);assert.equal(count(f),n);
+  assert.deepEqual(f.calls.filter(c=>c.method!=='GET').map(c=>[c.method,c.path,c.body]),[['PATCH',`/api/work-items/${f.w}`,args.patch]]);
+});
+test('repository binding rejects mixed patches, running/bound work, yolo and changed item/settings',async t=>{
+  const f=await fixture(t),args=repositoryArgs(f);
+  for(const patch of [{repository:'relative'},{...args.patch,status:'open'},{...args.patch,branch:'new'},{repository:'/tmp/../tmp'},{repository:'/'+ 'a'.repeat(500)}]) assert.equal((await f.plan('updateWorkItem',{...args,patch})).error,'invalid_request');
+  f.state.yolo=true;assert.equal((await f.plan('updateWorkItem',args)).error,'specific_approval_required');f.state.yolo=false;
+  for(const [key,value] of [['runIds',[1]],['worktreePath','/tmp/work'],['baseCommit','abc'],['repository','/tmp/repo'],['leaseHolder','worker'],['status','done']]){
+    const item=f.items.get(f.w),old=item[key];item[key]=value;
+    assert.equal((await f.plan('updateWorkItem',args)).error,'running_work');item[key]=old;
+  }
+  let p=await f.plan('updateWorkItem',args);f.grant(p);f.items.get(f.w).updatedAt='revision-2';assert.equal((await f.apply(p)).error,'stale_plan');
+  p=await f.plan('updateWorkItem',args);f.grant(p);f.state.executionModel='changed';assert.equal((await f.apply(p)).error,'stale_plan');
+  assert.equal(count(f),0);
+});
 test('legacy channel-allocating mission requests cannot plan another write',async t=>{
   const f=await fixture(t), args=missionArgs(f);
   delete args.channelId; delete args.rootMessageId; delete args.coordinatorRegistrationId;

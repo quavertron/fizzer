@@ -38,9 +38,17 @@ function validate(action, a, c, op) {
   if (action === 'createMissionTask' && (!['research','implementation','fix','integration'].includes(a.purpose) || !['shared','isolated'].includes(a.workspaceMode))) fail('invalid_request');
   if (action === 'updateMissionTask' && !['blocked','canceled','failed'].includes(a.status)) fail('invalid_request');
   if (a.patch) {
-    const allowed = action === 'updateWorkItem' ? ['title','brief','contract','verification','summary','status','priority'] : ['model','reasoningEffort','contextPrompt','finalReplyOnly'];
+    const allowed = action === 'updateWorkItem' ? ['title','brief','contract','verification','summary','status','priority','repository'] : ['model','reasoningEffort','contextPrompt','finalReplyOnly'];
     if (typeof a.patch !== 'object' || Array.isArray(a.patch) || !Object.keys(a.patch).length || Object.keys(a.patch).some(k => !allowed.includes(k))) fail('invalid_request');
     for (const [k,v] of Object.entries(a.patch)) {
+      if (k === 'repository') {
+        // Binding may unblock an existing paid-capable dispatch. Never combine it
+        // with status, branch, worktree, cwd or privilege changes.
+        // Match WorkItems.update's stored bound: never silently truncate a path.
+        text(v, 500);
+        if (Object.keys(a.patch).length !== 1 || !path.isAbsolute(v) || v.includes('\0') || path.normalize(v) !== v) fail('invalid_request');
+        if (!fs.statSync(v).isDirectory() || !fs.existsSync(path.join(v, '.git'))) fail('invalid_repository');
+      }
       if (k === 'priority') { if (!Number.isInteger(v) || v < -100 || v > 100) fail('invalid_request'); }
       else if (k === 'finalReplyOnly') { if (typeof v !== 'boolean') fail('invalid_request'); }
       else text(v, k === 'title' ? 180 : k === 'summary' ? 4000 : k === 'model' ? 160 : 8000, !['title','status','model'].includes(k));
@@ -56,6 +64,8 @@ function privateJSON(file) {
 }
 async function control(input, c) {
   const a = input.args, action = input.action;
+  const repositoryBinding = action === 'updateWorkItem' && Object.hasOwn(a?.patch || {}, 'repository');
+  const requiresGrant = consequential.has(action) || repositoryBinding;
   if (!reads[action] && !writes[action]) fail('invalid_request');
   exact(input, input.op === 'appRead' ? ['op','action','args'] : input.op === 'appPlan' ? ['op','action','args','requestId'] : ['op','action','args','requestId','planDigest']);
   validate(action, a, c, input.op);
@@ -76,8 +86,8 @@ async function control(input, c) {
     if (input.op !== 'appPlan') fail('intent_not_found');
     if (fs.readdirSync(c.receiptDir).length >= 1000) fail('receipt_limit');
     const before = await snapshot();
-    const plan = {...intent, before, audience, requiresGrant:consequential.has(action), atomicPrecondition:action === 'updateAgentSettings' || action === 'updateMission',
-      effects: action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
+    const plan = {...intent, before, audience, requiresGrant, atomicPrecondition:action === 'updateAgentSettings' || action === 'updateMission',
+      effects: repositoryBinding ? 'Binds only this unbound isolated mission work item repository; the existing pending dispatch may retry and spend provider tokens under unchanged assignee settings. No new task, run, approval, cwd or privilege change. Fresh whole-item guard, not backend atomic CAS.' : action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
       attribution:'Along local receipt; backend account attribution. Shared/public writes unavailable.'};
     r = {intentDigest:hash(intent), plan, planDigest:hash(plan), state:'planned'};
     c.durableWrite(file,r,true);
@@ -85,7 +95,7 @@ async function control(input, c) {
   if (input.op === 'appPlan') return {...r.plan, planDigest:r.planDigest, state:r.state};
   if (input.op === 'appReconcile' && r.state === 'planned') return {state:'planned', applied:false};
   if (r.state === 'planned') {
-    if (consequential.has(action)) grant(r.planDigest);
+    if (requiresGrant) grant(r.planDigest);
     const fresh = await snapshot();
     // A run's streamed output changes continuously; Stop binds its immutable ID,
     // vault and owner-only GET authorization, not a frozen output/status snapshot.
@@ -173,6 +183,17 @@ async function control(input, c) {
     if (action === 'updateWorkItem' || action === 'startRun') {
       const d = await item(a.workItemId);
       if (d.item.createdBy !== c.ownerId) fail('owner_scope_mismatch');
+      if (repositoryBinding) {
+        const w = d.item;
+        if (w.sourceKind !== 'mission' || w.workspaceMode !== 'isolated' || w.status !== 'open' || w.runIds?.length || w.leaseHolder || w.worktreePath || w.baseCommit || w.repository) fail('running_work');
+        id(w.channelId); id(w.assigneeRegistrationId); id(w.sourceId);
+        const e = await execution(w.channelId, w.assigneeRegistrationId);
+        if (e.yolo !== false) fail('specific_approval_required');
+        // Entire item (including source task, runs and updatedAt) and SELECT-only
+        // execution settings are compared again immediately before the PATCH.
+        // Backend work-item PATCH has no atomic revision CAS; preview says so.
+        return {item:w, executionSettings:e};
+      }
       if (action === 'startRun' && (!['open','blocked','review'].includes(d.item.status) || d.item.runIds?.length)) fail('running_work');
       return d.item;
     }
