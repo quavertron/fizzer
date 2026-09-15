@@ -6,6 +6,14 @@ use unicode_width::UnicodeWidthChar;
 
 pub const HEADER_HEIGHT: u16 = 1;
 
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct InlineSvgBlock {
+    pub start_line: usize,
+    pub rows: u16,
+    pub image_id: u32,
+    pub svg: String,
+}
+
 /// Cached layout and pre-rendered lines for the chat messages stream.
 /// Avoids re-parsing, re-wrapping, and re-allocating thousands of chat lines on every frame.
 #[derive(Default, Debug, Clone)]
@@ -18,12 +26,14 @@ pub struct ChatRenderCache {
     pub author_color: String,
     pub wrap_width: usize,
     pub lines: Vec<Line<'static>>,
+    pub message_markers: Vec<(usize, usize)>,
     pub line_offsets: Vec<(usize, usize)>,
     pub chat_text: String,
     pub char_count: usize,
+    pub inline_svgs: Vec<InlineSvgBlock>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActivePane {
     ChatSelector,
     ChatMessages,
@@ -31,6 +41,7 @@ pub enum ActivePane {
     Agents,
     Users,
     Notes,
+    Awatch,
     Vaults,
 }
 
@@ -976,7 +987,35 @@ impl UserSettingsState {
     }
 }
 
+// The active buffer is moved into App for the existing editing/rendering code.
+// Inactive buffers retain their data; changing windows never copies chat history.
+macro_rules! channel_buffer {
+    ($($field:ident: $ty:ty),* $(,)?) => {
+        #[derive(Default)]
+        pub struct ChannelBuffer { $(pub $field: $ty,)* }
+        impl ChannelBuffer {
+            fn take(app: &mut App) -> Self {
+                Self { $($field: std::mem::take(&mut app.$field),)* }
+            }
+            fn restore(self, app: &mut App) { $(app.$field = self.$field;)* }
+        }
+    };
+}
+channel_buffer! {
+    messages: Vec<ChatMessage>, agents: Vec<AgentItem>, input: String,
+    pending_images: Vec<String>, send_in_flight: bool,
+    receiving_messages: Option<String>, history_channel: Option<String>,
+    history_before: Option<i64>, history_has_more: bool, history_loading: bool,
+    message_load_error: Option<String>, active_agent_ids: HashSet<String>,
+    agent_run_seeds: HashMap<String, u64>,
+}
+
 pub struct App {
+    pub awatch: crate::awatch::Awatch,
+    pub channel_buffers: HashMap<String, ChannelBuffer>,
+    pub window_states: HashMap<ratatui_hypertile::PaneId, crate::panes::WindowState>,
+    pub loaded_window: Option<ratatui_hypertile::PaneId>,
+    pub panes: std::cell::RefCell<crate::panes::Panes>,
     pub default_client: CascadeClient,
     pub client: CascadeClient,
     pub active_pane: ActivePane,
@@ -997,6 +1036,7 @@ pub struct App {
     pub selected_user_idx: usize,
     /// Agent registration or provider IDs with a queued/running session.
     pub active_agent_ids: HashSet<String>,
+    pub active_sessions: Vec<crate::api::ActiveSession>,
     /// Monotonic animation frame used by the agents panel termimations.
     pub animation_tick: u64,
     pub ticker_seed: u64,
@@ -1008,17 +1048,12 @@ pub struct App {
     pub selected_agent_idx: usize,
     pub agent_settings_modal: Option<AgentSettingsState>,
     pub user_settings_modal: Option<UserSettingsState>,
-    pub show_channels: bool,
-    pub show_agents: bool,
-    pub show_users: bool,
-    pub show_notes: bool,
     pub show_vaults: bool,
     pub notes: Vec<NoteSummary>,
     pub selected_note_idx: usize,
     pub input: String,
     pub cursor_pos: usize,
     pub input_scroll_offset: usize,
-    pub input_height_override: Option<u16>,
     pub status_message: String,
     pub is_loading: bool,
     pub receiving_messages: Option<String>,
@@ -1036,10 +1071,15 @@ pub struct App {
     /// Anchor for a keyboard text selection in the flattened chat log.
     pub chat_selection_anchor: Option<usize>,
     pub should_quit: bool,
+    /// Layout captured at the previous exit, applied after the first vault is opened.
+    pub saved_panes: Option<crate::panes::SavedPanes>,
+    pub window_config_favorites: HashMap<String, crate::panes::SavedPanes>,
+    pub window_config_registers: HashMap<char, crate::panes::SavedPanes>,
     /// Whether the last backend request reached the server. When false the
     /// header shows a `BACKEND DOWN` badge; the app never fabricates data.
     pub backend_online: bool,
     pub local_authenticated: bool,
+    pub server_session_expired: bool,
     /// Best-effort local check for the desktop runner daemon (the process that
     /// answers @mentions). Only meaningful when the runner runs on this machine.
     pub runner_online: bool,
@@ -1059,6 +1099,9 @@ impl App {
             .unwrap_or_else(|_| "user".to_string());
 
         Self {
+            channel_buffers: HashMap::new(),
+            window_states: HashMap::new(),
+            loaded_window: None,
             default_client: client.clone(),
             client,
             active_pane: ActivePane::ChatInput,
@@ -1077,6 +1120,7 @@ impl App {
             users: Vec::new(),
             selected_user_idx: 0,
             active_agent_ids: HashSet::new(),
+            active_sessions: Vec::new(),
             animation_tick: 0,
             ticker_seed: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1087,17 +1131,14 @@ impl App {
             selected_agent_idx: 0,
             agent_settings_modal: None,
             user_settings_modal: None,
-            show_channels: true,
-            show_agents: true,
-            show_users: true,
-            show_notes: false,
+            panes: std::cell::RefCell::new(crate::panes::Panes::default()),
+            awatch: crate::awatch::Awatch::default(),
             show_vaults: false,
             notes: Vec::new(),
             selected_note_idx: 0,
             input: String::new(),
             cursor_pos: 0,
             input_scroll_offset: 0,
-            input_height_override: None,
             status_message: "Initializing Fizzer...".to_string(),
             is_loading: false,
             receiving_messages: None,
@@ -1113,8 +1154,12 @@ impl App {
             chat_cursor: None,
             chat_selection_anchor: None,
             should_quit: false,
+            saved_panes: None,
+            window_config_favorites: HashMap::new(),
+            window_config_registers: HashMap::new(),
             backend_online: true,
             local_authenticated: false,
+            server_session_expired: false,
             runner_online: false,
             new_channel_name: None,
             renaming_channel_idx: None,
@@ -1127,6 +1172,36 @@ impl App {
         if let Some(agent) = self.agents.get(self.selected_agent_idx).cloned() {
             self.agent_settings_modal = Some(AgentSettingsState::new(self.selected_agent_idx, agent));
         }
+    }
+
+    pub fn load_channel_buffer(&mut self, channel: Option<String>) {
+        if self.active_channel_id == channel { return; }
+        let previous = ChannelBuffer::take(self);
+        let mut buffer = channel.as_ref().and_then(|id| self.channel_buffers.remove(id)).unwrap_or_default();
+        if let Some(id) = self.active_channel_id.take() {
+            self.channel_buffers.insert(id, previous);
+        } else if buffer.input.is_empty() && buffer.pending_images.is_empty() {
+            // Preserve a draft typed while initial channel discovery was pending.
+            buffer.input = previous.input;
+            buffer.pending_images = previous.pending_images;
+        }
+        buffer.restore(self);
+        self.active_channel_id = channel;
+        self.apply_active_sessions(self.active_sessions.clone());
+    }
+
+    /// Route asynchronous work to its originating buffer without stealing focus.
+    pub fn with_channel_buffer<R>(&mut self, channel: String, f: impl FnOnce(&mut App) -> R) -> R {
+        if self.active_channel_id.as_ref() == Some(&channel) { return f(self); }
+        let previous = self.active_channel_id.clone();
+        let window = crate::panes::WindowState::take(self);
+        let status = self.status_message.clone();
+        self.load_channel_buffer(Some(channel));
+        let result = f(self);
+        self.load_channel_buffer(previous);
+        window.restore(self);
+        self.status_message = status;
+        result
     }
 
     pub fn open_new_agent_settings(&mut self) {
@@ -1168,6 +1243,7 @@ impl App {
     /// Fold a fresh active-sessions snapshot into the active set (keyed on the
     /// per-profile registration id and mention) and reassign spinner seeds.
     pub fn apply_active_sessions(&mut self, sessions: Vec<crate::api::ActiveSession>) {
+        self.active_sessions = sessions.clone();
         self.active_agent_ids.clear();
         for session in sessions {
             if session.channel_id.as_deref() == self.active_channel_id.as_deref() {
@@ -1245,104 +1321,6 @@ impl App {
         self.user_settings_modal = None;
     }
 
-    pub fn toggle_channels(&mut self) {
-        self.show_channels = !self.show_channels;
-        if !self.show_channels && self.active_pane == ActivePane::ChatSelector {
-            self.active_pane = ActivePane::ChatInput;
-        }
-        self.status_message = format!("Channels panel {}", if self.show_channels { "visible" } else { "collapsed" });
-    }
-
-    pub fn toggle_agents(&mut self) {
-        self.show_agents = !self.show_agents;
-        if !self.show_agents && self.active_pane == ActivePane::Agents {
-            self.active_pane = ActivePane::ChatInput;
-        }
-        self.status_message = format!("Agents panel {}", if self.show_agents { "visible" } else { "collapsed" });
-    }
-
-    pub fn toggle_users(&mut self) {
-        self.show_users = !self.show_users;
-        if self.show_users {
-            self.active_pane = ActivePane::Users;
-        } else if self.active_pane == ActivePane::Users {
-            self.active_pane = ActivePane::ChatInput;
-        }
-        self.status_message = format!("Users panel {}", if self.show_users { "visible" } else { "collapsed" });
-    }
-
-    pub fn toggle_notes(&mut self) {
-        self.show_notes = !self.show_notes;
-        if self.show_notes {
-            self.active_pane = ActivePane::Notes;
-        } else if self.active_pane == ActivePane::Notes {
-            self.active_pane = ActivePane::ChatInput;
-        }
-        self.status_message = format!("Notes panel {}", if self.show_notes { "visible" } else { "collapsed" });
-    }
-
-    pub fn toggle_vaults(&mut self) {
-        self.show_vaults = !self.show_vaults;
-        if self.show_vaults {
-            self.active_pane = ActivePane::Vaults;
-        } else if self.active_pane == ActivePane::Vaults {
-            self.active_pane = ActivePane::ChatInput;
-        }
-        self.status_message = format!("Vaults panel {}", if self.show_vaults { "visible" } else { "collapsed" });
-    }
-
-    pub fn switch_pane(&mut self, is_wide: bool) {
-        self.switch_pane_by(is_wide, false);
-    }
-
-    pub fn switch_pane_backwards(&mut self, is_wide: bool) {
-        self.switch_pane_by(is_wide, true);
-    }
-
-    fn switch_pane_by(&mut self, is_wide: bool, backwards: bool) {
-        let can_show_agents = self.show_agents && is_wide;
-        let mut order: Vec<ActivePane> = Vec::new();
-        if self.show_channels {
-            order.push(ActivePane::ChatSelector);
-        }
-        if self.show_vaults {
-            order.push(ActivePane::Vaults);
-        }
-        order.push(ActivePane::ChatMessages);
-        order.push(ActivePane::ChatInput);
-        if can_show_agents {
-            order.push(ActivePane::Agents);
-        }
-        if self.show_users && is_wide {
-            order.push(ActivePane::Users);
-        }
-        // Notes live in the left sidebar and remain navigable at narrow widths.
-        // They are not subject to the Agents panel's width constraint.
-        if self.show_notes {
-            order.push(ActivePane::Notes);
-        }
-
-        if order.is_empty() {
-            self.active_pane = ActivePane::ChatInput;
-            return;
-        }
-
-        if let Some(pos) = order.iter().position(|p| *p == self.active_pane) {
-            let next = if backwards {
-                order[(pos + order.len() - 1) % order.len()]
-            } else {
-                order[(pos + 1) % order.len()]
-            };
-            if next == ActivePane::ChatMessages && self.active_pane != ActivePane::ChatMessages {
-                self.selected_message_idx = self.messages.len().saturating_sub(1);
-            }
-            self.active_pane = next;
-        } else {
-            self.active_pane = order[0];
-        }
-    }
-
-
     pub fn next_channel(&mut self) {
         if !self.channels.is_empty() {
             self.selected_channel_idx = (self.selected_channel_idx + 1) % self.channels.len();
@@ -1407,6 +1385,12 @@ impl App {
         self.author.clear();
         self.author_color.clear();
         if changed {
+            self.channel_buffers.clear();
+            self.window_states.clear();
+            self.loaded_window = None;
+            *self.panes.borrow_mut() = crate::panes::Panes::default();
+            ChannelBuffer::take(self);
+            crate::panes::WindowState::take(self);
             self.active_channel_id = None;
             self.channels.clear();
             self.messages.clear();
@@ -1416,7 +1400,15 @@ impl App {
             self.scroll_offset = 0;
         }
         self.show_vaults = false;
-        self.active_pane = ActivePane::ChatInput;
+        if let Some(saved) = self.saved_panes.take() {
+            if self.panes.borrow_mut().restore_config(&saved) {
+                self.active_pane = self.panes.borrow().focused();
+            } else {
+                self.active_pane = ActivePane::ChatInput;
+            }
+        } else {
+            self.active_pane = ActivePane::ChatInput;
+        }
         self.status_message = format!("Switched to vault {}", self.vault_name);
         changed
     }
@@ -1425,10 +1417,7 @@ impl App {
         if let Some(ch) = self.channels.get(self.selected_channel_idx) {
             let channel_id = ch.id.clone();
             let channel_title = ch.title.clone();
-            self.active_channel_id = Some(channel_id);
-            self.reset_agent_activity();
-            self.scroll_offset = 0;
-            self.active_pane = ActivePane::ChatInput;
+            crate::panes::show_channel(self, channel_id);
             self.status_message = format!("Switched to #{}", channel_title);
         }
     }
@@ -1438,6 +1427,7 @@ impl App {
     pub fn reset_agent_activity(&mut self) {
         self.active_agent_ids.clear();
         self.agent_run_seeds.clear();
+        self.active_sessions.clear();
         self.animation_tick = 0;
     }
 
@@ -1460,6 +1450,18 @@ impl App {
 
     pub fn scroll_down_by(&mut self, delta: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(delta);
+    }
+
+    pub fn scroll_chat_view(&mut self, up: bool, rows: usize, visible: usize) {
+        let max_scroll = self.chat_cache.read().unwrap().lines.len().saturating_sub(visible);
+        let offset = self.scroll_offset.min(max_scroll);
+        self.scroll_offset = if up {
+            offset.saturating_add(rows).min(max_scroll)
+        } else {
+            offset.saturating_sub(rows)
+        };
+        self.chat_cursor = None;
+        self.chat_selection_anchor = None;
     }
 
     fn chat_offset(&self, text: &str) -> usize {
@@ -1879,17 +1881,9 @@ impl App {
         }
     }
 
-    pub fn input_box_height(&self, total_height: u16) -> u16 {
-        self.input_box_height_for_width(total_height, 80)
-    }
-
     pub fn input_box_height_for_width(&self, total_height: u16, total_width: u16) -> u16 {
-        let available_for_chat_modality = total_height.saturating_sub(HEADER_HEIGHT + 1);
+        let available_for_chat_modality = total_height.saturating_sub(HEADER_HEIGHT);
         let max_height = available_for_chat_modality.saturating_sub(5).max(3);
-
-        if let Some(override_h) = self.input_height_override {
-            return override_h.min(max_height).max(3);
-        }
 
         let text_width = total_width.saturating_sub(4).max(1) as usize;
         let line_count = self.visual_input_line_count(text_width).max(1) as u16;
@@ -1916,38 +1910,6 @@ impl App {
             })
             .sum::<usize>()
             .max(1)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_input_tall(&self, total_height: u16) -> bool {
-        self.input_box_height(total_height) >= 20
-    }
-
-    pub fn toggle_input_expand(&mut self, total_height: u16) {
-        if self.input_height_override.is_some() {
-            self.input_height_override = None;
-            self.status_message = "Input composer height: auto".to_string();
-        } else {
-            let max_height = total_height.saturating_sub(HEADER_HEIGHT + 6).max(20);
-            let tall_height = 22.min(max_height).max(20);
-            self.input_height_override = Some(tall_height);
-            self.status_message = "Input composer expanded".to_string();
-        }
-    }
-
-    pub fn grow_input_height(&mut self, total_height: u16) {
-        let current = self.input_box_height(total_height);
-        let max_height = total_height.saturating_sub(HEADER_HEIGHT + 6).max(3);
-        let next = (current + 2).min(max_height);
-        self.input_height_override = Some(next);
-        self.status_message = format!("Input height: {}", next);
-    }
-
-    pub fn shrink_input_height(&mut self) {
-        let current = self.input_height_override.unwrap_or(3);
-        let next = current.saturating_sub(2).max(3);
-        self.input_height_override = Some(next);
-        self.status_message = format!("Input height: {}", next);
     }
 
     fn byte_index(&self) -> usize {
@@ -2019,6 +1981,22 @@ fn normalize_agent_name(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wheel_scroll_clamps_to_viewport_and_releases_cursor() {
+        let mut app = super::App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.chat_cache.write().unwrap().lines = vec![ratatui::text::Line::raw("row"); 30];
+        app.scroll_offset = 100;
+        app.chat_cursor = Some(0);
+        app.scroll_chat_view(false, 3, 10);
+        assert_eq!(app.scroll_offset, 17);
+        assert_eq!(app.chat_cursor, None);
+        app.scroll_chat_view(true, 100, 10);
+        assert_eq!(app.scroll_offset, 20);
+        app.scroll_chat_view(false, 100, 10);
+        assert_eq!(app.scroll_offset, 0);
+        app.scroll_chat_view(true, 3, 40);
+        assert_eq!(app.scroll_offset, 0);
+    }
     use super::*;
 
     fn make_app() -> App {
@@ -2137,21 +2115,6 @@ mod tests {
     }
 
     #[test]
-    fn test_users_panel_toggles_like_notes() {
-        let mut app = make_app();
-        app.active_pane = ActivePane::Users;
-        assert!(app.show_users);
-
-        app.toggle_users();
-        assert!(!app.show_users);
-        assert_eq!(app.active_pane, ActivePane::ChatInput);
-
-        app.toggle_users();
-        assert!(app.show_users);
-        assert_eq!(app.active_pane, ActivePane::Users);
-    }
-
-    #[test]
     fn test_color_hex_parsing() {
         assert_eq!(parse_hex_color("#FF0000"), Some((255, 0, 0)));
         assert_eq!(parse_hex_color("00FF00"), Some((0, 255, 0)));
@@ -2230,7 +2193,7 @@ mod tests {
         app.active_channel_id = Some("c1".into());
         app.messages = vec![crate::api::ChatMessage {
             id: "m1".into(), author: "me".into(), body: "hello".into(),
-            created_at: "".into(), agent_id: None, images: vec![], has_images: false,
+            created_at: "".into(), agent_id: None, images: vec![], image_count: 0, has_images: false,
         }];
         app.mark_offline("Backend unreachable: 429 Too Many Requests");
         assert!(!app.backend_online);

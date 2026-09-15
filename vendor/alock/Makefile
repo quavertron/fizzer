@@ -1,0 +1,29 @@
+CC      = cc
+CFLAGS  = -std=c11 -Wall -Wextra -O2 -Isrc -Ilibdtob/lib
+OBJDIR  = obj
+BIN     ?= alock
+
+SRC = src/main.c src/events.c src/lock.c src/daemon.c src/ipc.c src/bridge.c src/history.c src/turns.c src/nab_embed.c
+OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
+
+.PHONY: all clean
+
+all: $(BIN)
+	rm -rf $(OBJDIR)
+
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+$(OBJDIR)/%.o: src/%.c | $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJDIR)/nab_embed.o: nab/src/nab.c nab/src/cmd.c nab/src/util.c nab/src/xbdiff.c nab/src/rebuild.c nab/src/nab.h
+
+libdtob/libdtob.a:
+	$(MAKE) -C libdtob libdtob.a
+
+$(BIN): $(OBJ) libdtob/libdtob.a
+	$(CC) -o $@ $^
+
+clean:
+	rm -rf $(OBJDIR) $(BIN)

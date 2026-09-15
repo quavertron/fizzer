@@ -970,6 +970,10 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  void require('./agent-account-setup.cjs').offerAgentAccountSetup({
+    dialog, clipboard, window: mainWindow, packaged: app.isPackaged, resourcesPath: process.resourcesPath,
+  }).catch(error => console.error('[Agent account setup]', error.message));
+
   // Explicitly provisioned owner-private API; never widen the TCP helper proxy.
   if (!app.isPackaged && process.platform !== 'win32' && process.env.FIZZER_EXTERNAL_AGENT_ACCESS === '1') {
     const { startExternalAgentAccess } = require('./external-agent-access.cjs');

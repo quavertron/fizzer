@@ -12,6 +12,7 @@ const readline = require('readline');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Resvg } = require('@resvg/resvg-js');
+const agentAccount = require('./agent-account.cjs');
 
 let cliAgentModulePromise = null;
 let cliAgentModuleMtimeMs = -1;
@@ -133,6 +134,7 @@ function ensureExecutable(file) {
   try {
     if (!fs.existsSync(file)) return false;
     const current = fs.statSync(file).mode;
+    if ((current & 0o555) === 0o555) return true;
     fs.chmodSync(file, current | 0o755);
     return true;
   } catch (err) {
@@ -919,6 +921,9 @@ async function runClaudeLocally(opts, emit) {
  * Resolves when the run finishes (success or failure).
  */
 async function startLocalAgentRun(opts, sendEvent) {
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.enabled()) {
+    return agentAccount.run(opts, sendEvent, noteApi);
+  }
   const runId = Number(opts.runId);
   if (!Number.isFinite(runId)) throw new Error('Invalid run id');
 
@@ -1050,6 +1055,7 @@ const canceledCliRuns = new Set();
 
 async function cancelLocalAgentRun(runId) {
   const id = Number(runId);
+  if (agentAccount.cancel(id)) return true;
 
   // Claude CLI runs: terminate the live child process.
   const claudeProcess = activeClaudeProcesses.get(id);
@@ -1086,8 +1092,14 @@ async function reapOrphanedLocalAgentRuns() {
   await loadCliAgentModule();
 }
 
+async function shutdownLocalAgentHost() {
+  const mod = await loadCliAgentModule();
+  mod.shutdownPersistentCliAgents?.();
+}
+
 module.exports = {
   startLocalAgentRun,
+  shutdownLocalAgentHost,
   cancelLocalAgentRun,
   reapOrphanedLocalAgentRuns,
   buildRunHelperEnv,

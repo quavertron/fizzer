@@ -1106,6 +1106,7 @@ defmodule Cascade.ChatDomainTest do
 
     assert {:ok, [listed]} = Messages.list(channel.id, 1)
     assert listed.hasImages
+    assert listed.imageCount == 2
     assert listed.images == ["https://example.com/a.png"]
     assert {:ok, detailed} = Messages.get(channel.id, 1, created.id)
     assert length(detailed.images) == 2

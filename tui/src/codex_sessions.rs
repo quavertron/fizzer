@@ -73,14 +73,14 @@ async fn import(client: CascadeClient, vault_id: &str, id: &str) -> Result<Chann
     }
 }
 
+pub fn open(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    if app.vault_id.is_none() || app.show_vaults {
+        app.status_message = "Open a vault before importing a local Codex session.".into();
+    } else { load(app, tx, 0); }
+}
+
 pub fn key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<BackendEvent>) -> bool {
-    if app.codex_import.is_none() {
-        if code != KeyCode::F(6) { return false; }
-        if app.vault_id.is_none() || app.show_vaults {
-            app.status_message = "Open a vault before importing a local Codex session.".into();
-        } else { load(app, tx, 0); }
-        return true;
-    }
+    if app.codex_import.is_none() { return false; }
     let picker = app.codex_import.as_mut().unwrap();
     if picker.busy { return true; }
     match code {
@@ -108,10 +108,9 @@ pub fn key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<BackendEvent
     true
 }
 
-pub fn render(frame: &mut Frame, app: &App, picker: &Picker) {
-    let area = frame.area();
+pub fn render(frame: &mut Frame, app: &App, picker: &Picker, area: ratatui::layout::Rect) {
     frame.render_widget(Clear, area);
-    let block = Block::default().title(" Import local Codex session · F6 ").borders(Borders::ALL);
+    let block = Block::default().title(" Import local Codex session ").borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(1), Constraint::Length(3)]).split(inner);

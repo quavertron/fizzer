@@ -51,7 +51,7 @@ fn codex_picker_navigation_does_not_import_until_selected_and_escape_closes() {
     assert_eq!(app.codex_import.as_ref().unwrap().selected, 1);
     assert!(rx.try_recv().is_err());
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
     let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
     assert!(screen.contains("Import local Codex session"));
     assert!(screen.contains("Earlier work"));
@@ -201,7 +201,7 @@ async fn startup_timing() {
     eprintln!("messages: {:?}", start.elapsed());
     let start = std::time::Instant::now();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
     eprintln!("first render: {:?}", start.elapsed());
 }
 
@@ -293,6 +293,8 @@ async fn vault_history_load_keeps_terminal_responsive() {
             (200, json!({"messages":[{"id":"history"}]}), Duration::from_millis(200))
         } else if request.contains("/notes ") {
             (200, json!({"notes":[{"id":"real-channel","title":"Chat","content_preview":"cascade://chat-channel"}]}), Duration::ZERO)
+        } else if request.contains("/channels") {
+            (200, json!([{"id":"real-channel","title":"Chat"}]), Duration::ZERO)
         } else {
             (200, json!([]), Duration::ZERO)
         }
@@ -312,9 +314,11 @@ async fn vault_history_load_keeps_terminal_responsive() {
     assert!(app.messages.is_empty());
     app.input = "typing while loading".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("Receiving messages…"));
-    assert!(!app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    // Rendering restores the focused window's cache; inspect the visible chat.
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Receiving messages…"));
+    assert!(!screen.contains("No messages"));
     tokio::time::timeout(Duration::from_secs(2), async {
         while app.messages.is_empty() {
             apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
@@ -323,11 +327,13 @@ async fn vault_history_load_keeps_terminal_responsive() {
     assert_eq!(app.messages[0].id, "history");
     assert_eq!(app.input, "typing while loading");
     apply_backend_event(&mut app, empty_history("real-channel"), &tx);
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("No messages"));
     apply_backend_event(&mut app, BackendEvent::HistoryPage { channel_id: "real-channel".into(), before: None, result: Err("offline".into()) }, &tx);
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("Could not receive messages: offline"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Could not receive messages: offline"));
 }
 
 #[tokio::test]
@@ -409,7 +415,7 @@ fn render_handles_small_terminals_and_unicode_drafts() {
     app.move_cursor_end();
     for (width, height) in [(1, 1), (20, 5), (80, 24), (120, 40)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| ui::render(f, &app)).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     }
 }
 

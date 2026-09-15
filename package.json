@@ -15,6 +15,7 @@
     "client"
   ],
   "scripts": {
+    "build:agent-tools": "node scripts/build-agent-tools.mjs",
     "build:tui": "node scripts/build-tui-binaries.mjs",
     "postinstall": "node -e \"try{require('fs').accessSync('scripts/rebuild-natives.cjs')}catch{process.exit(0)};require('child_process').spawnSync(process.execPath,['scripts/rebuild-natives.cjs','--postinstall'],{stdio:'inherit',env:process.env}).status&&process.exit(1)\"",
     "rebuild:native": "node scripts/rebuild-natives.cjs",

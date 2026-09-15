@@ -25,6 +25,18 @@ Fizzer is early beta software. Expect rough edges and rapid changes.
 
 ## Quickstart
 
+Optional agent write coordination on macOS and Linux, from this project root:
+
+```sh
+bash install-agent-writes.sh
+```
+
+Setup creates a separate agent account, installs alock, enables nab history by
+default, and offers selected credential copying. Existing history/access choices
+are preserved. All five project sources are included under `vendor/`; build them
+with `npm run build:agent-tools`. Packaged releases include the native helpers.
+See [build prerequisites and account setup](docs/agent-unix-account.md).
+
 ### Try the desktop beta
 
 1. Download a desktop beta from [Fizzer Releases](https://github.com/grm4871/fizzer/releases)

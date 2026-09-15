@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stageAgentAccountSetup } from './prepare-agent-account-setup.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const backendRoot = path.join(root, 'backend_elixir');
@@ -67,3 +68,4 @@ for (const dependency of fs.readdirSync(path.join(backendRoot, 'deps'), { withFi
 }
 
 console.log(`[build-desktop-runtime] staged ${runtimeRoot}`);
+if (process.platform !== 'win32') stageAgentAccountSetup(path.join(runtimeRoot, 'agent-account-setup'));

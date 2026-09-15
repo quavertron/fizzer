@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, copyFileSync, chmodSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { stageAgentAccountSetup } from './prepare-agent-account-setup.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = path.join(repoRoot, 'tui', 'Cargo.toml');
@@ -43,6 +44,8 @@ for (const target of targets) {
     if (target === hostTarget()) isHost = true;
   } catch {}
 
+  if (!isHost) throw new Error('Build agent-account-enabled packages on the target OS/architecture.');
+
   const buildArgs = isHost
     ? ['build', '--release', '--locked', '--manifest-path', manifest, '--target', target]
     : ['zigbuild', '--release', '--manifest-path', manifest, '--target', target];
@@ -57,6 +60,9 @@ for (const target of targets) {
   const to = path.join(destDir, binName);
   copyFileSync(from, to);
   chmodSync(to, 0o755);
+  // Cross-target releases must provide a matching alock on their target builder.
+  // Do not silently ship the host's native bridge in another platform package.
+  stageAgentAccountSetup(destDir);
   // Also create cascade-tui alias for compatibility
   const compatBinName = target.includes('windows') ? 'cascade-tui.exe' : 'cascade-tui';
   copyFileSync(from, path.join(destDir, compatBinName));
@@ -84,6 +90,7 @@ for (const target of targets) {
     const hostBin = path.join(hostBinDir, binName);
     copyFileSync(from, hostBin);
     chmodSync(hostBin, 0o755);
+    stageAgentAccountSetup(hostBinDir);
     const compatBinName = binName.includes('windows') ? 'cascade-tui.exe' : 'cascade-tui';
     copyFileSync(from, path.join(hostBinDir, compatBinName));
     chmodSync(path.join(hostBinDir, compatBinName), 0o755);
@@ -91,6 +98,7 @@ for (const target of targets) {
 
     const fizzerBinDir = path.join(repoRoot, 'npm', 'fizzer', 'bin');
     mkdirSync(fizzerBinDir, { recursive: true });
+    stageAgentAccountSetup(fizzerBinDir);
     copyFileSync(from, path.join(fizzerBinDir, binName));
     chmodSync(path.join(fizzerBinDir, binName), 0o755);
     copyFileSync(from, path.join(fizzerBinDir, compatBinName));
