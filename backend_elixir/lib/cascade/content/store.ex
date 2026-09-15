@@ -40,7 +40,8 @@ defmodule Cascade.Content.Store do
 
   def vaults_base_dir do
     case System.get_env("CASCADE_VAULTS_BASE_DIR", "") |> String.trim() do
-      "" -> Cascade.Config.dotdir("vaults")
+      "" ->
+        Application.get_env(:cascade_elixir, :test_vaults_base_dir) || Cascade.Config.dotdir("vaults")
       configured -> Path.expand(configured)
     end
   end

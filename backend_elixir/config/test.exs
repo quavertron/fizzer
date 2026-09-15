@@ -3,6 +3,12 @@ import Config
 test_db = Path.join(System.tmp_dir!(), "cascade_elixir_#{System.pid()}.sqlite3")
 Enum.each([test_db, test_db <> "-shm", test_db <> "-wal"], &File.rm/1)
 
+# Isolate filesystem fixtures as well as SQLite, including inherited developer
+# overrides. Individual tests may narrow this root, then restore this safe base.
+test_vaults = Path.join(System.tmp_dir!(), "cascade_elixir_vaults_#{System.pid()}")
+System.put_env("CASCADE_VAULTS_BASE_DIR", test_vaults)
+config :cascade_elixir, :test_vaults_base_dir, test_vaults
+
 config :cascade_elixir,
   server: false,
   dispatch_worker_enabled: true,

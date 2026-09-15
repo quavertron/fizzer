@@ -57,9 +57,6 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     Cascade.Accounts.Schema.ensure!()
     Cascade.Runs.Schema.ensure!()
     Cascade.Chat.Schema.ensure!()
-    reset_database()
-    PresenceDispatcher.invalidate_user_channels()
-
     root =
       Path.join(
         System.tmp_dir!(),
@@ -69,6 +66,9 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     previous_root = System.get_env("CASCADE_VAULTS_BASE_DIR")
     previous_sink = Application.get_env(:cascade_elixir, :note_mutation_sink)
     System.put_env("CASCADE_VAULTS_BASE_DIR", root)
+
+    reset_database()
+    PresenceDispatcher.invalidate_user_channels()
 
     SQL.exec("""
     INSERT INTO users(id,username,password_hash,display_name,avatar_url,auth_version) VALUES
