@@ -26,7 +26,7 @@ describe('vault selection connector', () => {
 
     expect([startX, startTop, endX, endTop, lineEndX, endBottom, returnEndX, startBottom])
       .toEqual([50, 110, 76, 20, 76, 52, 50, 146]);
-    expect(firstControlX - startX).toBeGreaterThan(horizontalRun);
+    expect(firstControlX - startX).toBeLessThanOrEqual(horizontalRun);
     expect(firstControlX - startX).toBeLessThanOrEqual(64);
     expect(endX - landingControlX).toBeGreaterThan(0);
     expect(endX - landingControlX).toBeLessThanOrEqual(16);
@@ -35,6 +35,37 @@ describe('vault selection connector', () => {
   });
 });
 
+
+describe('steep ribbon nonintersection regression', () => {
+  for (const offset of [-500, -200, -150, 150, 200, 500]) {
+    it(`never reverses horizontal direction or crosses edges at offset ${offset}`, () => {
+      const path = vaultSelectionConnectorPath(
+        { left: 0, right: 310, top: 0, bottom: 1000 },
+        { left: 16, right: 60, top: 300, bottom: 336 },
+        { left: 86, right: 300, top: 300 + offset, bottom: 332 + offset },
+      );
+      const p = path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      const [x0, y0, x1, , x2, y2, x3, y3, , bottom3, , , , bottom0] = p;
+      expect(x1).toBeGreaterThanOrEqual(x0);
+      expect(x1).toBeLessThanOrEqual(x3);
+      expect(x2).toBeGreaterThanOrEqual(x0);
+      expect(x2).toBeLessThanOrEqual(x3);
+      let priorX = x0;
+      for (let i = 1; i <= 1000; i++) {
+        const t = i / 1000, u = 1 - t;
+        const x = u ** 3 * x0 + 3 * u ** 2 * t * x1 + 3 * u * t ** 2 * x2 + t ** 3 * x3;
+        // Both edges share strictly monotone x and positive vertical separation,
+        // so they cannot self-intersect or intersect one another.
+        expect(x).toBeGreaterThan(priorX);
+        priorX = x;
+        const top = (u ** 3 + 3 * u ** 2 * t) * y0 + (3 * u * t ** 2 + t ** 3) * y2;
+        const bottom = (u ** 3 + 3 * u ** 2 * t) * bottom0 + (3 * u * t ** 2 + t ** 3) * bottom3;
+        expect(bottom).toBeGreaterThan(top);
+      }
+      expect(y2).toBe(y3);
+    });
+  }
+});
 
 describe('vault selection target', () => {
   const folders = [

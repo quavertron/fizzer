@@ -156,7 +156,9 @@ export function vaultSelectionConnectorPath(
   const endBottom = noteBox.bottom - sidebarBox.top;
   const horizontalRun = Math.max(endX - startX, 0);
   const verticalRun = Math.abs((endTop + endBottom - startTop - startBottom) / 2);
-  const outerControlX = startX + Math.min(64, Math.max(horizontalRun / 2, verticalRun * 0.35));
+  // Keep both cubic controls inside the horizontal attachment interval. A
+  // control beyond the landing can reverse x at steep offsets and fold the ribbon.
+  const outerControlX = startX + Math.min(horizontalRun, 64, Math.max(horizontalRun / 2, verticalRun * 0.35));
   const landingControlX = endX - Math.min(horizontalRun / 2, 16);
   return `M ${startX} ${startTop} C ${outerControlX} ${startTop}, ${landingControlX} ${endTop}, ${endX} ${endTop} `
     + `L ${endX} ${endBottom} C ${landingControlX} ${endBottom}, ${outerControlX} ${startBottom}, ${startX} ${startBottom} Z`;
