@@ -634,15 +634,23 @@ defmodule Cascade.Missions.MissionStateTest do
     runs = SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [ctx.user.id])
 
     {:ok, state} = Cascade.Missions.DispatchReannouncer.init(interval: 60_000)
-    {:noreply, state} = Cascade.Missions.DispatchReannouncer.handle_info(:dispatch, state)
+    notice_id = "task-notification:#{added.task.id}:0:failed"
 
-    Enum.each(state.jobs, fn {_key, {pid, ref}} ->
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+    # Other tests can leave durable publication jobs. Exercise the bounded fair
+    # queue until this exact job runs, not an assumption that it is in batch one.
+    Enum.reduce_while(1..100, state, fn _, state ->
+      {:noreply, state} = Cascade.Missions.DispatchReannouncer.handle_info(:dispatch, state)
+      state = Enum.reduce(state.jobs, state, fn {_key, {pid, ref}}, acc ->
+        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+        {:noreply, next} = Cascade.Missions.DispatchReannouncer.handle_info({:DOWN, ref, :process, pid, :normal}, acc)
+        next
+      end)
+      if SQL.one("SELECT 1 FROM chat_messages WHERE id=?", [notice_id]),
+        do: {:halt, state}, else: {:cont, state}
     end)
 
     assert SQL.one("SELECT wake_sent FROM chat_missions WHERE id=?", [created.mission.id]) == [0]
 
-    notice_id = "task-notification:#{added.task.id}:0:failed"
     assert {:ok, message} = Messages.get(ctx.channel.id, ctx.user.id, notice_id)
     assert message.author == "Fizzer task status"
     assert message.body =~ "Task failed"
