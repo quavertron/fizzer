@@ -41,9 +41,6 @@ function parseInstanceOrigin(value, label = 'instance URL') {
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new Error(`${label} must use HTTPS or HTTP`);
   }
-  if (parsed.protocol === 'http:' && !isPrivateHostname(parsed.hostname)) {
-    throw new Error(`${label} must use HTTPS outside loopback or private LAN addresses`);
-  }
   return parsed.origin;
 }
 

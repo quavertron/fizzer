@@ -296,12 +296,16 @@ export default function App() {
   }, [workspaceStore]);
 
   const switchVaultWorkspace = useCallback((nextVaultId: string | null) => {
-    if (workspaceStore.activeVaultId === nextVaultId) return;
     // Point non-vault-scoped requests (notes/assets) at the open vault's origin.
     const entry = nextVaultId ? getVaultOrigin(nextVaultId) : undefined;
     setActiveVaultOrigin(entry?.origin, entry?.token);
+    if (workspaceStore.activeVaultId === nextVaultId) {
+      ensureDesktopRunnerHost();
+      return;
+    }
     workspaceStore.switchVault(nextVaultId);
     clearWorkspacePanels();
+    ensureDesktopRunnerHost();
   }, [workspaceStore, clearWorkspacePanels]);
 
   const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError, switchVaultWorkspace);

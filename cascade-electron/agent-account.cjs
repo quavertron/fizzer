@@ -12,6 +12,15 @@ function resolveWorkspace(selected) {
   let expanded = selected === '~' ? os.homedir()
     : selected.startsWith('~/') ? path.join(os.homedir(), selected.slice(2)) : selected;
   if (!fs.existsSync(expanded)) {
+    // Delegated runs from a remote Fizzer server carry that server's container
+    // workspace path. It is meaningful on the server, never on this machine.
+    // Use the configured local workspace (or HOME) instead of letting
+    // realpathSync throw ENOENT before the local provider can start.
+    if (expanded === '/data' || expanded.startsWith('/data' + path.sep)
+      || expanded === '/var/lib/cascade' || expanded.startsWith('/var/lib/cascade' + path.sep)) {
+      const local = process.env.FIZZER_AGENT_WORKSPACE || os.homedir();
+      return fs.realpathSync(local);
+    }
     const legacy = expanded.replace(`${path.sep}.fizzer${path.sep}`, `${path.sep}.cascade${path.sep}`);
     if (legacy !== expanded && fs.existsSync(legacy)) expanded = legacy;
   }
@@ -88,7 +97,10 @@ async function run(opts, sendEvent, api) {
     }
     const bridge = bridges[0];
     contextApi = await startReadOnlyApi(api, opts.vaultId);
-    worker = spawn('/usr/bin/sudo', launchArguments(process.execPath, path.join(__dirname, 'agent-account-worker.cjs'), bridge.socket), {
+    // The worker is plain Node code. Do not pass Electron's process.execPath
+    // through sudo: Electron then tries to resolve default_app.asar and fails
+    // under the fizzer account. Resolve `node` through the preserved PATH.
+    worker = spawn('/usr/bin/sudo', launchArguments('node', path.join(__dirname, 'agent-account-worker.cjs'), bridge.socket), {
       cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
     });
     record.child = worker;
