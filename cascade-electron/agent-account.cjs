@@ -97,7 +97,10 @@ async function run(opts, sendEvent, api) {
     }
     const bridge = bridges[0];
     contextApi = await startReadOnlyApi(api, opts.vaultId);
-    worker = spawn('/usr/bin/sudo', launchArguments(process.execPath, path.join(__dirname, 'agent-account-worker.cjs'), bridge.socket), {
+    // The worker is plain Node code. Do not pass Electron's process.execPath
+    // through sudo: Electron then tries to resolve default_app.asar and fails
+    // under the fizzer account. Resolve `node` through the preserved PATH.
+    worker = spawn('/usr/bin/sudo', launchArguments('node', path.join(__dirname, 'agent-account-worker.cjs'), bridge.socket), {
       cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
     });
     record.child = worker;
