@@ -2706,6 +2706,21 @@ export default function App() {
             setAccountOpen(true);
           }}
           onJoinVault={handleJoinVault}
+          onConnectRemoteServer={async (origin, username, password) => {
+            const electronAPI = (window as unknown as { electronAPI?: {
+              connectRemoteInstance?: (input: { origin: string; username: string; password: string }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[] }>;
+              openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean }>;
+            } }).electronAPI;
+            const result = await electronAPI?.connectRemoteInstance?.({ origin, username, password });
+            if (!result?.success || !result.origin) return false;
+            const firstVault = result.vaults?.[0];
+            if (firstVault && electronAPI.openConnection) {
+              const opened = await electronAPI.openConnection({ id: firstVault.id, origin: result.origin });
+              if (!opened.success) return false;
+            }
+            await loadVaults();
+            return true;
+          }}
           onOpenPublicVaults={() => setDiscoveryDmsOpen('public')}
           onOpenDirectMessages={() => setDiscoveryDmsOpen('dms')}
           onSelectNote={(id) => {

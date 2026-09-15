@@ -61,6 +61,7 @@ interface SidebarProps {
   onRetryVaults?: () => void;
   onManageVault: (id: string) => void;
   onJoinVault: (inviteLink: string) => Promise<boolean>;
+  onConnectRemoteServer: (origin: string, username: string, password: string) => Promise<boolean>;
   onOpenPublicVaults: () => void;
   onOpenDirectMessages: () => void;
   onSelectNote: (id: string) => void;
@@ -188,6 +189,7 @@ export const Sidebar = memo(function Sidebar({
   onRetryVaults,
   onManageVault,
   onJoinVault,
+  onConnectRemoteServer,
   onOpenPublicVaults,
   onOpenDirectMessages,
   onSelectNote,
@@ -228,6 +230,11 @@ export const Sidebar = memo(function Sidebar({
   const [joiningVault, setJoiningVault] = useState(false);
   const [vaultInviteLink, setVaultInviteLink] = useState('');
   const [joiningVaultBusy, setJoiningVaultBusy] = useState(false);
+  const [connectingRemote, setConnectingRemote] = useState(false);
+  const [remoteOrigin, setRemoteOrigin] = useState('');
+  const [remoteUsername, setRemoteUsername] = useState('');
+  const [remotePassword, setRemotePassword] = useState('');
+  const [remoteBusy, setRemoteBusy] = useState(false);
   const [audioTracks, setAudioTracks] = useState<MediaTrack[]>([]);
   const [audioTrackIndex, setAudioTrackIndex] = useState(0);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -917,6 +924,25 @@ export const Sidebar = memo(function Sidebar({
     setVaultMenuOpen(false);
   };
 
+  const submitConnectRemote = async () => {
+    const origin = remoteOrigin.trim();
+    const username = remoteUsername.trim();
+    if (!origin || !username || !remotePassword || remoteBusy) return;
+    setRemoteBusy(true);
+    setVaultFormError('');
+    const connected = await onConnectRemoteServer(origin, username, remotePassword);
+    setRemoteBusy(false);
+    if (!connected) {
+      setVaultFormError('Could not connect to the remote server. Check the address and credentials.');
+      return;
+    }
+    setRemoteOrigin('');
+    setRemoteUsername('');
+    setRemotePassword('');
+    setConnectingRemote(false);
+    setVaultMenuOpen(false);
+  };
+
   return (
     <aside ref={sidebarRef} className="sidebar" id="sidebar" style={{ gridColumn: 1 }}>
       <nav className="vault-rail" aria-label="Vaults">
@@ -1099,6 +1125,23 @@ export const Sidebar = memo(function Sidebar({
                   <button type="button" className="vault-manager-action vault-manager-join" onClick={() => { setCreatingVault(false); setJoiningVault(true); }}>
                     <span className="vault-manager-action-icon" aria-hidden="true"><LogIn size={28} /></span>
                     <span className="vault-manager-copy"><strong>Join vault</strong><small>Use an invite link</small></span>
+                  </button>
+                )}
+                {connectingRemote ? (
+                  <div className="vault-manager-create-form vault-manager-action-form">
+                    <strong>Connect to remote server</strong>
+                    <input autoFocus value={remoteOrigin} placeholder="IP:port or https://server" aria-label="Remote server address" disabled={remoteBusy} onChange={(event) => setRemoteOrigin(event.target.value)} />
+                    <input value={remoteUsername} placeholder="Username" aria-label="Remote server username" autoComplete="username" disabled={remoteBusy} onChange={(event) => setRemoteUsername(event.target.value)} />
+                    <input value={remotePassword} placeholder="Password" aria-label="Remote server password" type="password" autoComplete="current-password" disabled={remoteBusy} onChange={(event) => setRemotePassword(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void submitConnectRemote(); }} />
+                    <div className="vault-manager-form-actions">
+                      <button type="button" disabled={remoteBusy} onClick={() => { setConnectingRemote(false); setRemoteOrigin(''); setRemoteUsername(''); setRemotePassword(''); }}>Cancel</button>
+                      <button type="button" disabled={!remoteOrigin.trim() || !remoteUsername.trim() || !remotePassword || remoteBusy} onClick={() => void submitConnectRemote()}>{remoteBusy ? 'Connecting' : 'Connect'}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="vault-manager-action" onClick={() => { setCreatingVault(false); setJoiningVault(false); setConnectingRemote(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><LogIn size={28} /></span>
+                    <span className="vault-manager-copy"><strong>Connect remote server</strong><small>Use an IP, port, and account</small></span>
                   </button>
                 )}
               </div>
