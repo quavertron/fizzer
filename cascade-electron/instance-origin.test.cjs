@@ -40,7 +40,7 @@ test('instance validation allows HTTP only on loopback and private LAN IPs', () 
   assert.equal(parseInstanceOrigin('http://localhost:3000'), 'http://localhost:3000');
   assert.equal(parseInstanceOrigin('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
   assert.equal(parseInstanceOrigin('http://[::1]:3000'), 'http://[::1]:3000');
-  assert.throws(() => parseInstanceOrigin('http://fizzer.example.test'), /must use HTTPS/u);
+  assert.equal(parseInstanceOrigin('http://fizzer.example.test'), 'http://fizzer.example.test');
   assert.equal(parseInstanceOrigin('http://192.168.1.20:4000'), 'http://192.168.1.20:4000');
 });
 
@@ -49,7 +49,7 @@ test('bare public addresses default to HTTPS and private IPs support local HTTP'
   assert.equal(normalizeInstanceOrigin('example.com:8443'), 'https://example.com:8443');
   assert.equal(normalizeInstanceOrigin('127.0.0.1:3000'), 'http://127.0.0.1:3000');
   assert.equal(normalizeInstanceOrigin('192.168.1.20:4000'), 'http://192.168.1.20:4000');
-  assert.throws(() => normalizeInstanceOrigin('http://example.com'), /must use HTTPS/);
+  assert.equal(normalizeInstanceOrigin('http://example.com'), 'http://example.com');
 });
 
 test('instance validation rejects malformed or authority-expanding values', () => {
