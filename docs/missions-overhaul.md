@@ -1,179 +1,148 @@
 # Missions overhaul
 
-**Status:** Planning — living brief, not authorization to implement everything below.
-**Project:** Fizzer
-**Mission conversation:** Missions Overhaul channel
-**Working method:** Fred and the orchestrator refine this document together, through direct edits and conversation.
+**Status:** Agreed product model; interactive UI proof of concept ready for hands-on review and iteration. Backend implementation planning follows Fred's explicit UI/UX approval.
 
-## Outcome
+Missions are the orchestration part of Fizzer's [projects and areas model](projects-areas-refactor.md). This is a living description of the intended product, not a claim that the current runtime implements it.
 
-Make Fizzer missions useful for collaborative, agent-assisted project work: discuss an outcome with an available orchestrator, shape a shared plan, delegate scoped work, follow progress, and review verified results.
-Our first target is completing the **Fizzer missions overhaul** itself. Narrative, Fred’s personal planning and reflection app, is a later bounded use case; Fizzer is the collaborative workspace used to build it, and this does not introduce multiplayer into Narrative itself.
+## Purpose
 
-Keep this pragmatic. Build a useful workflow, not an enterprise orchestration platform or a harness whose only purpose is building itself.
+A mission coordinates work that is too large for a single agent's context window. It gives people a clear product outcome, delivery conditions, an approved implementation plan, and visibility into the agents carrying it out.
 
-## Why this work exists
+A mission is not a permanent collection of topic knowledge and is not required merely because a task has several steps. Persistent product context belongs to the project and its areas. Small human tasks can stand alone; a bounded coding request is simply a prompt to an agent.
 
-Fred reports that current everyday use centers on one agent and one general channel. Missions have been implemented and lightly tested, but have not been exercised as the normal workflow for substantial work. Agent scope, configuration, and mission visibility are confusing.
+## Relationships
 
-Focused channels and properly functioning missions should provide useful context boundaries before we invent more elaborate context-management machinery.
+- A project is the user-facing name for a vault.
+- An area, such as **Beta test**, collects durable product context through an index of relevant notes and references. It can exist without an immediate task and outlive many missions.
+- An area can contain missions and standalone tasks.
+- A mission contains its execution tasks. Missions are not subordinate to tasks.
+- Product documentation lives in Fizzer. Code and engineering documentation live in the codebase.
 
-## Clean-cutover policy
+## Roles
 
-This brief describes one replacement mission system, not parallel legacy and new runtimes. Missions use one lifecycle—planning, executing, and closed—with the final schema and status details settled from source facts during implementation planning. An explicit schema/data migration is required.
+### Project manager: define the product outcome
 
-Before that migration runs, decide how historical mission records are migrated or retained (including any read-only treatment). Never silently delete historical records, and do not preserve old mission execution behavior solely for compatibility. Migrate every mission caller, helper, prompt, UI path, and relevant test; remove superseded mission paths, comments, and tests. Reuse generic infrastructure where it fits. Ordinary notes, chat, and security behavior remain unchanged. This scope does not add an archive project or a tool-restriction project.
+One shared project manager works across the project's areas, loading the appropriate product-context files through each area's index. There is no separate area-manager agent.
 
-## Agreed product decisions
+The PM discusses the product with humans in existing channels, maintains product notes, identifies work, assigns priorities, and creates missions describing:
 
-### A mission begins in planning
+- What the product should do from the user's point of view.
+- Why the change matters and what outcome it should deliver.
+- What must be confirmed working before the mission is complete.
 
-- Create a mission while the goal is still being explored; a complete implementation plan is not a prerequisite.
-- The orchestrator asks questions, captures decisions, and dispatches research workers as questions arise.
-- Planning and research do not automatically authorize implementation. The precise implementation go-ahead interaction remains to be designed.
-- Small, bounded requests can remain direct agent conversations. Multiple steps or temporary delegation do not by themselves make something a mission.
+The PM owns product understanding, not technical execution. It does not inspect the codebase or act as a relay for implementation discussions.
 
-### The mission orchestrator manages; workers do technical work
+### Coding orchestrator: plan and coordinate execution
 
-- The orchestrator maintains intent, constraints, scope, assignments, dependencies, progress, and completion criteria.
-- It remains available for conversation and steering while workers execute.
-- It reads and edits product notes, plans, and worker reports.
-- It does **not** read source code, implement changes, technically review code, or integrate code itself.
-- Workers perform code research, implementation, testing, technical review, and integration.
-- The orchestrator evaluates reported outcomes and evidence against the mission goal, commissions further work when necessary, and explains what was delivered or remains open.
+“Mission manager” and “coding orchestrator” are the same role.
 
-### Missions are first-class workspace items
+The coding orchestrator receives an approved mission, commissions planning agents to investigate the codebase and develop an implementation plan, and evaluates their proposed technical work against the mission's delivery conditions.
 
-- Missions appear in the vault navigation alongside notes, channels, and folders.
-- Opening a mission opens its Mission Control workspace, not its chat transcript.
-- Adapt Factory’s mission concepts rather than reproducing its fixed panel layout. Remove the large mission header and permanent progress-log and worker-output panels; the main document/work area gets the space.
-- A compact chat on the right is shared by the human collaborators and the orchestrator. It is a group conversation, not a private orchestrator chat or a separate destination to navigate back to. The underlying mission channel remains openable separately.
-- An ordinary channel may originate multiple missions; each mission should have its own dedicated channel.
-- Worker details should be inspectable without flooding the orchestrator conversation with every tool call.
-- Do not spend time on channel reuse or duplication edge cases unless they obstruct actual use.
-- The mission workspace is the primary way of interacting with the orchestrator: shared notes, plans, assignments, progress, and review make the work directly understandable and actionable. Chat supports clarification and discussion; it is not the control surface that everything else merely illustrates.
+It accepts the plan when it believes the plan will deliver those conditions, then presents it to humans for approval. Only after human approval does it dispatch implementation sub-agents and coordinate their work.
 
-### Notes are the collaborative planning surface
+The coding orchestrator and technical agents use the relevant product requirements together with code and engineering documentation in the repository. Technical findings can be reported to the PM so their product implications are captured in Fizzer's notes without duplicating engineering documentation.
 
-- People can contribute by editing mission notes directly or by talking to the orchestrator and having it update those notes.
-- Notes hold the evolving goal, constraints, open questions, milestones, scoped work, preconditions, expected behavior, and verification criteria.
-- The orchestrator needs to notice relevant note edits and reconcile them with its understanding and assignments.
-- The orchestrator should update notes as conversational decisions become clear, rather than requiring people to copy decisions out of chat.
-- Shared notes are the working plan, not merely a retrospective report.
+## Mission workflow
 
-## Proposed experience — to refine together
+### Define the mission
 
-Start with one mission note and split out supporting notes only when useful. Avoid requiring a separate document for every tiny assignment.
+Product definition comes before implementation planning. The PM works with humans to describe intended behavior, rationale, expected outcome, and delivery conditions.
 
-The mission surface should let someone see:
+This can emerge from a group product interview, an area conversation, the PM's proactive review of project context, or a human request. Existing channels remain the conversation surface.
 
-1. What we are trying to accomplish and what is still undecided.
-2. The current milestone and its scoped work.
-3. An assignment’s preconditions, expected behavior, and verification criteria.
-4. Which workers are doing what, and where attention is needed.
-5. Meaningful progress and timing, with detailed worker output available separately.
-6. What has been verified, rather than merely reported finished.
+### Approve the product-level mission
 
-Keep current responsibility prominent; completed missions remain accessible as dated history rather than dominating the view.
+A human approves what is to be delivered. This is the first human approval and authorizes planning, not implementation.
 
-### Mission workspace navigation
+### Develop the implementation plan
 
-- Replace the current Brief / Assignment tabs with Brief and Work (milestones and features).
-- Brief shows the shared mission note. Work shows expandable milestones and their features, with assigned agents, current activity, and relevant requirements.
-- Clicking an assigned agent reveals its worker trace on demand. The trace can expand to a full-screen view; direct worker steering is a desired capability, with its interaction with orchestrator assignments still to be defined.
-- History is accessible behind a button, not a permanent progress-log panel.
-- Mission status, progress, elapsed time, and usage do not require a large header. Their compact placement remains to be explored.
-- Preserve a high-level understanding of live work even while reading the brief. The exact presentation is still open; do not substitute raw tool output or an event history for that overview.
-- Use sensible spacing, scrolling, and explicit expansion rather than requiring draggable dividers.
+The coding orchestrator commissions planning agents. It judges whether their plan describes technical work that should satisfy the mission's delivery conditions and brings a credible plan to the humans.
 
-### Collaborative edits during execution
+The orchestrator's technical judgment belongs to preparing the plan. It is not a third human approval or a separate verification workflow.
 
-Proposed minimum behavior, not a detailed synchronization design:
+### Approve the implementation plan
 
-- Do not silently overwrite another person’s intervening edits.
-- If an edit changes an active assignment, the orchestrator acknowledges its impact and redirects the worker or explains when it takes effect.
-- A saved change to a note must not be mistaken for a successfully delivered change to a running worker’s instructions.
-- Avoid elaborate approval machinery for ordinary editorial changes.
+A human reviews and approves the plan. **This human review and approval is plan verification.** There is no separate plan-verification agent.
 
-## Candidate milestones — not an approved implementation plan
+This is the second human approval. Implementation sub-agents are dispatched only after it.
 
-### Understand and agree on the workflow
+### Execute and confirm delivery
 
-**Preconditions:** Current product documentation and concrete user feedback are available.
+The coding orchestrator dispatches implementation sub-agents, coordinates their tasks, and gathers results against the delivery conditions.
 
-**Expected outcome:** A shared brief that makes planning, research, implementation approval, orchestrator availability, worker responsibilities, notes, and mission channels understandable.
+Some conditions can be checked by agents through their validation tools. Others require humans to run flows, try the UI, and judge aspects of the experience agents cannot reliably assess. Agent success is not a substitute for a required human check.
 
-**Evidence:** Walk through Missions Overhaul as the example; compare relevant Factory UX and selected open-source references. Delegate narrow source investigations only when a product decision needs technical facts.
+The mission is complete when its delivery conditions have been satisfied.
 
-### Make the core mission loop usable
+## Human work is first-class
 
-**Preconditions:** Agree on the core experience and inspect existing implementation through research workers.
+Writing specs, approving mission definitions, reviewing implementation plans, dispatching work, and performing human acceptance checks are actual tasks. They appear on the project's Kanban with status, named assignees, and due dates rather than existing only as buttons inside the mission.
 
-**Expected outcome:** A mission can begin in planning, maintain a shared brief, commission research, and move into authorized worker execution while keeping its orchestrator conversation available.
+- PM sets priorities and identifies what should happen next.
+- Humans set delivery dates.
+- PM and humans can both assign human work.
+- A human task can be assigned to one person or several specific people.
+- Any one assignee can complete a shared task; everyone need not sign off.
+- Coding orchestrator assigns implementation work to coding sub-agents.
 
-**Evidence:** Exercise the actual workflow in Fizzer. Exact acceptance criteria and implementation slices are still to be agreed.
+Keep small standalone tasks lightweight. Do not force them through mission creation, planning, or the two-approval workflow.
 
-### Close the loop with integration and verification
+## Mission view and conversations
 
-**Preconditions:** Scoped workers can deliver results into the mission.
+Missions live under their areas in the sidebar, alongside each area's product channels. Area and project overview cards provide an explicit button to open a mission's own view; there is no separate project-wide Missions navigation category.
 
-**Expected outcome:** Technical review and integration belong to workers; the orchestrator tracks their results and presents verified outcomes, blockers, and remaining work clearly.
+On the project Kanban, a mission is an expandable card containing its tasks; standalone tasks remain separate. Task details expand in place. People move task cards by dragging rather than using a Done button or a status dropdown. The mission's approvals and delivery conditions remain authoritative.
 
-**Evidence:** Exercise the actual Fizzer workflow and inspect both the delivered behavior and the user’s ability to follow and steer it. Narrative is a later follow-on use case, not a prerequisite or first target.
+The mission view lets people:
 
-## Open questions
+- Read and edit the mission's intended behavior, rationale, and delivery conditions.
+- Inspect and discuss the implementation plan and approve it.
+- Understand current progress, assignments, blockers, and remaining human work.
+- Inspect detailed worker activity when useful without making raw traces the main view.
+- Talk directly to the coding orchestrator in the mission's channel.
 
-- How should the editable mission notes and optional orchestrator sidebar fit into the agreed Factory-style Mission Control layout?
-- What does the user approve before implementation begins, and how do material scope changes return for discussion?
-- How do we represent milestones and assignments in notes without maintaining a conflicting second plan in the UI?
-- How does the orchestrator receive note changes and user messages while workers run?
-- How are existing vault agents selected for mission roles, and where should model choices be visible?
-- What do pause, redirect, blocked, review, and complete mean to a user in the first usable workflow?
-- Which generic infrastructure can be reused, and which mission paths must be replaced?
+Product discussions remain with the PM in project/area channels. Technical planning and execution discussions happen directly with the coding orchestrator. There is no PM-mediated telephone chain.
 
-## Parallel work and boundaries
+The project execution dashboard remains available alongside product discovery. The precise mission layout, information hierarchy, and navigation are to be evaluated in the real-app UI prototype, not fixed by an external product's panel layout.
 
-Another OMP process is coordinating current-app fixes:
+## Notes and collaboration
 
-- #5: Preserve drafts when switching vaults.
-- #6 and #7: Native vault working-directory picker.
-- #8: Vault agents available across channels.
-- #9: My Agents picker and clearer Add Agents flow.
-- #10: Ownership background colors.
+People and the PM maintain product understanding through shared notes and channel conversations. PM updates to established product notes take effect immediately. The project view provides actual before/after note diffs with author and time.
 
-Do not duplicate or interfere with that work. Those changes need not anticipate this overhaul.
+Do not add note-approval queues, elaborate scope-management machinery, or an additional documentation-review workflow. Reuse normal collaborative editing behavior rather than making routine changes cumbersome.
 
-[#11](https://github.com/quavertron/fizzer/issues/11), automatic dedicated mission channels, belongs with this mission’s scope.
+Area context remains available across missions. Mission results inform that context; completing a mission does not discard the area's product understanding.
 
-No unrelated self-hosting changes, permission-default changes, or broad refactors. Fred’s preference for full host access is not authorization to change permissions.
+## Availability
 
-## Reference material
+PM participation in existing channels is configurable: live participation or catch-up after a quiet period. Catch-up processes messages the PM has not yet processed and updates relevant product notes through the area index.
 
-### Factory Missions
+An offline PM can catch up when its runner reconnects. Always-on hosted infrastructure is not a prerequisite for the product workflow.
 
-Adapt useful UI and workflow concepts, not undocumented internals or an entire competing product.
+## Current delivery plan
 
-- [Overview](https://docs.factory.ai/missions/overview)
-- [Planning and validation](https://docs.factory.ai/missions/planning)
-- [Mission Control in the app](https://docs.factory.ai/missions/running-app)
-- [Execution and steering in the CLI](https://docs.factory.ai/missions/running-cli)
-- [Published orchestration design](https://factory.ai/news/missions)
+1. Maintain this mission brief and the projects/areas brief as consistent living documents.
+2. Maintain the interactive mock views in the existing `docs/missions-overhaul-prototype.html` entry point, using Fizzer's real UI language and explicit in-memory example data. See the [preview instructions](projects-areas-refactor.md#running-the-current-preview).
+3. Exercise mission creation/definition, both human approvals, plan editing, direct orchestrator conversation, agent/human delivery checks, and navigation from the project view.
+4. Iterate until Fred explicitly approves the product UI/UX.
+5. Then derive the backend implementation plan from the accepted interactions and information requirements. Real implementation follows approval of that plan.
 
-Documented patterns: collaborative planning before execution approval; milestones containing features; fresh feature-worker sessions; milestone validation; visible worker activity; separate role/model choices; pause and redirect controls.
+Mock planning, agent messages, approvals, and execution are demonstrations of interaction, not real agent dispatch or persistence. Do not change backend behavior, migrate data, or touch unrelated terminal UI work during this prototype.
 
-The supplied terminal screenshot is the initial structural UI reference, not just general inspiration. Fusion’s modal-heavy dashboard UI was reviewed and rejected. Factory also publishes a graphical Mission Control screenshot: it shows a left session list, a central selected-session conversation, and right-side models, features, and progress. We are starting from the terminal structure instead, with the orchestrator chat secondary.
+For real implementation, evolve one mission system rather than introducing a parallel legacy runtime. Preserve existing user records and evidence; determine the necessary migration and caller changes during implementation planning, after UI approval. Do not mechanically rename compatibility identifiers or expand into unrelated hosting and permission changes.
 
-- [Terminal Mission Control screenshot](https://docs.factory.ai/docs-assets/images/mission-control.webp)
-- [Graphical Mission Control screenshot](https://docs.factory.ai/docs-assets/images/mission-web.webp)
+## UI review checklist
 
-Factory documents research roles, but the material reviewed so far does not establish exact planning-time dispatch behavior or a strict prohibition on orchestrator source access. Our orchestrator boundary and planning-time research behavior are our own agreed requirements.
+- A person can distinguish a mission from a persistent area and a small standalone task.
+- The mission explains its product outcome before presenting an implementation plan.
+- The first human approval concerns the mission; the second concerns its implementation plan.
+- Planning agents and implementation sub-agents have visibly different purposes and timing.
+- There is no separate plan-verification agent or third human approval.
+- Mission progress includes remaining human work, not only coding-agent activity.
+- Human tasks have assignees and delivery dates; one assignee can complete shared work.
+- A mission can be opened directly from the project view.
+- Humans can talk to the coding orchestrator inside the mission view without routing technical discussion through the PM.
+- Product context remains accessible and note changes are visible from the project.
+- Prototype actions are clearly simulated and cannot mutate real project data or dispatch agents.
 
-### Open-source research
-
-Initial documentation/license research identified these possible references; none has been technically evaluated or selected for reuse:
-
-- [Fusion](https://github.com/Runfusion/Fusion) — MIT; mission planning, plan artifacts, visible workflow/review steps. Broad early-preview platform; borrow selectively.
-- [Stoneforge](https://github.com/stoneforge-ai/stoneforge) — Apache-2.0; director/worker/integration-steward separation and handoffs. Experimental and more autonomous than our intended approval boundary.
-- [pi-orchestration](https://github.com/stew675/pi-orchestration) — MIT; lightweight editable-plan and worker workflow around Pi. Small project; no established shared-note or multiplayer experience.
-
-Read licenses and the relevant implementation before copying code. Product documentation is not proof of runtime reliability.
+**UI/UX approval remains pending Fred's hands-on review.**
