@@ -150,13 +150,16 @@ export function vaultSelectionConnectorPath(
 ) {
   const startX = vaultBox.right - sidebarBox.left;
   const endX = noteBox.left - sidebarBox.left;
-  const bendX = startX + (endX - startX) / 2;
   const startTop = vaultBox.top - sidebarBox.top;
   const startBottom = vaultBox.bottom - sidebarBox.top;
   const endTop = noteBox.top - sidebarBox.top;
   const endBottom = noteBox.bottom - sidebarBox.top;
-  return `M ${startX} ${startTop} C ${bendX} ${startTop}, ${bendX} ${endTop}, ${endX} ${endTop} `
-    + `L ${endX} ${endBottom} C ${bendX} ${endBottom}, ${bendX} ${startBottom}, ${startX} ${startBottom} Z`;
+  const horizontalRun = Math.max(endX - startX, 0);
+  const verticalRun = Math.abs((endTop + endBottom - startTop - startBottom) / 2);
+  const outerControlX = startX + Math.min(64, Math.max(horizontalRun / 2, verticalRun * 0.35));
+  const landingControlX = endX - Math.min(horizontalRun / 2, 16);
+  return `M ${startX} ${startTop} C ${outerControlX} ${startTop}, ${landingControlX} ${endTop}, ${endX} ${endTop} `
+    + `L ${endX} ${endBottom} C ${landingControlX} ${endBottom}, ${outerControlX} ${startBottom}, ${startX} ${startBottom} Z`;
 }
 
 export function isMp3Link(label: string, href: string) {

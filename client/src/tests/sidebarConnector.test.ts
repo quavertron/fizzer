@@ -9,8 +9,29 @@ describe('vault selection connector', () => {
       { left: 16, right: 60, top: 40, bottom: 76 },
       { left: 86, right: 300, top: 110, bottom: 142 },
     )).toBe(
-      'M 50 20 C 63 20, 63 90, 76 90 L 76 122 C 63 122, 63 56, 50 56 Z',
+      'M 50 20 C 73.8 20, 63 90, 76 90 L 76 122 C 63 122, 73.8 56, 50 56 Z',
     );
+  });
+
+  it('keeps an above-target ribbon broad while preserving both attachments', () => {
+    const path = vaultSelectionConnectorPath(
+      { left: 10, right: 310, top: 20, bottom: 620 },
+      { left: 16, right: 60, top: 130, bottom: 166 },
+      { left: 86, right: 300, top: 40, bottom: 72 },
+    );
+    const points = path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    const [startX, startTop, firstControlX, , landingControlX, , endX, endTop,
+      lineEndX, endBottom, returnControlX, , returnOuterControlX, , returnEndX, startBottom] = points;
+    const horizontalRun = endX - startX;
+
+    expect([startX, startTop, endX, endTop, lineEndX, endBottom, returnEndX, startBottom])
+      .toEqual([50, 110, 76, 20, 76, 52, 50, 146]);
+    expect(firstControlX - startX).toBeGreaterThan(horizontalRun);
+    expect(firstControlX - startX).toBeLessThanOrEqual(64);
+    expect(endX - landingControlX).toBeGreaterThan(0);
+    expect(endX - landingControlX).toBeLessThanOrEqual(16);
+    expect(returnControlX).toBe(landingControlX);
+    expect(returnOuterControlX).toBe(firstControlX);
   });
 });
 
