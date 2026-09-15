@@ -204,6 +204,10 @@ export function setActiveVaultOrigin(origin?: string, token?: string) {
   activeVaultOrigin = { origin, token };
 }
 
+export function getActiveVaultOrigin() {
+  return activeVaultOrigin;
+}
+
 export async function getRemoteVaults(): Promise<RemoteVaultRecord[]> {
   const electronAPI = (window as unknown as {
     electronAPI?: { getRemoteVaults?: () => Promise<RemoteVaultRecord[]> };
@@ -271,8 +275,10 @@ export async function api<T>(path: string, options: ApiOptions = {}) {
         targetOrigin = entry.origin;
         if (!targetToken) targetToken = entry.token;
       }
-    } else if (activeVaultOrigin.origin && /^\/api\/notes\//.test(path)) {
-      // Note/asset/mission-brief content belongs to the open vault's instance.
+    } else if (activeVaultOrigin.origin &&
+      (/^\/api\/notes\//.test(path) || path === '/api/me/desktop-runner')) {
+      // Note/asset/mission-brief content and runner status belong to the open
+      // vault's instance when the desktop is connected to a remote server.
       targetOrigin = activeVaultOrigin.origin;
       if (!targetToken) targetToken = activeVaultOrigin.token;
     }

@@ -9,6 +9,7 @@
 
 import { io, type Socket } from 'socket.io-client';
 import { androidRunnerAPI } from './androidLocalCodex';
+import { getActiveVaultOrigin } from './api';
 
 type RunnerElectronAPI = {
   setRunnerToken?: (opts: { token: string; apiUrl?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -73,6 +74,7 @@ export const DESKTOP_RUNNER_SOCKET_OPTIONS = {
 let socket: Socket | null = null;
 let currentToken = '';
 let apiBase = '';
+let currentSocketAuthToken = '';
 let agentEventUnsub: (() => void) | null = null;
 let planUsageTimer: number | null = null;
 let runHeartbeatTimer: number | null = null;
@@ -371,6 +373,7 @@ function detachSocket(): void {
 function disconnectDesktopRunnerSocket(): void {
   currentToken = '';
   apiBase = '';
+  currentSocketAuthToken = '';
   lastPlanUsageAt = 0;
   lastPlanUsage = null;
   detachSocket();
@@ -445,7 +448,7 @@ function wireSocketHandlers(activeSocket: Socket): void {
   });
 }
 
-function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
+function connectDesktopRunnerSocket(token: string, nextApiBase: string, socketAuthToken = ''): void {
   const authToken = String(token || '').trim();
   if (!authToken) {
     disconnectDesktopRunnerSocket();
@@ -458,7 +461,7 @@ function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
   ensureAgentEventBridge();
 
   // Idempotent: same credentials + existing socket → keep it.
-  if (socket && currentToken === authToken && apiBase === nextBase) {
+  if (socket && currentToken === authToken && apiBase === nextBase && currentSocketAuthToken === socketAuthToken) {
     if (socket.connected) void registerWithServer(socket);
     else socket.connect();
     return;
@@ -466,10 +469,12 @@ function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
 
   apiBase = nextBase;
   currentToken = authToken;
+  currentSocketAuthToken = socketAuthToken;
   detachSocket();
 
   socket = io(`${apiBase}/runners`, {
     withCredentials: true,
+    ...(socketAuthToken ? { auth: { token: socketAuthToken } } : {}),
     // Keep the runner on its own polling manager. Sharing the renderer's
     // manager lets a trace-room reconnect take the runner down with it, and
     // some residential middleboxes accept a WebSocket upgrade only to reap it
@@ -501,19 +506,24 @@ export function startDesktopRunnerHost(): void {
   // passed across IPC to Electron main.
   const token = 'cookie-session';
 
-  const resolvedBase = resolveApiBase();
+  const activeOrigin = getActiveVaultOrigin();
+  const resolvedBase = activeOrigin.origin || resolveApiBase();
+  const socketAuthToken = activeOrigin.token || '';
 
   // Soft focus/online ensures must be a true no-op for an already configured
   // login: retain the helper credential and the live runner socket.
-  if (socket && currentToken === token && apiBase === resolvedBase) {
-    connectDesktopRunnerSocket(token, resolvedBase);
+  if (socket && currentToken === token && apiBase === resolvedBase && currentSocketAuthToken === socketAuthToken) {
+    connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
   } else if (api.setRunnerToken) {
-    const setupKey = `${resolvedBase}\n${token}`;
+    const setupKey = `${resolvedBase}\n${token}\n${socketAuthToken}`;
     void runnerCredentialSetup.ensure(setupKey, async (isCurrent) => {
       const response = await fetch(`${resolvedBase}/api/auth/agent-token`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'X-Cascade-Browser': '1' },
+        headers: {
+          'X-Cascade-Browser': '1',
+          ...(socketAuthToken ? { Authorization: `Bearer ${socketAuthToken}` } : {}),
+        },
       });
       const body = await response.json().catch(() => ({})) as { token?: string; error?: string };
       if (!response.ok || !body.token) {
@@ -530,13 +540,13 @@ export function startDesktopRunnerHost(): void {
       if (!result?.success) {
         throw new Error(result?.error || 'Could not configure restricted agent credential');
       }
-      connectDesktopRunnerSocket(token, resolvedBase);
+      connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
     }).catch((error) => {
       console.error('Desktop runner credential setup failed:', error);
     });
   } else {
     // Legacy desktop bridge: socket still lives here so TLS uses Chromium.
-    connectDesktopRunnerSocket(token, resolvedBase);
+    connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
   }
 
 }
