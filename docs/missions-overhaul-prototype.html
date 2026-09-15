@@ -22,8 +22,8 @@
 .feature-card-header{width:100%;border:0;background:transparent;color:var(--text-primary);text-align:left;cursor:pointer}.feature-card-header:hover{background:var(--bg-raised)}.feature-card-header:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.feature-card-header .feature-expand{display:grid;place-items:center;flex:none}
 </style>
 <link rel="stylesheet" href="./projects-areas-prototype.css">
+<link rel="stylesheet" href="./projects-areas-prototype-chat.css">
 <link rel="stylesheet" href="./projects-areas-prototype-context.css">
-<link rel="stylesheet" href="./projects-areas-prototype-mission.css">
 </head>
 <body>
 <div class="app-shell" id="prototypeShell">
@@ -45,13 +45,11 @@
     </div>
   </aside>
   <main class="workspace">
-    <nav class="tab-bar" aria-label="Workspace navigation"><button class="tab-sidebar-toggle" id="sidebarToggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button><button class="tab-item" data-view="project">Project</button><button class="tab-item active" id="currentViewTab">Overview</button><span class="toolbar-spacer"></span><button class="tab-item" data-view="channel" data-id="general"># product</button></nav>
-    <div class="pp-demo-strip"><span><strong>PROTOTYPE</strong> Fictional project data · changes reset on reload</span><label><input type="checkbox" id="runnerOnline" checked> PM online</label><button data-action="reset">Reset</button></div>
+    <nav class="tab-bar" aria-label="Workspace"><button class="tab-sidebar-toggle" id="sidebarToggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button><span class="tab-item active" id="currentViewTab">Project Interface</span><span class="toolbar-spacer"></span></nav>
     <div id="prototypeContent" class="pp-content"></div>
   </main>
 </div>
 <div id="prototypeNotice" class="pp-notice hidden" role="status" aria-live="polite"></div>
-<nav id="prototypeSwitcher" class="pp-switcher" aria-label="Prototype variations"><button id="previousVariant" aria-label="Previous layout">←</button><button id="variantLabel" title="Return to project overview">A — Work board</button><button id="nextVariant" aria-label="Next layout">→</button><span class="pp-switcher-divider"></span><button id="showState">State</button></nav>
 <dialog id="taskDialog" class="pp-dialog" aria-label="Edit task"></dialog>
 <dialog id="missionDialog" class="pp-dialog" aria-label="Create mission"></dialog>
 <dialog id="stateDialog" class="pp-dialog pp-state-dialog" aria-label="Prototype state"><header><h2>In-memory preview state</h2><button data-close="stateDialog" aria-label="Close state">×</button></header><p class="pp-muted">Sample state only. This is not a proposed backend schema.</p><pre id="stateContent"></pre></dialog>

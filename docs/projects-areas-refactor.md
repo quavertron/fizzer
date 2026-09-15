@@ -1,13 +1,13 @@
 # Projects, areas, and missions refactor
 
-**Status:** Agreed product direction; interactive UI proof of concept ready for hands-on review and iteration. Backend implementation planning follows Fred's explicit UI/UX approval.
+**Status:** Product model being refined through an interactive UI prototype. Backend implementation planning follows Fred's explicit UI/UX approval.
 
 This living brief describes the current project and area model. [Missions overhaul](missions-overhaul.md) describes the mission workflow in detail. Keep both documents current and consistent as product decisions change.
 
 ## Delivery order
 
 1. Save the agreed product model and decisions in this brief.
-2. Build interactive mock UIs within Fizzer's existing web UI. Reuse its visual language and existing components. Explore what people can see, edit, navigate, and act on using explicit sample data and in-memory interactions.
+2. Iterate the selected note-and-chat prototype within Fizzer's existing web UI, using its visual language and explicit in-memory sample data. Work on this one design, not alternative layouts or parallel versions.
 3. Exercise the real UI and iterate with Fred. The prototype is ready for feedback, not a deployed or backend-complete feature.
 4. Only after Fred explicitly approves the product UI/UX, derive the backend implementation plan needed to make the agreed experience real. Implementation-plan approval precedes real implementation.
 
@@ -21,27 +21,29 @@ Keep the system easy to use. Do not add approval queues for ordinary note edits,
 
 ## Vocabulary and relationships
 
-- **Project:** The existing vault renamed as the user-facing product concept. It contains people, product notes, channels, areas, missions, tasks, and activity. This is not a mechanical rename of compatibility identifiers or an additional container above a vault.
-- **Area:** A persistent, indexed collection of product context for an effort such as **Beta test**. Feedback is part of that effort, not necessarily its own area. An area can exist before there is an immediate task and preserve understanding across many missions and tasks.
-- **Area index:** Identifies the product-context files relevant to the area, including links to existing notes. The PM uses it to select what to load into its context. Do not require duplicate copies of shared product notes or a fixed document template.
-- **Standalone task:** A bounded human or single-agent piece of work. A small coding request is just a prompt, not a mission-planning workflow.
-- **Mission:** A goal or body of work requiring agent orchestration because it is too large for one agent's context window. It contains tasks; it is not subordinate to a task. Several steps alone do not require a mission.
+- **Project:** The topmost level, represented by a collaboratively editable project note with its own chat. The example project is **Fizzer**. It contains areas and their work. This remains the user-facing name for the existing vault, not an additional container above a vault or a mechanical rename of compatibility identifiers.
+- **Area:** The middle level: durable product knowledge lives here, in an overview/index and short supporting notes, with a group chat. It links missions and standalone tasks and preserves understanding across missions. **Project Interface** is the example feature area; the project agent is one mission within it, not the area's name.
+- **Area index:** The entry document links supporting product documentation instead of containing all of it. Split topics into notes roughly one or two pages long. Missions obtain relevant knowledge from these area notes rather than copying it.
+- **Task:** A bounded human or single-agent piece of work with its own document and conversation. A mission task opens as a right-hand artifact with floating task chat, keeping its mission centered on the left. Standalone tasks remain lightweight; a small coding request does not require a mission-planning workflow.
+- **Mission:** A scoped body of work with its own change-specific brief and chat, linked from the owning area. Its documentation records intended change, rationale, scope, progress, and delivery conditions, referring to shared product knowledge in the area. It is not the coding orchestrator's execution prompt. Several steps alone do not require a mission.
 - **Delivery conditions:** The mission's checklist of what must be confirmed working before it is complete, including both agent-verifiable and human-verifiable items.
+- **Leaf artifact:** A prototype, image, or leaf-note document that has no notes beneath it. Images and prototypes are not text notes, but share the same leaf behavior. They are linked from a parent note and open beside it rather than replacing it.
+- **Dispatch:** A separate area-owned artifact created by the PM containing the prompt/instructions for the coding orchestrator. It refers to product documentation as input; it does not turn the area or mission note into an execution prompt. The orchestrator proposes an implementation plan before implementation.
 
 Example:
 
 ```text
-Project: Fizzer
-└── Area: Beta test
-    ├── Product context and its index
-    │   ├── Goals, participants, and features being tested
-    │   ├── Relevant database references and beta setup
-    │   ├── Feedback and findings
-    │   └── Links to feature/product notes
-    ├── Standalone task: Check this week's customer feedback
-    └── Mission: Prepare the first beta round
-        ├── Task: Configure participant access
-        └── Task: Verify the onboarding flow
+Project note: Fizzer                         + project chat
+├── Area note: Project Interface             + area group chat
+│   ├── Mission note: Mission refactor       + mission chat
+│   │   ├── Current step: UI refinement
+│   │   └── Human review task documents      + floating task chat, right-hand artifact
+│   ├── Mission note: Create the project agent + mission chat
+│   │   ├── Current step: group scoping and ideation
+│   │   └── Later: prototype, refine, implement, and confirm delivery
+│   └── Dispatch artifact: PM's coding-orchestrator prompt
+├── Area note: Beta test                     + area group chat
+└── Area note: Public launch                 + area group chat
 ```
 
 The distinction is durable context versus work versus orchestration. Amp's orbs are resumable remote agent environments, not this product-context abstraction. Cursor Projects provide useful inspiration for long-lived shared context that outlives individual tasks; neither product dictates Fizzer's implementation or naming.
@@ -50,7 +52,7 @@ The distinction is durable context versus work versus orchestration. Amp's orbs 
 
 ### Project manager: product responsibility
 
-There is one shared project-level PM, not a separate area-manager agent. The same PM works across areas by using their indexes to select relevant product notes.
+There is one shared project-level agent in the PM role, not a separate area-manager agent. It works across project, area, mission, and task notes and chats, using their documentation and references for context. These chats are shared rooms, not isolated agent sessions: the project agent can read new messages across them and choose where to reply.
 
 The PM:
 
@@ -58,10 +60,13 @@ The PM:
 - Understands intended user behavior and why it matters.
 - Maintains product notes as decisions and understanding develop.
 - Identifies and proposes work proactively.
-- Proposes **areas together with the context files they would contain or reference**, rather than silently creating areas.
-- Creates missions describing intended behavior, expected outcomes, rationale, and delivery conditions.
+- Proposes **areas as notes with links to the context they need**, rather than silently creating areas.
+- Creates mission product documents describing intended behavior, expected outcomes, rationale, and delivery conditions, linked from their area notes.
+- Creates separate area-owned dispatch artifacts with instructions for the coding orchestrator when the product work is ready for implementation planning.
 - Assigns priorities across areas and says what should be done next.
 - Can assign human work, as can humans.
+
+The interview pattern is shared, room-based product discovery: PM asks focused questions, offers alternatives, incorporates teammates' perspectives, and helps the room reach a conclusion. It must not treat the first reply as the group's decision. Unresolved choices can be recorded in the notes while discussion continues; this is not a new note-approval queue or an additional mission approval.
 
 The PM's context is product documentation in Fizzer. Code and engineering documentation stay in the codebase and are read by technical orchestrators and agents. Technical findings can inform the product notes without copying the engineering documentation into Fizzer.
 
@@ -71,22 +76,23 @@ The PM's context is product documentation in Fizzer. Code and engineering docume
 
 The coding orchestrator:
 
-- Takes an approved mission and its delivery conditions.
+- Receives the PM's dispatch prompt with the relevant approved product documentation and delivery conditions as inputs.
 - Commissions planning agents to investigate and develop an implementation plan.
 - Evaluates that plan and accepts it when the described technical work should deliver the mission's conditions.
 - Presents the plan to humans for review and approval.
 - Only after approval dispatches implementation sub-agents and coordinates execution.
 
-Humans discuss technical planning and execution directly with the coding orchestrator in the mission conversation. The PM is not a relay for technical conversations.
+Humans discuss technical planning and execution directly with the coding orchestrator in the relevant scoped chat. Missions have their own conversations; agents can still follow context across rooms. The PM is not a relay for technical conversations.
 
 ## Mission flow and approvals
 
-1. PM defines the mission: intended behavior, why, expected outcome, and delivery checklist.
-2. A human approves the mission. Product definition precedes the implementation plan.
-3. Coding orchestrator commissions planning agents and judges the resulting plan technically credible.
-4. A human reviews and approves the implementation plan. **This human approval is plan verification.** Do not add a separate verification agent or verification workflow.
-5. Coding orchestrator dispatches implementation sub-agents to carry out the approved plan.
-6. Agent and human delivery checks are satisfied before the mission is considered complete.
+1. PM and humans shape the mission's product document: intended behavior, why, expected outcome, and delivery checklist.
+2. Humans approve the product-level direction. In Mission refactor, Fred, Diego, and Tyler each need to say the UX is ready before implementation planning.
+3. PM prepares a separate dispatch artifact in the area containing the coding orchestrator's prompt and references to the product documentation.
+4. Coding orchestrator commissions planning agents and proposes a technically credible implementation plan, rather than implementing immediately.
+5. A human reviews and approves that plan. **This human approval is plan verification.** Do not add a separate verification agent or verification workflow.
+6. Coding orchestrator dispatches implementation sub-agents to carry out the approved plan.
+7. Agent and human delivery checks are satisfied before the mission is considered complete.
 
 There are two human approvals: the product-level mission and the implementation plan. The orchestrator's technical judgment is part of preparing a credible plan, not a third human approval.
 
@@ -118,60 +124,88 @@ PM edits to established project notes take effect immediately. People need a pro
 
 No note-approval queue. Do not add elaborate scope fences or a second documentation-review workflow. The UI should make changes easy to understand and review.
 
+### Short notes and local links
+
+The area's overview/index is the starting document. A compact **Notes** button at the chat header's top right opens its available documents, index first. Choosing a supporting note changes what is being read without switching the conversation. A mission can consult its area's product documentation through this picker without duplicating that knowledge in its brief.
+
+Literal `[[name]]` links open notes, missions, tasks, or artifacts by local name. Names resolve among siblings and children of the current document; there is no global name search or duplicate-name chooser. A spaced hyphen descends through named containers: `[[Mission refactor - Review Mission refactor UX]]`. Typing inside brackets offers eligible local names; after `Mission refactor - ` it offers only that mission's children.
+
+Links remain normal text: a click follows the target, while dragging selects text and keyboard navigation can place the cursor inside the brackets. Copying, cutting, replacing, and deleting the text work normally. Completion inserts text, not an embedded object. Notes use muted yellow, missions muted red, and tasks muted blue at comparable perceived brightness, with icons as well as color.
+
 ## Existing channels are the conversation surface
 
-Reuse existing channels. Group chats, interviews, and product discussions are channel conversations, not a new parallel conversation type.
+Reuse existing channels for project, area, mission, and task chats. Group chats, interviews, and product discussions are channel conversations, not a new parallel conversation type. Projects, areas, and missions open their document and chat together. Mission tasks use their own existing conversation in the floating artifact UI while their mission remains centered. Agents with project access can follow new messages across those chats and reply wherever relevant; selecting a mission does not confine an agent to that room.
 
 PM involvement is configurable:
 
 - **Live:** PM follows the conversation as it happens; its conversational participation can be configured.
 - **Catch-up:** Humans converse first. After a quiet period (15 minutes was an example, not a hard requirement), new messages are sent to the PM so it can update product context and notes and identify resulting work.
 
-“Unread” in catch-up means messages the PM has not processed, independent of human read/unread state. PM loads the relevant product files through the area's index.
+“Unread” in catch-up means messages the PM has not processed in each chat, independent of human read/unread state. PM loads the relevant product notes and their references. Following multiple rooms does not mean replying to every message.
 
 The PM may catch up when its runner reconnects. Always-on infrastructure is not required. Closing a project view need not stop a connected runner; offline work waits until the runner is available.
 
 ## Project and mission views
 
-The project view is the main entry into ongoing work, with access to:
+The main workspace pairs a shared document with its conversation. **Fizzer is a project note; Project Interface opens an area index; Mission refactor and Create the project agent each have their own mission brief and chat.** Supporting product knowledge belongs to the area. Mission tasks open on the right as editable artifacts with floating task conversations, never replacing the centered mission. Product documentation and mission briefs are not executable prompts.
 
-- Execution overview: Kanban or an equivalent presentation of tasks, priorities, assignees, due dates, and mission progress.
-- Current work across all people, with a personal filter available on the expanded Kanban.
-- Changes since the person's last visit, including note diffs.
-- Areas, their context indexes, and editable product notes.
-- Existing channels and ongoing group conversations with the PM.
-- **An explicit button to open a mission view.**
+The prototype opens the existing **Project Interface overview/index within Fizzer**, already populated and editable beside the area's chat. It links short product notes, Mission refactor, and Create the project agent. It must not show a “Start” screen when the area exists. Restored selection resolves to a valid document. One compact, clickable hierarchy provides navigation without duplicate tabs, breadcrumb rows, or an “Open Project Interface” button in the note.
 
-In the mission view, humans can review mission intent and delivery conditions, inspect and approve the implementation plan, follow execution, and talk directly to the coding orchestrator.
+### The two example missions
 
-The default workspace shows a **Current tasks** column on the left, containing everyone's in-progress work—not only work assigned to the current person. Project chat and **Since your last look** updates occupy the remaining space. Keep the header compact and use the available workspace rather than oversized introductions or empty panels.
+**Mission refactor** adapts the existing app's missions to the new project interface. Its product document and chat define and discuss the change, with linked review tasks and artifacts. Useful orchestration, approvals, tasks, and delivery checks remain part of the intended workflow, while execution instructions live in a separate dispatch artifact.
 
-Expanding the Kanban horizontally reveals **To do / In progress / Done** and the **My work / All work** filter. The wider board compresses the secondary panels; updates can fold while chat remains available. Returning to Current tasks restores the all-people view.
+This mission is already at **UI refinement**. Fred, Diego, and Tyler must each explicitly say the UI/UX is ready before implementation planning proceeds. These are separate reviewer obligations, not one shared task that any assignee can finish. Agent checks, ordinary feedback, or the first person's approval cannot satisfy everybody's readiness gate. Passing that gate permits the next step; it does not complete the mission.
 
-Missions appear as expandable Kanban cards with their tasks inside. Standalone tasks remain separate cards, and task details can expand in place. Drag-and-drop replaces status dropdowns and Done controls on cards. Mission progress still respects the two approvals and delivery checks; dragging does not silently bypass them.
+**Create the project agent** is a sibling mission, not a mission called “Prototype the project agent.” It is earlier in its lifecycle: the team is scoping, ideating, and brainstorming what it wants in that mission's chat, with the agent helping the conversation. Prototyping is the next stage after shared scope is established. It has not reached the mission-refactor example's UX-readiness gate. Prototyping, implementation, and delivery belong to the larger mission rather than replacing its goal.
 
-Product conversation is embedded in the main workspace, not hidden behind navigation. Resizing the board and moving work should preserve the message being composed. Exact proportions remain subject to Fred's hands-on UX review.
+### Shared documents and work
+
+Mission creation establishes a change-specific brief and conversation, linked from the area. Intended change, rationale, progress, and delivery checklist are prose and checklists in that brief, not a second set of form fields. Shared product behavior is documented in the area's topic notes and referenced by the mission. Mission task links open editable documents in the artifact pane while the mission remains centered. Notes are always directly editable; there is no Edit note button or reading/editing mode switch. Chat-driven changes supplement typing without overwriting other scopes' documents.
+
+The note surface is plain Markdown/source text with syntax colors. Markers such as `#`, `**`, list prefixes, and links stay visible. Different patterns use different colors, not larger headings, varying font sizes, rendered bold/italic styles, duplicate titles, or decorative cards. Text uses a uniform font size, weight, and line height. One small history control floats at the note pane's top right and opens only that note's history in place; closing it leaves the note and conversation selected. Global Changes remains a separate navigation destination.
+
+Markdown checklists are ordinary editable text: manually typing `[ ]` or `[x]` is sufficient for this prototype. Any existing direct-click convenience changes the same source and note history; no further checkbox machinery or permission/approval mechanism is needed.
+
+The document is enough: do not append a redundant Mission refactor card, mission workflow panel, or duplicate Brief/Plan form beneath it. Product context and review obligations belong in the note and linked task documents. The PM's planning-first instructions to the coding orchestrator belong in the separate area dispatch artifact, not in the product document.
+
+An explicit, compact **Note / Project** toggle retains the project work view without taking a full-width toolbar band. Project mode initially shows **Current tasks** for all people. Expanding the Kanban horizontally reveals **To do / In progress / Done** and **My work / All work**. Collapsing it restores the all-people view. Mission cards expand to contain their tasks; standalone tasks remain separate. Task dragging does not bypass approvals or delivery checks.
+
+Conversation is integrated into the normal workspace. Switching context preserves drafts. Opening a mission from a note link, navigation, or work card opens its brief on the left and its chat on the right. Opening a mission task instead keeps that mission on the left and opens the task as an artifact on the right, with the task's own floating chat. The Notes picker changes the reading document without switching conversations. Clicking a resolved local `[[name]]` or `[[container - child]]` link follows the same destination behavior while leaving the literal source editable.
+
+Agent actions are distinct from speech and link their effects on assignments, mission conditions, and note content. The launch-language review assigned to Diego remains a secondary example. Mission refactor's discussion illustrates UI refinement; Create the project agent's discussion illustrates earlier group discovery. Project and area chats preserve wider context.
+
+The prototype includes linked events across project, area, and mission conversations to demonstrate cross-chat awareness. Scripted collaboration changes the intended in-memory mission document and history without overwriting other notes or inventing unanimous sign-off. These messages and editing cues are illustrative, not real agents or multiplayer editing.
+
+### Leaf artifacts and floating chat
+
+A parent note stays in the left pane when a linked leaf artifact opens. A prototype, image, or ordinary leaf-note document takes the right pane normally used by that parent's chat and uses the same parent conversation, not a new artifact channel. Mission tasks use this artifact presentation too, but retain their existing task conversations in the floating chat. Mission refactor's tasks and review artifacts keep its mission document centered. Closing a task artifact returns to the mission chat without navigating away. The PM's dispatch belongs to the area, so opening it keeps the area document on the left and uses the area chat.
+
+The illustrative **Mission refactor dispatch** is a draft prompt for the coding orchestrator. It links the product requirements and asks for an implementation plan first. It is deliberately separate from the area and mission documentation, and its presence is not evidence that implementation or real dispatch has begun.
+
+With chat collapsed, the artifact is unobscured. A compact bottom chat/writing control has a small unread count; there is no persistent message history or active writing area. A newly received message can briefly float over the artifact as a bubble, with **Dismiss** and **Reply**. It disappears after a few seconds if ignored. Removing that temporary bubble does not delete its message history.
+
+Clicking the bottom control to write or read history expands floating messages above it and activates the composer. The artifact remains visible underneath, blurred while the expanded conversation has attention. This is not an opaque full-pane chat card or another sidebar. Reply opens the composer; collapse returns attention to the sharp artifact and hides history again.
+
+Expanding chat history clears the displayed unread count. Artifact and conversation changes preserve drafts, and expanding or sending chat does not reset the artifact being reviewed. The visual prototype uses illustrative incoming messages to make the transient-bubble behavior visible; it does not implement real message delivery or read synchronization.
 
 ### Navigation and content hierarchy
 
-The sidebar starts with **Overview**, immediately followed by the main project channel, **Notes**, and **Changes**. Below these, each expandable area contains its own product channels and missions. Channels and missions are not separate project-wide sidebar categories.
+The sidebar keeps the **full project list visible and expanded**: areas, missions, and ordinary supporting notes stay available regardless of the center document. It is a list, not a drill-down file explorer. The overview/index sits above slightly indented supporting notes, alongside that area's missions and standalone tasks. Only mission-owned task and artifact rows are conditional: show them when that mission's document is centered; otherwise hide them. Opening a mission task leaves the mission centered, so those rows remain visible. Do not duplicate task artifacts or backing notes as ordinary-note rows. Search respects the same visibility rule. Keep **Changes** explicit, without separate channel rows or a redundant global Notes landing page.
 
-**Notes** is a dedicated space for finding, creating, reading, and editing project and area product notes. Search covers note content; area filtering keeps the library manageable. Area pages link to relevant notes and their context index without reproducing entire documents. Reading and editing use the same note canvas rather than two stacked copies.
+Muted yellow notes, red missions, and blue tasks use distinct icons as well as comparable-brightness color. The full list provides direct document access without requiring navigation into containers first. Documents use one always-editable, syntax-colored text surface, including task and leaf-note artifacts on the right. Compact local links retain access without large cards or a secondary context column.
 
-An area opens on a short purpose statement, human work needing attention, mission progress, relevant product notes, and recent conversation. Editing area details is an explicit action. A proposed area uses a status and an acceptance action, not a large instructional proposal panel.
-
-The existing-product preview should feel like an ongoing project: concrete conversations and decisions, dated human work, agent assignments, several mission stages, and meaningful before/after note changes. Keep prototype disclosure in the shell and forced agent transitions in compact preview controls. Do not fill ordinary product surfaces with explanations of the mock.
-
+The existing-product preview should feel like ongoing work: concrete discussions, different mission stages, named human obligations, and meaningful before/after changes. Do not restore the prototype banner or relocate its removed controls elsewhere. This brief and the handoff carry the prototype limitations.
 
 ## Starting projects
 
 ### Greenfield
 
-Several humans can start by talking with the PM in a channel. A repository, finished spec, or configured coding team is not a prerequisite for defining the product. PM conducts interviews, maintains notes, proposes areas and context files, and eventually identifies missions and tasks.
+Several humans can start by talking with the PM in the project's group chat. A repository, finished spec, or configured coding team is not a prerequisite. The conversation establishes the project note, proposed area notes and their context, and eventually mission and task documents with their own discussions. Scoping and ideation precede prototyping; a prototype is a step toward a mission's outcome, not automatically a separate mission.
 
 ### Existing product
 
-Support assisted setup: research agents investigate the existing app and codebase, and PM turns their findings into product-facing notes and proposed areas that humans refine. PM does not inspect code itself; engineering documentation remains in the repository.
+Support assisted setup: research agents investigate the existing app and codebase, and PM turns their findings into a project note and proposed area notes that humans refine. PM does not inspect code itself; engineering documentation remains in the repository.
 
 These are equally important entry paths into the same ongoing product workflow.
 
@@ -179,19 +213,28 @@ These are equally important entry paths into the same ongoing product workflow.
 
 Use the real application's styling and components with explicitly simulated, in-memory data. Provide a repeatable preview and make reset/reload behavior clear. Do not connect mock UI actions to production mutations or real agent dispatch.
 
+This iteration is for visual and interaction review of the selected design. Do not add behavioral test suites, production authorization enforcement, or alternate-layout work to this UI prototype. Fred judges whether the experience looks and feels right.
+
 The prototype should let Fred evaluate:
 
-- Project-first navigation with area-owned channels and missions, a dedicated Notes space, and several distinct dashboard information hierarchies.
-- The all-people Current tasks default, horizontal board expansion, and the expanded board's personal-work filter.
+- Fizzer as the top-level index, area indexes and short product notes beneath it, and mission briefs that reference area knowledge. Mission tasks open as right-hand artifacts with their own floating chats.
+- The full expanded project list stays visible with slightly nested, color-and-icon-coded notes. Mission task/artifact rows depend on the centered mission; opening a task keeps that mission centered.
+- The existing Project Interface note visible and editable immediately, with its page chat and a compact Note / Project toggle.
+- Mission refactor already at UI refinement, requiring Fred, Diego, and Tyler to each say the UX is ready before implementation planning.
+- Create the project agent as a sibling mission still at group scoping and ideation, with prototyping later rather than a separate mission goal.
+- Durable product knowledge in area notes; mission briefs contain change-specific scope, progress, and checks. A separate area-owned dispatch artifact contains the planning-first execution prompt.
+- The all-people Current tasks view in Project mode, horizontal board expansion, and the expanded board's personal-work filter.
 - Expandable mission cards containing task cards, standalone tasks beside them, and drag-based task movement without status controls on cards.
 - Editing due dates, assignees, and priorities, and completing shared tasks without bypassing mission approvals.
-- Main-page project chat alongside recent changes, including draft preservation while changing the work view.
-- Proposed areas with proposed context files, accepting an area, and opening its index.
-- Searching and creating project/area notes, reading or editing one document canvas, and inspecting actual before/after diffs.
+- Scoped name/path links and card actions open the correct mission or artifact. The chat-header Notes picker switches reading documents without switching the conversation.
+- PM assignment events visually distinct from speech, with linked effects on task ownership, mission acceptance, and shared note content.
+- Group conversations showing brainstorming, differing mission stages, and the agent's awareness of new messages across scoped chats.
+- Proposed areas represented as editable notes with context links, accepting an area, and opening its document.
+- Always-editable, uniformly sized Markdown; muted type colors; literal editable/selectable bracket links with scoped name/path completion; manual `[x]` editing; and note-local History.
 - Existing channel-style group conversations, live/catch-up settings, and visibly simulated PM catch-up/offline behavior.
-- Opening a mission from the project; editing its definition and plan; exercising both human approval steps and the human/agent delivery checklist.
-- Direct mission conversation with the coding orchestrator, distinct from product discussion with PM.
-- Greenfield product discussion and an existing-product example.
+- Mission documentation without a redundant inline mission card, workflow panel, or duplicate definition form.
+- A planning-first dispatch artifact distinct from product documentation, with direct technical conversation rather than a PM relay.
+- The existing Fizzer scenario in the selected note-and-chat version, without expanding this iteration into other prototype designs.
 
 Mock conversations, planning, catch-up, execution, and approvals demonstrate interactions only. No AI reasoning, runner work, persistence, multiplayer synchronization, or backend behavior is implied by a clickable prototype.
 
@@ -203,9 +246,9 @@ The prototype extends the existing `docs/missions-overhaul-prototype.html` entry
 python3 -m http.server 5175 --bind 127.0.0.1 --directory docs
 ```
 
-Open [the project overview](http://127.0.0.1:5175/missions-overhaul-prototype.html?variant=A) or [Beta test](http://127.0.0.1:5175/missions-overhaul-prototype.html?variant=A&view=area&id=beta). The bottom arrows switch between the work board, people/dates, and area overview layouts. Each uses the same local project state.
+Open [Project Interface](http://127.0.0.1:5175/missions-overhaul-prototype.html?variant=A). The default is its populated, always-editable area note and page chat within Fizzer. Its links open Mission refactor at UI refinement and Create the project agent at group scoping and ideation, each with its own document and chat. The compact Note / Project toggle and clickable note hierarchy belong to this one design. Existing B/C alternatives are not being developed or separately verified in this iteration.
 
-The example uses Fred, Tyler, and Diego, with active Beta test and Public launch areas, a proposed Partner pilot, product discussions and notes, and missions at different approval/execution stages. Reload or Reset restores the example; the person selector lets reviewers inspect shared human work. The preview is not deployed, persistent, or connected to agents. Fred owns the hands-on visual and UX review.
+The example uses Fred, Tyler, and Diego, with secondary Beta test and Public launch work. Reload restores the fixture; edits and discussions are in memory. This is not deployed, persistent, or connected to agents. Fred owns hands-on visual and UX review.
 
 ## Reference research
 

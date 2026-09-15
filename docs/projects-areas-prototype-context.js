@@ -1,4 +1,4 @@
-import { newId, nowLabel, PHASE_LABELS, STATUS_LABELS } from './projects-areas-prototype-model.js';
+import { newId, nowLabel, PHASE_LABELS, STATUS_LABELS, getNoteLinkTargets, resolveNoteLink } from './projects-areas-prototype-model.js';
 
 const esc = (app, value) => app.escape(String(value ?? ''));
 const byId = (items, id) => items.find(item => item.id === id);
@@ -10,78 +10,7 @@ const areaTasks = (state, area) => state.tasks.filter(task => task.areaId === ar
 const formatStatus = status => status === 'proposed' ? 'Proposed' : 'Active';
 const humanMessages = (channel, start = channel?.processedCount || 0) => (channel?.messages || []).slice(start).filter(message => message.role === 'human');
 
-function noteByTitle(state, title) {
-    const wanted = String(title || '').trim().toLowerCase();
-    return state.notes.find(note => note.title.trim().toLowerCase() === wanted);
-}
 
-function readableContent(app, state, content) {
-    const linkify = value => {
-        const output = [];
-        const pattern = /\[\[([^\]]+)\]\]/g;
-        let cursor = 0;
-        let match;
-        while ((match = pattern.exec(value))) {
-            output.push(esc(app, value.slice(cursor, match.index)));
-            const title = match[1];
-            const target = noteByTitle(state, title);
-            output.push(target
-                ? `<button type="button" class="context-note-link" data-note-link="${esc(app, target.id)}">${esc(app, title)}</button>`
-                : esc(app, title));
-            cursor = match.index + match[0].length;
-        }
-        output.push(esc(app, value.slice(cursor)));
-        return output.join('');
-    };
-    const inline = value => linkify(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    const lines = String(content || '').split(/\r?\n/);
-    const output = [];
-    let list = null;
-    const closeList = () => {
-        if (list) {
-            output.push(`</${list}>`);
-            list = null;
-        }
-    };
-    lines.forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed) {
-            closeList();
-            return;
-        }
-        const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-        if (heading) {
-            closeList();
-            const level = Math.min(4, heading[1].length + 1);
-            output.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-            return;
-        }
-        const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
-        if (bullet) {
-            if (list !== 'ul') {
-                closeList();
-                output.push('<ul>');
-                list = 'ul';
-            }
-            output.push(`<li>${inline(bullet[1])}</li>`);
-            return;
-        }
-        const numbered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
-        if (numbered) {
-            if (list !== 'ol') {
-                closeList();
-                output.push('<ol>');
-                list = 'ol';
-            }
-            output.push(`<li>${inline(numbered[1])}</li>`);
-            return;
-        }
-        closeList();
-        output.push(`<p>${inline(line)}</p>`);
-    });
-    closeList();
-    return output.join('') || '<p class="context-empty-copy">No product context yet.</p>';
-}
 
 function button(app, label, action, options = {}) {
     const classes = `pp-button ${options.primary ? 'primary ' : ''}${options.className || ''}`.trim();
@@ -159,51 +88,227 @@ function renderArea(app, root, state, area) {
     bindNewNoteForm(app, root, state, area);
 }
 
-function renderNote(app, root, state, note) {
-    if (!note)
-        return renderMissing(app, root, state, 'Note not found', 'The selected product note is no longer in this in-memory sample.');
-    const area = note.areaId ? byId(state.areas, note.areaId) : null;
-    const index = area ? indexNote(state, area) : null;
-    const related = areaNotes(state, area).filter(item => item.id !== note.id && item.id !== index?.id);
-    root.innerHTML = `<div class="context-shell context-note-view">
-        <header class="context-toolbar"><div>${breadcrumb(app, state, area, note.title)}</div><div class="context-toolbar-actions"><button type="button" class="pp-button primary" data-context-action="toggle-note-edit" aria-expanded="false">Edit note</button>${button(app, 'View changes', 'open-changes', { className: 'secondary' })}</div></header>
-        <main class="context-scroll context-note-scroll ${area ? '' : 'context-note-solo'}"><article class="note-document context-note-document"><div class="context-note-heading"><h1>${esc(app, note.title)}</h1><div class="context-note-meta"><span data-note-author>Last edited by ${esc(app, note.updatedBy || 'Unknown')}</span><time data-note-time>${esc(app, note.updatedAt || '—')}</time></div></div><div class="context-note-preview" data-note-preview aria-label="Rendered product note">${readableContent(app, state, note.content)}</div><label class="pp-field context-note-editor-label" data-note-editor-wrap hidden><textarea class="context-note-editor" data-note-editor rows="18" spellcheck="true" aria-label="Edit ${esc(app, note.title)}">${esc(app, note.content)}</textarea><span class="context-save-hint">Changes save when you leave the editor.</span></label></article>${area ? `<aside class="context-note-sidebar"><section class="context-panel"><h2>In ${esc(app, area.name)}</h2>${index && index.id !== note.id ? `<p><button type="button" class="context-note-link-button" data-context-action="open-index">${esc(app, index.title)}</button></p>` : ''}<ul class="context-note-list">${related.map(item => renderNoteLink(app, item, false)).join('')}</ul><button type="button" class="pp-text-button" data-context-action="open-area" data-area-id="${esc(app, area.id)}">Open area ↗</button></section></aside>` : ''}</main>
-    </div>`;
-    root.querySelector('[data-context-action="toggle-note-edit"]')?.addEventListener('click', event => {
-        const wrap = root.querySelector('[data-note-editor-wrap]');
-        const preview = root.querySelector('[data-note-preview]');
-        const open = wrap?.hasAttribute('hidden');
-        if (!wrap || !preview)
-            return;
-        wrap.toggleAttribute('hidden', !open);
-        preview.toggleAttribute('hidden', open);
-        event.currentTarget.setAttribute('aria-expanded', String(open));
-        event.currentTarget.textContent = open ? 'Close editor' : 'Edit note';
-        if (open)
-            wrap.querySelector('textarea')?.focus();
-    });
-    root.querySelector('[data-note-editor]')?.addEventListener('blur', event => {
-        const content = event.target.value;
+
+
+
+
+function resolveSourceLink(app, noteId, title) {
+    return resolveNoteLink(app.state, noteId, String(title || '').trim()) || null;
+}
+
+function openSourceLink(app, target) {
+    if (!target)
+        return;
+    if (target.kind === 'artifact')
+        return app.openArtifact?.(target.id);
+    if (target.kind === 'mission')
+        return app.openMission?.(target.id);
+    if (target.kind === 'task')
+        return app.openTaskWorkspace?.(target.id);
+    if (target.kind === 'note')
+        return app.showNote?.(target.noteId || target.id);
+}
+
+function sourceSyntaxMarkup(app, noteId, content) {
+    return String(content || '').split(/\r?\n/).map(line => {
+        let markup = '';
+        let last = 0;
+        const links = /\[\[([^\]]+)\]\]/g;
+        let match;
+        while ((match = links.exec(line))) {
+            markup += esc(app, line.slice(last, match.index));
+            const target = resolveSourceLink(app, noteId, match[1]);
+            const kind = target?.kind || 'unknown';
+            markup += `<span class="source-syntax-link source-syntax-link-${kind}" data-source-link-kind="${kind}"${target ? ` data-source-link-id="${esc(app, target.id)}"` : ''}>${esc(app, match[0])}</span>`;
+            last = match.index + match[0].length;
+        }
+        markup += esc(app, line.slice(last));
+        if (/^#{1,4}\s/.test(line))
+            markup = `<span class="source-syntax-heading">${markup}</span>`;
+        else {
+            markup = markup.replace(/(\*\*[^*]+\*\*)/g, '<span class="source-syntax-strong">$1</span>');
+            markup = markup.replace(/(`[^`]+`)/g, '<span class="source-syntax-code">$1</span>');
+        }
+        markup = markup.replace(/\[([ xX])\]/g, (marker, mark) => `<span class="source-checkbox ${mark.toLowerCase() === 'x' ? 'is-checked' : ''}">${marker}</span>`);
+        return markup;
+    }).join('\n');
+}
+
+function noteDocumentMarkup(app, state, note, embedded) {
+    return `<article class="note-document context-note-document"><div class="context-note-editor-wrap"><pre class="context-note-mirror" aria-hidden="true"></pre><textarea class="context-note-editor context-note-source" data-note-editor rows="24" spellcheck="true" aria-label="Edit ${esc(app, note.title)}">${esc(app, note.content)}</textarea><div class="context-note-completion" data-note-completion hidden role="listbox"></div></div></article>`;
+}
+
+
+function sourceLinkAt(content, position, app, noteId) {
+    const source = String(content || '');
+    const links = /\[\[([^\]\n]+)\]\]/g;
+    let match;
+    while ((match = links.exec(source))) {
+        const end = match.index + match[0].length;
+        if (position >= match.index && position <= end)
+            return resolveSourceLink(app, noteId, match[1]);
+    }
+    return null;
+}
+
+function completionQuery(value, position) {
+    const match = /\[\[([^\]\n]*)$/.exec(String(value || '').slice(0, position));
+    if (!match)
+        return null;
+    const parts = match[1].split(/\s+-\s*/);
+    const leaf = parts.pop().trim().toLowerCase();
+    return { start: position - match[0].length, containerPath: parts.join(' - ').trim(), leaf };
+}
+
+function bindNoteEditor(app, root, note) {
+    const editor = root.querySelector('[data-note-editor]');
+    const mirror = root.querySelector('.context-note-mirror');
+    const completion = root.querySelector('[data-note-completion]');
+    if (!editor || !mirror)
+        return;
+    let timer;
+    let pointerStart;
+    let completionIndex = 0;
+    const sync = () => {
+        mirror.innerHTML = sourceSyntaxMarkup(app, note.id, editor.value);
+        mirror.scrollTop = editor.scrollTop;
+        mirror.scrollLeft = editor.scrollLeft;
+    };
+    const commit = content => {
         const current = byId(app.state.notes, note.id);
         if (!current || content === current.content)
             return;
         app.recordNote(note.id, content, app.state.currentUser);
-        const updated = byId(app.state.notes, note.id);
-        if (!updated)
+    };
+    const scheduleCommit = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => commit(editor.value), 900);
+    };
+    const hideCompletion = () => {
+        if (completion)
+            completion.hidden = true;
+    };
+    const activeOptions = () => {
+        const query = completionQuery(editor.value, editor.selectionStart);
+        if (!query)
+            return null;
+        const targets = getNoteLinkTargets(app.state, note.id, query.containerPath)
+            .filter(target => !query.leaf || String(target.title || '').toLowerCase().includes(query.leaf));
+        return { query, targets };
+    };
+    const renderCompletion = () => {
+        if (!completion)
             return;
-        const preview = root.querySelector('[data-note-preview]');
-        if (preview)
-            preview.innerHTML = readableContent(app, app.state, updated.content);
-        const author = root.querySelector('[data-note-author]');
-        const time = root.querySelector('[data-note-time]');
-        if (author)
-            author.textContent = `Last edited by ${updated.updatedBy || 'Unknown'}`;
-        if (time)
-            time.textContent = updated.updatedAt || '—';
+        const active = activeOptions();
+        if (!active?.targets.length) {
+            hideCompletion();
+            return;
+        }
+        completionIndex = Math.min(completionIndex, active.targets.length - 1);
+        completion.innerHTML = active.targets.map((target, index) => `<button type="button" role="option" class="context-note-completion-option${index === completionIndex ? ' is-active' : ''}" data-completion-index="${index}"><span class="context-note-completion-kind context-note-completion-kind-${target.kind}">${esc(app, target.kind)}</span><span>${esc(app, target.title)}</span></button>`).join('');
+        completion.hidden = false;
+    };
+    const chooseCompletion = index => {
+        const active = activeOptions();
+        const target = active?.targets[index];
+        if (!active || !target)
+            return;
+        const path = active.query.containerPath ? `${active.query.containerPath} - ${target.title}` : target.title;
+        const insert = `[[${path}]]`;
+        editor.value = `${editor.value.slice(0, active.query.start)}${insert}${editor.value.slice(editor.selectionStart)}`;
+        const cursor = active.query.start + insert.length;
+        editor.focus({ preventScroll: true });
+        editor.setSelectionRange(cursor, cursor);
+        sync();
+        scheduleCommit();
+        hideCompletion();
+    };
+    sync();
+    completion?.addEventListener('mousedown', event => event.preventDefault());
+    completion?.addEventListener('click', event => {
+        const option = event.target.closest('[data-completion-index]');
+        if (option)
+            chooseCompletion(Number(option.dataset.completionIndex));
     });
+    editor.addEventListener('pointerdown', event => {
+        pointerStart = { x: event.clientX, y: event.clientY };
+    });
+    editor.addEventListener('click', event => {
+        const start = pointerStart;
+        pointerStart = null;
+        if (start && (Math.abs(start.x - event.clientX) > 3 || Math.abs(start.y - event.clientY) > 3))
+            return;
+        const target = sourceLinkAt(editor.value, editor.selectionStart, app, note.id);
+        if (target)
+            openSourceLink(app, target);
+    });
+    editor.addEventListener('input', () => {
+        sync();
+        scheduleCommit();
+        completionIndex = 0;
+        renderCompletion();
+    });
+    editor.addEventListener('keydown', event => {
+        const active = activeOptions();
+        if (!active?.targets.length)
+            return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            completionIndex = (completionIndex + (event.key === 'ArrowDown' ? 1 : -1) + active.targets.length) % active.targets.length;
+            renderCompletion();
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            chooseCompletion(completionIndex);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            hideCompletion();
+        }
+    });
+    editor.addEventListener('scroll', sync);
+    editor.addEventListener('blur', () => {
+        clearTimeout(timer);
+        commit(editor.value);
+        setTimeout(hideCompletion, 0);
+    });
+}
+
+function bindWorkspaceNoteActions(app, root) {
+    root.querySelectorAll('[data-workspace-conversation]').forEach(link => link.addEventListener('click', () => {
+        if (app.openConversation)
+            app.openConversation({ kind: link.dataset.workspaceConversation, id: link.dataset.conversationId });
+    }));
+    root.querySelectorAll('[data-workspace-note-id]').forEach(link => link.addEventListener('click', () => {
+        if (app.showNote)
+            app.showNote(link.dataset.workspaceNoteId);
+    }));
+}
+
+function renderNote(app, root, state, note) {
+    if (!note)
+        return renderMissing(app, root, state, 'Note not found', 'The selected product note is no longer in this in-memory sample.');
+    const area = note.areaId ? byId(state.areas, note.areaId) : null;
+    root.innerHTML = `<div class="context-shell context-note-view">
+        <header class="context-toolbar"><div>${breadcrumb(app, state, area, note.title)}</div><div class="context-toolbar-actions"><button type="button" class="workspace-note-history-button" data-context-action="open-note-history" data-note-id="${esc(app, note.id)}" aria-label="Open note history" title="Open note history">↶</button></div></header>
+        <main class="context-scroll context-note-scroll ${area ? '' : 'context-note-solo'}"><div class="workspace-note-main">${noteDocumentMarkup(app, state, note, false)}</div></main>
+    </div>`;
+    bindNoteEditor(app, root, note);
     bindContextActions(app, root, state, area);
 }
 
+
+export function renderWorkspaceNote(app, root, noteId) {
+    const state = app.state;
+    return renderWorkspaceNoteSurface(app, root, state, byId(state.notes, noteId));
+}
+function renderWorkspaceNoteSurface(app, root, state, note) {
+    if (!note)
+        return renderMissing(app, root, state, 'Note not found', 'The selected product note is no longer in this in-memory sample.');
+    const area = note.areaId ? byId(state.areas, note.areaId) : null;
+    root.innerHTML = `<div class="context-shell context-note-view context-note-embedded"><main class="context-scroll context-note-workspace-scroll"><button type="button" class="workspace-note-history-button" data-context-action="open-note-history" data-note-id="${esc(app, note.id)}" aria-label="Open note history" title="Open note history">↶</button><div class="workspace-note-main">${noteDocumentMarkup(app, state, note, true)}</div><div class="workspace-note-context"></div></main><div class="context-note-live" aria-live="polite"></div></div>`;
+    bindNoteEditor(app, root, note);
+    bindWorkspaceNoteActions(app, root);
+    bindContextActions(app, root, state, area);
+}
 function renderNotes(app, root, state) {
     const areaGroups = new Map();
     const productNotes = state.notes.filter(note => !note.areaId);
@@ -273,6 +378,31 @@ function diffLinesMarkup(app, lines, kind) {
     if (!lines.length)
         return `<p class="context-diff-empty">No ${kind} lines.</p>`;
     return `<ul class="context-diff-lines ${kind}">${lines.map(line => `<li><span aria-hidden="true">${kind === 'added' ? '+' : '−'}</span><code>${esc(app, line || ' ')}</code></li>`).join('')}</ul>`;
+}
+function openLocalHistory(app, root, noteId) {
+    const note = app.state.notes.find(item => item.id === noteId);
+    if (!note)
+        return;
+    root.querySelector('.context-note-history-popover')?.remove();
+    const changes = (app.state.changes || []).filter(change => change.noteId === note.id);
+    const body = changes.length ? changes.map(change => {
+        const diff = diffLines(change.before, change.after);
+        return `<article class="context-note-history-entry"><header><div><strong>${esc(app, change.author || 'Unknown')}</strong><time>${esc(app, change.at || '—')}</time></div><span>${esc(app, change.title || note.title)}</span></header><div class="context-diff-columns"><section><h3>Removed</h3>${diffLinesMarkup(app, diff.removed, 'removed')}</section><section><h3>Added</h3>${diffLinesMarkup(app, diff.added, 'added')}</section></div></article>`;
+    }).join('') : '<p class="context-empty-row">No saved changes for this note yet.</p>';
+    root.insertAdjacentHTML('beforeend', `<div class="context-note-history-popover" role="presentation"><section class="context-note-history-dialog" role="dialog" aria-modal="true" aria-labelledby="context-note-history-title"><header><div><span class="context-kicker">Local note history</span><h2 id="context-note-history-title">${esc(app, note.title)}</h2></div><button type="button" class="context-inline-close" data-close-note-history aria-label="Close note history">×</button></header><div class="context-note-history-list">${body}</div></section></div>`);
+    const popover = root.querySelector('.context-note-history-popover');
+    const close = () => {
+        popover?.remove();
+    };
+    popover?.addEventListener('click', event => {
+        if (event.target === popover || event.target.closest('[data-close-note-history]'))
+            close();
+    });
+    popover?.addEventListener('keydown', event => {
+        if (event.key === 'Escape')
+            close();
+    });
+    popover?.querySelector('[data-close-note-history]')?.focus();
 }
 
 function renderChanges(app, root, state) {
@@ -408,13 +538,13 @@ function bindContextActions(app, root, state, area) {
             const noteId = action.dataset.noteId || (type === 'open-note' && action.closest('.context-panel')?.querySelector('[data-note-link]')?.dataset.noteLink);
             const target = noteId || indexNote(state, area)?.id;
             if (target)
-                app.navigate({ kind: 'note', id: target });
+                return app.showNote ? app.showNote(target) : app.navigate({ kind: 'note', id: target });
             return;
         }
         if (type === 'open-index') {
             const target = indexNote(app.state, area);
             if (target)
-                app.navigate({ kind: 'note', id: target.id });
+                return app.showNote ? app.showNote(target.id) : app.navigate({ kind: 'note', id: target.id });
             return;
         }
         if (type === 'open-note-from-change')
@@ -425,20 +555,22 @@ function bindContextActions(app, root, state, area) {
                 app.navigate({ kind: 'channel', id: channel.id });
             return;
         }
-        if (type === 'open-changes')
-            return app.navigate({ kind: 'changes' });
+        if (type === 'open-note-history') {
+            const noteId = action.dataset.noteId || app.workspace?.noteId || app.view?.id;
+            return openLocalHistory(app, root, noteId);
+        }
         if (type === 'open-mission') {
             const missionId = action.closest('.context-work-card')?.dataset.missionId;
             const mission = app.state.missions.find(item => item.id === missionId && item.areaId === area?.id);
             if (mission)
-                return app.navigate({ kind: 'mission', id: mission.id });
+                return app.openMission(mission.id);
             return;
         }
         if (type === 'open-task') {
             const taskId = action.closest('.context-work-card')?.dataset.taskId;
             const task = app.state.tasks.find(item => item.id === taskId && item.areaId === area?.id);
             if (task)
-                return app.openTask(task.id);
+                return app.openTaskWorkspace(task.id);
             return;
         }
         if (type === 'new-note') {
@@ -472,7 +604,8 @@ function bindContextActions(app, root, state, area) {
             simulateProposal(app);
         }
     }));
-    root.querySelectorAll('[data-note-link]').forEach(link => link.addEventListener('click', () => app.navigate({ kind: 'note', id: link.dataset.noteLink })));
+    root.querySelectorAll('[data-note-link]').forEach(link => link.addEventListener('click', () => app.showNote ? app.showNote(link.dataset.noteLink) : app.navigate({ kind: 'note', id: link.dataset.noteLink })));
+    root.querySelectorAll('[data-open-artifact]').forEach(link => link.addEventListener('click', () => app.openArtifact?.(link.dataset.openArtifact)));
 }
 
 export function renderContext(app, root) {
