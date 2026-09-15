@@ -12,6 +12,8 @@ import {
 import { ensureDesktopRunnerHost, stopDesktopRunnerHost } from '../desktopRunnerHost';
 import { ModalShell } from './ModalShell';
 
+type AgentSetupBridge = { showAgentAccountSetup?: () => Promise<void> };
+
 type AssignableRole = Exclude<VaultRole, 'owner'>;
 export type AccountSettingsSection = 'profile' | 'preferences' | 'security' | 'local-agent' | 'vault';
 type PublicJoinPolicy = 'open' | 'request' | 'invite';
@@ -50,6 +52,25 @@ type VaultReport = {
   detail: string;
   createdAt: string;
 };
+
+function AgentAccountSetup() {
+  const bridge = (window as unknown as { electronAPI?: AgentSetupBridge }).electronAPI;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (!bridge?.showAgentAccountSetup) return null;
+  return <div className="account-settings-actions">
+    <div>
+      <button type="button" disabled={busy} onClick={async () => {
+        setBusy(true); setError('');
+        try { await bridge.showAgentAccountSetup?.(); }
+        catch { setError('Could not open setup. Try again.'); }
+        finally { setBusy(false); }
+      }}>Agent file-write coordination (alock)</button>
+      <p className="account-settings-hint">Optional advanced setup. View or copy a terminal command; nothing is installed or enabled here.</p>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  </div>;
+}
 
 const ROLE_HELP: Record<VaultRole, string> = {
   owner: 'Owns the vault. Cannot be removed or demoted here.',
@@ -519,6 +540,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
 
         <div className="account-settings-section" id="account-preferences" role="tabpanel" hidden={activeSection !== 'preferences'}>
           <div className="account-section-title"><SlidersHorizontal size={15} /><strong>Preferences</strong></div>
+          <AgentAccountSetup />
           <label className="account-settings-check">
             <input
               type="checkbox"

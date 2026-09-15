@@ -9,7 +9,7 @@ const { PassThrough } = require('node:stream');
 const account = require('./agent-account.cjs');
 const { offerAgentAccountSetup } = require('./agent-account-setup.cjs');
 
-test('setup is offered once unless deferred; completion is shared with TUI', async () => {
+test('explicit Settings setup remains available after TUI decline without changing installation state', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'account-state-'));
   const previous = process.env.CASCADE_DATA_DIR;
   process.env.CASCADE_DATA_DIR = directory;
@@ -26,12 +26,34 @@ test('setup is offered once unless deferred; completion is shared with TUI', asy
     assert.equal(account.shouldOffer(), true);
     account.decline();
     assert.equal(account.shouldOffer(), false);
+    const before = fs.readdirSync(directory);
+    let shown = 0;
+    await offerAgentAccountSetup({
+      dialog: { showMessageBox: async (_window, options) => {
+        shown++;
+        assert.deepEqual(options.buttons, ['Copy setup command', 'Close']);
+        assert.match(options.detail, /sudo in your terminal/);
+        return { response: 1 };
+      } }, clipboard: { writeText: () => assert.fail('Close must not copy') },
+      packaged: false,
+    });
+    assert.equal(shown, 1);
+    assert.deepEqual(fs.readdirSync(directory), before);
+    assert.equal(account.enabled(), false);
     fs.writeFileSync(path.join(directory, 'agent-writes-enabled'), '1\n');
     assert.equal(account.enabled(), true);
   } finally {
     if (previous === undefined) delete process.env.CASCADE_DATA_DIR; else process.env.CASCADE_DATA_DIR = previous;
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('desktop setup has only an explicit IPC caller, not a startup offer', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8');
+  assert.equal((source.match(/offerAgentAccountSetup\(/g) || []).length, 1);
+  assert.match(source, /ipcMain\.handle\('agent:showAccountSetup'[\s\S]*?offerAgentAccountSetup/);
+  const startup = source.slice(source.indexOf('app.whenReady()'));
+  assert.doesNotMatch(startup, /offerAgentAccountSetup/);
 });
 
 test('launch always drops to fizzer without password collection or human HOME overrides', () => {

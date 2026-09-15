@@ -34,39 +34,43 @@ export function canRestoreDesktopSelection(selection: Selection | null, ownerId:
     && selection.vaultId === activeVaultId && vaults.some(vault => vault.id === selection.vaultId));
 }
 
+export function selectDesktopStartupVault(selection: Selection | null, ownerId: string, origin: string, vaults: { id: string }[], requestedVaultId: string | null = null): string | null {
+  const accessible = (id: string | null) => id && vaults.some(vault => vault.id === id);
+  if (accessible(requestedVaultId)) return requestedVaultId;
+  if (selection?.ownerId === ownerId && selection.origin === origin && accessible(selection.vaultId)) return selection.vaultId;
+  // Stable across server list ordering; never restore an unbound legacy pointer.
+  return vaults.map(vault => vault.id).sort()[0] ?? null;
+}
+
 /** A selection is navigation, never authority: authenticate and list vaults first. */
-export function useDesktopStartup(desktop: boolean, ownerId: string | null, activeVaultId: string | null, vaults: { id: string }[], listingReady: boolean) {
-  const [state, setState] = useState<{ phase: 'pending' | 'chooser' | 'workspace'; ownerId: string | null }>({ phase: desktop ? 'pending' : 'workspace', ownerId: null });
+export function useDesktopStartup(desktop: boolean, ownerId: string | null, activeVaultId: string | null, vaults: { id: string }[], listingReady: boolean, select: (id: string | null) => void) {
+  const [resolvedOwner, setResolvedOwner] = useState<string | null>(null);
   const selection = useRef(readDesktopSelection(localStorage));
   const remember = (vaultId: string | null) => {
     if (!desktop || !ownerId || !vaultId || !vaults.some(vault => vault.id === vaultId)) return;
     const value = { ownerId, origin: window.location.origin, vaultId };
     selection.current = value;
-    try { localStorage.setItem(DESKTOP_SELECTION_KEY, JSON.stringify(value)); } catch { /* Storage unavailable: choose again next launch. */ }
+    try { localStorage.setItem(DESKTOP_SELECTION_KEY, JSON.stringify(value)); } catch { /* optional persistence */ }
   };
+  const activeAccessible = activeVaultId === null ? vaults.length === 0 : vaults.some(vault => vault.id === activeVaultId);
   useEffect(() => {
     if (!desktop) return;
-    if (!ownerId) {
-      if (state.ownerId || state.phase !== 'pending') setState({ phase: 'pending', ownerId: null });
-      return;
-    }
-    if (!listingReady || state.ownerId === ownerId) return;
-    const params = new URLSearchParams(window.location.search);
-    const requestedVaultId = params.get('vault');
-    const requestedVaultReady = requestedVaultId === activeVaultId && vaults.some(vault => vault.id === requestedVaultId);
-    setState({ ownerId, phase: params.get('chooser') !== '1' && (requestedVaultReady || canRestoreDesktopSelection(selection.current, ownerId, window.location.origin, activeVaultId, vaults)) ? 'workspace' : 'chooser' });
-  }, [desktop, ownerId, activeVaultId, vaults, listingReady, state]);
+    if (!ownerId) { setResolvedOwner(null); return; }
+    if (!listingReady) return;
+    if (resolvedOwner === ownerId && activeAccessible) return;
+    const requested = resolvedOwner === ownerId ? null : new URLSearchParams(window.location.search).get('vault');
+    select(selectDesktopStartupVault(selection.current, ownerId, window.location.origin, vaults, requested));
+    setResolvedOwner(ownerId);
+  }, [desktop, ownerId, vaults, listingReady, resolvedOwner, activeAccessible, select]);
   return {
-    pending: desktop && (!ownerId || state.ownerId !== ownerId || state.phase === 'pending'),
-    open: state.phase === 'chooser',
-    choose: () => setState({ ownerId, phase: 'chooser' }),
-    continue: () => { remember(activeVaultId); setState({ ownerId, phase: 'workspace' }); },
+    pending: desktop && (!ownerId || !listingReady || resolvedOwner !== ownerId || !activeAccessible),
     remember,
-    reset: () => {
-      selection.current = null;
-
-      try { localStorage.removeItem(DESKTOP_SELECTION_KEY); } catch { /* optional persistence */ }
-      setState({ ownerId: null, phase: desktop ? 'pending' : 'workspace' });
+    reset: (preserveSelection = false) => {
+      if (!preserveSelection) {
+        selection.current = null;
+        try { localStorage.removeItem(DESKTOP_SELECTION_KEY); } catch { /* optional persistence */ }
+      }
+      setResolvedOwner(null);
     },
   };
 }

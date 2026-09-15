@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canRestoreDesktopSelection, readDesktopSelection, rememberDesktopSession, acceptAndOpenRemoteInvite } from '../desktopStartup';
+import { canRestoreDesktopSelection, readDesktopSelection, rememberDesktopSession, acceptAndOpenRemoteInvite, selectDesktopStartupVault } from '../desktopStartup';
 
 it('continues successful login when desktop session persistence rejects', async () => {
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -28,6 +28,25 @@ it('does not navigate after invite rejection and reports remote open failures', 
 
 const selection = { ownerId: '1', origin: 'https://cscd.online', vaultId: 'chosen' };
 const vaults = [{ id: 'chosen' }];
+describe('automatic desktop startup selection', () => {
+  const available = [{ id: 'z' }, { id: 'a' }];
+  const saved = { ...selection, vaultId: 'z' };
+  it('restores the same owner and origin saved accessible vault', () => {
+    expect(selectDesktopStartupVault(saved, '1', selection.origin, available)).toBe('z');
+  });
+  it('prefers an accessible explicit deep link', () => {
+    expect(selectDesktopStartupVault(saved, '1', selection.origin, available, 'a')).toBe('a');
+  });
+  it('uses a stable accessible default for first launch, stale access, another owner or origin', () => {
+    for (const candidate of [null, selection, { ...saved, ownerId: '2' }, { ...saved, origin: 'https://other.example' }]) {
+      expect(selectDesktopStartupVault(candidate, '1', selection.origin, available, 'missing')).toBe('a');
+      expect(selectDesktopStartupVault(candidate, '1', selection.origin, [...available].reverse())).toBe('a');
+    }
+  });
+  it('returns no workspace when access is empty', () => {
+    expect(selectDesktopStartupVault(saved, '1', selection.origin, [])).toBeNull();
+  });
+});
 describe('desktop selection binding', () => {
   it('restores only an explicit selection with current membership', () => {
     expect(canRestoreDesktopSelection(selection, '1', selection.origin, 'chosen', vaults)).toBe(true);

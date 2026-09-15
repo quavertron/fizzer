@@ -619,6 +619,14 @@ ipcMain.handle('agent:cancel', async (_event, runId) => {
 });
 
 /** Restore main-owned runs and missed events after renderer reload/freeze. */
+// Informational only: installation is a separate, explicit terminal action.
+ipcMain.handle('agent:showAccountSetup', async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || event.senderFrame !== event.sender.mainFrame) throw new Error('Unavailable outside the app window');
+  await require('./agent-account-setup.cjs').offerAgentAccountSetup({
+    dialog, clipboard, window, packaged: app.isPackaged, resourcesPath: process.resourcesPath,
+  });
+});
 ipcMain.handle('agent:getState', async (_event, afterSeq = 0) => agentRunState.snapshot(afterSeq));
 ipcMain.handle('agent:acknowledge', async (_event, { instanceId, seq } = {}) => (
   agentRunState.acknowledge(instanceId, seq)
@@ -970,9 +978,6 @@ app.whenReady().then(async () => {
 
   createWindow();
 
-  void require('./agent-account-setup.cjs').offerAgentAccountSetup({
-    dialog, clipboard, window: mainWindow, packaged: app.isPackaged, resourcesPath: process.resourcesPath,
-  }).catch(error => console.error('[Agent account setup]', error.message));
 
   // Explicitly provisioned owner-private API; never widen the TCP helper proxy.
   if (!app.isPackaged && process.platform !== 'win32' && process.env.FIZZER_EXTERNAL_AGENT_ACCESS === '1') {

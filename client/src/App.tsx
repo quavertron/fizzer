@@ -111,7 +111,7 @@ import {
 import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './chat/messageStore';
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
-import { DesktopVaultChooser } from './components/DesktopVaultChooser';
+
 import { useDesktopStartup, rememberDesktopSession, acceptAndOpenRemoteInvite } from './desktopStartup';
 
 /**
@@ -185,8 +185,7 @@ export default function App() {
   const [resetToken, setResetToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
-  const [serverAuthRequested, setServerAuthRequested] = useState(false);
-  useEffect(() => { if (user) setServerAuthRequested(false); }, [user]);
+
 
 
   // App data state
@@ -197,7 +196,7 @@ export default function App() {
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
   const activeVaultId = workspaceStore.activeVaultId;
   const codexImports = useCodexImports(user ? String(user.id) : null);
-  const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError);
+
   const initialVaultListing = persistedSessionRef.current.activeVaultId
     ? persistedSessionRef.current.vaultListingsByVault[persistedSessionRef.current.activeVaultId]
     : undefined;
@@ -305,8 +304,10 @@ export default function App() {
     clearWorkspacePanels();
   }, [workspaceStore, clearWorkspacePanels]);
 
-  const resetVaultWorkspaces = useCallback(() => {
-    desktopStartup.reset();
+  const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError, switchVaultWorkspace);
+
+  const resetVaultWorkspaces = useCallback((preserveDesktopSelection = false) => {
+    desktopStartup.reset(preserveDesktopSelection);
     workspaceStore.reset();
     setNoteLoadErrors({});
     loadVaultDataInflight.clear();
@@ -428,13 +429,8 @@ export default function App() {
     setVaultListError('');
     const epoch = workspaceStore.epoch;
     try {
-      let localVaults: Vault[] = [];
-      try {
-        const data = await api<{ vaults: Vault[] }>('/api/vaults');
-        localVaults = data.vaults || [];
-      } catch (err) {
-        console.warn('Could not load local vaults:', err);
-      }
+      const data = await api<{ vaults: Vault[] }>('/api/vaults');
+      const localVaults = data.vaults || [];
 
       const remoteRecords = await getRemoteVaults();
       const remoteVaults: Vault[] = remoteRecords.map((rv) => ({
@@ -474,9 +470,9 @@ export default function App() {
       const accessibleIds = new Set(nextVaults.map((vault) => vault.id));
       workspaceStore.retain(accessibleIds);
     } catch (error) {
-      setVaultListError(error instanceof Error ? error.message : 'Could not load vaults');
+      if (workspaceStore.epoch === epoch) setVaultListError(error instanceof Error ? error.message : 'Could not load vaults');
     } finally {
-      setVaultListLoading(false);
+      if (workspaceStore.epoch === epoch) setVaultListLoading(false);
     }
   }, [switchVaultWorkspace]);
 
@@ -2407,7 +2403,8 @@ export default function App() {
         .electronAPI?.rememberServerSession);
       // Account switch: never restore another user's activeVaultId / open tabs.
       localStorage.removeItem(SESSION_STORAGE_KEY);
-      resetVaultWorkspaces();
+      // Keep only owner/origin-bound navigation; the startup resolver rechecks access.
+      resetVaultWorkspaces(true);
       localStorage.removeItem('docs_token');
       setUser(data.user);
       setIsOwner(Boolean(data.owner));
@@ -2568,14 +2565,7 @@ export default function App() {
     );
   }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData]);
 
-  if ((window as unknown as { electronAPI?: unknown }).electronAPI && !user && !serverAuthRequested) {
-    return <DesktopVaultChooser vaults={[]} activeVaultId={null} onSelect={() => {}}
-      onCreate={async () => false} onContinue={() => {}}
-      onConnectLocal={() => { setAuthError(''); setServerAuthRequested(true); }} />;
-  }
-
-
-  if (!authReady && !serverAuthRequested) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
+  if (!authReady) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 
   if (!user) {
     const hasInvite = /^\/invite\/[^/]+$/.test(window.location.pathname);
@@ -2623,7 +2613,7 @@ export default function App() {
               : 'Fizzer agents run on your own desktop app. You can join this invite here, then open it in Fizzer desktop to run agents.'}
             {!inDesktopApp && <> <a href="/download">Get Fizzer desktop</a></>}
           </p>
-          {inDesktopApp && <button type="button" onClick={() => setServerAuthRequested(false)}>Back to vault chooser</button>}
+
           {authNotice && <div className="auth-notice">{authNotice}</div>}
           {authError && <div className="error">{authError}</div>}
           <button id="auth-submit" type="submit">
@@ -2654,17 +2644,6 @@ export default function App() {
     return <main className="auth-shell" id="desktop-startup-pending"><StartupPending kind="vault" failed={Boolean(vaultListError)} onRetry={() => void loadVaults()} /></main>;
   }
 
-  if (inDesktopApp && desktopStartup.open) {
-    return (
-      <DesktopVaultChooser
-        vaults={vaults}
-        activeVaultId={activeVaultId}
-        onSelect={switchVaultWorkspace}
-        onCreate={handleCreateVault}
-        onContinue={desktopStartup.continue}
-      />
-    );
-  }
 
   return (
     <main
@@ -2835,7 +2814,7 @@ export default function App() {
               </button>
             )}
             <NewsTicker />
-            {inDesktopApp && <button type="button" className="workspace-desktop-action" onClick={desktopStartup.choose}>Choose a vault</button>}
+
             {showDesktopDownload && (
               <a
                 className="workspace-desktop-action"

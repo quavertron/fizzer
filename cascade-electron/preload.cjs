@@ -16,6 +16,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose safe IPC methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
+  ...(process.platform !== 'win32' ? { showAgentAccountSetup: () => ipcRenderer.invoke('agent:showAccountSetup') } : {}),
   // ── Windows ─────────────────────────────────────────────────
   /**
    * Pop a tab out into its own OS window. Resolves with `{ popped }`: true when

@@ -1,9 +1,13 @@
 # Agent-account setup (macOS and Linux)
 
-Electron and the TUI offer optional agent-account setup on macOS and Linux.
-The GUI supplies a terminal command; Enter in the TUI leaves raw mode and runs
+On macOS and Linux, desktop setup is available explicitly in Account settings →
+Preferences → Agent file-write coordination (alock). It never opens at startup.
+The dialog only displays or copies a terminal command; it does not install,
+enable access, run sudo, or read credentials. It remains available after a prior
+decline or installation. Existing grants and installer defaults are unchanged.
+The TUI's optional startup prompt is unchanged: Enter leaves raw mode and runs
 the installer so sudo reads the password directly. Neither application collects
-an administrator password. "Don't ask again" is shared between both clients.
+an administrator password. The decline marker controls the TUI prompt only.
 
 To enable the integrated launcher from a development checkout:
 
