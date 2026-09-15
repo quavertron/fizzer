@@ -1106,6 +1106,7 @@ defmodule Cascade.ChatDomainTest do
 
     assert {:ok, [listed]} = Messages.list(channel.id, 1)
     assert listed.hasImages
+    assert listed.imageCount == 2
     assert listed.images == ["https://example.com/a.png"]
     assert {:ok, detailed} = Messages.get(channel.id, 1, created.id)
     assert length(detailed.images) == 2
@@ -1279,10 +1280,11 @@ defmodule Cascade.ChatDomainTest do
 
   test "chat route catalog is complete and has no duplicates" do
     catalog = CascadeWeb.ChatRoutes.catalog()
-    assert length(catalog) == 35
+    assert length(catalog) == 36
     for {method, suffix} <- [{"GET", "execution-v1"}, {"GET", "settings-v1"}, {"PATCH", "settings-v1"}] do
       assert {method, "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/" <> suffix} in catalog
     end
+    assert {"POST", "/api/vaults/:vault_id/import-codex-session"} in catalog
     assert length(Enum.uniq(catalog)) == length(catalog)
     assert {"DELETE", "/api/vaults/:vault_id/vault-agents/:agent_id/profile"} in catalog
 

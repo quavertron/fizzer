@@ -96,6 +96,7 @@ defmodule Cascade.Runs.PromptContext do
     |> maybe_put(:model, normalize_model(field(runtime, :model, params["model"])))
     |> maybe_put(:reasoningEffort, field(runtime, :reasoning_effort))
     |> maybe_put(:resumeSessionId, resume_session_id)
+    |> maybe_put(:importedCodexSession, if(agent == "codex" and String.starts_with?(Map.get(run, :conversation_id) || "", "codex-import:"), do: true))
     |> maybe_put(:workItemId, field(runtime, :work_item_id))
     |> maybe_put(
       :contextMode,

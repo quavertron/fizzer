@@ -10,6 +10,7 @@ const runnerStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-runner-sta
 const runnerBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-runner-bin-'));
 process.env.CASCADE_AGENT_PROCESS_DIR = runnerLeaseDir;
 process.env.CASCADE_AGENT_STATE_DIR = runnerStateDir;
+process.env.CASCADE_DATA_DIR = runnerStateDir;
 process.env.CASCADE_AGENT_BIN_DIR = runnerBinDir;
 const {
   buildRunHelperEnv,
@@ -208,6 +209,10 @@ process.stdout.write('bridged answer\\n');
   assert.equal(terminal.type, 'status');
   assert.equal(JSON.parse(terminal.payload_json).status, 'completed');
 
+  // Durable /proc start-tick leases are a Linux-only implementation. On macOS
+  // the crash fixture otherwise waits forever for a lease that is never made.
+  if (process.platform !== 'linux') return;
+
   // Reproduce a hard Electron-main crash: the detached Akron process group is
   // adopted by PID 1, while its durable lease survives on disk.
   const crashedRunId = 92002;
@@ -258,6 +263,9 @@ test('runner recovers from failed initial and replacement builds without restart
   fs.symlinkSync(path.join(__dirname, 'node_modules'), path.join(dir, 'node_modules'));
   const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
   fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
+  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs']) {
+    fs.copyFileSync(path.join(__dirname, name), path.join(dir, 'cascade-electron', name));
+  }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
   const modPath = path.join(dir, 'dist', 'cli-agents', 'cli-agent.js');
   let revision = 0;

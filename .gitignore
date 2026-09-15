@@ -58,4 +58,8 @@ bin/cascade-tui.exe
 .DS_Store
 *.owner.sqlite*
 .package/
+.native-tools/
+tui/vendor/purrvect/
 *.tgz
+
+*.*.nab

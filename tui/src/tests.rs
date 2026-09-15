@@ -7,6 +7,59 @@ use tokio::task::{JoinHandle, JoinSet};
 
 type Requests = Arc<Mutex<Vec<(String, Value)>>>;
 
+#[tokio::test]
+async fn codex_import_targets_selected_server_and_opens_existing_channel_once() {
+    let server = MockServer::new(|request, body| {
+        if request.starts_with("POST /api/vaults/selected/import-codex-session ") {
+            assert_eq!(body["messages"][0]["body"], "Previous work");
+            return (200, json!({"imported":{"channelId":"imported", "title":"Codex work", "following":true, "paused":false}}), Duration::ZERO);
+        }
+        (200, json!({"messages":[], "agents":[], "notes":[], "sessions":[]}), Duration::ZERO)
+    }).await;
+    let result = server.client.import_codex_page("selected", &json!({"messages":[{"body":"Previous work"}]})).await.unwrap();
+    assert_eq!(result["imported"]["channelId"], "imported");
+    let mut app = App::new(server.client.clone());
+    app.vault_id = Some("selected".into());
+    app.show_vaults = false;
+    app.codex_import = Some(codex_sessions::Picker::default());
+    app.channels.push(ChannelItem { id: "imported".into(), title: "Old title".into() });
+    let (tx, _) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::CodexImported {
+        origin: "https://different-server.example".into(), vault_id: "selected".into(),
+        result: Ok(ChannelItem { id: "wrong".into(), title: "Wrong".into() }),
+    }, &tx);
+    assert!(app.codex_import.is_some());
+    apply_backend_event(&mut app, BackendEvent::CodexImported {
+        origin: server.client.base_url.clone(), vault_id: "selected".into(),
+        result: Ok(ChannelItem { id: "imported".into(), title: "Codex work".into() }),
+    }, &tx);
+    assert!(app.codex_import.is_none());
+    assert_eq!(app.channels.len(), 1);
+    assert_eq!(app.active_channel_id.as_deref(), Some("imported"));
+    assert_eq!(app.active_pane, ActivePane::ChatInput);
+}
+
+#[test]
+fn codex_picker_navigation_does_not_import_until_selected_and_escape_closes() {
+    let mut app = App::new(CascadeClient::new("https://remote.example".into(), None));
+    app.codex_import = Some(codex_sessions::Picker::default());
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    apply_backend_event(&mut app, BackendEvent::CodexList(Ok(serde_json::from_value(json!({
+        "sessions":[{"id":"one","title":"Earlier work","cwd":"/tmp/project"},{"id":"two","title":"Later work","cwd":"/tmp/project"}], "nextOffset":50
+    })).unwrap())), &tx);
+    assert!(codex_sessions::key(&mut app, KeyCode::Down, &tx));
+    assert_eq!(app.codex_import.as_ref().unwrap().selected, 1);
+    assert!(rx.try_recv().is_err());
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Import local Codex session"));
+    assert!(screen.contains("Earlier work"));
+    assert!(codex_sessions::key(&mut app, KeyCode::Esc, &tx));
+    assert!(app.codex_import.is_none());
+    assert!(!app.should_quit);
+}
+
 #[test]
 fn remote_origins_default_to_https_and_reject_public_plaintext() {
     assert_eq!(normalize_remote_origin("example.com:8443").unwrap(), "https://example.com:8443");
@@ -148,7 +201,7 @@ async fn startup_timing() {
     eprintln!("messages: {:?}", start.elapsed());
     let start = std::time::Instant::now();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
     eprintln!("first render: {:?}", start.elapsed());
 }
 
@@ -240,6 +293,8 @@ async fn vault_history_load_keeps_terminal_responsive() {
             (200, json!({"messages":[{"id":"history"}]}), Duration::from_millis(200))
         } else if request.contains("/notes ") {
             (200, json!({"notes":[{"id":"real-channel","title":"Chat","content_preview":"cascade://chat-channel"}]}), Duration::ZERO)
+        } else if request.contains("/channels") {
+            (200, json!([{"id":"real-channel","title":"Chat"}]), Duration::ZERO)
         } else {
             (200, json!([]), Duration::ZERO)
         }
@@ -259,9 +314,11 @@ async fn vault_history_load_keeps_terminal_responsive() {
     assert!(app.messages.is_empty());
     app.input = "typing while loading".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("Receiving messages…"));
-    assert!(!app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    // Rendering restores the focused window's cache; inspect the visible chat.
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Receiving messages…"));
+    assert!(!screen.contains("No messages"));
     tokio::time::timeout(Duration::from_secs(2), async {
         while app.messages.is_empty() {
             apply_backend_event(&mut app, rx.recv().await.unwrap(), &tx);
@@ -270,11 +327,13 @@ async fn vault_history_load_keeps_terminal_responsive() {
     assert_eq!(app.messages[0].id, "history");
     assert_eq!(app.input, "typing while loading");
     apply_backend_event(&mut app, empty_history("real-channel"), &tx);
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("No messages"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("No messages"));
     apply_backend_event(&mut app, BackendEvent::HistoryPage { channel_id: "real-channel".into(), before: None, result: Err("offline".into()) }, &tx);
-    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
-    assert!(app.chat_cache.read().unwrap().chat_text.contains("Could not receive messages: offline"));
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("Could not receive messages: offline"));
 }
 
 #[tokio::test]
@@ -356,7 +415,7 @@ fn render_handles_small_terminals_and_unicode_drafts() {
     app.move_cursor_end();
     for (width, height) in [(1, 1), (20, 5), (80, 24), (120, 40)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| ui::render(f, &app)).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     }
 }
 

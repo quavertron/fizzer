@@ -1,4 +1,5 @@
 import { LoadingIndicator } from './LoadingIndicator';
+import { CodexSessionImport } from './CodexSessionImport';
 import {
   useCallback,
   useEffect,
@@ -69,6 +70,8 @@ export type SessionTimelineItem = {
 };
 
 type Props = {
+  vaultId?: string | null;
+  onImportCodex?: (id: string, vaultId: string) => Promise<{ channelId: string; title: string }>;
   open: boolean;
   runnerOnline: boolean;
   /** When set (from an Orbit node click), auto-select the run with this agent session id. */
@@ -252,6 +255,8 @@ function TraceEmpty({ icon, children }: { icon: ReactNode; children: ReactNode }
 }
 
 export function SessionManager({
+  vaultId,
+  onImportCodex,
   open,
   runnerOnline,
   focusSessionId,
@@ -528,6 +533,7 @@ export function SessionManager({
             </button>
           </div>
         </header>
+        {onImportCodex && <CodexSessionImport vaultId={vaultId || null} onImport={onImportCodex} onOpenChat={onOpenChat} />}
 
         {stopNotice && <p role="status">{stopNotice}</p>}
         <div className={`session-manager-body${selected ? ' has-selection' : ''}`}>

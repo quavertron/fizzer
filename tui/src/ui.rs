@@ -1,67 +1,97 @@
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{ Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::symbols::{border, line};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    parse_hex_color, ActivePane, AgentSettingsField, App, ChatRenderCache, HEADER_HEIGHT,
+    parse_hex_color, ActivePane, AgentSettingsField, App, ChatRenderCache, InlineSvgBlock, HEADER_HEIGHT,
     UserSettingsField, VaultActionField, VaultActionState,
 };
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
+    crate::purrvect::begin_frame();
     let size = frame.area();
-
-    // Top-level vertical layout: Header, Main Area, Footer
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(HEADER_HEIGHT), // Header
-            Constraint::Min(10),   // Main Area
-            Constraint::Length(1), // Footer
-        ])
-        .split(size);
+    let content_size = crate::panes::main_area(size);
+    let header_area = Rect::new(size.x, size.y, size.width, HEADER_HEIGHT.min(size.height));
+    if let Some(picker) = &app.codex_import {
+        crate::codex_sessions::render(frame, app, picker, content_size);
+        render_header(frame, app, header_area);
+        return;
+    }
 
     if app.agent_settings_modal.is_some() {
-        frame.render_widget(Clear, size);
+        frame.render_widget(Clear, content_size);
         render_agent_settings_modal(frame, app);
+        render_header(frame, app, header_area);
         return;
     }
 
     if app.user_settings_modal.is_some() {
-        frame.render_widget(Clear, size);
+        frame.render_widget(Clear, content_size);
         render_user_settings_modal(frame, app);
+        render_header(frame, app, header_area);
         return;
     }
 
     if app.show_vaults {
-        frame.render_widget(Clear, size);
+        frame.render_widget(Clear, content_size);
         if app.vault_action.is_some() {
-            render_vault_action_modal(frame, app, size);
+            render_vault_action_modal(frame, app, content_size);
         } else {
-            render_vaults_panel(frame, app, size);
+            render_vaults_panel(frame, app, content_size);
         }
+        render_buffer_picker(frame, app);
+        render_header(frame, app, header_area);
         return;
     }
 
-    render_header(frame, app, vertical_chunks[0]);
-    render_main_area(frame, app, vertical_chunks[1]);
-    render_footer(frame, app, vertical_chunks[2]);
+    render_header(frame, app, Rect::new(size.x, size.y, size.width, HEADER_HEIGHT.min(size.height)));
+    render_main_area(frame, app);
+    render_buffer_picker(frame, app);
+}
+
+fn render_buffer_picker(frame: &mut Frame, app: &App) {
+    let choices = crate::panes::buffer_choices(app);
+    let panes = app.panes.borrow();
+    let Some(picker) = &panes.picker else { return; };
+    let size = frame.area();
+    let height = (choices.len() as u16 + 3).min(14).min(size.height);
+    let area = Rect::new(size.x, size.bottom().saturating_sub(height), size.width, height);
+    frame.render_widget(Clear, area);
+    let items: Vec<_> = choices.iter().map(|(name, _, _)| ListItem::new(name.clone())).collect();
+    let mut state = ListState::default();
+    state.select((!choices.is_empty()).then_some(picker.selected.min(choices.len().saturating_sub(1))));
+    let block = Block::default().borders(Borders::ALL)
+        .title(if picker.command { format!("M-x {} ", picker.query) } else { format!("Switch to buffer{}: {} ", if picker.other { " in window" } else { "" }, picker.query) })
+        .border_style(Style::default().fg(Color::Cyan));
+    frame.render_stateful_widget(List::new(items).block(block)
+        .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan)), area, &mut state);
+}
+
+fn header_badge(label: String, foreground: Color, color: Color, previous: Color) -> Vec<Span<'static>> {
+    vec![
+        Span::styled("▌", Style::default().fg(previous).bg(color)),
+        Span::styled(label, Style::default().fg(foreground).bg(color).bold()),
+    ]
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    if area.is_empty() { return; }
+    let background = crate::terminal_theme::background();
+    let mode_color = if app.backend_online { Color::Green } else { Color::Red };
+    let runner_color = if app.runner_online { Color::Cyan } else { Color::Yellow };
     let mode_badge = if app.backend_online {
-        Span::styled(" LIVE ", Style::default().fg(Color::Black).bg(Color::Green).bold())
+        header_badge("LIVE".into(), Color::Black, mode_color, background)
     } else {
-        Span::styled(" BACKEND DOWN ", Style::default().fg(Color::White).bg(Color::Red).bold())
+        header_badge("BACKEND DOWN".into(), Color::White, mode_color, background)
     };
 
     let runner_badge = if app.runner_online {
-        Span::styled(" RUNNER ", Style::default().fg(Color::Black).bg(Color::Cyan).bold())
+        header_badge("RUNNER".into(), Color::Black, runner_color, mode_color)
     } else {
-        Span::styled(" NO RUNNER ", Style::default().fg(Color::Black).bg(Color::Yellow).bold())
+        header_badge("NO RUNNER".into(), Color::Black, runner_color, mode_color)
     };
 
     let loading_indicator = if app.is_loading {
@@ -75,31 +105,35 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         ("☁", Color::Magenta)
     };
-    let vault_badge = Span::styled(
-        format!(" {} {} ", vault_origin_icon, app.vault_name),
-        Style::default().fg(Color::Black).bg(vault_color).bold(),
+    let vault_badge = header_badge(
+        format!("{} {}", vault_origin_icon, app.vault_name),
+        Color::Black, vault_color, runner_color,
     );
 
-    let title_line = Line::from(vec![
+    let mut title_spans = vec![
         Span::styled(" ◈ FIZZER ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        mode_badge,
-        Span::raw(" "),
-        runner_badge,
-        Span::raw(" "),
-        vault_badge,
-        loading_indicator,
-    ]);
+    ];
+    title_spans.extend(mode_badge);
+    title_spans.extend(runner_badge);
+    title_spans.extend(vault_badge);
+    title_spans.push(Span::styled("▌", Style::default().fg(vault_color).bg(background)));
+    title_spans.push(loading_indicator);
+    let title_line = Line::from(title_spans);
 
     let title_width = title_line
         .spans
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-        .sum::<usize>() as u16;
+        .sum::<usize>().min(u16::MAX as usize) as u16;
+    let legend_width = (emacs_hint_line(app.panes.borrow().prefix).width() as u16).min(area.width / 2);
+    let remaining = area.width.saturating_sub(legend_width);
+    let title_width = title_width.min(remaining.saturating_sub(12.min(remaining / 3)));
     let header_columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(title_width.min(area.width)), Constraint::Min(0)])
+        .constraints([Constraint::Length(title_width), Constraint::Min(0), Constraint::Length(legend_width)])
         .split(area);
     frame.render_widget(Paragraph::new(vec![title_line]), header_columns[0]);
+    render_emacs_legend(frame, app, header_columns[2]);
 
     let width = header_columns[1].width as usize;
     if width == 0 {
@@ -152,86 +186,257 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-pub const MIN_WIDTH_FOR_AGENTS: u16 = 100;
+const BORDER_COLOR: Color = Color::Rgb(64, 64, 64);
+const FOCUS_COLOR: Color = Color::Rgb(98, 215, 232);
 
-fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
-    let show_channels = app.show_channels;
-    let show_agents = app.show_agents && area.width >= MIN_WIDTH_FOR_AGENTS;
-    let show_users = app.show_users && area.width >= MIN_WIDTH_FOR_AGENTS;
-    let show_notes = app.show_notes;
-    let show_left_sidebar = show_channels || show_notes;
-    let show_right_sidebar = show_agents || show_users;
-
-    if show_left_sidebar && show_right_sidebar {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(26), // Left: Chats / Notes
-                Constraint::Min(35),    // Center: Chat Messages + Input
-                Constraint::Length(28), // Right: Agents
-            ])
-            .split(area);
-
-        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
-        render_chat_modality(frame, app, chunks[1]);
-        render_right_sidebar(frame, app, chunks[2], show_agents, show_users);
-    } else if show_left_sidebar {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(28), // Left: Chats / Notes
-                Constraint::Min(30),    // Center: Chat Messages + Input
-            ])
-            .split(area);
-
-        render_left_sidebar(frame, app, chunks[0], show_channels, show_notes);
-        render_chat_modality(frame, app, chunks[1]);
-    } else if show_right_sidebar {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(30),    // Center: Chat Messages + Input
-                Constraint::Length(28), // Right: Agents
-            ])
-            .split(area);
-
-        render_chat_modality(frame, app, chunks[0]);
-        render_right_sidebar(frame, app, chunks[1], show_agents, show_users);
-    } else {
-        render_chat_modality(frame, app, area);
+fn render_focus_wrap(frame: &mut Frame, area: Rect) {
+    let bounds = crate::panes::main_area(frame.area());
+    let accent = FOCUS_COLOR;
+    let background = crate::terminal_theme::background();
+    if area.width < 3 || area.height < 2 { return; }
+    for x in [area.x, area.right() - 1] {
+        for y in area.y..area.bottom() {
+            if bounds.contains(Position::new(x, y)) {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                let corner = y == area.y;
+                if corner {
+                    // Junction rails stay gray; focus only adds a accent underline.
+                    let symbol = if x == bounds.x || x + 1 == bounds.right() {
+                        " "
+                    } else {
+                        match cell.symbol() {
+                            "▋" => "🮈",
+                            "▍" => "▍",
+                            _ => " ",
+                        }
+                    };
+                    cell.reset();
+                    cell.set_symbol(symbol).set_style(Style::default()
+                        .fg(BORDER_COLOR).bg(background).underline_color(accent)
+                        .add_modifier(Modifier::UNDERLINED));
+                    continue;
+                }
+                if x == bounds.x {
+                    cell.set_fg(accent).set_bg(BORDER_COLOR);
+                } else if x + 1 == bounds.right() {
+                    cell.set_fg(BORDER_COLOR).set_bg(accent);
+                } else {
+                    cell.set_fg(accent);
+                }
+            }
+        }
+    }
+    // Block-7 leaves the lowest eighth clear for the gray underline.
+    // The bottom fill starts in the following row.
+    for (y, symbol) in [(area.y, "🭻"), (area.bottom(), "🮂")] {
+        if y < bounds.y || y >= bounds.bottom() { continue; }
+        let text_start = (area.x + 1..area.right() - 1)
+            .find(|&x| frame.buffer_mut()[(x, y)].symbol() != " ");
+        let text_end = (area.x + 1..area.right() - 1)
+            .rfind(|&x| frame.buffer_mut()[(x, y)].symbol() != " ");
+        for x in area.x + 1..area.right() - 1 {
+            if bounds.contains(Position::new(x, y)) {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                let within_text = text_start.zip(text_end)
+                    .is_some_and(|(start, end)| x >= start && x <= end);
+                if !within_text && cell.symbol() == " " {
+                    cell.set_symbol(symbol).set_fg(accent).set_bg(background);
+                }
+                if y == area.y { cell.set_fg(accent); }
+                cell.set_style(Style::default().underline_color(BORDER_COLOR)
+                    .add_modifier(Modifier::UNDERLINED));
+            }
+        }
     }
 }
 
-fn render_right_sidebar(frame: &mut Frame, app: &App, area: Rect, show_agents: bool, show_users: bool) {
-    if show_agents && show_users {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-        render_agents_panel(frame, app, chunks[0]);
-        render_users_panel(frame, app, chunks[1]);
-    } else if show_users {
-        render_users_panel(frame, app, area);
+pub(crate) fn buffer_borders(area: Rect, bounds: Rect) -> Borders {
+    if area.bottom() == bounds.bottom() {
+        Borders::TOP | Borders::LEFT | Borders::RIGHT
     } else {
-        render_agents_panel(frame, app, area);
+        Borders::ALL
     }
 }
 
-fn render_left_sidebar(frame: &mut Frame, app: &App, area: Rect, show_channels: bool, show_notes: bool) {
-    if show_channels && show_notes {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-        render_chat_selector(frame, app, chunks[0]);
-        render_notes_panel(frame, app, chunks[1]);
-    } else if show_notes {
-        render_notes_panel(frame, app, area);
-    } else {
-        render_chat_selector(frame, app, area);
+fn render_main_area(frame: &mut Frame, app: &mut App) {
+    crate::panes::prepare(app, frame.area());
+    crate::panes::activate_focused(app);
+    let focused = app.panes.borrow().focused_id();
+    let channel = app.active_channel_id.clone();
+    let rectangles = app.panes.borrow().window_rectangles().to_vec();
+    let render_rectangles: Vec<_> = rectangles.iter().map(|(id, area)| {
+        (*id, shared_border_area(*area, &rectangles, frame.area()))
+    }).collect();
+    // Duplicate windows share one terminal session; size it once per frame.
+    let awatch_area = render_rectangles.iter()
+        .filter(|(id, _)| app.panes.borrow().view(*id) == ActivePane::Awatch)
+        .min_by_key(|(id, _)| *id != focused).map(|(_, area)| *area);
+    if let Some(area) = awatch_area {
+        app.awatch.set_bounds(frame.area());
+        app.awatch.prepare(area);
+    }
+    for (id, area) in render_rectangles {
+        if area.width < 3 || area.height < 2 { continue; }
+        crate::panes::activate_window(app, id);
+        let view = app.active_pane;
+        if id != focused { app.active_pane = ActivePane::Vaults; }
+        match view {
+            ActivePane::ChatSelector => render_chat_selector(frame, app, area),
+            ActivePane::ChatMessages => render_messages_stream(frame, app, area),
+            ActivePane::ChatInput => render_input_composer(frame, app, area),
+            ActivePane::Agents => render_agents_panel(frame, app, area),
+            ActivePane::Users => render_users_panel(frame, app, area),
+            ActivePane::Notes => render_notes_panel(frame, app, area),
+            ActivePane::Awatch => app.awatch.render(frame, area, id == focused),
+            ActivePane::Vaults => {}
+        }
+    }
+    render_shared_borders(frame, &rectangles);
+    if let Some((_, area)) = rectangles.iter().find(|(id, _)| *id == focused) {
+        let mut focus_area = shared_border_area(*area, &rectangles, frame.area());
+        // Width includes shared side rails; height ends before the next buffer's title.
+        focus_area.height = area.height;
+        render_focus_wrap(frame, focus_area);
+    }
+    crate::panes::activate_window(app, focused);
+    app.load_channel_buffer(channel);
+}
+
+const EMACS_HINTS: &str = "C-x b buffer   C-x o window   M-x run command   C-x C-c quit";
+
+fn emacs_hint_line(prefix: bool) -> Line<'static> {
+    let background = crate::terminal_theme::background();
+    let mut previous = background;
+    let mut spans = Vec::new();
+    if prefix {
+        spans.push(Span::styled("C-x: ", Style::default().fg(Color::White)));
+    }
+    for (index, hint) in EMACS_HINTS.split("   ").enumerate() {
+        let (color, foreground) = if index % 2 == 0 {
+            (Color::Rgb(128, 128, 128), Color::Black)
+        } else {
+            (Color::Rgb(64, 64, 64), Color::White)
+        };
+        spans.extend(header_badge(hint.into(), foreground, color, previous).into_iter().map(|mut span| {
+            span.style = span.style.remove_modifier(Modifier::BOLD);
+            span
+        }));
+        previous = color;
+    }
+    spans.push(Span::styled("▌", Style::default().fg(previous).bg(background)));
+    Line::from(spans)
+}
+
+fn render_emacs_legend(frame: &mut Frame, app: &App, area: Rect) {
+    if area.is_empty() { return; }
+    frame.render_widget(
+        Paragraph::new(emacs_hint_line(app.panes.borrow().prefix))
+            .alignment(Alignment::Right),
+        area,
+    );
+}
+
+/// Hypertile gives adjacent panes disjoint rectangles. Rendering a full block
+/// in each rectangle therefore spends two cells on every shared edge. Extend
+/// the pane on the leading side into its neighbour's border cell so both
+/// blocks share one rendered column/row; logical rectangles remain unchanged
+/// for focus, mouse targeting, and resize calculations.
+fn shared_border_area(area: Rect, panes: &[(ratatui_hypertile::PaneId, Rect)], bounds: Rect) -> Rect {
+    let has_right = panes.iter().any(|(_, other)| {
+        area.right() == other.x && area.y < other.bottom() && other.y < area.bottom()
+    });
+    let has_bottom = panes.iter().any(|(_, other)| {
+        area.bottom() == other.y && area.x < other.right() && other.x < area.right()
+    });
+    Rect::new(
+        area.x,
+        area.y,
+        area.width.saturating_add(u16::from(has_right && area.right() < bounds.right())),
+        area.height.saturating_add(u16::from(has_bottom && area.bottom() < bounds.bottom())),
+    )
+}
+
+fn junction_cell(mask: u8, background: Color) -> (&'static str, Style) {
+    // Only turnstiles retain the rail opposite the incoming branch.
+    match mask {
+        13 => ("▋", Style::default().fg(background).bg(BORDER_COLOR)),
+        14 => ("▍", Style::default().fg(BORDER_COLOR).bg(background)),
+        _ => (" ", Style::default().bg(background)),
     }
 }
 
+/// Join box-drawing strokes without painting over titles or their padding.
+fn render_shared_borders(frame: &mut Frame, panes: &[(ratatui_hypertile::PaneId, Rect)]) {
+    let bounds = frame.area();
+    let stroke_color = crate::terminal_theme::background();
+    let left = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.x).min().unwrap_or(bounds.x);
+    let right = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.right().min(bounds.right())).max().unwrap_or(bounds.right());
+    let top = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.y).min().unwrap_or(bounds.y);
+    let bottom = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.bottom().min(bounds.bottom())).max().unwrap_or(bounds.bottom());
+    let mut strokes = std::collections::HashMap::<(u16, u16), u8>::new();
+    for (_, logical) in panes {
+        let area = shared_border_area(*logical, panes, bounds);
+        if area.width < 3 || area.height < 2 { continue; }
+        for y in [area.y, area.bottom() - 1] {
+            if y + 1 == bounds.bottom() { continue; }
+            for x in area.x..area.right() {
+                *strokes.entry((x, y)).or_default() |=
+                    if x > area.x { 1 } else { 0 } | if x + 1 < area.right() { 2 } else { 0 };
+            }
+        }
+        for x in [area.x, area.right() - 1] {
+            for y in area.y..area.bottom() {
+                *strokes.entry((x, y)).or_default() |=
+                    if y > area.y { 4 } else { 0 } | if y + 1 < area.bottom() { 8 } else { 0 };
+            }
+        }
+    }
+    for ((x, y), mask) in strokes {
+        let cell = &mut frame.buffer_mut()[(x, y)];
+        if !matches!(cell.symbol(), "─" | "│" | "┌" | "┐" | "└" | "┘" | "├" | "┤" | "┬" | "┴" | "┼") {
+            if mask & 3 != 0 && mask & 12 == 0 {
+                cell.set_style(Style::default().underline_color(BORDER_COLOR)
+                    .add_modifier(Modifier::UNDERLINED));
+            }
+            continue;
+        }
+        let vertical = mask & 12 != 0;
+        let horizontal = mask & 3 != 0;
+        let mut style = Style::default().fg(BORDER_COLOR).bg(stroke_color);
+        if vertical && horizontal {
+            let world_edge = x == left || x.saturating_add(1) == right
+                || y == top || y.saturating_add(1) == bottom;
+            let (symbol, junction_style) = junction_cell(if world_edge { 0 } else { mask }, stroke_color);
+            cell.reset();
+            cell.set_symbol(symbol).set_style(junction_style);
+        } else if vertical {
+            if x == left {
+                // Outward five eighths are terminal background; gray faces inward.
+                cell.set_symbol("▋").set_style(Style::default().fg(stroke_color).bg(BORDER_COLOR));
+            } else if x.saturating_add(1) == right {
+                cell.set_symbol("▍").set_style(Style::default().fg(BORDER_COLOR).bg(stroke_color));
+            } else {
+                cell.set_symbol("┃").set_style(Style::default()
+                    .fg(stroke_color).bg(BORDER_COLOR).add_modifier(Modifier::BOLD));
+            }
+        } else if horizontal {
+            if y.saturating_add(1) < bottom {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            cell.set_symbol(" ").set_style(style);
+        }
+    }
+    // Underline each buffer's last logical row, including the row above a shared title.
+    for (_, logical) in panes {
+        let area = shared_border_area(*logical, panes, bounds).intersection(bounds);
+        if area.height == 0 || area.width < 3 || logical.height == 0 { continue; }
+        let y = logical.bottom().min(bounds.bottom()) - 1;
+        for x in area.x + 1..area.right() - 1 {
+            frame.buffer_mut()[(x, y)].set_style(
+                Style::default().underline_color(BORDER_COLOR).add_modifier(Modifier::UNDERLINED));
+        }
+    }
+}
 fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Vaults;
     let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
@@ -284,6 +489,8 @@ fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
     for (offset, (icon, label)) in
         [("⌂", match (app.default_client.is_local_instance(), app.local_authenticated) {
+            (true, false) if app.server_session_expired => "Local server (sign in again)",
+            (false, false) if app.server_session_expired => "Remote server (sign in again)",
             (true, true) => "Create local vault", (true, false) => "Connect local server",
             (false, true) => "Create remote vault", (false, false) => "Connect remote server",
         }), ("☁", "Connect remote server")]
@@ -309,10 +516,12 @@ fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
             .style(style),
         );
     }
-    let title = Span::styled(" Vaults F4 ", Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold());
+    let title = Span::styled(" Vaults ", Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold());
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(area);
     let block = Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(border_color));
-    let mut state = ListState::default().with_selected((!app.vaults.is_empty()).then_some(app.selected_vault_idx));
-    frame.render_stateful_widget(List::new(items).block(block), area, &mut state);
+    let mut state = ListState::default().with_selected(Some(app.selected_vault_idx));
+    frame.render_stateful_widget(List::new(items).block(block), chunks[0], &mut state);
+    frame.render_widget(Paragraph::new(app.status_message.as_str()).wrap(Wrap { trim: true }), chunks[1]);
 }
 
 fn render_vault_action_modal(frame: &mut Frame, app: &App, area: Rect) {
@@ -537,15 +746,81 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::White).bold()
     };
 
-    let title = Span::styled(format!(" Agents ({}) ", app.agents.len()), title_style);
+    let title = Span::styled(format!(" Agents · #{} ({}) ", app.active_channel_title(), app.agents.len()), title_style);
 
     let agents_block = Block::default()
-        .borders(Borders::ALL)
+        .borders(buffer_borders(area, frame.area()))
         .title(title)
         .border_style(Style::default().fg(border_color));
 
     let list = List::new(items).block(agents_block);
     frame.render_widget(list, area);
+}
+
+fn channel_termimation(app: &App, channel_id: &str) -> Option<String> {
+    let sessions: Vec<_> = app.active_sessions.iter()
+        .filter(|s| s.channel_id.as_deref() == Some(channel_id)).collect();
+    // The selector is rendered while one channel is loaded, but it shows all
+    // channels. Use the target channel's buffered agent/run state instead of
+    // the currently loaded channel's state; otherwise a shared agent profile
+    // makes every channel display the same spinner and seed.
+    let (channel_agents, active_ids, run_seeds): (&[crate::api::AgentItem], &std::collections::HashSet<String>, &std::collections::HashMap<String, u64>) =
+        if app.active_channel_id.as_deref() == Some(channel_id) {
+            (&app.agents, &app.active_agent_ids, &app.agent_run_seeds)
+        } else if let Some(buffer) = app.channel_buffers.get(channel_id) {
+            (&buffer.agents, &buffer.active_agent_ids, &buffer.agent_run_seeds)
+        } else {
+            (&[], &app.active_agent_ids, &app.agent_run_seeds)
+        };
+    let normalized_name = |name: &str| name.trim().to_lowercase().chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>().split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
+    let is_active = |ag: &crate::api::AgentItem| {
+        active_ids.contains(&ag.id)
+            || (!ag.mention.is_empty() && active_ids.contains(&ag.mention))
+            || (!ag.display_name.is_empty() && active_ids.contains(&ag.display_name))
+            || (!ag.display_name.is_empty() && active_ids.contains(&normalized_name(&ag.display_name)))
+            || ag.vault_agent_id.as_deref().is_some_and(|id| active_ids.contains(id))
+    };
+    let agents: Vec<_> = channel_agents.iter().enumerate().filter(|(_, ag)| {
+        if app.active_channel_id.as_deref() == Some(channel_id) || !active_ids.is_empty() {
+            is_active(ag)
+        } else {
+            sessions.iter().any(|s| s.registration_id.as_deref() == Some(&ag.id)
+                || (!s.mention.is_empty() && s.mention == ag.mention)
+                || (!s.author.is_empty() && s.author == ag.display_name))
+        }
+    }).collect();
+    if let [(idx, ag)] = agents.as_slice() {
+        if sessions.len() <= 1 {
+            let seed = run_seeds.get(&ag.id).copied().unwrap_or_else(|| app.agent_run_seed(ag));
+            return Some(agent_termimation_ball(ag, app.animation_tick, seed, *idx));
+        }
+    }
+    if agents.is_empty() && sessions.is_empty() { return None; }
+    // Pick a separate, stable pattern for a channel with concurrent runs.
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    channel_id.hash(&mut hash);
+    for (_, ag) in &agents {
+        run_seeds.get(&ag.id).copied().unwrap_or_else(|| app.agent_run_seed(ag)).hash(&mut hash);
+    }
+    let seed = hash.finish();
+    let patterns = termimation_patterns();
+    let pattern = &patterns[seed as usize % patterns.len()];
+    let ch = pattern.frames[(app.animation_tick.wrapping_mul(ANIMATION_TICK_MS)
+        / pattern.frame_ms) as usize % pattern.frames.len()];
+    Some(if ch.width().unwrap_or(1) <= 1 { format!("{ch} ") } else { ch.to_string() })
+}
+
+fn response_termimation(app: &App, message_index: usize) -> Option<String> {
+    let agent = agent_for_message(&app.agents, &app.messages[message_index])?;
+    if !app.is_agent_active(agent) || app.messages[message_index + 1..].iter()
+        .any(|msg| agent_for_message(&app.agents, msg).map(|ag| &ag.id) == Some(&agent.id)) {
+        return None;
+    }
+    let row = app.agents.iter().position(|ag| ag.id == agent.id)?;
+    Some(agent_termimation_ball(agent, app.animation_tick, app.agent_run_seed(agent), row))
 }
 
 fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -593,7 +868,7 @@ fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(buffer_borders(area, frame.area()))
         .title(Span::styled(
             format!(" Users ({}) ", app.users.len()),
             Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
@@ -655,7 +930,7 @@ fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(buffer_borders(area, frame.area()))
         .title(Span::styled(format!(" Notes ({}) ", app.notes.len()), Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold()))
         .border_style(Style::default().fg(border_color));
     // Notes occupy two terminal rows each. Stateful list rendering keeps the
@@ -696,7 +971,8 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
         let is_selected = idx == app.selected_channel_idx;
         let is_active = app.active_channel_id.as_deref() == Some(&ch.id);
 
-        let marker = if is_active { "● " } else { "# " };
+        let animation = channel_termimation(app, &ch.id);
+        let marker = animation.as_deref().unwrap_or(if is_active { "● " } else { "# " });
         let prefix = if is_selected { "> " } else { "  " };
 
         let text = format!("{}{}{}", prefix, marker, ch.title);
@@ -725,28 +1001,12 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let selector_block = Block::default()
-        .borders(Borders::ALL)
+        .borders(buffer_borders(area, frame.area()))
         .title(title)
         .border_style(Style::default().fg(border_color));
 
     let list = List::new(items).block(selector_block);
     frame.render_widget(list, area);
-}
-
-fn render_chat_modality(frame: &mut Frame, app: &App, area: Rect) {
-    let input_h = app.input_box_height_for_width(frame.area().height, area.width);
-
-    // Vertical layout inside Chat Modality: Top = Messages, Bottom = Input Composer
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),          // Messages Stream
-            Constraint::Length(input_h), // Input Composer
-        ])
-        .split(area);
-
-    render_messages_stream(frame, app, vertical_chunks[0]);
-    render_input_composer(frame, app, vertical_chunks[1]);
 }
 
 pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
@@ -766,6 +1026,8 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut message_markers = Vec::new();
+    let mut inline_svgs = Vec::new();
     let mut line_offsets: Vec<(usize, usize)> = Vec::new();
     let mut chat_text = String::new();
     let mut current_char_offset = 0;
@@ -779,6 +1041,7 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
         chat_text.push_str(text_line);
         current_char_offset += char_count + 1;
         lines.push(line);
+        lines.len() - 1
     };
 
     if app.messages.is_empty() {
@@ -844,19 +1107,28 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
                 ]);
                 let text_line = format!("● {}  {}", msg.author, ts);
-                push_line(author_line, &text_line);
+                let row = push_line(author_line, &text_line);
+                message_markers.push((row, m_idx));
             }
 
             // A grouped continuation has no author line to mark its start, so its
             // first content row gets a colored `>` in the margin instead.
             let mut marker_pending = continues_group;
 
-            // Message Body: word-wrapped so each Line is exactly 1 visual terminal row
-            for body_line in msg.body.lines() {
+            // Inline SVG is a message-body format, not an agent-only format:
+            // human-authored SVG messages should render in exactly the same
+            // position as generated diagrams.
+            let parts = if crate::purrvect::is_kitty_terminal() {
+                crate::purrvect::split_inline_svgs(&msg.body)
+            } else { vec![crate::purrvect::InlinePart::Text(&msg.body)] };
+            let mut svg_index = 0;
+            for part in parts { match part {
+              crate::purrvect::InlinePart::Text(text) => for body_line in text.lines() {
                 if body_line.trim().is_empty() {
                     push_line(Line::from(""), "");
                 } else {
                     for wrapped_chunk in wrap_text(body_line, body_wrap_width) {
+                        let marks_message = marker_pending;
                         let (margin_str, margin_span) = if marker_pending {
                             marker_pending = false;
                             ("> ", Span::styled("> ", Style::default().fg(author_color)))
@@ -867,17 +1139,37 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                         spans.extend(styled_message_text(&wrapped_chunk, app));
                         let line = Line::from(spans);
                         let text_line = format!("{}{}", margin_str, wrapped_chunk);
-                        push_line(line, &text_line);
+                        let row = push_line(line, &text_line);
+                        if marks_message { message_markers.push((row, m_idx)); }
                     }
                 }
-            }
+              },
+              crate::purrvect::InlinePart::Svg(svg) => {
+                svg_index += 1;
+                let rows = 12u16;
+                let mut start_line = None;
+                for row_index in 0..rows {
+                    let marks_message = marker_pending;
+                    let margin = if marker_pending {
+                        marker_pending = false;
+                        Span::styled("> ", Style::default().fg(author_color))
+                    } else { Span::raw("  ") };
+                    let row = push_line(Line::from(margin), if row_index == 0 && marks_message { "> " } else { "" });
+                    start_line.get_or_insert(row);
+                    if marks_message { message_markers.push((row, m_idx)); }
+                }
+                inline_svgs.push(InlineSvgBlock { start_line: start_line.unwrap_or(0), rows,
+                    image_id: crate::purrvect::image_id(&msg.id, svg_index, svg), svg: svg.to_string() });
+              }
+            }}
 
             // Attached-image indicator (the list API strips heavy data-URLs but flags them)
             if msg.has_image() {
-                let label = match msg.images.len() {
+                let label = match msg.image_count.max(msg.images.len()) {
                     0 | 1 => " ▤ image ".to_string(),
-                    n => format!(" ▤ {} images ", n),
+                    n => format!(" ▤ image ({}) ", n),
                 };
+                let marks_message = marker_pending;
                 let (margin_str, margin_span) = if marker_pending {
                     marker_pending = false;
                     ("> ", Span::styled("> ", Style::default().fg(author_color)))
@@ -889,7 +1181,8 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     Span::styled(label.clone(), Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
                 ]);
                 let text_line = format!("{}{}", margin_str, label);
-                push_line(line, &text_line);
+                let row = push_line(line, &text_line);
+                if marks_message { message_markers.push((row, m_idx)); }
             }
             let _ = marker_pending;
 
@@ -913,38 +1206,20 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
         author_color: app.author_color.clone(),
         wrap_width: body_wrap_width,
         lines,
+        message_markers,
         line_offsets,
         chat_text,
         char_count,
+        inline_svgs,
     };
 }
 
-fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
-    let is_focused = app.active_pane == ActivePane::ChatMessages;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
-
-    let active_title = format!(" #{} ", app.active_channel_title());
-
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let body_wrap_width = inner_width.saturating_sub(2).max(10);
-
-    ensure_chat_cache(app, body_wrap_width);
-    let cache = app.chat_cache.read().unwrap();
-
-    let messages_block = Block::default()
-        .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-        .title(Span::styled(active_title, Style::default().fg(Color::Cyan).bold()))
-        .border_style(Style::default().fg(border_color));
-
-    let visible_lines = area.height.saturating_sub(1) as usize;
-    let total_lines = cache.lines.len();
-
-    // Auto-scroll to bottom if scroll_offset is 0, else apply offset
-    let max_scroll = total_lines.saturating_sub(visible_lines);
+pub fn chat_scroll_top(app: &App, cache: &ChatRenderCache, visible_lines: usize) -> usize {
+    let max_scroll = cache.lines.len().saturating_sub(visible_lines);
     let mut scroll_y = max_scroll.saturating_sub(app.scroll_offset);
 
     // Keep the text cursor visible while moving through the flattened log.
-    if is_focused && app.scroll_offset == 0 {
+    if app.active_pane == ActivePane::ChatMessages && app.scroll_offset == 0 {
         if let Some(cursor) = app.chat_cursor {
             let (cursor_line, _) = chat_line_column_from_offsets(&cache.line_offsets, cursor);
             if cursor_line < scroll_y {
@@ -956,6 +1231,31 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    scroll_y
+}
+
+fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::ChatMessages;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+    let active_title = format!(" #{} ", app.active_channel_title());
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let body_wrap_width = inner_width.saturating_sub(2).max(1);
+
+    ensure_chat_cache(app, body_wrap_width);
+    let cache = app.chat_cache.read().unwrap();
+
+    let messages_block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(Span::styled(active_title, Style::default().fg(if is_focused { FOCUS_COLOR } else { Color::White }).bold()))
+        .border_style(Style::default().fg(border_color));
+
+    let visible_lines = messages_block.inner(area).height as usize;
+    let total_lines = cache.lines.len();
+
+    let scroll_y = chat_scroll_top(app, &cache, visible_lines);
+
     let selection_bounds = app.chat_selection_bounds(&cache.chat_text);
 
     // Slice only the lines visible in the current viewport to avoid iterating,
@@ -965,6 +1265,14 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         (scroll_y..slice_end)
             .map(|idx| {
                 let mut line = cache.lines[idx].clone();
+                if let Ok(marker) = cache.message_markers.binary_search_by_key(&idx, |(row, _)| *row) {
+                    if let Some(ball) = response_termimation(app, cache.message_markers[marker].1) {
+                        if let Some(span) = line.spans.first_mut() {
+                            span.content = ball.into();
+                            span.style = span.style.bold();
+                        }
+                    }
+                }
                 if let Some((sel_start, sel_end)) = selection_bounds {
                     let (line_start, line_len) = cache.line_offsets[idx];
                     let line_end = line_start + line_len;
@@ -987,6 +1295,17 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         .block(messages_block);
 
     frame.render_widget(paragraph, area);
+
+    for svg in &cache.inline_svgs {
+        let end = svg.start_line + usize::from(svg.rows);
+        if svg.start_line >= scroll_y && end <= scroll_y + visible_lines {
+            let y = area.y + 1 + (svg.start_line - scroll_y) as u16;
+            let x = area.x + 3;
+            let instance_id = svg.image_id ^ (u32::from(x) << 16) ^ u32::from(y);
+            crate::purrvect::place(crate::purrvect::Placement { image_id: instance_id.max(1),
+                area: Rect::new(x, y, body_wrap_width.min(u16::MAX as usize) as u16, svg.rows), svg: svg.svg.clone() });
+        }
+    }
 
     if is_focused {
         if let Some(cursor) = app.chat_cursor {
@@ -1193,29 +1512,21 @@ fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
 
     let title = if app.pending_images.is_empty() {
-        Span::styled(" Message ", Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }))
+        Span::styled(format!(" Message · #{} ", app.active_channel_title()), Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }))
     } else {
         Span::styled(
-            format!(" Message  [{} image{} attached] ", app.pending_images.len(), if app.pending_images.len() == 1 { "" } else { "s" }),
+            format!(" Message · #{} [{} image{} attached] ", app.active_channel_title(), app.pending_images.len(), if app.pending_images.len() == 1 { "" } else { "s" }),
             Style::default().fg(Color::Yellow).bold(),
         )
     };
 
-    // Top corners are T-junctions (├ ┤) so the divider connects into the message
-    // pane's side walls, conjoining the two boxes.
-    let joined = border::Set {
-        top_left: line::NORMAL.vertical_right,
-        top_right: line::NORMAL.vertical_left,
-        ..border::PLAIN
-    };
-
     let input_block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(joined)
+        .borders(buffer_borders(area, frame.area()))
         .title(title)
         .border_style(Style::default().fg(border_color));
 
-    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner = input_block.inner(area);
+    let inner_height = inner.height as usize;
     let text_width = area.width.saturating_sub(4).max(1) as usize;
     let (cursor_visual_line, cursor_column) = wrapped_cursor_position(&app.input, app.cursor_pos, text_width);
     let visual_line_count = app.visual_input_line_count(text_width);
@@ -1241,7 +1552,6 @@ fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     frame.render_widget(input_block, area);
-    let inner = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), area.height.saturating_sub(2));
     if inner.width >= 2 {
         let prefix = if app.input_scroll_offset == 0 { "> " } else { "  " };
         frame.render_widget(Paragraph::new(prefix).style(Style::default().fg(Color::Cyan)), inner);
@@ -1349,195 +1659,6 @@ fn wrapped_input_line_count(line: &[char], width: usize) -> usize {
 }
 
 /// Expand `(key, label)` hint pairs into alternating badge/text spans.
-fn hint_spans<'a>(pairs: &[(&'a str, &'a str)], badge: Style, text: Style) -> Vec<Span<'a>> {
-    pairs
-        .iter()
-        .flat_map(|(key, label)| [Span::styled(*key, badge), Span::styled(*label, text)])
-        .collect()
-}
-
-fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if max_len == 0 {
-        return String::new();
-    }
-    let count = s.chars().count();
-    if count <= max_len {
-        return s.to_string();
-    }
-    if max_len == 1 {
-        return "…".to_string();
-    }
-    let take_count = max_len.saturating_sub(1);
-    let mut truncated: String = s.chars().take(take_count).collect();
-    truncated.push('…');
-    truncated
-}
-
-fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let global_badge_style = Style::default().fg(Color::Black).bg(Color::Cyan).bold();
-    let global_text_style = Style::default().fg(Color::White);
-    let box_badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
-
-    let is_error = !app.backend_online
-        || app.status_message.to_ascii_lowercase().contains("error")
-        || app.status_message.starts_with("Backend ")
-        || app.status_message.contains("unreachable")
-        || app.status_message.contains("429")
-        || app.status_message.contains("Rate limited")
-        || app.status_message.to_ascii_lowercase().contains("failed");
-
-    let box_text_style = if is_error {
-        Style::default().fg(Color::LightRed).bold()
-    } else {
-        Style::default().fg(Color::Yellow)
-    };
-
-    let full_hints: &[(&str, &str)] = &[
-        ("Tab", " Pane "),
-        ("F1", " Chats "),
-        ("F2", " Agents "),
-        ("F3", " Notes "),
-        ("F4", " Vaults "),
-        ("F5", " Users "),
-        ("Esc", " Quit "),
-    ];
-
-    let compact_hints: &[(&str, &str)] = &[
-        ("Tab", " Pane "),
-        ("F1-F5", " Views "),
-        ("Esc", " Quit "),
-    ];
-
-    let minimal_hints: &[(&str, &str)] = &[
-        ("Esc", " Quit "),
-    ];
-
-    // Right side: Box-specific controls (Yellow)
-    let box_hints: &[(&str, &str)] = match app.active_pane {
-        ActivePane::ChatInput => &[
-            ("Alt+e", " Expand "),
-            ("Enter", " Send "),
-            ("Shift+Enter", " Newline "),
-        ],
-        ActivePane::ChatSelector => &[
-            ("↑/↓", " Select "),
-            ("Enter", " Open "),
-            ("n", " New "),
-            ("Shift+r", " Rename "),
-            ("r", " Refresh "),
-        ],
-        ActivePane::ChatMessages => &[
-            ("↑/↓", " Scroll "),
-            ("Type", " Message "),
-        ],
-        ActivePane::Agents => &[
-            ("↑/↓", " Select "),
-            ("Enter", " Mention "),
-            ("n", " New "),
-            ("s", " Settings "),
-        ],
-        ActivePane::Users => &[
-            ("↑/↓", " Select "),
-            ("Enter", " Edit "),
-        ],
-        ActivePane::Notes => &[
-            ("↑/↓", " Select "),
-        ],
-        ActivePane::Vaults => &[
-            ("↑/↓", " Select "),
-            ("Enter", " Open "),
-            ("r", " Refresh "),
-        ],
-    };
-
-    let show_status = app.send_in_flight
-        || app.is_loading
-        || is_error
-        || ["Backend ", "No ", "Vault has no ", "Sending ", "Connecting ", "Saving "]
-            .iter()
-            .any(|prefix| app.status_message.starts_with(prefix));
-
-    let raw_status = app.status_message.replace(['\n', '\r'], " ");
-    let total_w = area.width;
-    const GAP: u16 = 2;
-
-    let (left_hints, right_spans) = if show_status && !raw_status.is_empty() {
-        let status_len = raw_status.chars().count() as u16;
-        let full_w = Line::from(hint_spans(full_hints, global_badge_style, global_text_style)).width() as u16;
-        let compact_w = Line::from(hint_spans(compact_hints, global_badge_style, global_text_style)).width() as u16;
-        let minimal_w = Line::from(hint_spans(minimal_hints, global_badge_style, global_text_style)).width() as u16;
-
-        if total_w >= full_w + GAP + status_len {
-            (full_hints, vec![Span::styled(raw_status, box_text_style)])
-        } else if total_w >= compact_w + GAP + status_len {
-            (compact_hints, vec![Span::styled(raw_status, box_text_style)])
-        } else if total_w >= minimal_w + GAP + status_len {
-            (minimal_hints, vec![Span::styled(raw_status, box_text_style)])
-        } else {
-            // Need to truncate status message
-            let avail_for_status = total_w.saturating_sub(minimal_w + GAP) as usize;
-            if avail_for_status >= 10 {
-                let truncated = truncate_with_ellipsis(&raw_status, avail_for_status);
-                (minimal_hints, vec![Span::styled(truncated, box_text_style)])
-            } else if total_w >= 4 {
-                let truncated = truncate_with_ellipsis(&raw_status, total_w as usize);
-                (&[][..], vec![Span::styled(truncated, box_text_style)])
-            } else {
-                (&[][..], vec![])
-            }
-        }
-    } else {
-        let box_spans = hint_spans(box_hints, box_badge_style, box_text_style);
-        let box_w = Line::from(box_spans.clone()).width() as u16;
-        let full_w = Line::from(hint_spans(full_hints, global_badge_style, global_text_style)).width() as u16;
-        let compact_w = Line::from(hint_spans(compact_hints, global_badge_style, global_text_style)).width() as u16;
-        let minimal_w = Line::from(hint_spans(minimal_hints, global_badge_style, global_text_style)).width() as u16;
-
-        if total_w >= full_w + GAP + box_w {
-            (full_hints, box_spans)
-        } else if total_w >= compact_w + GAP + box_w {
-            (compact_hints, box_spans)
-        } else if total_w >= minimal_w + GAP + box_w {
-            (minimal_hints, box_spans)
-        } else if total_w >= box_w {
-            (&[][..], box_spans)
-        } else {
-            (&[][..], vec![])
-        }
-    };
-
-    let left_spans = hint_spans(left_hints, global_badge_style, global_text_style);
-    let left_w = Line::from(left_spans.clone()).width() as u16;
-    let right_w = Line::from(right_spans.clone()).width() as u16;
-
-    if left_w == 0 && right_w == 0 {
-        return;
-    }
-
-    let footer_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(left_w),
-            Constraint::Min(0),
-            Constraint::Length(right_w),
-        ])
-        .split(area);
-
-    if left_w > 0 {
-        frame.render_widget(Paragraph::new(Line::from(left_spans)), footer_chunks[0]);
-    }
-    if right_w > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
-            footer_chunks[2],
-        );
-    }
-}
-
 pub fn supports_truecolor() -> bool {
     if let Ok(force) = std::env::var("FORCE_ANSI") {
         if force == "1" || force.eq_ignore_ascii_case("true") {
@@ -2038,6 +2159,35 @@ mod tests {
     }
 
     #[test]
+    fn header_badges_share_single_cell_color_joins() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.backend_online = true;
+        app.runner_online = true;
+        app.vault_name = "My Vault".into();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 1)).unwrap();
+        terminal.draw(|frame| render_header(frame, &app, frame.area())).unwrap();
+        let text = rendered_text(&terminal);
+        assert!(text.contains("▌LIVE▌RUNNER▌⌂ My Vault▌"), "{text}");
+        let buffer = terminal.backend().buffer();
+        let caps: Vec<_> = (0..200).filter_map(|x| {
+            let cell = &buffer[(x, 0)];
+            (cell.symbol() == "▌").then_some((cell.fg, cell.bg))
+        }).collect();
+        let background = crate::terminal_theme::background();
+        assert_eq!(caps, vec![
+            (background, Color::Green),
+            (Color::Green, Color::Cyan),
+            (Color::Cyan, Color::Blue),
+            (Color::Blue, background),
+            (background, Color::Rgb(128, 128, 128)),
+            (Color::Rgb(128, 128, 128), Color::Rgb(64, 64, 64)),
+            (Color::Rgb(64, 64, 64), Color::Rgb(128, 128, 128)),
+            (Color::Rgb(128, 128, 128), Color::Rgb(64, 64, 64)),
+            (Color::Rgb(64, 64, 64), background),
+        ]);
+    }
+
+    #[test]
     fn vault_origin_icons_appear_in_header_and_selector() {
         for (origin, expected) in [
             ("http://localhost:4000", "⌂ My Vault"),
@@ -2056,12 +2206,12 @@ mod tests {
 
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
             assert!(rendered_text(&terminal).contains(expected));
 
             app.show_vaults = true;
             app.active_pane = ActivePane::Vaults;
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
             let text = rendered_text(&terminal);
             let icon = expected.chars().next().unwrap();
             assert!(text.contains(&format!("{icon} My Vault")), "{text}");
@@ -2071,29 +2221,314 @@ mod tests {
     }
 
     #[test]
-    fn footer_shows_send_errors_and_pending_status() {
+    fn header_shows_send_errors_and_pending_status() {
         let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
         for width in [80, 120] {
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
             for status in ["Send error: server unavailable", "Sending message..."] {
                 app.status_message = status.into();
-                terminal.draw(|frame| render(frame, &app)).unwrap();
-                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
-                assert!(footer.contains(status), "Missing status: {footer}");
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+                assert!(footer.contains("C-x b") || footer.contains(" buffer"), "Missing Emacs footer: {footer}");
             }
-            for status in ["Connected (2 channels loaded)", "Message sent"] {
+            for status in ["Connected (2 channels loaded)", "Ready"] {
                 app.status_message = status.into();
                 app.active_pane = ActivePane::ChatInput;
-                terminal.draw(|frame| render(frame, &app)).unwrap();
-                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
-                assert!(footer.contains("Enter Send"), "Missing Send hint: {footer}");
-                assert!(!footer.contains(status));
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+                assert!(footer.contains("C-x b") || footer.contains(" buffer"), "Missing Emacs footer: {footer}");
+                assert!(!footer.contains("Enter Send"));
+                assert!(!footer.contains("F1"));
+            assert!(footer.contains("C-x") || footer.contains(" buffer"));
             }
         }
     }
 
     #[test]
-    fn test_footer_adapts_to_long_rate_limit_errors_without_collision() {
+    fn unified_header_keeps_ticker_moving_and_frees_bottom_row() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.status_message = "Ready".into();
+        app.backend_online = true;
+        app.runner_online = true;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 24)).unwrap();
+        let mut headers = Vec::new();
+        for tick in [100, 120] {
+            app.animation_tick = tick;
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let header: String = (0..160).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+            assert!(header.contains("FIZZER") && header.contains("C-x b"));
+            let bottom: String = (0..160).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+            assert!(!bottom.contains("C-x b  buffer"));
+            assert!(header.trim_end().ends_with("C-x C-c quit▌"));
+            assert_eq!(app.panes.borrow().window_rectangles().iter().map(|(_, rect)| rect.bottom()).max(), Some(24));
+            headers.push(header);
+        }
+        assert_ne!(headers[0], headers[1], "ticker must continue scrolling beside fixed status");
+    }
+
+    #[test]
+    fn inverted_shared_rules_keep_titles_and_attachment_labels() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.channels.push(crate::api::ChannelItem { id: "tui".into(), title: "tui".into() });
+        app.active_channel_id = Some("tui".into());
+        app.pending_images.push("image-fixture".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let screen = rendered_text(&terminal);
+        assert!(screen.contains("Message · #tui [1 image attached]"), "{screen}");
+        assert!(screen.contains("Chats / Channels") && screen.contains("Agents"));
+        let mut rules = 0;
+        for cell in &terminal.backend().buffer().content {
+            assert_ne!(cell.symbol(), "▀");
+            if cell.symbol() == "┃" {
+                assert_eq!(cell.bg, BORDER_COLOR);
+                assert!(cell.fg == crate::terminal_theme::background() || cell.fg == FOCUS_COLOR);
+                rules += 1;
+            }
+        }
+        assert!(rules > 50);
+    }
+
+    #[test]
+    fn focus_wrap_uses_quarter_bands_and_tracks_selection() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 14)).unwrap();
+        for area in [Rect::new(3, 4, 8, 5), Rect::new(16, 4, 8, 5)] {
+            terminal.draw(|frame| {
+                frame.render_widget(Paragraph::new("header"), Rect::new(0, 0, 30, 1));
+                frame.buffer_mut()[(area.x, area.y + 1)].set_symbol("┃");
+                render_focus_wrap(frame, area);
+            }).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(area.x + 1, 4)].symbol(), "🭻");
+            assert_eq!(buffer[(area.x + 1, 9)].symbol(), "🮂");
+            assert_eq!(buffer[(area.x + 1, 9)].fg, FOCUS_COLOR);
+            assert!(buffer[(area.x + 1, 9)].modifier.contains(Modifier::UNDERLINED));
+            for y in [4] {
+                let cell = &buffer[(area.x + 1, y)];
+                assert_eq!(cell.fg, FOCUS_COLOR);
+                assert_eq!(cell.underline_color, BORDER_COLOR);
+                assert!(cell.modifier.contains(Modifier::UNDERLINED));
+            }
+            assert_eq!(buffer[(area.x + 1, 3)].symbol(), " ");
+            assert_eq!(buffer[(area.x + 1, 8)].symbol(), " ");
+            assert_eq!(buffer[(area.x, 5)].symbol(), "┃");
+            assert_eq!(buffer[(area.x, 5)].fg, FOCUS_COLOR);
+            assert_eq!(buffer[(area.x, 5)].bg, Color::Reset);
+            assert_eq!(buffer[(area.right() - 1, 5)].fg, FOCUS_COLOR);
+            assert_eq!(buffer[(0, 0)].symbol(), "h");
+            let other_x = if area.x == 3 { 16 } else { 3 };
+            assert_eq!(buffer[(other_x, 3)].symbol(), " ");
+            assert_ne!(buffer[(other_x, 5)].fg, FOCUS_COLOR);
+        }
+        terminal.draw(|frame| {
+            frame.render_widget(Paragraph::new("header"), Rect::new(0, 0, 30, 1));
+            render_focus_wrap(frame, Rect::new(0, 1, 30, 13));
+        }).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "h");
+        for x in [0, 29] {
+            let cell = &terminal.backend().buffer()[(x, 5)];
+            assert_eq!(cell.fg, if x == 0 { FOCUS_COLOR } else { BORDER_COLOR });
+            assert_eq!(cell.bg, if x == 0 { BORDER_COLOR } else { FOCUS_COLOR });
+        }
+    }
+
+    #[test]
+    fn focused_junctions_keep_base_rails_on_normal_background() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 14)).unwrap();
+        terminal.draw(|frame| {
+            frame.buffer_mut()[(12, 4)].set_symbol("▋").set_bg(BORDER_COLOR);
+            frame.buffer_mut()[(12, 8)].set_symbol("▋").set_bg(BORDER_COLOR);
+            render_focus_wrap(frame, Rect::new(0, 4, 13, 5));
+        }).unwrap();
+        for y in [4] {
+            let right = &terminal.backend().buffer()[(12, y)];
+            assert_eq!(right.symbol(), "🮈");
+            assert_eq!(right.fg, BORDER_COLOR);
+            assert_eq!(right.bg, crate::terminal_theme::background());
+            assert_eq!(right.underline_color, FOCUS_COLOR);
+            assert!(right.modifier.contains(Modifier::UNDERLINED));
+            let left = &terminal.backend().buffer()[(0, y)];
+            assert_eq!(left.symbol(), " ");
+            assert_eq!(left.bg, crate::terminal_theme::background());
+        }
+    }
+
+    #[test]
+    fn horizontal_border_attributes_reset_before_following_text() {
+        use ratatui::backend::Backend;
+        let mut output = Vec::new();
+        let mut backend = ratatui::backend::CrosstermBackend::new(&mut output);
+        let mut rule = ratatui::buffer::Cell::default();
+        rule.set_style(Style::default().fg(BORDER_COLOR)
+            .bg(crate::terminal_theme::background())
+            .add_modifier(Modifier::UNDERLINED));
+        let mut text = ratatui::buffer::Cell::default();
+        text.set_symbol("X");
+        backend.draw([(0, 0, &rule), (1, 0, &text)].into_iter()).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let underline = output.find("\x1b[4m").expect("underline on");
+        let no_underline = output.find("\x1b[24m").expect("underline off");
+        let text = output.find('X').unwrap();
+        assert!(underline < no_underline);
+        assert!(no_underline < text);
+    }
+
+    #[test]
+    fn buffer_title_underline_preserves_text_and_color() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.pending_images.push("image-fixture".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 5)).unwrap();
+        terminal.draw(|frame| {
+            render_input_composer(frame, &app, frame.area());
+            render_shared_borders(frame, &[(ratatui_hypertile::PaneId::new(0), frame.area())]);
+        }).unwrap();
+        assert!(rendered_text(&terminal).contains("[1 image attached]"));
+        let buffer = terminal.backend().buffer();
+        let mut title_cells = 0;
+        for x in 1..99 {
+            let cell = &buffer[(x, 0)];
+            assert!(cell.modifier.contains(Modifier::UNDERLINED));
+            if cell.symbol() != " " {
+                assert_eq!(cell.fg, Color::Yellow);
+                assert_eq!(cell.underline_color, BORDER_COLOR);
+                title_cells += 1;
+            }
+        }
+        assert!(title_cells > 10);
+        assert!(!buffer[(0, 0)].modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn bottom_row_is_available_for_buffer_content() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.input = "first\nsecond\nlast".into();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 4)).unwrap();
+        terminal.draw(|frame| {
+            render_input_composer(frame, &app, frame.area());
+            render_shared_borders(frame, &[(ratatui_hypertile::PaneId::new(0), frame.area())]);
+        }).unwrap();
+        let last: String = (0..30).map(|x| terminal.backend().buffer()[(x, 3)].symbol()).collect();
+        assert!(last.contains("last"), "{last}");
+        let text_cell = &terminal.backend().buffer()[(3, 3)];
+        assert_eq!(text_cell.symbol(), "l");
+        assert_eq!(text_cell.fg, Color::White);
+        assert_eq!(text_cell.underline_color, BORDER_COLOR);
+        assert!(text_cell.modifier.contains(Modifier::UNDERLINED));
+        let bounds = Rect::new(0, 0, 30, 4);
+        let mut awatch = crate::awatch::Awatch::default();
+        awatch.set_bounds(bounds);
+        assert_eq!(awatch.content_area(bounds).height, 3);
+        assert!(buffer_borders(Rect::new(0, 0, 30, 2), bounds).contains(Borders::BOTTOM));
+    }
+
+    #[test]
+    fn junctions_mirror_with_their_connected_edges() {
+        let background = Color::Rgb(17, 17, 17);
+        for mask in [5, 6, 9, 10, 7, 11, 15] {
+            let (symbol, style) = junction_cell(mask, background);
+            assert_eq!(symbol, " ");
+            assert_eq!(style.bg, Some(background));
+            assert!(style.add_modifier.is_empty());
+        }
+        let (left_branch, left_style) = junction_cell(13, background);
+        let (right_branch, right_style) = junction_cell(14, background);
+        assert_eq!((left_branch, right_branch), ("▋", "▍"));
+        assert_eq!(left_style.fg, Some(background));
+        assert_eq!(left_style.bg, Some(BORDER_COLOR));
+        assert_eq!(right_style.fg, Some(BORDER_COLOR));
+        assert_eq!(right_style.bg, Some(background));
+        let (_, up) = junction_cell(3 | 4, background);
+        let (_, down) = junction_cell(3 | 8, background);
+        assert!(up.add_modifier.is_empty());
+        assert!(down.add_modifier.is_empty());
+        let (_, cross) = junction_cell(15, background);
+        assert!(cross.add_modifier.is_empty());
+    }
+
+    #[test]
+    fn world_edges_override_turnstile_shapes_on_both_sides() {
+        use ratatui_hypertile::PaneId;
+        for split_on_left in [false, true] {
+            let split_x = if split_on_left { 0 } else { 10 };
+            let other_x = 10 - split_x;
+            let panes = [
+                (PaneId::new(0), Rect::new(other_x, 0, 10, 10)),
+                (PaneId::new(1), Rect::new(split_x, 0, 10, 5)),
+                (PaneId::new(2), Rect::new(split_x, 5, 10, 5)),
+            ];
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+            terminal.draw(|frame| {
+                for (_, rect) in panes {
+                    frame.render_widget(Block::default().borders(buffer_borders(rect, frame.area())),
+                        shared_border_area(rect, &panes, frame.area()));
+                }
+                render_shared_borders(frame, &panes);
+            }).unwrap();
+            let edge_x = if split_on_left { 0 } else { 19 };
+            let edge = &terminal.backend().buffer()[(edge_x, 5)];
+            assert_eq!(edge.symbol(), " ");
+            assert_eq!(edge.bg, crate::terminal_theme::background());
+            assert!(edge.modifier.is_empty());
+            let inside = &terminal.backend().buffer()[(10, 5)];
+            assert_eq!(inside.symbol(), if split_on_left { "▋" } else { "▍" });
+        }
+    }
+
+    #[test]
+    fn shared_rules_join_at_t_junction() {
+        use ratatui_hypertile::PaneId;
+        let panes = [
+            (PaneId::new(0), Rect::new(0, 0, 10, 10)),
+            (PaneId::new(1), Rect::new(10, 0, 10, 5)),
+            (PaneId::new(2), Rect::new(10, 5, 10, 5)),
+        ];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+        terminal.draw(|frame| {
+            for (_, rect) in &panes {
+                frame.render_widget(Block::default().borders(buffer_borders(*rect, frame.area())),
+                    shared_border_area(*rect, &panes, frame.area()));
+            }
+            render_shared_borders(frame, &panes);
+        }).unwrap();
+        let junction = &terminal.backend().buffer()[(10, 5)];
+        assert_eq!(junction.symbol(), "▍");
+        assert_eq!(junction.bg, crate::terminal_theme::background());
+        assert_eq!(junction.fg, BORDER_COLOR);
+        assert!(junction.modifier.is_empty());
+        let corner = &terminal.backend().buffer()[(0, 0)];
+        assert_eq!(corner.symbol(), " ");
+        assert_eq!(corner.bg, crate::terminal_theme::background());
+        assert!(corner.modifier.is_empty());
+        let top = &terminal.backend().buffer()[(2, 0)];
+        assert!(top.modifier.contains(Modifier::UNDERLINED));
+        let bottom = &terminal.backend().buffer()[(12, 9)];
+        assert_eq!(bottom.symbol(), " ");
+        assert!(bottom.modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(bottom.underline_color, BORDER_COLOR);
+        let horizontal = &terminal.backend().buffer()[(12, 5)];
+        let upper_last_row = &terminal.backend().buffer()[(12, 4)];
+        assert!(upper_last_row.modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(upper_last_row.underline_color, BORDER_COLOR);
+        assert_eq!(horizontal.symbol(), " ");
+        assert_eq!(horizontal.bg, crate::terminal_theme::background());
+        assert_eq!(horizontal.fg, BORDER_COLOR);
+        assert!(horizontal.modifier.contains(Modifier::UNDERLINED));
+        let vertical = &terminal.backend().buffer()[(10, 6)];
+        assert_eq!(vertical.symbol(), "┃");
+        assert!(vertical.modifier.contains(Modifier::BOLD));
+        assert!(!vertical.modifier.intersects(Modifier::UNDERLINED));
+        let left = &terminal.backend().buffer()[(0, 1)];
+        assert_eq!(left.symbol(), "▋");
+        assert_eq!(left.fg, crate::terminal_theme::background());
+        assert_eq!(left.bg, BORDER_COLOR);
+        let right = &terminal.backend().buffer()[(19, 1)];
+        assert_eq!(right.symbol(), "▍");
+        assert_eq!(right.fg, BORDER_COLOR);
+        assert_eq!(right.bg, crate::terminal_theme::background());
+    }
+
+    #[test]
+    fn test_header_adapts_to_long_rate_limit_errors_without_collision() {
         let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
         let err = "Backend unreachable: Rate limited (429: Too Many Requests)";
         app.status_message = err.into();
@@ -2101,20 +2536,12 @@ mod tests {
 
         for width in [50, 70, 90, 120, 160] {
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
-            terminal.draw(|frame| render(frame, &app)).unwrap();
-            let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
 
             // Must never crash or collide
-            if width >= 120 {
-                assert!(footer.contains(err), "Should contain full error at width {width}: {footer}");
-            } else {
-                assert!(footer.contains("Rate limited") || footer.contains("…"),
-                    "Should contain rate limit or ellipsis at width {width}: {footer}");
-            }
-            if width >= 70 {
-                // Must preserve quit or view hints cleanly
-                assert!(footer.contains("Esc"), "Should have Esc hint: {footer}");
-            }
+            assert!(footer.contains("C-x") || footer.contains(" buffer"),
+                "Emacs legend should remain visible at width {width}: {footer}");
         }
     }
 
@@ -2125,7 +2552,7 @@ mod tests {
         let message = crate::api::ChatMessage {
             id: "first".into(), author: "chat2".into(), body: "before".into(),
             created_at: "2026-09-08T12:00:00Z".into(), agent_id: None,
-            images: vec![], has_images: false,
+            images: vec![], image_count: 0, has_images: false,
         };
         app.messages = vec![message.clone(), crate::api::ChatMessage {
             id: "last".into(), ..message
@@ -2143,8 +2570,9 @@ mod tests {
         assert!(text.contains("edited") && text.contains("change"));
         assert!(!text.contains("before"));
         app.messages[0].has_images = true;
+        app.messages[0].image_count = 2;
         ensure_chat_cache(&app, 80);
-        assert!(app.chat_cache.read().unwrap().chat_text.contains("image"));
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("image (2)"));
         app.agents[0].color = Some("#00ff00".into());
         ensure_chat_cache(&app, 80);
         assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
@@ -2176,7 +2604,7 @@ mod tests {
             created_at: "2026-09-08T12:00:00Z".into(),
             agent_id: Some("codex".into()),
             images: vec![],
-            has_images: false,
+            image_count: 0, has_images: false,
         };
 
         assert_eq!(agent_for_message(&agents, &message).map(|agent| agent.id.as_str()),
@@ -2188,6 +2616,39 @@ mod tests {
         let patterns = termimation_patterns();
         assert!(!patterns.is_empty());
         assert!(patterns.len() >= 2);
+    }
+
+    #[test]
+    fn channel_termimation_uses_the_target_channel_buffer() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("first".into());
+        let first: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "agent-first", "agentId": "codex", "displayName": "First", "mention": "first"
+        })).unwrap();
+        let second: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "agent-second", "agentId": "codex", "displayName": "Second", "mention": "second"
+        })).unwrap();
+        app.agents = vec![first.clone()];
+        app.active_agent_ids.insert(first.id.clone());
+        app.agent_run_seeds.insert(first.id.clone(), 11);
+        app.channel_buffers.insert("second".into(), crate::app::ChannelBuffer {
+            agents: vec![second.clone()],
+            active_agent_ids: [second.id.clone()].into_iter().collect(),
+            agent_run_seeds: [(second.id.clone(), 22)].into_iter().collect(),
+            ..Default::default()
+        });
+        app.active_sessions = vec![
+            crate::api::ActiveSession { agent: "codex".into(), author: "First".into(), mention: "first".into(),
+                registration_id: Some(first.id.clone()), channel_id: Some("first".into()) },
+            crate::api::ActiveSession { agent: "codex".into(), author: "Second".into(), mention: "second".into(),
+                registration_id: Some(second.id.clone()), channel_id: Some("second".into()) },
+        ];
+
+        app.animation_tick = 7;
+        assert_eq!(channel_termimation(&app, "first"),
+            Some(agent_termimation_ball(&first, 7, 11, 0)));
+        assert_eq!(channel_termimation(&app, "second"),
+            Some(agent_termimation_ball(&second, 7, 22, 0)));
     }
 
     #[test]
@@ -2223,6 +2684,52 @@ mod tests {
         let balls: Vec<String> = (0..32).map(|t| agent_termimation_ball(&agent, t, 0, 0)).collect();
         let unique_balls: std::collections::HashSet<&String> = balls.iter().collect();
         assert!(unique_balls.len() > 1);
+
+        let mut app = App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("channel".into());
+        app.agents.push(agent.clone());
+        app.active_agent_ids.insert(agent.id.clone());
+        app.refresh_run_seeds();
+        let message = crate::api::ChatMessage {
+            id: "old".into(), author: "bot".into(), body: "first".into(),
+            created_at: "2026-09-13T12:00:00Z".into(), agent_id: Some(agent.id.clone()),
+            images: vec![], image_count: 0, has_images: false,
+        };
+        app.messages.push(message.clone());
+        app.messages.push(crate::api::ChatMessage { id: "new".into(), body: "second".into(), ..message });
+        ensure_chat_cache(&app, 80);
+        let original_text = app.chat_cache.read().unwrap().chat_text.clone();
+        assert_eq!(app.chat_cache.read().unwrap().message_markers.len(), 2);
+        for tick in 0..32 {
+            app.animation_tick = tick;
+            let expected = agent_termimation_ball(&agent, tick, app.agent_run_seed(&agent), 0);
+            assert_eq!(response_termimation(&app, 0), None);
+            assert_eq!(response_termimation(&app, 1), Some(expected.clone()));
+            assert_eq!(channel_termimation(&app, "channel"), Some(expected));
+            ensure_chat_cache(&app, 80);
+            assert_eq!(app.chat_cache.read().unwrap().chat_text, original_text);
+        }
+        let mut second = agent.clone();
+        second.id = "agent-2".into();
+        second.mention = "second".into();
+        second.display_name = "Second".into();
+        app.active_agent_ids.insert(second.id.clone());
+        app.agents.push(second);
+        app.refresh_run_seeds();
+        let concurrent: std::collections::HashSet<_> = (0..128).map(|tick| {
+            app.animation_tick = tick;
+            channel_termimation(&app, "channel").unwrap()
+        }).collect();
+        assert!(concurrent.len() > 1);
+        app.active_agent_ids.clear();
+        assert_eq!(response_termimation(&app, 1), None);
+        assert_eq!(channel_termimation(&app, "channel"), None);
+        app.apply_active_sessions(vec![crate::api::ActiveSession {
+            agent: "codex".into(), author: "Bot".into(), mention: "bot".into(),
+            registration_id: Some(agent.id.clone()), channel_id: Some("background".into()),
+        }]);
+        assert!(channel_termimation(&app, "background").is_some());
+        assert_eq!(channel_termimation(&app, "channel"), None);
     }
 
     #[test]
@@ -2271,7 +2778,7 @@ mod tests {
                 created_at: "2026-09-08T04:00:00Z".into(),
                 agent_id: if i % 2 == 1 { Some("claude-code".into()) } else { None },
                 images: vec![],
-                has_images: false,
+                image_count: 0, has_images: false,
             });
         }
 
@@ -2323,7 +2830,7 @@ mod tests {
             created_at: "2026-09-08T04:00:00Z".into(),
             agent_id: Some("claude-code".into()),
             images: vec![],
-            has_images: false,
+            image_count: 0, has_images: false,
         });
 
         ensure_chat_cache(&app, 80);

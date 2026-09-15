@@ -1042,6 +1042,7 @@ class CodexAppServerClient {
         started = await this.request('turn/start', turnParams);
       } catch (error) {
         if (!this.isActiveWriterError(error)) throw error;
+        if (options.resumeId && options.env?.CASCADE_IMPORTED_CODEX_SESSION === options.resumeId) throw error;
         emitHarness(options.emit, '\x1b[33m# Codex left this thread busy — interrupting its unfinished turn\x1b[0m\r\n');
         const interrupted = await this.interruptActiveTurn(threadId);
         try {
@@ -1085,13 +1086,14 @@ class CodexAppServerClient {
   }
 
   private async openThread(options: {
-    resumeId?: string; emit: AgentEmit;
+    resumeId?: string; emit: AgentEmit; env?: NodeJS.ProcessEnv;
   }, common: JsonObject): Promise<JsonObject> {
     if (!options.resumeId) return this.request('thread/start', common);
     const resumeParams = { threadId: options.resumeId, excludeTurns: true, ...common };
     try {
       return await this.request('thread/resume', resumeParams);
     } catch (error) {
+      if (options.resumeId && options.env?.CASCADE_IMPORTED_CODEX_SESSION === options.resumeId) throw error;
       if (isDeadCodexSession(String(error))) {
         emitHarness(options.emit, '\x1b[33m# that session is gone from Codex\'s store — starting a fresh one\x1b[0m\r\n');
         return this.request('thread/start', common);
@@ -1538,6 +1540,9 @@ async function runCodex(
     'Codex', runId, emit, env, collectStderr,
   );
   const retryFresh = async () => {
+    if (resumeId && env?.CASCADE_IMPORTED_CODEX_SESSION === resumeId) {
+      throw new Error('The imported Codex session could not be resumed. Its history was preserved; no replacement session was started.');
+    }
     emitHarness(emit, '\x1b[33m# that session is gone from Codex\'s store — starting a fresh one\x1b[0m\r\n');
     stderrText = '';
     return { summary: await drive(buildArgs(undefined)), sessionId };

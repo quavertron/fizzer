@@ -105,12 +105,14 @@ pub struct ChatMessage {
     pub images: Vec<String>,
     #[serde(rename = "hasImages", default)]
     pub has_images: bool,
+    #[serde(rename = "imageCount", default)]
+    pub image_count: usize,
 }
 
 impl ChatMessage {
     /// Whether this message carries any image, whether hydrated or stripped by the list API.
     pub fn has_image(&self) -> bool {
-        self.has_images || !self.images.is_empty()
+        self.image_count > 0 || self.has_images || !self.images.is_empty()
     }
 }
 
@@ -121,6 +123,14 @@ const CHAT_MESSAGE_GROUP_WINDOW_MS: i64 = 90_000;
 pub fn continues_chat_group(prev: &ChatMessage, next: &ChatMessage) -> bool {
     if prev.agent_id != next.agent_id || prev.author.trim() != next.author.trim() {
         return false;
+    }
+    // The TUI briefly uses "Just now" for a successful local fallback
+    // response. Keep an image submission in the same visual turn while
+    // the subsequent server refresh supplies its real timestamp.
+    if (prev.created_at == "Just now" || next.created_at == "Just now")
+        && (prev.has_image() || next.has_image())
+    {
+        return true;
     }
     let prev_date = prev.created_at.split('T').next().unwrap_or("");
     let next_date = next.created_at.split('T').next().unwrap_or("");
@@ -341,6 +351,8 @@ impl CascadeClient {
         let url = format!("{}/api/session", self.base_url);
         let req = self.auth_header(self.client.get(&url));
         let res = req.send().await.map_err(|e| e.to_string())?;
+
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED { return Ok(None); }
 
         if !res.status().is_success() {
             return Err(format_status_error("GET", "/api/session", res.status()));
@@ -628,7 +640,7 @@ impl CascadeClient {
             created_at: "Just now".to_string(),
             agent_id: None,
             images: images.to_vec(),
-            has_images: !images.is_empty(),
+            image_count: 0, has_images: !images.is_empty(),
         })
     }
 
@@ -638,6 +650,31 @@ impl CascadeClient {
         channel_id: &str,
         agent: &AgentItem,
     ) -> Result<AgentItem, String> {
+        if let Some(identity_id) = agent.vault_agent_id.as_deref().filter(|id| !id.is_empty()) {
+            let profiles = format!("{}/api/vaults/{}/vault-agents", self.base_url, vault_id);
+            let response = self.auth_header(self.client.get(format!("{}/{}", profiles, identity_id)))
+                .send().await.map_err(|e| e.to_string())?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(format_status_body_error("GET", "/api/vault-agents", status, &response.text().await.unwrap_or_default()));
+            }
+            let mut body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+            let profile = body.get_mut("agent").and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| "Failed to parse agent profile".to_string())?;
+            if profile.get("mention").and_then(|v| v.as_str()) != Some(agent.mention.as_str())
+                || profile.get("displayName").and_then(|v| v.as_str()) != Some(agent.display_name.as_str())
+                || agent.color.as_deref().is_some_and(|color| profile.get("color").and_then(|v| v.as_str()) != Some(color)) {
+                profile.insert("mention".into(), serde_json::json!(agent.mention));
+                profile.insert("displayName".into(), serde_json::json!(agent.display_name));
+                if let Some(color) = &agent.color { profile.insert("color".into(), serde_json::json!(color)); }
+                let response = self.auth_header(self.client.put(&profiles).json(profile))
+                    .send().await.map_err(|e| e.to_string())?;
+                let status = response.status();
+                if !status.is_success() {
+                    return Err(format_status_body_error("PUT", "/api/vault-agents", status, &response.text().await.unwrap_or_default()));
+                }
+            }
+        }
         let url = format!("{}/api/vaults/{}/channels/{}/agents", self.base_url, vault_id, channel_id);
         let payload = serde_json::json!({
             "id": agent.id,
@@ -679,6 +716,15 @@ impl CascadeClient {
         }
 
         Err("Failed to parse updated agent response".to_string())
+    }
+
+    pub async fn import_codex_page(&self, vault_id: &str, page: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("{}/api/vaults/{}/import-codex-session", self.base_url, vault_id);
+        let response = self.auth_header(self.client.post(url).json(page)).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(response.text().await.unwrap_or_else(|e| e.to_string()));
+        }
+        response.json().await.map_err(|e| e.to_string())
     }
 
     /// Create a chat channel. Channels are notes tagged with the chat marker;
@@ -807,6 +853,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_change_updates_shared_profile_before_channel_membership() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = CascadeClient::new(format!("http://{}", listener.local_addr().unwrap()), None);
+        let task = tokio::spawn(async move {
+            for step in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..end]);
+                        let len = header.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|s| s.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                        if bytes.len() >= end + 4 + len { break; }
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                let response = match step {
+                    0 => {
+                        assert!(request.starts_with("GET /api/vaults/v/vault-agents/profile "));
+                        serde_json::json!({"agent":{"id":"profile","agentId":"codex","mention":"chat2","displayName":"chat2","color":"FFFFFF","cwd":"/keep","contextPrompt":"keep","model":"keep"}})
+                    }
+                    1 => {
+                        assert!(request.starts_with("PUT /api/vaults/v/vault-agents "));
+                        let value: serde_json::Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+                        assert_eq!(value["mention"], "luna");
+                        assert_eq!(value["id"], "profile");
+                        assert_eq!(value["cwd"], "/keep");
+                        assert_eq!(value["contextPrompt"], "keep");
+                        serde_json::json!({"agent":value})
+                    }
+                    _ => {
+                        assert!(request.starts_with("PUT /api/vaults/v/channels/c/agents "));
+                        serde_json::json!({"registration":{"id":"member","vaultAgentId":"profile","mention":"luna"}})
+                    }
+                }.to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes()).await.unwrap();
+            }
+        });
+        let agent: AgentItem = serde_json::from_value(serde_json::json!({"id":"member","vaultAgentId":"profile","displayName":"chat2","mention":"luna","agentId":"codex"})).unwrap();
+        let saved = tokio::time::timeout(std::time::Duration::from_secs(5), client.update_agent("v", "c", &agent)).await.unwrap().unwrap();
+        assert_eq!(saved.mention, "luna");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn history_negotiates_and_decodes_gzip() {
         // gzip-encoded {"messages":[]}.
         let body: &[u8] = &[31,139,8,0,0,0,0,0,0,19,171,86,202,77,45,46,78,76,79,45,86,178,138,142,173,5,0,145,195,48,0,15,0,0,0];
@@ -864,5 +958,18 @@ mod tests {
         assert_eq!(messages[0].author, "diego");
         assert_eq!(messages[0].body, "hello");
         assert_eq!(messages[0].agent_id, None);
+    }
+
+    #[test]
+    fn image_messages_keep_continuation_grouping_for_local_fallbacks() {
+        let image = ChatMessage {
+            id: "image".into(), author: "diego".into(), body: "".into(),
+            created_at: "Just now".into(), agent_id: None, images: vec!["data:image/png;base64,x".into()], image_count: 0, has_images: true,
+        };
+        let next = ChatMessage {
+            id: "next".into(), author: "diego".into(), body: "follow-up".into(),
+            created_at: "2026-09-13T23:40:00Z".into(), agent_id: None, images: vec![], image_count: 0, has_images: false,
+        };
+        assert!(continues_chat_group(&image, &next));
     }
 }

@@ -914,6 +914,7 @@ defmodule Cascade.Chat.Messages do
   defp put_images(message, images, :full), do: Map.put(message, :images, images)
 
   defp put_images(message, images, :list) do
+    message = Map.put(message, :imageCount, length(images))
     light =
       Enum.filter(images, fn image ->
         is_binary(image) and not String.starts_with?(image, "data:") and byte_size(image) < 2_048
