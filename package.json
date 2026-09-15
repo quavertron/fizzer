@@ -67,6 +67,7 @@
     "test:release:backend": "npm run test:elixir-release",
     "test:release:backend:full": "npm run build && npm run test:elixir-release:full && npm run test:cli-agents",
     "typecheck:client": "tsc --noEmit -p client/tsconfig.json",
+    "test:voice-html": "bash scripts/test-voice-html.sh",
     "test:release:frontend": "npm run typecheck:client && npm test",
     "test:release:desktop": "npm run test:electron",
     "verify:client-runtime": "node scripts/verify-client-runtime.mjs",
