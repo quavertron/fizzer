@@ -245,20 +245,23 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   />
                   {message.images && message.images.length > 0 && (
                     <div className="chat-msg-images">
-                      {message.images.map((src, imageIndex) => (
-                        <a
-                          key={imageIndex}
-                          href={src}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            onLightbox(src);
-                          }}
-                        >
-                          <img src={src} alt="" className="chat-msg-image" onLoad={onImageLoad} />
-                        </a>
-                      ))}
+                      {message.images.map((image, imageIndex) => {
+                        const src = typeof image === 'string' ? image : image.url;
+                        return (
+                          <a
+                            key={imageIndex}
+                            href={src}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              onLightbox(src);
+                            }}
+                          >
+                            <img src={src} alt="" className="chat-msg-image" onLoad={onImageLoad} />
+                          </a>
+                        );
+                      })}
                     </div>
                   )}
                   {message.hasImages && !message.images?.length && (

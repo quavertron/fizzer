@@ -19,7 +19,7 @@ import { LoadingIndicator } from './LoadingIndicator';
  */
 
 import { memo, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { vaultDetailsLabel, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
+import { vaultDetailsLabel, vaultOriginBadge, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
 import { NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
 import {
@@ -30,10 +30,12 @@ import {
 } from '../mediaLinks';
 import { CHAT_NOTE_MARKER } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
+import type { MissionCreateInput, MissionSummary } from '../missions';
 import {
   Folder as FolderIcon, FolderOpen, FileText, Pin, Edit2, FolderPlus,
   Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
   Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
+  Flag,
 } from 'lucide-react';
 
 export function vaultOptionLabel(vault: Vault): string {
@@ -49,6 +51,11 @@ interface SidebarProps {
   activeVaultId: string | null;
   folders: Folder[];
   notes: NoteSummary[];
+  missions?: MissionSummary[];
+  vaultAgents?: Array<{ id: string; displayName?: string; mention?: string; agentId?: string }>;
+  onOpenMission?: (id: string) => void;
+  onCreateMission?: (input: MissionCreateInput) => Promise<boolean>;
+  missionCreateBusy?: boolean;
   activeNoteId: string | null;
   updateCounts: CommunityUpdates['counts'];
   agentActivity: Readonly<Record<string, ChannelAgentActivity>>;
@@ -118,6 +125,28 @@ export function sortSidebarNotes(notes: NoteSummary[]) {
   );
 }
 
+export function vaultSelectionTargetId(
+  note: Pick<NoteSummary, 'id' | 'folder_id' | 'content_preview'>,
+  folders: ReadonlyArray<Pick<Folder, 'id' | 'parent_id'>>,
+  expandedFolders: ReadonlySet<string>,
+) {
+  if (!note.folder_id || !note.content_preview.trim().startsWith(CHAT_NOTE_MARKER)) {
+    return `note-${note.id}`;
+  }
+
+  let target = note.folder_id;
+  let folder = folders.find((candidate) => candidate.id === target);
+  const visited = new Set<string>();
+  while (folder?.parent_id && !visited.has(folder.id)) {
+    visited.add(folder.id);
+    const parentId = folder.parent_id;
+    // A collapsed ancestor hides every row below it, including the direct folder.
+    if (!expandedFolders.has(parentId)) target = parentId;
+    folder = folders.find((candidate) => candidate.id === parentId);
+  }
+  return `folder-${target}`;
+}
+
 type ConnectorBox = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>;
 
 export function vaultSelectionConnectorPath(
@@ -154,6 +183,11 @@ export const Sidebar = memo(function Sidebar({
   activeVaultId,
   folders,
   notes,
+  missions = [],
+  vaultAgents = [],
+  onOpenMission,
+  onCreateMission,
+  missionCreateBusy = false,
   activeNoteId,
   updateCounts,
   agentActivity,
@@ -201,6 +235,10 @@ export const Sidebar = memo(function Sidebar({
   const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
   const [creatingVault, setCreatingVault] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
+  const [missionFormOpen, setMissionFormOpen] = useState(false);
+  const [missionTitle, setMissionTitle] = useState('');
+  const [missionBrief, setMissionBrief] = useState('');
+  const [missionCoordinator, setMissionCoordinator] = useState('');
   const [creatingVaultBusy, setCreatingVaultBusy] = useState(false);
   const [vaultFormError, setVaultFormError] = useState('');
   const [joiningVault, setJoiningVault] = useState(false);
@@ -284,6 +322,11 @@ export const Sidebar = memo(function Sidebar({
     (updateCounts.byTarget[note.id] || 0) > 0,
   ) !== null);
 
+  const activeNote = notes.find((note) => note.id === activeNoteId);
+  const selectionTargetId = activeNote
+    ? vaultSelectionTargetId(activeNote, folders, expandedFolders)
+    : `note-${activeNoteId}`;
+
   useLayoutEffect(() => {
     const sidebar = sidebarRef.current;
     if (!sidebar || !activeVaultId || !activeNoteId) {
@@ -295,15 +338,15 @@ export const Sidebar = memo(function Sidebar({
     let disposed = false;
     const updateConnector = () => {
       const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-      const noteButton = document.getElementById(`note-${activeNoteId}`);
-      if (!vaultButton || !noteButton || !sidebar.contains(noteButton)) {
+      const targetButton = document.getElementById(selectionTargetId);
+      if (!vaultButton || !targetButton || !sidebar.contains(targetButton)) {
         setSelectionConnector((current) => current === '' ? current : '');
         return;
       }
       const next = vaultSelectionConnectorPath(
         sidebar.getBoundingClientRect(),
         vaultButton.getBoundingClientRect(),
-        noteButton.getBoundingClientRect(),
+        targetButton.getBoundingClientRect(),
       );
       setSelectionConnector((current) => current === next ? current : next);
     };
@@ -325,9 +368,9 @@ export const Sidebar = memo(function Sidebar({
     const observer = new ResizeObserver(scheduleConnectorUpdate);
     observer.observe(sidebar);
     const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-    const noteButton = document.getElementById(`note-${activeNoteId}`);
+    const targetButton = document.getElementById(selectionTargetId);
     if (vaultButton) observer.observe(vaultButton);
-    if (noteButton && sidebar.contains(noteButton)) observer.observe(noteButton);
+    if (targetButton && sidebar.contains(targetButton)) observer.observe(targetButton);
     void document.fonts?.ready.then(scheduleConnectorUpdate);
     sidebar.addEventListener('scroll', scheduleConnectorUpdate, true);
     window.addEventListener('resize', scheduleConnectorUpdate);
@@ -338,7 +381,7 @@ export const Sidebar = memo(function Sidebar({
       sidebar.removeEventListener('scroll', scheduleConnectorUpdate, true);
       window.removeEventListener('resize', scheduleConnectorUpdate);
     };
-  }, [activeNoteId, activeVaultId, expandedFolders, folders, notes, vaults]);
+  }, [activeNoteId, activeVaultId, selectionTargetId, expandedFolders, folders, notes, vaults, showAgentMemory, editingFolderId, editingNoteId]);
 
   const visibleFolders = useMemo(() => {
     if (showAgentMemory) return folders;
@@ -858,6 +901,20 @@ export const Sidebar = memo(function Sidebar({
     { id: 'new-channel', title: 'New channel', icon: <Hash size={15} />, onClick: () => { void createChannel(null); } },
     { id: 'search', title: 'Search', icon: <Search size={15} />, onClick: onSearch },
   ];
+  const renderMission = (mission: MissionSummary) => (
+    <button
+      type="button"
+      key={mission.id}
+      className={`tree-item sidebar-mission-item${activeNoteId === `mission:${mission.id}` ? ' active' : ''}`}
+      onClick={() => onOpenMission?.(mission.id)}
+      title={`${mission.title} · ${mission.phase === 'closed' ? mission.status : mission.phase}`}
+    >
+      <span className="tree-icon"><Flag size={14} aria-hidden="true" /></span>
+      <span className="tree-label">{mission.title || 'Untitled mission'}</span>
+      {mission.phase !== 'closed' && <span className="sidebar-mission-phase">{mission.phase}</span>}
+    </button>
+  );
+
   const actionButtons = (location: string) => quickActions.map((action) => (
     <button key={action.id} id={`${action.id}-btn-${location}`} className="btn-icon" onClick={action.onClick} title={action.title}>{action.icon}</button>
   ));
@@ -873,6 +930,25 @@ export const Sidebar = memo(function Sidebar({
     setNewVaultName('');
     setCreatingVault(false);
     setVaultMenuOpen(false);
+  };
+
+  const submitNewMission = async () => {
+    if (!onCreateMission || missionCreateBusy) return;
+    const title = missionTitle.trim();
+    const briefContent = missionBrief.trim();
+    if (!title || !briefContent || !missionCoordinator) return;
+    const created = await onCreateMission({
+      id: crypto.randomUUID(),
+      title,
+      briefContent,
+      coordinatorIdentityId: missionCoordinator,
+    });
+    if (created) {
+      setMissionFormOpen(false);
+      setMissionTitle('');
+      setMissionBrief('');
+      setMissionCoordinator('');
+    }
   };
 
   const submitJoinVault = async () => {
@@ -986,7 +1062,11 @@ export const Sidebar = memo(function Sidebar({
                       className={vault.id === activeVaultId ? 'is-active' : ''}
                       onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
                       <span className="vault-manager-copy">
-                        <span className="vault-manager-title-line"><strong>{vault.name}</strong>{vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}</span>
+                        <span className="vault-manager-title-line">
+                          <strong>{vault.name}</strong>
+                          <span style={{ opacity: 0.75, fontSize: '0.8em', marginLeft: 6, fontWeight: 500 }}>{vaultOriginBadge(vault)}</span>
+                          {vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}
+                        </span>
                         <small>{vaultDetailsLabel(vault)}</small>
                       </span>
                       <span>Open</span>
@@ -1075,6 +1155,80 @@ export const Sidebar = memo(function Sidebar({
       )}
 
       <div className="sidebar-actions sidebar-actions-mobile">{actionButtons('mobile')}</div>
+
+      {(onOpenMission || onCreateMission) && (
+        <section className="sidebar-missions" aria-labelledby="missions-sidebar-heading">
+          <div className="sidebar-section-label sidebar-section-label-with-action">
+            <span id="missions-sidebar-heading">Missions</span>
+            {onCreateMission && (
+              <button
+                type="button"
+                className="btn-icon"
+                title="Create mission"
+                aria-label="Create mission"
+                onClick={() => setMissionFormOpen((open) => !open)}
+              >
+                <Plus size={14} />
+              </button>
+            )}
+          </div>
+          {missionFormOpen && onCreateMission && (
+            <form
+              className="sidebar-mission-create-form"
+              onSubmit={(event) => { event.preventDefault(); void submitNewMission(); }}
+            >
+              <input
+                value={missionTitle}
+                onChange={(event) => setMissionTitle(event.target.value)}
+                placeholder="Mission title"
+                aria-label="Mission title"
+                required
+              />
+              <textarea
+                value={missionBrief}
+                onChange={(event) => setMissionBrief(event.target.value)}
+                placeholder="Brief / request"
+                aria-label="Mission brief"
+                rows={3}
+                required
+              />
+              <select
+                value={missionCoordinator}
+                onChange={(event) => setMissionCoordinator(event.target.value)}
+                aria-label="Mission coordinator"
+                required
+              >
+                <option value="">Choose coordinator</option>
+                {vaultAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.displayName || agent.mention || agent.agentId || agent.id}
+                  </option>
+                ))}
+              </select>
+              <div className="sidebar-mission-form-actions">
+                <button type="button" onClick={() => setMissionFormOpen(false)}>Cancel</button>
+                <button type="submit" disabled={missionCreateBusy || !vaultAgents.length}>
+                  {missionCreateBusy ? 'Creating…' : 'Create mission'}
+                </button>
+              </div>
+            </form>
+          )}
+          <div className="sidebar-mission-list">
+            {missions.filter((mission) => mission.phase !== 'closed').map(renderMission)}
+          </div>
+          {missions.some((mission) => mission.phase === 'closed') && (
+            <details className="sidebar-mission-history" key={activeVaultId}>
+              <summary>History <span>{missions.filter((mission) => mission.phase === 'closed').length}</span></summary>
+              <div className="sidebar-mission-list">
+                {missions.filter((mission) => mission.phase === 'closed').map(renderMission)}
+              </div>
+            </details>
+          )}
+          {missions.length === 0 && !missionFormOpen && (
+            <div className="palette-empty sidebar-missions-empty">No missions yet.</div>
+          )}
+        </section>
+      )}
 
       {/* Folder tree. The "Notes" header doubles as the move-to-root drop target. */}
       <div

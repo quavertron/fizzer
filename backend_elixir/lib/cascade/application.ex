@@ -5,7 +5,7 @@ defmodule Cascade.Application do
 
   @impl true
   def start(_type, _args) do
-    children =
+    children = Cascade.DB.InstanceOwner.children() ++
       [
         Cascade.DB.Repo,
         Cascade.DB.WriteCoordinator,
@@ -18,7 +18,7 @@ defmodule Cascade.Application do
         CascadeWeb.RateLimiter
       ] ++
         qmd_children() ++
-        [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.RunnerLifecycle}] ++
+        [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.TransportCallbacks}] ++
         dispatch_children() ++ http_children()
 
     # Every child after the repository and write coordinator depends on their

@@ -115,6 +115,73 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  # Versioned route, never a flag on the legacy endpoint: old servers cannot
+  # silently accept this operation and dispatch. No member/settings lookup, natural
+  # reply inference, clear-session command, or dispatch creation is reachable here.
+  get "/api/vaults/:vault_id/channels/:channel_id/messages-no-invoke-v1" do
+    authenticated(conn, :agent, nil, fn conn, user ->
+      with :ok <- no_invoke_owner(user, vault_id),
+           {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
+        JSON.send(conn, 200, %{
+          contract: "messages_no_invoke_v1",
+          mediaContract: "channel_png_assets_v1",
+          actorUserId: user.id,
+          vaultId: vault_id,
+          channelId: channel_id
+        })
+      else
+        error -> domain_error(conn, error)
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/messages-no-invoke-v1" do
+    authenticated(conn, :agent, :vault, fn conn, user ->
+      case serialized_create_and_emit(
+             conn,
+             fn ->
+               Cascade.Accounts.SQL.transaction(fn ->
+                 with :ok <- no_invoke_owner(user, vault_id),
+                      {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+                      {:ok, images} <-
+                        Cascade.Chat.NoInvokeMedia.validate(conn.body_params, channel_id) do
+                   input =
+                     conn.body_params
+                     |> Map.take(["body", "author", "agentId", "registrationId"])
+                     |> Map.merge(%{
+                       "status" => "completed",
+                       "replyTo" => nil,
+                       "runId" => nil,
+                       "images" => images
+                     })
+
+                   Messages.create(user, vault_id, channel_id, input, access: :agent)
+                 end
+               end)
+             end,
+             fn message ->
+               %{
+                 event: "vault:chatMessageCreated",
+                 vaultId: vault_id,
+                 channelId: channel_id,
+                 message: message,
+                 dispatches: []
+               }
+             end
+           ) do
+        {:ok, message} ->
+          JSON.send(conn, 201, %{
+            contract: "messages_no_invoke_v1",
+            message: message,
+            dispatches: []
+          })
+
+        error ->
+          domain_error(conn, error)
+      end
+    end)
+  end
+
   post "/api/vaults/:vault_id/channels/:channel_id/messages" do
     authenticated(conn, :any, :vault, fn conn, user ->
       with {:ok, result} <-
@@ -394,6 +461,55 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/execution-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      case Cascade.Chat.RegistrationSettings.execution(user.id, vault_id, channel_id, registration_id) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.get(user.id, vault_id, channel_id, registration_id, conn.query_params) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  patch "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.update(user.id, vault_id, channel_id, registration_id, conn.query_params, conn.body_params) do
+        {:ok, settings} ->
+          JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  # Exact registration, or the named /agents/resolve?vaultAgentId=...&hermesProfile=...
+  # query. Both require existing owner-bound membership and never materialize it.
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+
+      case Cascade.Chat.RegistrationLookup.get(
+             user.id,
+             vault_id,
+             channel_id,
+             registration_id,
+             conn.query_params
+           ) do
+        {:ok, registration} -> JSON.send(conn, 200, %{registration: registration})
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
   get "/api/vaults/:vault_id/channels/:channel_id/agents" do
     authenticated(conn, :any, nil, fn conn, user ->
       respond(conn, Agents.ensure_vault_wide(user.id, vault_id, channel_id), :agents)
@@ -655,6 +771,12 @@ defmodule CascadeWeb.ChatRouter do
         end)
       end)
     end
+  end
+
+  defp no_invoke_owner(user, vault_id) do
+    if VaultMembers.role(vault_id, user.id) == "owner",
+      do: :ok,
+      else: {:error, "Only the vault owner can post without invocation"}
   end
 
   defp access(conn), do: if(conn.assigns.auth_access == "agent", do: :agent, else: :user)

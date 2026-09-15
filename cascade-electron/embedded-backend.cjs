@@ -73,7 +73,49 @@ function terminateProcessTree(child) {
   child.kill('SIGTERM');
 }
 
+async function existingBackend(dataDir, timeout = 30_000) {
+  const database = path.join(dataDir, 'docs.db');
+  let record;
+  try { record = JSON.parse(fs.readFileSync(path.join(dataDir, 'local-backend.json'), 'utf8')); }
+  catch { return null; }
+  if (!Number.isInteger(record.pid) || record.pid < 1) return null;
+  try { process.kill(record.pid, 0); } catch (error) {
+    if (error.code === 'ESRCH') return null;
+    throw error;
+  }
+  const origin = new URL(record.origin);
+  if (origin.protocol !== 'http:' || origin.hostname !== LOOPBACK || origin.username || origin.password
+      || (record.database && path.resolve(record.database) !== database)) {
+    throw new Error('The local backend discovery record does not match this data directory.');
+  }
+  const deadline = Date.now() + timeout;
+  do {
+    if (await healthIsReady(Number(origin.port))) {
+      return { origin: origin.origin, process: null, reused: true, stop() {} };
+    }
+    await delay(100);
+  } while (Date.now() < deadline);
+  throw new Error(`A backend already owns ${dataDir}, but is not healthy. Check it before starting another backend.`);
+}
+
+function rejectLegacyDatabaseOwner(dataDir) {
+  // Older backends do not publish discovery or acquire the new lease. Refuse
+  // to start beside one rather than guessing which server/database it serves.
+  const database = path.join(dataDir, 'docs.db');
+  if (process.platform === 'win32' || !fs.existsSync(database)) return;
+  const result = spawnSync('lsof', ['-t', '--', database], { encoding: 'utf8', timeout: 3_000 });
+  if (result.status === 0 && result.stdout.trim()) {
+    throw new Error(`Another process has ${database} open. Stop that older backend before opening Fizzer, or update it to support backend discovery.`);
+  }
+  if (result.error && result.error.code !== 'ENOENT') throw result.error;
+}
+
 async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, userDataDir, env = process.env }) {
+  const dataDir = path.resolve(env.CASCADE_DATA_DIR || path.join(require('node:os').homedir(), '.fizzer'));
+  fs.mkdirSync(dataDir, { recursive: true });
+  const existing = await existingBackend(dataDir);
+  if (existing) return existing;
+  rejectLegacyDatabaseOwner(dataDir);
   const { releaseRoot, clientDistDir } = runtimePaths({ packaged, resourcesPath, projectRoot, env });
   const invocation = releaseInvocation(releaseRoot);
   const appHtml = path.join(clientDistDir, 'app.html');
@@ -84,9 +126,10 @@ async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, user
     throw new Error(`The bundled client is missing (${appHtml}).`);
   }
 
-  const dataDir = path.join(userDataDir, 'local-server');
-  fs.mkdirSync(dataDir, { recursive: true });
   const port = await availablePort();
+  fs.mkdirSync(userDataDir, { recursive: true });
+  const logPath = path.join(userDataDir, 'local-backend.log');
+  fs.writeFileSync(logPath, `Starting local backend on ${LOOPBACK}:${port}\nData directory: ${dataDir}\n`, { mode: 0o600 });
   const child = spawn(invocation.command, invocation.args, {
     cwd: releaseRoot,
     env: {
@@ -100,8 +143,6 @@ async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, user
       CASCADE_VAULTS_BASE_DIR: path.join(dataDir, 'vaults'),
       CASCADE_QMD_DIR: path.join(dataDir, 'qmd'),
       CASCADE_CLIENT_DIST_DIR: clientDistDir,
-      HOME: dataDir,
-      USERPROFILE: dataDir,
       RELEASE_DISTRIBUTION: 'none',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -113,6 +154,7 @@ async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, user
     const text = chunk.toString();
     output = (output + text).slice(-16_000);
     process.stderr.write(`[Local backend] ${text}`);
+    fs.appendFileSync(logPath, text);
   };
   child.stdout.on('data', appendOutput);
   child.stderr.on('data', appendOutput);
@@ -126,8 +168,9 @@ async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, user
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline && !exit) {
     if (await healthIsReady(port)) {
+      const origin = `http://${LOOPBACK}:${port}`;
       return {
-        origin: `http://${LOOPBACK}:${port}`,
+        origin,
         process: child,
         stop: () => terminateProcessTree(child),
       };
@@ -136,11 +179,15 @@ async function startEmbeddedBackend({ packaged, resourcesPath, projectRoot, user
   }
 
   terminateProcessTree(child);
+  // A simultaneous launcher may have acquired the backend lease first.
+  const winner = exit ? await existingBackend(dataDir) : null;
+  if (winner) return winner;
   const reason = exit ? exit.message : 'Timed out waiting for its health endpoint.';
-  throw new Error(`${reason}${output.trim() ? `\n\n${output.trim()}` : ''}`);
+  throw new Error(`${reason}\nStartup log: ${logPath}${output.trim() ? `\n\n${output.trim()}` : ''}`);
 }
 
 module.exports = {
   runtimePaths,
+  existingBackend,
   startEmbeddedBackend,
 };

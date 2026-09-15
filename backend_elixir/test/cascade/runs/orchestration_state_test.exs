@@ -307,7 +307,7 @@ defmodule Cascade.Runs.OrchestrationStateTest do
              })
 
     assert run_id == run.id
-    assert :ok = RunnerLifecycle.registered(context.user_id, "sid-hub", %{}, nil)
+    assert :ok = Cascade.Runs.TransportCallbacks.registered(context.user_id, "sid-hub", %{}, nil)
 
     health = RunnerLifecycle.health(context.user_id)
     assert health.activeRuns == 1

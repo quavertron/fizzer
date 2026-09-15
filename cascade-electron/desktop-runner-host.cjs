@@ -24,6 +24,7 @@ let currentToken = '';
 let helperProxyServer = null;
 /** Loopback base URL helpers should call, e.g. http://127.0.0.1:54321 */
 let helperProxyUrl = '';
+let localAgentSetup = null;
 
 function normalizeApiBase(value) {
   const raw = String(value || '').trim();
@@ -216,6 +217,10 @@ async function connectDesktopRunner(token, nextApiBase) {
   }
 
   const nextBase = normalizeApiBase(nextApiBase);
+  if (localAgentSetup && (nextBase !== 'https://cscd.online' || process.env.FIZZER_LOCAL_AGENT_SETUP !== '1')) {
+    await localAgentSetup.close();
+    localAgentSetup = null;
+  }
   apiBase = nextBase;
   currentToken = authToken;
 
@@ -228,10 +233,24 @@ async function connectDesktopRunner(token, nextApiBase) {
   }
 
   setNoteApiConfig({ url: helperUrl, token: authToken });
+  // Explicit local opt-in; never add browser-CSRF privilege to the TCP proxy.
+  if (process.env.FIZZER_LOCAL_AGENT_SETUP === '1' && nextBase === 'https://cscd.online' && !localAgentSetup) {
+    try {
+      const { startLocalAgentSetup } = require('./local-agent-setup.cjs');
+      const { net } = require('electron');
+      localAgentSetup = await startLocalAgentSetup({ fetch: net.fetch.bind(net) });
+    } catch {
+      console.error('[agent-setup] private setup unavailable; no endpoint replaced');
+    }
+  }
   return { success: true, helperUrl, apiBase: nextBase };
 }
 
 async function disconnectDesktopRunner() {
+  if (localAgentSetup) {
+    await localAgentSetup.close();
+    localAgentSetup = null;
+  }
   currentToken = '';
   apiBase = 'https://cscd.online';
   stopHelperProxy();

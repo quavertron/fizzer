@@ -11,12 +11,10 @@ defmodule Cascade.Content.Privacy do
   def redact_note(nil, _agent?), do: nil
 
   def redact_note(note, agent?) do
-    note = Map.delete(note, :file_path)
-
     note =
-      if is_binary(note[:content]),
-        do: Map.put(note, :revision, Cascade.WikiMaintenance.revision(note.content)),
-        else: note
+      note
+      |> Map.delete(:file_path)
+      |> maybe_put_revision()
 
     if agent? do
       note
@@ -26,6 +24,21 @@ defmodule Cascade.Content.Privacy do
       note
     end
   end
+
+  def note_revision(%{revision_counter: counter}) when is_integer(counter) and counter >= 1,
+    do: "note-v1:#{counter}"
+
+  def note_revision(%{revision_counter: counter}) when is_binary(counter) do
+    case Integer.parse(counter) do
+      {value, ""} when value >= 1 -> "note-v1:#{value}"
+      _ -> raise ArgumentError, "note revision counter is invalid"
+    end
+  end
+
+  def note_revision(_note), do: raise(ArgumentError, "note revision counter is required")
+
+  def revision(content),
+    do: :crypto.hash(:sha256, redact_blocks(content)) |> Base.encode16(case: :lower)
 
   def redact_blocks(content) do
     replace_blocks(to_string(content), fn block ->
@@ -185,4 +198,16 @@ defmodule Cascade.Content.Privacy do
       _ -> map
     end
   end
+  defp maybe_put_revision(%{revision_counter: counter} = note)
+       when is_integer(counter) and counter >= 1,
+       do: Map.put(note, :revision, note_revision(note))
+
+  defp maybe_put_revision(%{revision_counter: counter} = note) when is_binary(counter) do
+    case Integer.parse(counter) do
+      {value, ""} when value >= 1 -> Map.put(note, :revision, note_revision(%{note | revision_counter: value}))
+      _ -> note
+    end
+  end
+
+  defp maybe_put_revision(note), do: note
 end

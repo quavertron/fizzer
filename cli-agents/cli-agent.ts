@@ -60,15 +60,26 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getHermesProfileCommand } from './hermes-profile-command.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir(): string {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
 
 export const activeCliProcesses = new Map<number, ChildProcess>();
 const activePersistentCancels = new Map<number, () => void>();
 const groupedCliProcesses = new Set<number>();
 const agentProcessLeaseDir = process.env.CASCADE_AGENT_PROCESS_DIR
-  || path.join(os.homedir(), '.cascade', 'agent-processes');
+  || path.join(fizzerDir(), 'agent-processes');
 
 type AgentProcessLease = {
   version: 1;
@@ -643,7 +654,8 @@ export interface CliAgentResult {
  * @returns Summary text and optional session id for conversation continuity
  */
 export async function runCliAgent(opts: CliAgentOpts): Promise<CliAgentResult> {
-  assertCliAgentAvailable(opts.agent);
+  // Hermes availability depends on its profile's local executable route.
+  if (opts.agent !== 'hermes') assertCliAgentAvailable(opts.agent);
 
   // The CLIs are full agents in their own right; we only prepend a short
   // context line (which note is open), then pass the user's prompt verbatim.
@@ -2103,7 +2115,7 @@ function writeAntigravityHelperContext(
         basePayload = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf-8')) as Record<string, unknown>;
       } catch { /* ignore */ }
     } else if (runId) {
-      const runContextPath = path.join(home, '.cascade', 'run-contexts', `${runId}.json`);
+      const runContextPath = path.join(fizzerDir(), 'run-contexts', `${runId}.json`);
       if (fs.existsSync(runContextPath)) {
         try {
           basePayload = JSON.parse(fs.readFileSync(runContextPath, 'utf-8')) as Record<string, unknown>;
@@ -2114,7 +2126,7 @@ function writeAntigravityHelperContext(
     let token = String(env?.CASCADE_NOTE_TOKEN || basePayload.token || '').trim();
     if (!token) {
       try {
-        const diskTokenPath = path.join(home, '.cascade', 'token');
+        const diskTokenPath = path.join(fizzerDir(), 'token');
         if (fs.existsSync(diskTokenPath)) {
           token = fs.readFileSync(diskTokenPath, 'utf-8').trim();
         }
@@ -2137,14 +2149,14 @@ function writeAntigravityHelperContext(
     const content = JSON.stringify(payload, null, 2);
 
     if (conversationId) {
-      const convDir = path.join(home, '.cascade', 'conversations');
+      const convDir = path.join(fizzerDir(), 'conversations');
       fs.mkdirSync(convDir, { recursive: true, mode: 0o700 });
       const convPath = path.join(convDir, `${conversationId}.json`);
       fs.writeFileSync(convPath, content, { mode: 0o600 });
       try { fs.chmodSync(convPath, 0o600); } catch { /* ignore */ }
     }
 
-    const helperContextPath = path.join(home, '.cascade', 'agent-helper-context.json');
+    const helperContextPath = path.join(fizzerDir(), 'agent-helper-context.json');
     fs.mkdirSync(path.dirname(helperContextPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(helperContextPath, content, { mode: 0o600 });
     try { fs.chmodSync(helperContextPath, 0o600); } catch { /* ignore */ }
@@ -2720,6 +2732,9 @@ async function runHermes(prompt: string, cwd: string, emit: AgentEmit, resumeId?
     throw new Error('Hermes profile must use letters, numbers, dots, underscores, or dashes.');
   }
   const profileArgs = profileName ? ['-p', profileName] : [];
+  const profileCommand = getHermesProfileCommand(profileName);
+  if (!profileCommand) assertCliAgentAvailable('hermes');
+  const command = profileCommand ?? getCliAgentBin('hermes');
   const postureArgs = [...(yolo ? ['--yolo'] : []), ...(safeMode ? ['--safe-mode'] : [])];
   const args = resumeId
     ? [...profileArgs, 'chat', '-Q', '--resume', resumeId, '-q', prompt, ...modelArgs, ...postureArgs]
@@ -2778,7 +2793,7 @@ async function runHermes(prompt: string, cwd: string, emit: AgentEmit, resumeId?
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       summaryText = await driveHermesProcess(
-        getCliAgentBin('hermes'),
+        command,
         args,
         cwd,
         onStdoutLine,

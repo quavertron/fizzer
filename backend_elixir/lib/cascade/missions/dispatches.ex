@@ -29,29 +29,7 @@ defmodule Cascade.Missions.Dispatches do
     end
   end
 
-  def retract_pending_reply(dispatch_id) do
-    SQL.transaction(fn ->
-      reply_id = "agent-dispatch-#{dispatch_id}"
-
-      with nil <- Cascade.Runs.Store.find_by_chat_dispatch(dispatch_id),
-           [vault_id, channel_id] <-
-             SQL.one(
-               "SELECT vault_id,channel_id FROM chat_messages WHERE id=? AND run_id IS NULL",
-               [reply_id]
-             ) do
-        SQL.exec("DELETE FROM chat_messages WHERE id=?", [reply_id])
-
-        Events.emit(%{
-          event: "vault:chatMessageDeleted",
-          vaultId: vault_id,
-          channelId: channel_id,
-          messageId: reply_id
-        })
-      else
-        _ -> :ok
-      end
-    end)
-  end
+  defdelegate retract_pending_reply(dispatch_id), to: Cascade.Chat.PendingReply, as: :retract
 
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
@@ -88,7 +66,7 @@ defmodule Cascade.Missions.Dispatches do
         )
       end)
 
-      Cascade.Missions.DispatchReannouncer.wake()
+      Cascade.Missions.WorkAvailable.notify()
 
       case SQL.one(
              "SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?",
@@ -259,6 +237,55 @@ defmodule Cascade.Missions.Dispatches do
              String.starts_with?(dispatch.messageId, "sys-mission-"),
            do: Cascade.Missions.Interpretation.keep_wake?(dispatch.id),
            else: true
+    end
+  end
+
+  @doc "SELECT-only delivery authorization for an already claimed dispatch; never re-admits it."
+  def delivery_allowed?(dispatch_id, run_id, owner_id) do
+    with [
+           requester,
+           channel,
+           source,
+           registration,
+           identity,
+           pingable,
+           taggable,
+           message_registration,
+           agent
+         ] <-
+           SQL.one(
+             """
+             SELECT d.requester_user_id,d.requester_channel_id,d.channel_id,m.id,va.id,
+               m.pingable_by_others,m.taggable_by_agents,msg.registration_id,msg.agent_id
+             FROM chat_agent_dispatches d
+             JOIN chat_agent_members m ON m.id=d.registration_id AND m.channel_id=d.channel_id
+             JOIN vault_agents va ON va.id=m.vault_agent_id
+             JOIN chat_messages msg ON msg.id=d.message_id AND msg.channel_id=d.channel_id
+             WHERE d.id=? AND d.run_id=? AND d.failed_at IS NULL
+               AND d.target_owner_user_id=? AND va.owner_user_id=d.target_owner_user_id
+               AND va.id=d.target_identity_id
+               AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+               AND NOT EXISTS(SELECT 1 FROM vault_agent_exclusions x
+                 WHERE x.vault_id=m.vault_id AND x.vault_agent_id=va.id)
+             """,
+             [dispatch_id, run_id, owner_id]
+           ),
+         {:ok, %{sourceChannelId: ^source}} <- Channel.assert_channel(channel, requester),
+         {:ok, %{ownerId: ^owner_id, ownerChannelId: owner_channel}} <-
+           Agents.resolve_owner_projection(requester, channel, registration),
+         {:ok, _} <- Channel.assert_channel(owner_channel, owner_id) do
+      allowed?(
+        requester,
+        %{
+          ownerUserId: owner_id,
+          vaultAgentId: identity,
+          pingableByOthers: pingable == 1,
+          taggableByAgents: taggable == 1
+        },
+        %{registrationId: message_registration, agentId: agent}
+      )
+    else
+      _ -> false
     end
   end
 

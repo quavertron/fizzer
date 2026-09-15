@@ -442,7 +442,11 @@ async function main() {
         if (!ref) fail('memory update needs an id or title.');
         const selected = await resolveMemoryNote(url, token, vaultId, args, config, ref);
         const content = await bodyContent(args);
-        const { note } = await api(url, token, 'PUT', `/api/notes/${selected.id}`, { content });
+        const { note: existing } = await api(url, token, 'GET', `/api/notes/${selected.id}`);
+        const { note } = await api(url, token, 'PUT', `/api/notes/${selected.id}`, {
+          content,
+          ...(existing.revision ? { expectedRevision: existing.revision } : {}),
+        });
         out(args, `updated ${note.id}  ${note.title}`, note);
       } else if (sub === 'delete') {
         const ref = args._[2];
@@ -551,15 +555,18 @@ async function main() {
       if (!ref) fail(`${cmd} needs a note id or title.`);
       const vaultId = await resolveVault(url, token, args, config);
       const id = await resolveNote(url, token, vaultId, ref);
+      const { note: existing } = await api(url, token, 'GET', `/api/notes/${id}`);
       const incoming = await bodyContent(args);
       let content = incoming;
       if (cmd === 'append') {
-        const { note: existing } = await api(url, token, 'GET', `/api/notes/${id}`);
         const sep = existing.content.endsWith('\n') ? '' : '\n';
         content = existing.content + sep + incoming;
       }
       const normalizedContent = content.replace(/\\+`/g, '`');
-      const { note } = await api(url, token, 'PUT', `/api/notes/${id}`, { content: normalizedContent });
+      const { note } = await api(url, token, 'PUT', `/api/notes/${id}`, {
+        content: normalizedContent,
+        ...(existing.revision ? { expectedRevision: existing.revision } : {}),
+      });
       out(args, `${cmd === 'append' ? 'appended to' : 'updated'} ${note.id}  ${note.title}`, note);
       break;
     }

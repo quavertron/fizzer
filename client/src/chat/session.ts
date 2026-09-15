@@ -54,6 +54,12 @@ function sanitizeRestoredTabs(value: unknown): Tab[] {
       if (tab.type === 'chat') {
         return { id: tab.id, title: tab.title.replace(/^#/, '') || 'Channel', type: 'chat', dirty: false };
       }
+      if (tab.type === 'mission') {
+        // Mission tabs are addressed by a namespaced identity so restoration
+        // cannot accidentally hydrate the mission's channel as a note.
+        const missionId = tab.id.startsWith('mission:') ? tab.id : `mission:${tab.id}`;
+        return { id: missionId, title: tab.title || 'Mission', type: 'mission', dirty: false };
+      }
       if (tab.type === 'note') {
         return { id: tab.id, title: tab.title, type: 'note', dirty: false };
       }

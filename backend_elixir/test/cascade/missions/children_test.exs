@@ -4,7 +4,7 @@ defmodule Cascade.Missions.ChildrenTest do
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Messages}
   alias Cascade.Content.Store, as: ContentStore
-  alias Cascade.Missions.{Dispatches, Scheduler, Store}
+  alias Cascade.Missions.{Dispatches, Interpretation, Scheduler, Store}
   alias Cascade.Missions.Children
   alias Cascade.Runs.Store, as: RunStore
 
@@ -78,6 +78,41 @@ defmodule Cascade.Missions.ChildrenTest do
       worker: worker,
       suffix: suffix
     }
+  end
+
+  test "research children retain the server-owned parent purpose", ctx do
+    {mission, parent, run} = parent(ctx)
+    SQL.exec("UPDATE chat_mission_tasks SET purpose='research' WHERE id=?", [parent.id])
+    SQL.exec("UPDATE chat_missions SET phase='planning',approved_at=NULL WHERE id=?", [mission.id])
+
+    for input <- [%{title: "Omitted purpose"}, %{title: "Attempted escalation", purpose: "implementation"}] do
+      assert {:ok, child} = Children.add(ctx.user.id, ctx.channel.id, mission.id, input, run.id)
+      assert child.task.purpose == "research"
+      assert child.update.mission.phase == "planning"
+      assert child.update.mission.approvedAt == nil
+    end
+  end
+
+  test "integration and verification children inherit the parent's prerequisites", ctx do
+    {mission, parent, run} = parent(ctx)
+    {_, stages} = Enum.reduce(~w(implementation review integration), {[], %{}}, fn purpose, {deps, stages} ->
+      assignee = if purpose == "review", do: ctx.coordinator.id, else: ctx.worker.id
+      assert {:ok, added} = Store.add_task(ctx.user.id, ctx.channel.id, mission.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        assignee: assignee, anonymous: purpose == "review",
+        title: "Prerequisite #{purpose}", purpose: purpose, dependsOn: deps
+      })
+      SQL.exec("UPDATE chat_mission_tasks SET status='completed',review_outcome='accepted' WHERE id=?", [added.task.id])
+      {[added.task.id], Map.put(stages, purpose, added.task.id)}
+    end)
+
+    for {purpose, prerequisite} <- [{"integration", stages["review"]}, {"verification", stages["integration"]}] do
+      SQL.exec("UPDATE chat_mission_tasks SET purpose=?,depends_on_json=? WHERE id=?", [purpose, Jason.encode!([prerequisite]), parent.id])
+      assert {:ok, child} = Children.add(ctx.user.id, ctx.channel.id, mission.id, %{title: "Child #{purpose}"}, run.id)
+      assert child.task.purpose == purpose
+      assert child.task.dependsOn == [prerequisite]
+      assert Enum.any?(Store.schedulable(mission.id).candidates, &(&1.taskId == child.task.id))
+    end
   end
 
   test "parallel children join once, resume their parent with artifacts, and gate completion",
@@ -329,7 +364,7 @@ defmodule Cascade.Missions.ChildrenTest do
     :ok = RunStore.finish(run.id, "canceled", "Stopped")
     {:ok, _} = Scheduler.settle_run(run.id, "canceled", "Stopped")
 
-    Cascade.Missions.Recovery.replay_cancellations(fn user, id ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn user, id ->
       assert user == ctx.user.id
       assert id == child_run.id
       false
@@ -337,7 +372,7 @@ defmodule Cascade.Missions.ChildrenTest do
 
     assert RunStore.get(child_run.id).status == child_run.status
 
-    Cascade.Missions.Recovery.replay_cancellations(fn user, id ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn user, id ->
       assert user == ctx.user.id
       assert id == child_run.id
       true
@@ -345,7 +380,7 @@ defmodule Cascade.Missions.ChildrenTest do
 
     assert RunStore.get(child_run.id).status == "canceled"
 
-    Cascade.Missions.Recovery.replay_cancellations(fn _, _ ->
+    Cascade.Missions.Scheduler.replay_cancellations(fn _, _ ->
       flunk("Canceled children must not be replayed")
     end)
 
@@ -360,7 +395,7 @@ defmodule Cascade.Missions.ChildrenTest do
     {:ok, _} = Store.update_task(ctx.user.id, ctx.channel.id, parent.id, %{status: "canceled"})
 
     attempted = fn acknowledge ->
-      Cascade.Missions.Recovery.replay_cancellations(fn owner, id ->
+      Cascade.Missions.Scheduler.replay_cancellations(fn owner, id ->
         assert owner == ctx.user.id
         send(self(), {:stop, id})
         acknowledge
@@ -377,7 +412,7 @@ defmodule Cascade.Missions.ChildrenTest do
     attempted.(true)
     assert RunStore.get(run.id).status == "canceled"
     assert RunStore.get(child_run.id).status == "canceled"
-    Cascade.Missions.Recovery.replay_cancellations(fn _, _ -> flunk("Already stopped") end)
+    Cascade.Missions.Scheduler.replay_cancellations(fn _, _ -> flunk("Already stopped") end)
     assert Scheduler.schedule(mission.id).dispatches == []
   end
 
@@ -494,15 +529,40 @@ defmodule Cascade.Missions.ChildrenTest do
         title: "Child lifecycle"
       })
 
-    {:ok, added} =
-      Store.add_task(ctx.user.id, ctx.channel.id, created.mission.id, %{
-        coordinatorRegistrationId: ctx.coordinator.id,
-        assignee: ctx.worker.id,
-        title: "Parent"
+    brief =
+      ContentStore.create_note(ctx.vault.id, ctx.user.id, %{
+        id: "mission-brief-#{created.mission.id}",
+        title: "Child lifecycle brief",
+        content: "Implement and verify the child lifecycle.",
+        is_listed: true
       })
 
-    [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
-    {created.mission, added.task, start(ctx, dispatch)}
+    brief_revision = Cascade.Content.Privacy.note_revision(brief)
+
+    SQL.exec(
+      """
+      INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision)
+      VALUES(?,?, 'mission',NULL,0,?)
+      """,
+      [created.mission.id, brief.id, brief_revision]
+    )
+
+    {:ok, approved} =
+      Store.approve_workspace(ctx.user.id, ctx.vault.id, created.mission.id, %{
+        brief.id => brief_revision
+      })
+    acknowledge_approval(ctx, approved.id)
+
+    {:ok, added} =
+      Store.add_task(ctx.user.id, ctx.channel.id, approved.id, %{
+        coordinatorRegistrationId: ctx.coordinator.id,
+        assignee: ctx.worker.id,
+        title: "Parent",
+        purpose: "implementation"
+      })
+
+    [%{dispatch: dispatch}] = Scheduler.schedule(approved.id).dispatches
+    {approved, added.task, start(ctx, dispatch)}
   end
 
   defp start(ctx, dispatch) do
@@ -510,5 +570,45 @@ defmodule Cascade.Missions.ChildrenTest do
     :ok = Dispatches.attach_run(dispatch.id, run.id)
     {:ok, _} = Store.attach_run(dispatch.id, run.id)
     run
+  end
+
+  defp acknowledge_approval(ctx, mission_id) do
+    [dispatch_id] =
+      SQL.one(
+        "SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?",
+        [mission_id]
+      )
+
+    assert is_binary(dispatch_id)
+    {:ok, dispatch} = Dispatches.get(ctx.user.id, ctx.channel.id, dispatch_id)
+
+    {:ok, run} =
+      RunStore.start(ctx.vault.id, nil, "Interpret", "codex",
+        owner_user_id: ctx.user.id,
+        chat_dispatch_id: dispatch.id,
+        conversation_id: dispatch.conversationId
+      )
+
+    :ok = Dispatches.attach_run(dispatch.id, run.id)
+
+    {:ok, state} =
+      Interpretation.get(ctx.user.id, ctx.channel.id, mission_id, ctx.coordinator.id)
+
+    assert {:ok, _} =
+             Interpretation.record(
+               ctx.user,
+               ctx.channel.id,
+               mission_id,
+               ctx.coordinator.id,
+               %{
+                 "revision" => state.revision,
+                 "fingerprint" => state.fingerprint,
+                 "noMaterialChange" => true
+               },
+               run.id,
+               Cascade.Chat.Events.Noop
+             )
+
+    :ok = RunStore.finish(run.id, "completed", "Acknowledged approval")
   end
 end

@@ -543,14 +543,21 @@ defmodule Cascade.Realtime.Session do
   end
 
   defp apply_action(
-         {:refresh_chat_presence, source_vault_id, source_channel_id},
+         {:domain, action},
          _namespace,
          _ack_id,
          _identity,
          state
        ) do
-    Cascade.Realtime.Events.emit_presence(source_vault_id, source_channel_id)
-    {:ok, state}
+    case state.domain.handle_action(action) do
+      :ok -> {:ok, state}
+      {:error, _} = error -> error
+      _ -> {:error, "Invalid realtime domain action result"}
+    end
+  rescue
+    _ -> {:error, "Realtime domain action failed"}
+  catch
+    _, _ -> {:error, "Realtime domain action failed"}
   end
 
   defp apply_action({:ack, data}, namespace, ack_id, _identity, state) when is_integer(ack_id),
@@ -637,8 +644,42 @@ defmodule Cascade.Realtime.Session do
 
   defp put_disconnect_rooms(context, rooms), do: %{domain_context: context, rooms: rooms}
 
+  # Recheck at enqueue (including immediate websocket/waiting-poll sends) and
+  # again when draining. Authorization at admission cannot bless a stale packet.
+  defp deliverable?(raw, state) do
+    case EngineIO.decode_packet(raw) do
+      {:ok, %{type: :message, data: data}} ->
+        case SocketIO.decode(data) do
+          {:ok, %{namespace: "/runners", type: :event, data: ["run:delegate", payload]}} ->
+            with %{identity: %{id: owner_id}} <- state.namespaces["/runners"],
+                 true <- is_map(payload),
+                 true <- function_exported?(state.domain, :authorize_delivery, 2) do
+              state.domain.authorize_delivery(Map.get(payload, "runId"), owner_id) == true
+            else
+              _ -> false
+            end
+
+          {:ok, %{namespace: "/runners", type: :event, data: ["run:delegate" | _]}} ->
+            false
+
+          _ ->
+            true
+        end
+
+      _ ->
+        true
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
   defp enqueue(raw, state) do
     cond do
+      not deliverable?(raw, state) ->
+        enqueue(EngineIO.encode_packet(%{type: :noop}), state)
+
       state.websocket != nil and state.active_transport == :websocket ->
         case Process.info(state.websocket, :message_queue_len) do
           {:message_queue_len, length} when length >= state.max_mailbox ->
@@ -674,11 +715,12 @@ defmodule Cascade.Realtime.Session do
 
   defp drain_queue(state) do
     {packets, state} = drain_packets(state)
-    {packets |> Enum.intersperse(<<0x1E>>) |> IO.iodata_to_binary(), state}
+    payload = packets |> Enum.intersperse(<<0x1E>>) |> IO.iodata_to_binary()
+    {if(payload == "", do: EngineIO.encode_packet(%{type: :noop}), else: payload), state}
   end
 
   defp drain_packets(state) do
-    packets = :queue.to_list(state.queue)
+    packets = state.queue |> :queue.to_list() |> Enum.filter(&deliverable?(&1, state))
     {packets, %{state | queue: :queue.new(), queue_packets: 0, queue_bytes: 0}}
   end
 

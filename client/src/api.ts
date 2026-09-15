@@ -45,7 +45,18 @@ export type Vault = {
   role?: VaultRole | null;
   memberCount?: number;
   visibility?: 'private' | 'public';
+  origin?: string;
+  token?: string;
 };
+
+export function vaultOriginBadge(vault: Vault): string {
+  if (!vault.origin) return '⌂ Local';
+  try {
+    return `☁ ${new URL(vault.origin).host}`;
+  } catch {
+    return `☁ ${vault.origin}`;
+  }
+}
 
 /** Discovery, membership, and permission are independent facts. */
 export function vaultDetailsLabel(vault: Vault): string {
@@ -162,25 +173,130 @@ export class ApiError extends Error {
   }
 }
 
+export type RemoteVaultRecord = {
+  id: string;
+  name: string;
+  origin: string;
+  token: string;
+  role?: VaultRole | null;
+};
+
+const vaultOriginMap = new Map<string, { origin: string; token?: string }>();
+
+export function registerVaultOrigin(vaultId: string, origin: string, token?: string) {
+  vaultOriginMap.set(vaultId, { origin, token });
+}
+
+export function unregisterVaultOrigin(vaultId: string) {
+  vaultOriginMap.delete(vaultId);
+}
+
+export function getVaultOrigin(vaultId: string) {
+  return vaultOriginMap.get(vaultId);
+}
+
+// Origin/token of the vault currently open. Vault-scoped requests that aren't
+// under `/api/vaults/:id` (e.g. `/api/notes/*`) must target this so a remote
+// vault's notes/assets load from its instance instead of the local backend.
+let activeVaultOrigin: { origin?: string; token?: string } = {};
+
+export function setActiveVaultOrigin(origin?: string, token?: string) {
+  activeVaultOrigin = { origin, token };
+}
+
+export async function getRemoteVaults(): Promise<RemoteVaultRecord[]> {
+  const electronAPI = (window as unknown as {
+    electronAPI?: { getRemoteVaults?: () => Promise<RemoteVaultRecord[]> };
+  }).electronAPI;
+  if (electronAPI?.getRemoteVaults) {
+    try {
+      const vaults = await electronAPI.getRemoteVaults();
+      if (Array.isArray(vaults)) return vaults;
+    } catch {
+      // Fall back to localStorage
+    }
+  }
+  try {
+    const raw = localStorage.getItem('fizzer_remote_vaults');
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveRemoteVault(record: RemoteVaultRecord): Promise<void> {
+  const current = await getRemoteVaults();
+  const next = [...current.filter((r) => r.id !== record.id || r.origin !== record.origin), record];
+  const electronAPI = (window as unknown as {
+    electronAPI?: { saveRemoteVaults?: (vaults: RemoteVaultRecord[]) => Promise<unknown> };
+  }).electronAPI;
+  if (electronAPI?.saveRemoteVaults) {
+    try {
+      await electronAPI.saveRemoteVaults([record]);
+    } catch {}
+  }
+  try {
+    localStorage.setItem('fizzer_remote_vaults', JSON.stringify(next));
+  } catch {}
+}
+
+export type ApiOptions = RequestInit & {
+  origin?: string;
+  token?: string;
+};
+
 /**
  * Generic typed fetch wrapper for the Cascade API.
  *
- * Sends the HttpOnly session cookie. Legacy JavaScript-readable credentials are
- * discarded instead of being attached to requests.
+ * Automatically routes requests according to origin configuration, attaching
+ * session cookies or bearer tokens as appropriate.
  *
  * @template T - Expected shape of the JSON response body
  * @param path - API path (e.g. `/api/vaults`)
- * @param options - Standard `RequestInit` options (method, body, headers, etc.)
+ * @param options - Standard `RequestInit` options plus optional origin/token
  * @returns Parsed JSON response typed as `T`
  */
-export async function api<T>(path: string, options: RequestInit = {}) {
+export async function api<T>(path: string, options: ApiOptions = {}) {
   localStorage.removeItem('docs_token');
-  const headers = {
+
+  let targetOrigin = options.origin;
+  let targetToken = options.token;
+
+  if (!targetOrigin) {
+    const match = /^\/api\/vaults\/([^/]+)/.exec(path);
+    if (match) {
+      const vaultId = match[1];
+      const entry = vaultOriginMap.get(vaultId);
+      if (entry) {
+        targetOrigin = entry.origin;
+        if (!targetToken) targetToken = entry.token;
+      }
+    } else if (activeVaultOrigin.origin && /^\/api\/notes\//.test(path)) {
+      // Note/asset/mission-brief content belongs to the open vault's instance.
+      targetOrigin = activeVaultOrigin.origin;
+      if (!targetToken) targetToken = activeVaultOrigin.token;
+    }
+  }
+
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Cascade-Browser': '1',
-    ...options.headers,
+    ...(options.headers as Record<string, string>),
   };
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
+  if (targetToken) {
+    headers['Authorization'] = `Bearer ${targetToken}`;
+  }
+
+  const base = targetOrigin ? targetOrigin.replace(/\/+$/, '') : API_BASE;
+  const url = path.startsWith('http://') || path.startsWith('https://') ? path : `${base}${path}`;
+
+  const { origin: _ignoredOrigin, token: _ignoredToken, ...fetchOptions } = options;
+
+  const res = await fetch(url, {
+    ...fetchOptions,
+    headers,
+    credentials: targetOrigin && !url.startsWith(window.location.origin) ? 'same-origin' : 'include',
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const body = data && typeof data === 'object' ? data as Record<string, unknown> : {};

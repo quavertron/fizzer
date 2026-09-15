@@ -9,6 +9,12 @@ import type { ChatAgentRegistration, ChatMediaAttachment, ChatReplyRef } from '.
 export const CHAT_MEDIA_LIMIT = 8;
 export const CHAT_MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 
+type PendingMedia = ChatMediaAttachment & {
+  controller: AbortController;
+  uploadedUrl?: string;
+  error?: string;
+};
+
 const CHAT_EMOJIS = ['😀', '😂', '😍', '🥳', '😎', '🤔', '👍', '👎', '❤️', '🔥', '🎉', '✅', '👀', '🙏', '💎', '🚀'];
 
 type ElectronClipboardAPI = {
@@ -95,13 +101,35 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
   const [draft, setDraft] = useState('');
   const [replyTarget, setReplyTarget] = useState<ChatReplyRef | null>(null);
   const [replyNotifiesAgent, setReplyNotifiesAgent] = useState(true);
-  const [pendingMedia, setPendingMedia] = useState<ChatMediaAttachment[]>([]);
+  const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([]);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [mediaError, setMediaError] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const emojiPickerRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const mentionCycleRef = useRef<{ matches: string[]; index: number; start: number } | null>(null);
+
+  const mediaRef = useRef<PendingMedia[]>([]);
+  const mediaGenerationRef = useRef(0);
+
+  const replaceMedia = useCallback((items: PendingMedia[]) => {
+    mediaRef.current = items;
+    setPendingMedia(items);
+  }, []);
+
+  const clearMedia = useCallback(() => {
+    mediaGenerationRef.current++;
+    for (const item of mediaRef.current) {
+      item.controller.abort();
+      URL.revokeObjectURL(item.url);
+    }
+    replaceMedia([]);
+  }, [replaceMedia]);
+
+  useLayoutEffect(() => {
+    setMediaError('');
+    return clearMedia;
+  }, [channelId, clearMedia]);
 
   useImperativeHandle(ref, () => ({
     startReply(reply: ChatReplyRef) {
@@ -137,37 +165,63 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     };
   }, [channelId]);
 
-  const addMediaFiles = useCallback(async (files: File[]) => {
-    if (files.length === 0) return;
-    const next: ChatMediaAttachment[] = [];
+  const addMediaFiles = useCallback((files: File[]) => {
+    setMediaError('');
     for (const file of files) {
-      const item = await readMediaFile(file);
-      if (!item) {
+      if (file.size > CHAT_MEDIA_MAX_BYTES) {
         setMediaError(`"${file.name}" is too large (max ${CHAT_MEDIA_MAX_BYTES / (1024 * 1024)}MB).`);
         continue;
       }
-      try {
-        const uploaded = await api<{ url: string }>(`/api/notes/${channelId}/assets`, {
-          method: 'POST',
-          body: JSON.stringify({ media_type: item.media_type, data: item.data, filename: item.name }),
-        });
-        next.push({ ...item, url: uploaded.url });
-      } catch (error) {
-        setMediaError(error instanceof Error ? error.message : `Could not upload "${file.name}".`);
+      if (mediaRef.current.length >= CHAT_MEDIA_LIMIT) {
+        setMediaError(`You can attach up to ${CHAT_MEDIA_LIMIT} files.`);
+        break;
       }
+      const controller = new AbortController();
+      const item: PendingMedia = {
+        name: file.name, media_type: inferredMediaType(file), data: '',
+        url: URL.createObjectURL(file), controller,
+      };
+      // Paint from the local file immediately, without waiting for encoding or upload.
+      replaceMedia([...mediaRef.current, item]);
+      const update = (patch: Partial<PendingMedia>) => {
+        if (controller.signal.aborted) return;
+        replaceMedia(mediaRef.current.map((current) => current.controller === controller
+          ? { ...current, ...patch } : current));
+      };
+      void (async () => {
+        try {
+          const encoded = await readMediaFile(file);
+          if (controller.signal.aborted) return;
+          if (!encoded) throw new Error(`Could not read "${file.name}".`);
+          const uploaded = await api<{ url: string }>(`/api/notes/${channelId}/assets`, {
+            method: 'POST', signal: controller.signal,
+            body: JSON.stringify({ media_type: item.media_type, data: encoded.data, filename: item.name }),
+          });
+          update({ uploadedUrl: uploaded.url });
+        } catch (error) {
+          update({ error: error instanceof Error ? error.message : `Could not upload "${file.name}".` });
+        }
+      })();
     }
-    if (next.length === 0) return;
-    setMediaError('');
-    setPendingMedia((prev) => [...prev, ...next].slice(0, CHAT_MEDIA_LIMIT));
-  }, [channelId]);
+  }, [channelId, replaceMedia]);
 
   const addDesktopClipboardImage = useCallback(async () => {
-    const image = await getElectronClipboardAPI()?.readClipboardImage?.();
-    if (!image?.data || !isImageMediaType(image.media_type)) return false;
-    setMediaError('');
-    setPendingMedia((prev) => [...prev, image].slice(0, CHAT_MEDIA_LIMIT));
-    return true;
-  }, []);
+    const generation = mediaGenerationRef.current;
+    try {
+      const image = await getElectronClipboardAPI()?.readClipboardImage?.();
+      if (generation !== mediaGenerationRef.current || !image?.data || !isImageMediaType(image.media_type)) return;
+      if (image.data.length > Math.ceil(CHAT_MEDIA_MAX_BYTES / 3) * 4) {
+        setMediaError(`Clipboard image is too large (max ${CHAT_MEDIA_MAX_BYTES / (1024 * 1024)}MB).`);
+        return;
+      }
+      const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
+      addMediaFiles([new File([bytes], image.name || 'clipboard.png', { type: image.media_type })]);
+    } catch (error) {
+      if (generation === mediaGenerationRef.current) {
+        setMediaError(error instanceof Error ? error.message : 'Could not read clipboard image.');
+      }
+    }
+  }, [addMediaFiles]);
 
   const handlePaste = useCallback((event: React.ClipboardEvent) => {
     const files = Array.from(event.clipboardData?.items || [])
@@ -235,14 +289,17 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
 
   function submit() {
     const body = draft.trim();
-    if (!body && pendingMedia.length === 0) return;
+    const media = mediaRef.current;
+    if ((!body && media.length === 0) || media.some((item) => !item.uploadedUrl)) return;
     const reply = replyTarget
       ? prepareReplyForSend(replyTarget, replyNotifiesAgent)
       : undefined;
-    onSendMessage(channelId, body, pendingMedia, reply);
+    onSendMessage(channelId, body, media.map((item) => ({
+      name: item.name, media_type: item.media_type, data: '', url: item.uploadedUrl!,
+    })), reply);
     setDraft('');
     resetHistory();
-    setPendingMedia([]);
+    clearMedia();
     setMediaError('');
     setReplyTarget(null);
   }
@@ -292,7 +349,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     return cursor === cycle.start + cycleToken.length
       && value.slice(cycle.start, cursor) === cycleToken;
   }
-  const canSend = draft.trim().length > 0 || pendingMedia.length > 0;
+  const canSend = (draft.trim().length > 0 || pendingMedia.length > 0)
+    && pendingMedia.every((item) => Boolean(item.uploadedUrl));
 
   // Undo/redo history for the composer. A controlled textarea loses the browser's
   // native undo stack, so we keep our own snapshots and coalesce rapid typing into
@@ -450,8 +508,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
         )}
         {pendingMedia.length > 0 && (
           <div className="chat-paste-previews">
-            {pendingMedia.map((item, index) => (
-              <div key={`${item.name || 'media'}-${index}`} className="chat-paste-thumb">
+            {pendingMedia.map((item) => (
+              <div key={item.url} className="chat-paste-thumb">
                 {isImageMediaType(item.media_type) ? (
                   <img src={item.url} alt="" />
                 ) : isVideoMediaType(item.media_type) || isMp4Attachment(item) ? (
@@ -462,11 +520,20 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
                     <span>{item.name || 'file'}</span>
                   </div>
                 )}
+                {!item.uploadedUrl && (
+                  <span className="chat-paste-status" role={item.error ? 'alert' : 'status'} title={item.error}>
+                    {item.error ? `Upload failed: ${item.error}` : 'Uploading…'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="chat-paste-remove"
                   title="Remove"
-                  onClick={() => setPendingMedia((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
+                  onClick={() => {
+                    item.controller.abort();
+                    URL.revokeObjectURL(item.url);
+                    replaceMedia(mediaRef.current.filter((current) => current.controller !== item.controller));
+                  }}
                 >
                   <X size={10} />
                 </button>

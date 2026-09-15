@@ -3,9 +3,8 @@ defmodule Cascade.Missions.DispatchReannouncer do
   use GenServer
   require Logger
 
-  alias Cascade.Missions.{Dispatches, Recovery, Scheduler, Steering}
+  alias Cascade.Missions.{Dispatches, Execution, Scheduler, Steering}
   alias Cascade.Runs.RunnerLifecycle
-  alias CascadeWeb.OrchestrationController
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -127,16 +126,16 @@ defmodule Cascade.Missions.DispatchReannouncer do
   defp perform({:delivery, id}, owner), do: RunnerLifecycle.replay_delivery(id, owner)
 
   defp perform({:mission, id}, owner) do
-    Recovery.replay_cancellations(&RunnerLifecycle.cancel(&1, &2, 2_000), id)
+    Scheduler.replay_cancellations(&RunnerLifecycle.cancel(&1, &2, 2_000), id)
     Steering.replay(id)
     if RunnerLifecycle.online?(owner), do: Scheduler.schedule(id, events: Cascade.Realtime.Events)
   end
 
   defp perform({:dispatch, _session}, ids) do
-    Enum.each(ids, &OrchestrationController.prepare_dispatch/1)
+    Enum.each(ids, &Execution.prepare_dispatch/1)
 
     Enum.reduce_while(ids, :ok, fn id, _ ->
-      case OrchestrationController.execute_dispatch(id) do
+      case Execution.execute_dispatch(id) do
         {:busy, reason} ->
           Dispatches.retry(id, reason)
           {:cont, :ok}

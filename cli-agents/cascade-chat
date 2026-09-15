@@ -9,6 +9,7 @@
 
 'use strict';
 
+import { randomUUID } from 'node:crypto';
 import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,19 +31,22 @@ Usage:
   cascade-chat continuation              read unfinished coordinator responsibility
   cascade-chat continuation --status pending|waiting|completed|canceled --revision N --summary TEXT
   cascade-chat members                  list people-callable agent teammates
-  cascade-chat mission start --title T [--objective O] [--control-plane] [--message TEXT] [--review]
-  cascade-chat mission list [--status open|all|<states>] [--task-status open|all|<states>] [--detail]
+  cascade-chat mission start --title T [--message BRIEF]
+  cascade-chat mission list [--json]
   cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
   cascade-chat mission status [--mission <id|current>] [--json | --detail]
   cascade-chat mission interpret --mission <id> [--detail] [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
-  cascade-chat mission delegate --mission <id> --to @agent --task T --message P [--after <task-id,...>] [--priority N] [--effort E] [--anonymous] [--isolated]
+  cascade-chat mission delegate --mission <id> --to @agent --task T --purpose P --message I [--brief-note <id>] [--after <task-id,...>] [--priority N] [--effort E] [--isolated]
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
   cascade-chat mission join            inspect child results; end turn to wait and resume for integration
   cascade-chat mission steer --task <id> --message <instruction>
-  cascade-chat mission update --task <id> --status <status> [--summary S] [--finding]
+  cascade-chat mission update --task <id> --status <status> [--summary S] [--review-outcome accepted|changes_requested] [--verification-passed true|false] [--finding]
   cascade-chat mission retry --task <id> [--summary S]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
+  cascade-chat mission approve --mission <id> --expected-revisions '{"note-id":1}'
+  cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
+  cascade-chat mission note list --mission <id>
   cascade-chat mission finish --mission <id> --verification <observed-evidence> [--summary S]
   cascade-chat avatar --file <path>     upload this agent's profile picture
   cascade-chat avatar --url <https-url> use an existing uploaded note image
@@ -50,13 +54,18 @@ Usage:
   cascade-chat distill                 condense chat into a vault note
   cascade-chat search <query>          short matching excerpts; full messages via history
 
-Options:
-  --vault <id>              vault id (default $CASCADE_NOTE_VAULT)
-  --channel <id>            channel id (default $CASCADE_CHAT_CHANNEL)
-  --message <text>          message body for send (default: stdin)
+  --message <text>          message body for send; mission start uses it as the brief/request
   --mission <id|current>    mission id for mission commands
   --task <id|title>         task id (update) or title (delegate)
   --to <@handle>            target agent for send handoff or mission delegate
+  --purpose <type>          research|implementation|review|fix|integration|verification
+  --brief-note <id>         linked mission brief/note id for a delegated task
+  --review-outcome <value>  accepted|changes_requested for a completed review task
+  --verification-passed <b> true|false for a completed verification task
+  --expected-revisions <j>  JSON object mapping note IDs to revisions for approval
+  --kind <type>             milestone|feature for a mission note
+  --content <text>          content for a mission note
+  --parent-note-id <id>     parent mission note
   --reply-to <message-id>   source message for a typed send handoff
   --relation <type>         builds_on|review_request|question|contradiction|decision
   --status <status>         pending|running|completed|failed|blocked|canceled
@@ -66,17 +75,11 @@ Options:
                             active,reviewing,attention,blocked,completed,canceled or open|all
   --finding                 request coordinator interpretation of a significant finding or question
   --summary <text>          concise task/mission outcome
-  --authority-messages <ids> comma-separated owner-authored instruction sources for a new mission
   --verification <text>     coordinator-observed checks and artifact/live evidence required to finish
-  --objective <text>        mission objective (defaults to triggering message)
   --after <task-id,...>     wait for these mission tasks to complete
   --priority <-100..100>    schedule higher-priority ready work first
   --effort <level>          per-task reasoning effort override
-  --anonymous               parallel subagent of --to (same agent, no occupancy)
   --isolated                prepare a dedicated worktree instead of the channel cwd
-  --control-plane           start background work that completes without coordinator review
-  --review                  require coordinator review after background work settles
-  --root <message-id>       mission root (defaults to triggering chat message)
   --changes-file <path|->   JSON change request metadata for send (- reads stdin)
   --raw-message             preserve literal backslash-n sequences in --message
   --url <https-url>         profile picture URL for avatar
@@ -163,23 +166,23 @@ API failures include HTTP status and reason. An identical retry of a saved input
 returns its prior result; changing input at an already-used revision conflicts.`,
   'mission list': `cascade-chat mission list [--status <filter>] [--task-status <filter>] [--json | --detail]
 
-Default: compact ownership rows for open missions and open tasks, scoped to the
-current channel and coordinator when registered. No prompts or historical payloads.
+Default: compact ownership rows for open missions and open tasks across the
+current vault. The workspace endpoint returns linked note summaries and task
+evidence; filters are applied by the helper.
   --status open|all|<comma-separated statuses>
     open (default): active,reviewing,attention,blocked; also completed,canceled.
   --task-status open|all|<comma-separated statuses>
     open (default): pending,running,failed,blocked; also completed,canceled.
     Filters task rows, not the enclosing missions; empty missions remain visible.
   --json    compact JSON array, with the same filters.
-  --detail  full historical JSON through the existing detail API; no filters allowed.
+  --detail  full historical JSON; no filters allowed.
 
 Example: cascade-chat mission list --status open --task-status running --json
 Use mission status --mission <id> --detail for one mission's full detail.
 Invalid statuses and --detail combined with filters are errors.`,
   'mission status': `cascade-chat mission status [--mission <id|current>] [--json | --detail]
-Read current mission and task state, including owners, attempts and blockers.
---json replaces authority bodies with authorityMessageIds; retrieve --detail
-before acting on authority. --detail returns the original full JSON payload.
+Read current mission and task state, including phase, brief, notes, owners,
+attempts and blockers. Explicit mission IDs use the vault workspace endpoint.
 Every invocation fetches current server state; no unchanged-state cache.`,
   'mission diagnose': `cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
 Read-only comparison of task/run projection, forwarded provider events and runner presence.
@@ -668,58 +671,37 @@ async function main() {
       if (!registrationId) fail('mission start can only be used from a registered coordinator run.');
       const title = String(args.title || '').trim();
       if (!title) fail('mission start needs --title <text>.');
-      const triggerMessageId = String(
-        args.root
-        || configString(config, 'chatTriggeringMessageId')
-        || process.env.CASCADE_CHAT_TRIGGERING_MESSAGE
-        || '',
-      ).trim();
-      // Mission cards project onto root_message_id. Always attach under a
-      // coordinator shell (Supagrok header), not the human triggering message.
-      const syntheticId = `sys-mission-root-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const synthetic = await api(
+      const members = await api(
         url,
         token,
-        'POST',
-        `/api/vaults/${vaultId}/channels/${channelId}/messages`,
-        {
-          id: syntheticId,
-          channelId,
-          author: configString(config, 'displayName') || configString(config, 'mention') || 'Coordinator',
-          registrationId,
-          body: String(args.objective || '').trim() || title,
-          createdAt: new Date().toISOString(),
-          ...(triggerMessageId
-            ? { replyTo: { messageId: triggerMessageId, author: '', preview: title } }
-            : {}),
-        },
+        'GET',
+        `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/agents`,
       );
-      const rootMessageId = String(synthetic.message?.id || syntheticId).trim();
-      if (!rootMessageId) fail('mission start could not create a coordinator root message.');
+      const coordinator = (members.agents || []).find((member) => String(member.id) === registrationId);
+      const coordinatorIdentityId = String(coordinator?.vaultAgentId || '').trim();
+      if (!coordinatorIdentityId) {
+        fail(`mission start could not resolve coordinator registration ${registrationId} to a vault identity.`);
+      }
+      const rawBrief = args.message === true ? await readStdin() : args.message;
+      const briefContent = normalizeInlineMessage(
+        rawBrief === undefined ? title : rawBrief,
+        args['raw-message'] === true,
+      ).trim() || title;
       const result = await api(
         url,
         token,
         'POST',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions`,
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions`,
         {
-          rootMessageId,
-          coordinatorRegistrationId: registrationId,
+          id: randomUUID(),
           title,
-          objective: String(args.objective || '').trim(),
-          controlPlane: args['control-plane'] === true || args.message !== undefined,
-          reviewRequested: args.review === true,
-          authorityMessageIds: String(args['authority-messages'] || '').split(',').map(id => id.trim()).filter(Boolean),
+          coordinatorIdentityId,
+          briefContent,
         },
       );
-      if (args.message === undefined) {
-        if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
-        else process.stdout.write(`mission ${result.mission.id} started: ${result.mission.title}\n`);
-        return;
-      }
-      missionRef = result.mission.id;
-      sub = 'delegate';
-      args.to ||= registrationId;
-      args.anonymous = true;
+      if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
+      else process.stdout.write(`mission ${result.mission.id} started: ${result.mission.title}\n`);
+      return;
     }
     if (sub === 'diagnose') {
       const taskId = String(args.task || '').trim();
@@ -743,13 +725,10 @@ async function main() {
       return;
     }
     if (sub === 'status' || sub === 'show') {
-      const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';
-      const result = await api(
-        url,
-        token,
-        'GET',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}${coordinator}`,
-      );
+      const endpoint = missionRef === 'current'
+        ? `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/missions/current`
+        : `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}`;
+      const result = await api(url, token, 'GET', endpoint);
       if (args.json || args.detail) {
         const { authority, ...compact } = result.mission;
         process.stdout.write(JSON.stringify(args.detail ? result.mission : {
@@ -762,39 +741,47 @@ async function main() {
         const tasks = (mission.tasks || []).map((task) => (
           `  ${task.status === 'completed' ? '✓' : task.status === 'failed' || task.status === 'blocked' ? '!' : '·'} ${task.id}  ${task.title} — @${task.assigneeMention || task.assignee} (${task.status})${task.summary ? `\n      ${task.summary}` : ''}`
         )).join('\n');
-        process.stdout.write(`${mission.status}  ${mission.id}  ${mission.title}\n${tasks || '  (no tasks)'}\n`);
+        process.stdout.write(`${mission.status || mission.phase || 'unknown'}  ${mission.id}  ${mission.title}\n${tasks || '  (no tasks)'}\n`);
       }
       return;
     }
     if (sub === 'list') {
       if (args.detail && (args.status || args['task-status'])) fail('--detail cannot be combined with list filters.');
-      const query = new URLSearchParams();
-      if (registrationId) query.set('coordinator', registrationId);
-      if (!args.detail) {
-        query.set('view', 'compact');
-        for (const [flag, key, allowed] of [
-          ['status', 'status', ['active', 'reviewing', 'attention', 'blocked', 'completed', 'canceled']],
-          ['task-status', 'taskStatus', ['pending', 'running', 'completed', 'failed', 'blocked', 'canceled']],
-        ]) {
-          if (!args[flag]) continue;
-          const value = String(args[flag]);
-          if (!['open', 'all'].includes(value) && !value.split(',').every((state) => allowed.includes(state.trim()))) {
-            fail(`Invalid --${flag}; use open, all, or comma-separated ${allowed.join(',')}.`);
-          }
-          query.set(key, value);
-        }
-      }
       const result = await api(url, token, 'GET',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions${query.size ? `?${query}` : ''}`);
-      if (args.json || args.detail) process.stdout.write(JSON.stringify(result.missions || []) + '\n');
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions`);
+      let missions = result.missions || [];
+      if (!args.detail && args.status && String(args.status) !== 'all') {
+        const requested = String(args.status) === 'open'
+          ? ['active', 'reviewing', 'attention', 'blocked']
+          : String(args.status).split(',').map((state) => state.trim());
+        const allowed = ['planning', 'executing', 'closed', 'active', 'reviewing', 'attention', 'blocked', 'completed', 'canceled'];
+        if (!requested.every((state) => allowed.includes(state))) {
+          fail(`Invalid --status; use open, all, or comma-separated ${allowed.join(',')}.`);
+        }
+        missions = missions.filter((mission) => requested.includes(mission.status || mission.phase));
+      }
+      if (!args.detail && args['task-status'] && String(args['task-status']) !== 'all') {
+        const requested = String(args['task-status']) === 'open'
+          ? ['pending', 'running', 'failed', 'blocked']
+          : String(args['task-status']).split(',').map((state) => state.trim());
+        const allowed = ['pending', 'running', 'completed', 'failed', 'blocked', 'canceled'];
+        if (!requested.every((state) => allowed.includes(state))) {
+          fail(`Invalid --task-status; use open, all, or comma-separated ${allowed.join(',')}.`);
+        }
+        missions = missions.map((mission) => ({
+          ...mission,
+          tasks: (mission.tasks || []).filter((task) => requested.includes(task.status)),
+        }));
+      }
+      if (args.json || args.detail) process.stdout.write(JSON.stringify(missions) + '\n');
       else {
-        const lines = (result.missions || []).map((mission) => {
-          const owner = mission.coordinatorMention ? `@${mission.coordinatorMention}` : mission.coordinatorRegistrationId || 'unknown';
+        const lines = missions.map((mission) => {
+          const owner = mission.coordinatorMention || mission.coordinatorIdentityId || 'unknown';
           const tasks = (mission.tasks || []).map((task) => {
-            const owner = task.assigneeMention ? `@${task.assigneeMention}` : task.assigneeRegistrationId || 'unknown';
-            return `  ${task.status.padEnd(10)}  ${task.id}  ${task.title}  · ${owner}`;
+            const taskOwner = task.assigneeMention || task.assigneeRegistrationId || 'unknown';
+            return `  ${task.status.padEnd(10)}  ${task.id}  ${task.title}  · ${taskOwner}`;
           });
-          return [`${mission.status.padEnd(10)}  ${mission.id}  ${mission.title}  · ${owner}`, ...tasks].join('\n');
+          return [`${(mission.status || mission.phase || 'unknown').padEnd(10)}  ${mission.id}  ${mission.title}  · ${owner}`, ...tasks].join('\n');
         });
         process.stdout.write((lines.join('\n') || '(no missions)') + '\n');
       }
@@ -851,6 +838,59 @@ async function main() {
       }
       return;
     }
+    if (sub === 'approve') {
+      if (!missionRef || missionRef === 'current') fail('mission approve needs --mission <id>.');
+      const rawRevisions = String(args['expected-revisions'] || '').trim();
+      if (!rawRevisions) fail('mission approve needs --expected-revisions <JSON>.');
+      let expectedRevisions;
+      try { expectedRevisions = JSON.parse(rawRevisions); } catch { fail('mission approve expected revisions must be valid JSON.'); }
+      if (!expectedRevisions || typeof expectedRevisions !== 'object' || Array.isArray(expectedRevisions)) {
+        fail('mission approve expected revisions must be a JSON object.');
+      }
+      const result = await api(
+        url,
+        token,
+        'POST',
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}/approve`,
+        { expectedRevisions },
+      );
+      if (args.json) process.stdout.write(JSON.stringify(result.mission || result) + '\n');
+      else process.stdout.write(`mission ${result.mission?.id || missionRef} approved\n`);
+      return;
+    }
+    if (sub === 'note' || sub === 'notes') {
+      const action = String(args._[2] || 'list').toLowerCase();
+      if (!missionRef || missionRef === 'current') fail(`mission note ${action} needs --mission <id>.`);
+      const endpoint = `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}`;
+      if (action === 'list') {
+        const result = await api(url, token, 'GET', endpoint);
+        const notes = result.mission?.notes || [];
+        if (args.json) process.stdout.write(JSON.stringify(notes) + '\n');
+        else process.stdout.write((notes.map((note) => (
+          `${note.kind} ${note.noteId || note.id}  r${note.revision}  ${note.title || ''}`
+        )).join('\n') || '(no mission notes)') + '\n');
+        return;
+      }
+      if (action !== 'create') fail('mission note use create or list.');
+      const kind = String(args.kind || '').trim().toLowerCase();
+      if (!['milestone', 'feature'].includes(kind)) fail('mission note create needs --kind milestone|feature.');
+      const noteTitle = String(args.title || '').trim();
+      if (!noteTitle) fail('mission note create needs --title <text>.');
+      let noteContent = args.content;
+      if (noteContent === undefined) noteContent = args.message === true ? await readStdin() : args.message;
+      noteContent = normalizeInlineMessage(noteContent || '', args['raw-message'] === true).trim();
+      if (!noteContent) fail('mission note create needs --content <text> or stdin.');
+      const result = await api(url, token, 'POST', `${endpoint}/notes`, {
+        id: randomUUID(),
+        kind,
+        parentNoteId: String(args['parent-note-id'] || '').trim() || null,
+        title: noteTitle,
+        content: noteContent,
+      });
+      if (args.json) process.stdout.write(JSON.stringify(result) + '\n');
+      else process.stdout.write(`mission note ${result.note?.noteId || result.note?.id || 'created'} created\n`);
+      return;
+    }
     if (sub === 'child') {
       const title = String(args.task || args.title || '').trim();
       if (!title) fail('mission child needs --task <title>.');
@@ -868,10 +908,14 @@ async function main() {
     }
     if (sub === 'delegate') {
       if (!registrationId) fail('mission delegate can only be used from a registered coordinator run.');
+      if (args.anonymous === true) fail('mission delegate no longer supports anonymous self-delegation; assign a named agent with --to.');
       const assignee = String(args.to || '').trim();
       const title = String(args.task || args.title || '').trim();
+      const purpose = String(args.purpose || '').trim().toLowerCase();
+      const allowedPurposes = ['research', 'implementation', 'review', 'fix', 'integration', 'verification'];
       if (!assignee) fail('mission delegate needs --to <@agent>.');
       if (!title) fail('mission delegate needs --task <title>.');
+      if (!allowedPurposes.includes(purpose)) fail('mission delegate needs --purpose research|implementation|review|fix|integration|verification.');
       const fromStdin = args.message === true || args.message === undefined;
       const rawPrompt = fromStdin ? await readStdin() : args.message;
       const prompt = (fromStdin
@@ -885,12 +929,13 @@ async function main() {
         {
           coordinatorRegistrationId: registrationId,
           title,
+          purpose,
           assignee,
           prompt,
+          ...(args['brief-note'] !== undefined ? { briefNoteId: String(args['brief-note']).trim() } : {}),
           dependsOn: String(args.after || '').split(',').map((item) => item.trim()).filter(Boolean),
           priority: Number(args.priority) || 0,
           reasoningEffort: String(args.effort || '').trim().toLowerCase(),
-          anonymous: args.anonymous === true,
           workspaceMode: args.isolated === true ? 'isolated' : 'shared',
         },
       );
@@ -927,12 +972,31 @@ async function main() {
       if (!['pending', 'running', 'completed', 'failed', 'blocked', 'canceled'].includes(status)) {
         fail('mission update needs --status pending|running|completed|failed|blocked|canceled.');
       }
+      const reviewOutcome = args['review-outcome'] === undefined
+        ? undefined : String(args['review-outcome']).trim().toLowerCase();
+      if (reviewOutcome !== undefined && !['accepted', 'changes_requested'].includes(reviewOutcome)) {
+        fail('mission update --review-outcome must be accepted|changes_requested.');
+      }
+      const verificationValue = args['verification-passed'];
+      let verificationPassed;
+      if (verificationValue !== undefined) {
+        if (verificationValue === true) fail('mission update --verification-passed must be true|false.');
+        const normalized = String(verificationValue).trim().toLowerCase();
+        if (!['true', 'false'].includes(normalized)) fail('mission update --verification-passed must be true|false.');
+        verificationPassed = normalized === 'true';
+      }
       const result = await api(
         url,
         token,
         'PATCH',
         `/api/vaults/${vaultId}/channels/${channelId}/missions/tasks/${encodeURIComponent(taskId)}`,
-        { status, summary: String(args.summary || '').trim(), ...(args.finding ? { finding: true } : {}) },
+        {
+          status,
+          summary: String(args.summary || '').trim(),
+          ...(args.finding ? { finding: true } : {}),
+          ...(reviewOutcome !== undefined ? { reviewOutcome } : {}),
+          ...(verificationPassed !== undefined ? { verificationPassed } : {}),
+        },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
       else process.stdout.write(sub === 'retry' ? `task ${taskId} queued for retry\n` : `task ${taskId} → ${status}\n`);
@@ -975,7 +1039,7 @@ async function main() {
       else process.stdout.write(`mission ${result.mission.id} → ${result.mission.status}\n`);
       return;
     }
-    fail(`unknown mission command "${sub}". Use start|list|status|diagnose|history|interpret|delegate|child|join|steer|update|retry|link-recovery|finish|cancel.`);
+    fail(`unknown mission command "${sub}". Use start|list|status|diagnose|history|interpret|delegate|child|join|steer|update|retry|link-recovery|approve|note|finish|cancel.`);
   }
 
   if (cmd === 'avatar') {

@@ -75,6 +75,17 @@ describe('workTrace', () => {
     }))).toBe(false);
   });
 
+  it('preserves substantive canceled replies and attachments on interrupted runs', () => {
+    const reply = msg({ id: 'answer', author: 'Sol', agentId: 'codex', status: 'canceled',
+      body: 'Found the cause before cancellation: the listing flag was enabled.' });
+    const artifact = msg({ id: 'artifact', author: 'Sol', agentId: 'codex', status: 'canceled',
+      body: 'Steered into the continuation below.', attachments: [{ name: 'evidence.txt', url: '/evidence.txt', media_type: 'text/plain' }] });
+    expect(segmentTranscript([reply, artifact])).toEqual([
+      { kind: 'group', group: { messages: [reply] } },
+      { kind: 'group', group: { messages: [artifact] } },
+    ]);
+  });
+
   it('labels steering cancels as steer, not blocked', () => {
     const steered = msg({
       id: 'steered', author: 'Sol', body: 'Steered into the continuation below.', status: 'canceled', agentId: 'codex',

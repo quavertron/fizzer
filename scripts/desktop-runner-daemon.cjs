@@ -21,8 +21,18 @@ const {
 } = require('../cascade-electron/agent-runner.cjs');
 const worktrees = require('../cascade-electron/worktrees.cjs');
 
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir() {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
+
 const API_BASE = (process.env.API_URL || process.env.API_BASE || 'http://localhost:3000').replace(/\/$/, '');
-const TOKEN_PATH = process.env.CASCADE_TOKEN_PATH || path.join(os.homedir(), '.cascade', 'token');
+const TOKEN_PATH = process.env.CASCADE_TOKEN_PATH || path.join(fizzerDir(), 'token');
 
 function readToken() {
   if (process.env.CASCADE_TOKEN) return process.env.CASCADE_TOKEN.trim();
