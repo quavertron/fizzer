@@ -84,6 +84,27 @@ defmodule CascadeWeb.MissionRouterTest do
     }
   end
 
+  test "rollback creates missions in the existing room and rejects channel-less workspace creation without writes", ctx do
+    tables = ~w(notes chat_messages chat_agent_members chat_agent_dispatches chat_missions)
+    snapshot = fn -> Map.new(tables, fn table -> {table, SQL.all("SELECT * FROM #{table} ORDER BY rowid")} end) end
+    before = snapshot.()
+    rejected = request(ctx, :post, "/api/vaults/#{ctx.vault.id}/missions", %{
+      id: Ecto.UUID.generate(), title: "No virtual room",
+      coordinatorIdentityId: ctx.coordinator_identity.id, briefContent: "Do not allocate a channel"
+    })
+    assert rejected.status == 400
+    assert snapshot.() == before
+
+    created = request(ctx, :post, "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}/missions", %{
+      rootMessageId: ctx.root.id, coordinatorRegistrationId: ctx.coordinator.id, title: "Existing room mission"
+    })
+    assert created.status == 201
+    assert json(created)["mission"]["channelId"] == ctx.channel.id
+    assert SQL.all("SELECT * FROM chat_agent_members ORDER BY rowid") == before["chat_agent_members"]
+    assert SQL.all("SELECT * FROM notes ORDER BY rowid") == before["notes"]
+    assert [0] == SQL.one("SELECT count(*) FROM notes WHERE vault_id=? AND id LIKE 'mission-channel-%'", [ctx.vault.id])
+  end
+
   test "a worker reads its current mission instead of filtering itself as coordinator", ctx do
     {:ok, created} =
       Store.create(ctx.user.id, ctx.vault.id, ctx.channel.id, %{
@@ -269,6 +290,9 @@ defmodule CascadeWeb.MissionRouterTest do
     created =
       request(ctx, :post, workspace_path, %{
         id: workspace_id,
+        channelId: ctx.channel.id,
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
         title: "Workspace route mission",
         coordinatorIdentityId: ctx.coordinator_identity.id,
         briefContent: "# Brief\n\nOpen questions:\n\n- Which surface ships first?"
@@ -279,7 +303,7 @@ defmodule CascadeWeb.MissionRouterTest do
     assert mission["id"] == workspace_id
     assert mission["vaultId"] == ctx.vault.id
     assert mission["phase"] == "planning"
-    assert is_binary(mission["channelId"])
+    assert mission["channelId"] == ctx.channel.id
     assert [%{"kind" => "mission", "noteId" => brief_id}] = mission["notes"]
 
     listed = request(ctx, :get, workspace_path)
@@ -482,6 +506,9 @@ defmodule CascadeWeb.MissionRouterTest do
       request(ctx, :post, "/api/vaults/#{ctx.vault.id}/missions", %{
         id: Ecto.UUID.generate(),
         title: "",
+        channelId: ctx.channel.id,
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
         coordinatorIdentityId: ctx.coordinator_identity.id,
         briefContent: "A brief"
       })
@@ -489,14 +516,15 @@ defmodule CascadeWeb.MissionRouterTest do
     assert invalid.status == 400
     assert json(invalid)["error"] =~ "required"
 
-    superseded =
+    restored =
       request(ctx, :post, base <> "/missions", %{
         rootMessageId: ctx.root.id,
         coordinatorRegistrationId: ctx.coordinator.id,
         title: "Old channel creation"
       })
 
-    assert superseded.status == 404
+    assert restored.status == 201
+    assert json(restored)["mission"]["channelId"] == ctx.channel.id
   end
 
   test "a worker run cannot delegate nested missions", ctx do

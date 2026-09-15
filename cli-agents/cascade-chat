@@ -671,6 +671,8 @@ async function main() {
       if (!registrationId) fail('mission start can only be used from a registered coordinator run.');
       const title = String(args.title || '').trim();
       if (!title) fail('mission start needs --title <text>.');
+      const rootMessageId = String(args.root || configString(config, 'chatTriggeringMessageId') || process.env.CASCADE_CHAT_TRIGGERING_MESSAGE || '').trim();
+      if (!rootMessageId) fail('mission start needs an existing root message (--root or the triggering message).');
       const members = await api(
         url,
         token,
@@ -697,6 +699,9 @@ async function main() {
           title,
           coordinatorIdentityId,
           briefContent,
+          channelId,
+          rootMessageId,
+          coordinatorRegistrationId: registrationId,
         },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');

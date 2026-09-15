@@ -44,6 +44,9 @@ defmodule CascadeWeb.MissionRouter do
     authenticated(conn, :vault, fn conn, user ->
       input = %{
         id: string_body(conn, "id"),
+        channelId: string_body(conn, "channelId"),
+        rootMessageId: string_body(conn, "rootMessageId"),
+        coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
         title: string_body(conn, "title"),
         coordinatorIdentityId: string_body(conn, "coordinatorIdentityId"),
         briefContent: string_body(conn, "briefContent")
@@ -118,6 +121,31 @@ defmodule CascadeWeb.MissionRouter do
 
         error ->
           route_error(conn, 400, error, "Could not approve mission")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/missions" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        rootMessageId: string_body(conn, "rootMessageId"),
+        coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
+        title: string_body(conn, "title"),
+        objective: string_body(conn, "objective"),
+        authorityMessageIds: body(conn, "authorityMessageIds", []),
+        reviewRequested: js_truthy?(body(conn, "reviewRequested", false)),
+        controlPlane: js_truthy?(body(conn, "controlPlane", false))
+      }
+      opts = [agent: conn.assigns.auth_access == "agent", control_plane: input.controlPlane] ++
+        case run_id(conn) do
+          nil -> []
+          id -> [current_run_id: id]
+        end
+      case Store.create(user.id, vault_id, channel_id, input, opts) do
+        {:ok, update} ->
+          Scheduler.emit_projection(update, callback(conn, :events))
+          JSON.send(conn, 201, %{mission: update.mission})
+        error -> route_error(conn, 400, error, "Could not create mission")
       end
     end)
   end

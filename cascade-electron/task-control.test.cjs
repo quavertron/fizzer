@@ -49,18 +49,19 @@ async function fixture(t) {
     }
     if(p===`/api/vaults/${v}/missions`) {
       if(get)return reply(200,{missions:[...missions.values()]});
-      const mission={id:body.id,vaultId:v,channelId:'mission-channel-'+body.id,coordinatorRegistrationId:registrationId,title:body.title,objective:body.briefContent,phase:'planning',status:'active',blockedReason:null,notes:[{noteId:'mission-brief-'+body.id,revision:'1'}],tasks:[]};
+      assert.equal(body.channelId,channelId); assert.equal(body.rootMessageId,'existing-root'); assert.equal(body.coordinatorRegistrationId,registrationId);
+      const mission={id:body.id,vaultId:v,channelId:body.channelId,coordinatorRegistrationId:registrationId,title:body.title,objective:body.briefContent,phase:'planning',status:'active',blockedReason:null,notes:[{noteId:'mission-brief-'+body.id,revision:'1'}],tasks:[]};
       missions.set(body.id,mission);notes.set('mission-brief-'+body.id,{id:'mission-brief-'+body.id,vault_id:v,content:body.briefContent,revision:'1'});return changed({mission});
     }
     if(p.endsWith('/approve')) {
       const mission=missions.get(m);assert.deepEqual(body,{expectedRevisions:Object.fromEntries(mission.notes.map(n=>[n.noteId,n.revision]))});
       mission.approvedRevisions=body.expectedRevisions;mission.approvedBy=1;mission.phase='executing';return changed({mission});
     }
-    if(p===`/api/vaults/${v}/channels/mission-channel-${m}/missions/${m}/tasks`) {
+    if(p===`/api/vaults/${v}/channels/${channelId}/missions/${m}/tasks`) {
       const mission=missions.get(m);assert.equal(body.coordinatorRegistrationId,registrationId);assert.equal(body.anonymous,false);assert.equal(body.workspaceMode,'shared');
       const task={id:randomUUID(),assigneeRegistrationId:body.assignee,title:body.title,status:'pending',summary:'',workItemId:w};mission.tasks.push(task);return changed({task,mission,scheduled:false});
     }
-    if(p.startsWith(`/api/vaults/${v}/channels/mission-channel-${m}/missions/tasks/`)) {
+    if(p.startsWith(`/api/vaults/${v}/channels/${channelId}/missions/tasks/`)) {
       const mission=missions.get(m),task=mission.tasks.find(t=>t.id===p.split('/').at(-1));assert.equal(body.finding,false);assert.equal(body.verificationPassed,null);Object.assign(task,{status:body.status,summary:body.summary});return changed({mission});
     }
     if(p.startsWith(`/api/vaults/${v}/missions/`))return reply(200,{mission:missions.get(p.split('/').at(-1))});
@@ -91,8 +92,15 @@ async function fixture(t) {
 const taskArgs=f=>({vaultId:f.v,title:'Synthetic only',brief:'brief',contract:'acceptance',verification:'offline check'});
 const startArgs=f=>({vaultId:f.v,workItemId:f.w,agent:'codex',model:'test-model',prompt:'synthetic prompt',cwd:'',sandbox:'read-only'});
 const settingArgs=f=>({vaultId:f.v,channelId:f.channelId,registrationId:f.registrationId,vaultAgentId:f.identityId,hermesProfile:'along'});
-const missionArgs=f=>({vaultId:f.v,missionId:f.m,title:'Synthetic mission',coordinatorIdentityId:f.identityId,briefContent:'Synthetic brief'});
+const missionArgs=f=>({vaultId:f.v,missionId:f.m,title:'Synthetic mission',coordinatorIdentityId:f.identityId,briefContent:'Synthetic brief',channelId:f.channelId,rootMessageId:'existing-root',coordinatorRegistrationId:f.registrationId});
 const count=f=>f.calls.filter(c=>c.method!=='GET').length;
+test('legacy channel-allocating mission requests cannot plan another write',async t=>{
+  const f=await fixture(t), args=missionArgs(f);
+  delete args.channelId; delete args.rootMessageId; delete args.coordinatorRegistrationId;
+  const before=count(f);
+  assert.equal((await f.plan('createMission',args)).error,'invalid_request');
+  assert.equal(count(f),before);
+});
 test('named lifecycle over real private Unix socket and HTTP fixtures; all task reads and writes',async t=>{
   const f=await fixture(t);
   const cap=await f.call({op:'appCapabilities'});

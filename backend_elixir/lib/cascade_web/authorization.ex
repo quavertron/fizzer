@@ -25,7 +25,7 @@ defmodule CascadeWeb.Authorization do
     {~w(GET POST), ~r<^/api/vaults/[^/]+/missions$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/missions/[^/]+$>},
     {~w(POST), ~r<^/api/vaults/[^/]+/missions/[^/]+/notes$>},
-    {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions$>},
+    {~w(GET POST), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions/[^/]+$>},
     {~w(GET), ~r<^/api/vaults/[^/]+/channels/[^/]+/missions/[^/]+/(?:history|interpretation)$>},
     {~w(POST),

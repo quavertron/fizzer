@@ -1,6 +1,6 @@
 export interface Tab {
   id: string;
   title: string;
-  type: 'note' | 'chat' | 'mission' | 'superkanban' | 'new';
+  type: 'note' | 'chat' | 'superkanban' | 'new';
   dirty?: boolean;
 }

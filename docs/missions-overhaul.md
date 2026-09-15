@@ -1,5 +1,7 @@
 # Missions overhaul
 
+> Historical design, superseded for the separate mission UI/channel allocator by the explicitly requested [selective mission rollback](mission-rollback.md). Current integrations and schema safety remain; do not treat this proposal as authority to restore the removed workspace.
+
 **Status:** Planning — living brief, not authorization to implement everything below.
 **Project:** Fizzer
 **Mission conversation:** Missions Overhaul channel

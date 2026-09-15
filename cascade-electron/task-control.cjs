@@ -10,7 +10,7 @@ const reads = { missions: ['vaultId'], mission: ['vaultId', 'missionId'], workIt
 const writes = {
   createWorkItem: ['vaultId', 'title', 'brief', 'contract', 'verification'],
   updateWorkItem: ['vaultId', 'workItemId', 'patch'],
-  createMission: ['vaultId', 'missionId', 'title', 'coordinatorIdentityId', 'briefContent'],
+  createMission: ['vaultId', 'missionId', 'title', 'coordinatorIdentityId', 'briefContent', 'channelId', 'rootMessageId', 'coordinatorRegistrationId'],
   updateMission: ['vaultId', 'missionId', 'noteId', 'content'],
   approveMission: ['vaultId', 'missionId'],
   createMissionTask: ['vaultId', 'missionId', 'assigneeRegistrationId', 'title', 'prompt', 'purpose', 'workspaceMode'],
@@ -23,8 +23,10 @@ const consequential = new Set(['createMission', 'startRun', 'cancelRun', 'update
 function exact(o, keys) { if (!o || typeof o !== 'object' || Array.isArray(o) || Object.keys(o).length !== keys.length || keys.some(k => !Object.hasOwn(o,k))) fail('invalid_request'); }
 function id(v) { if (typeof v !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(v)) fail('invalid_id'); }
 function text(v, n, empty = false) { if (typeof v !== 'string' || v.length > n || (!empty && !v.trim()) || v !== v.trim()) fail('invalid_request'); }
-function validate(action, a, c) {
-  exact(a, reads[action] || writes[action] || []);
+function validate(action, a, c, op) {
+  // Historical receipts remain readable, but cannot authorize another channel allocation.
+  const legacyReconcile = action === 'createMission' && op === 'appReconcile' && a && !Object.hasOwn(a, 'channelId');
+  exact(a, legacyReconcile ? ['vaultId', 'missionId', 'title', 'coordinatorIdentityId', 'briefContent'] : reads[action] || writes[action] || []);
   for (const [k,v] of Object.entries(a)) {
     if (k === 'vaultId') c.checkId(v);
     else if (k === 'runId') { if (!Number.isSafeInteger(v) || v < 1) fail('invalid_id'); }
@@ -56,7 +58,7 @@ async function control(input, c) {
   const a = input.args, action = input.action;
   if (!reads[action] && !writes[action]) fail('invalid_request');
   exact(input, input.op === 'appRead' ? ['op','action','args'] : input.op === 'appPlan' ? ['op','action','args','requestId'] : ['op','action','args','requestId','planDigest']);
-  validate(action, a, c);
+  validate(action, a, c, input.op);
   if ((await c.browser('/api/me')).user?.id !== c.ownerId) fail('owner_scope_mismatch');
   const base = `/api/vaults/${a.vaultId}`;
   const audience = await access(input.op !== 'appRead');
@@ -75,7 +77,7 @@ async function control(input, c) {
     if (fs.readdirSync(c.receiptDir).length >= 1000) fail('receipt_limit');
     const before = await snapshot();
     const plan = {...intent, before, audience, requiresGrant:consequential.has(action), atomicPrecondition:action === 'updateAgentSettings' || action === 'updateMission',
-      effects: action === 'createMission' ? 'Creates mission channel, enables coordinator/orchestrator and ambient membership, queues planning model dispatch. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
+      effects: action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
       attribution:'Along local receipt; backend account attribution. Shared/public writes unavailable.'};
     r = {intentDigest:hash(intent), plan, planDigest:hash(plan), state:'planned'};
     c.durableWrite(file,r,true);
@@ -163,6 +165,11 @@ async function control(input, c) {
     return d;
   }
   async function snapshot() {
+    if (action === 'createMission') {
+      const e = await execution(a.channelId, a.coordinatorRegistrationId);
+      if (e.yolo !== false) fail('specific_approval_required');
+      return e;
+    }
     if (action === 'updateWorkItem' || action === 'startRun') {
       const d = await item(a.workItemId);
       if (d.item.createdBy !== c.ownerId) fail('owner_scope_mismatch');
@@ -211,7 +218,7 @@ async function control(input, c) {
       d = await c.browser(base+'/work-items','POST',{title:a.title,brief:a.brief,contract:a.contract,verification:a.verification,sourceKind:'manual',sourceId:'along:'+input.requestId,workspaceMode:'shared',priority:0,tokenBudget:0,dependsOn:[],channelId:null,assigneeRegistrationId:null});
       r.target = d.item?.id;
     } else if (action === 'updateWorkItem') await c.browser(`/api/work-items/${a.workItemId}`,'PATCH',a.patch);
-    else if (action === 'createMission') await c.browser(base+'/missions','POST',{id:a.missionId,title:a.title,coordinatorIdentityId:a.coordinatorIdentityId,briefContent:a.briefContent});
+    else if (action === 'createMission') await c.browser(base+'/missions','POST',{id:a.missionId,title:a.title,coordinatorIdentityId:a.coordinatorIdentityId,briefContent:a.briefContent,channelId:a.channelId,rootMessageId:a.rootMessageId,coordinatorRegistrationId:a.coordinatorRegistrationId});
     else if (action === 'updateMission') await c.browser(`/api/notes/${a.noteId}`,'PUT',{content:a.content,expectedRevision:r.plan.before.note.revision});
     else if (action === 'approveMission') await c.browser(base+`/missions/${a.missionId}/approve`,'POST',{expectedRevisions:Object.fromEntries(r.plan.before.notes.map(n => [n.noteId,n.revision]))});
     else if (action === 'createMissionTask') {
@@ -241,7 +248,7 @@ async function control(input, c) {
       if (Object.entries(expected).some(([k,v]) => d.item[k] !== v)) fail('readback_mismatch');
       return d;
     }
-    if (action === 'createMission') { const d = await mission(r.target); if (d.mission.title !== a.title || d.mission.objective !== a.briefContent) fail('readback_mismatch'); return d; }
+    if (action === 'createMission') { const d = await mission(r.target); if (d.mission.title !== a.title || d.mission.objective !== a.briefContent || (a.channelId && (d.mission.channelId !== a.channelId || d.mission.coordinatorRegistrationId !== a.coordinatorRegistrationId))) fail('readback_mismatch'); return d; }
     if (action === 'updateMission') { const d = await missionNote(); if (d.note.content !== a.content) fail('readback_mismatch'); return d; }
     if (['approveMission','createMissionTask','updateMissionTask'].includes(action)) {
       const d = await mission(a.missionId);

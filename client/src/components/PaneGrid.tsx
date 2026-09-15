@@ -12,7 +12,7 @@
 
 import { Fragment, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Flag } from 'lucide-react';
+import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles } from 'lucide-react';
 import type { Tab } from './TabBar';
 import { NOTE_DND_TYPE } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
@@ -109,7 +109,6 @@ function sideFromPosition(rect: DOMRect, clientX: number, clientY: number): Drop
 
 function TabIcon({ type }: { type: Tab['type'] }) {
   if (type === 'chat') return <Hash size={13} className="text-secondary" style={{ marginRight: 6 }} />;
-  if (type === 'mission') return <Flag size={13} className="text-accent" style={{ marginRight: 6 }} />;
   if (type === 'superkanban') return <LayoutDashboard size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   if (type === 'new') return <Sparkles size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   return <FileText size={13} className="text-tertiary" style={{ marginRight: 6 }} />;

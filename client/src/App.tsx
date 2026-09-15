@@ -25,9 +25,6 @@ const NoteEditor = lazy(() =>
 const ChatView = lazy(() =>
   import('./components/ChatView').then((m) => ({ default: m.ChatView })),
 );
-const MissionWorkspace = lazy(() =>
-  import('./components/MissionWorkspace').then((m) => ({ default: m.MissionWorkspace })),
-);
 const SearchOverlay = lazy(() =>
   import('./components/SearchOverlay').then((m) => ({ default: m.SearchOverlay })),
 );
@@ -83,12 +80,6 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
 import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
-import {
-  createMission,
-  fetchMissions,
-  type MissionCreateInput,
-  type MissionSummary,
-} from './missions';
 import { connectVaultSocket } from './socket';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
@@ -149,8 +140,6 @@ const loadChatMessagesInflight = new Map<string, Promise<{
   baseline: ChatMessageSnapshotBaseline;
 }>>();
 
-const missionTabId = (missionId: string) => `mission:${missionId}`;
-const missionIdFromTab = (tabId: string) => tabId.startsWith('mission:') ? tabId.slice('mission:'.length) : null;
 /** Stable empty so ChatView memo doesn't bust when a channel has no agents yet. */
 const EMPTY_CHAT_AGENTS: ChatAgentRegistration[] = [];
 const EMPTY_CHAT_PRESENCE: ChatChannelPresence = { participants: [], online: [], owner: '', profiles: {} };
@@ -212,10 +201,8 @@ export default function App() {
   const initialVaultListing = persistedSessionRef.current.activeVaultId
     ? persistedSessionRef.current.vaultListingsByVault[persistedSessionRef.current.activeVaultId]
     : undefined;
-  const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [folders, setFolders] = useState<Folder[]>(initialVaultListing?.folders ?? []);
-  const [missions, setMissions] = useState<MissionSummary[]>([]);
-  const [missionRefreshToken, setMissionRefreshToken] = useState(0);
+  const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [chatState, setChatState] = useState<ChatState>(loadChatState);
   const [loadingChatChannels, setLoadingChatChannels] = useState<Record<string, boolean>>({});
   const [chatPresenceByChannel, setChatPresenceByChannel] = useState<Record<string, ChatChannelPresence>>({});
@@ -265,7 +252,6 @@ export default function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [runnerHealth, setRunnerHealth] = useState<DesktopRunnerHealth | null>(null);
-  const [missionCreateBusy, setMissionCreateBusy] = useState(false);
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false);
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
   const [vaultAgents, setVaultAgents] = useState<VaultAgent[]>([]);
@@ -274,26 +260,17 @@ export default function App() {
   const activeTabId = focusedPane.activeTabId;
   const focusedTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
   const focusedIsChat = focusedTab?.type === 'chat';
-  const focusedMission = focusedTab?.type === 'mission'
-    ? missions.find((mission) => mission.id === missionIdFromTab(focusedTab.id))
-    : undefined;
   const vaultSidebarChannel = focusedIsChat
     ? focusedTab.id
-    : focusedTab?.type === 'mission'
-      ? focusedMission?.channelId
-      : notes.find((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER))?.id;
-  const vaultSidebarChannelName = focusedMission?.title
-    ?? notes.find((note) => note.id === vaultSidebarChannel)?.title
-    ?? 'Vault';
+    : notes.find((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER))?.id;
   const currentUsername = user?.username ?? '';
   // Refs mirror the latest state so event handlers stay stable (no dep churn)
   // and never read a stale closure during drags / async work.
   const activeVaultIdRef = useMemo(() => ({ get current() { return workspaceStore.activeVaultId; } }), [workspaceStore]);
   const notesRef = useRef(notes); notesRef.current = notes;
-  const missionsRef = useRef(missions); missionsRef.current = missions;
   const chatStateRef = useRef(chatState); chatStateRef.current = chatState;
   const vaultSocketRef = useRef<ReturnType<typeof connectVaultSocket> | null>(null);
-  const joinedChatChannelsRef = useRef(new Set<string>());
+  const joinedChatChannelsRef = useRef<Set<string>>(new Set());
   const acceptedInviteTokenRef = useRef<string | null>(null);
   // Debounce socket-driven soft vault reloads (note create/change/delete bursts).
   const socketVaultReloadTimerRef = useRef<number | null>(null);
@@ -310,7 +287,6 @@ export default function App() {
     const listing = workspaceStore.activeVaultId ? vaultListingsRef.current[workspaceStore.activeVaultId] : undefined;
     notesRef.current = listing?.notes ?? [];
     setFolders(listing?.folders ?? []);
-    setMissions([]);
     setNotes(listing?.notes ?? []);
     setVaultAgents([]);
     setSuperkanbanNotes([]);
@@ -382,15 +358,6 @@ export default function App() {
     }, 250);
     return () => clearTimeout(id);
   }, [chatState]);
-  useEffect(() => {
-    if (missions.length === 0) return;
-    setOpenTabs((prev) => prev.map((tab) => {
-      if (tab.type !== 'mission') return tab;
-      const id = missionIdFromTab(tab.id);
-      const mission = id ? missions.find((item) => item.id === id) : undefined;
-      return mission ? { ...tab, title: mission.title } : tab;
-    }));
-  }, [missions]);
 
   useEffect(() => {
     if (!notice) return;
@@ -780,25 +747,15 @@ export default function App() {
     };
   }, [user]);
 
-  /** Chat channels currently open as tabs (including mission conversations). */
+  /** Chat channels currently open as tabs (not every chat note in the vault). */
   const openChatTabIds = useCallback((): string[] => {
-    return workspaceStore.active.openTabs.flatMap((tab) => {
-      if (tab.type === 'chat') return [tab.id];
-      if (tab.type === 'mission') {
-        const missionId = missionIdFromTab(tab.id);
-        const channelId = missionId
-          ? missionsRef.current.find((mission) => mission.vaultId === workspaceStore.activeVaultId && mission.id === missionId)?.channelId
-          : undefined;
-        return channelId ? [channelId] : [];
-      }
-      return [];
-    });
+    return workspaceStore.active.openTabs.filter((tab) => tab.type === 'chat').map((tab) => tab.id);
   }, []);
 
   /**
    * Resolve which chat channels a load call should touch: an explicit
-   * `channelIds` list when given, otherwise only open chat/mission tabs that
-   * resolve to a channel — never every channel note in the vault.
+   * `channelIds` list when given, otherwise only the open chat tabs that are
+   * actually chat notes — never every channel note in the vault.
    */
   const resolveChatChannelIds = useCallback((
     noteList: NoteSummary[],
@@ -810,12 +767,7 @@ export default function App() {
         .filter((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER))
         .map((note) => note.id),
     );
-    const missionChannelIds = new Set(
-      missionsRef.current
-        .filter((mission) => mission.vaultId === workspaceStore.activeVaultId)
-        .map((mission) => mission.channelId),
-    );
-    return openChatTabIds().filter((id) => chatNoteIds.has(id) || missionChannelIds.has(id));
+    return openChatTabIds().filter((id) => chatNoteIds.has(id));
   }, [openChatTabIds]);
 
   const loadChatAgentMembers = useCallback(async (
@@ -1055,7 +1007,6 @@ export default function App() {
 
         const foldersP = api<{ folders: Folder[] }>(`/api/vaults/${vaultId}/folders`);
         const notesP = api<{ notes: NoteSummary[] }>(`/api/vaults/${vaultId}/notes`);
-        const missionsP = fetchMissions(vaultId);
         // Primary chat + vault agents must not gate notes-tree paint.
         const primaryChatP = !soft && primaryChats.length > 0
           ? Promise.all([
@@ -1066,11 +1017,10 @@ export default function App() {
           : Promise.resolve();
         const vaultAgentsP = soft ? Promise.resolve() : loadVaultAgents(vaultId);
 
-        const [folderData, noteData, missionData] = await Promise.all([foldersP, notesP, missionsP]);
+        const [folderData, noteData] = await Promise.all([foldersP, notesP]);
         if (workspaceStore.epoch !== epoch) return;
         const nextNotes = noteData.notes || [];
         const nextFolders = folderData.folders || [];
-        const nextMissions = missionData;
         vaultListingsRef.current = {
           ...vaultListingsRef.current,
           [vaultId]: { folders: nextFolders, notes: nextNotes, savedAt: Date.now() },
@@ -1080,19 +1030,17 @@ export default function App() {
         // must never repaint whichever vault the user is currently viewing.
         if (activeVaultIdRef.current !== vaultId) return;
         notesRef.current = nextNotes;
-        setNotes(nextNotes);
-        setFolders(nextFolders);
-        setMissions(nextMissions);
+        const channelIds = nextNotes
+          .filter((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER))
+          .map((note) => note.id);
         setChannelVaultIds((previous) => {
-          const channelIds = [
-            ...nextNotes.filter((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER)).map((note) => note.id),
-            ...nextMissions.map((mission) => mission.channelId),
-          ];
           if (channelIds.every((channelId) => previous[channelId] === vaultId)) return previous;
           const next = { ...previous };
           for (const channelId of channelIds) next[channelId] = vaultId;
           return next;
         });
+        setFolders(nextFolders);
+        setNotes(nextNotes);
         void primaryChatP.catch(() => undefined);
         void vaultAgentsP.catch(() => undefined);
         if (!soft && secondaryChats.length > 0) {
@@ -1112,7 +1060,7 @@ export default function App() {
     })();
 
     loadVaultDataInflight.set(inflightKey, run);
-  }, [fetchMissions, loadChatMessages, loadChatAgentMembers, loadChatPresence, loadVaultAgents, openChatTabIds, persistWorkspaceSession]);
+  }, [loadChatMessages, loadChatAgentMembers, loadChatPresence, loadVaultAgents, openChatTabIds, persistWorkspaceSession]);
 
   // The vault rail is navigation, so selecting any visible vault should feel
   // like switching tabs rather than beginning a fetch. Warm each uncached
@@ -1175,26 +1123,6 @@ export default function App() {
     }
     void loadChatPresence(vaultId, notesList, { channelIds: ids });
   }, [loadChatMessages, loadChatAgentMembers, loadChatPresence]);
-  const ensureMissionChannelLoaded = useCallback((channelId: string) => {
-    const vaultId = activeVaultIdRef.current;
-    if (!vaultId || !channelId) return;
-    const notesList = notesRef.current;
-    if (!chatMessageStore.hasChannel(channelId)) {
-      void loadChatMessages(vaultId, notesList, { silent: true, channelIds: [channelId] });
-    }
-    if (!Object.prototype.hasOwnProperty.call(chatStateRef.current.registeredAgentsByChannel, channelId)) {
-      void loadChatAgentMembers(vaultId, notesList, { channelIds: [channelId] });
-    }
-    void loadChatPresence(vaultId, notesList, { channelIds: [channelId] });
-  }, [loadChatMessages, loadChatAgentMembers, loadChatPresence]);
-  useEffect(() => {
-    for (const tab of openTabs) {
-      if (tab.type !== 'mission') continue;
-      const id = missionIdFromTab(tab.id);
-      const mission = id ? missions.find((item) => item.id === id) : undefined;
-      if (mission?.channelId) ensureMissionChannelLoaded(mission.channelId);
-    }
-  }, [ensureMissionChannelLoaded, missions, openTabs]);
 
   // Hydrate the active chat channel whenever it's the focused tab and its
   // messages aren't loaded. Chat transcripts aren't persisted to localStorage
@@ -1205,20 +1133,9 @@ export default function App() {
   // is idempotent (skips when already cached) and flags the channel as loading,
   // so ChatView shows "Loading messages…" instead of the empty state.
   useEffect(() => {
-    if (!user || !activeVaultId || !vaultSidebarChannel) return;
-    if (focusedTab?.type === 'mission') ensureMissionChannelLoaded(vaultSidebarChannel);
-    else ensureChatChannelLoaded(vaultSidebarChannel);
-  }, [user, activeVaultId, notes, vaultSidebarChannel, focusedTab?.type, ensureChatChannelLoaded, ensureMissionChannelLoaded]);
-  const openMission = useCallback((id: string, mode: 'open' | 'replace' = 'open') => {
-    const mission = missions.find((item) => item.id === id);
-    workspaceStore.openTab({
-      id: missionTabId(id),
-      title: mission?.title || 'Mission',
-      type: 'mission',
-      dirty: false,
-    }, mode);
-    if (mission?.channelId) ensureMissionChannelLoaded(mission.channelId);
-  }, [ensureMissionChannelLoaded, missions, workspaceStore]);
+    if (!user || !activeVaultId) return;
+    if (vaultSidebarChannel) ensureChatChannelLoaded(vaultSidebarChannel);
+  }, [user, activeVaultId, notes, vaultSidebarChannel, ensureChatChannelLoaded]);
 
   /** Merge full message detail (harness log) after expand-fetch. */
   const handleOpenSharedChatNote = useCallback(async (
@@ -1320,7 +1237,6 @@ export default function App() {
     } else {
       setFolders([]);
       setNotes([]);
-      setMissions([]);
       setVaultAgents([]);
     }
   }, [activeVaultId, loadVaultData]);
@@ -1392,34 +1308,12 @@ export default function App() {
       return false;
     }
   }, [acceptVaultInvite]);
-  const handleCreateMission = useCallback(async (input: MissionCreateInput): Promise<boolean> => {
-    const vaultId = activeVaultIdRef.current;
-    if (!vaultId || missionCreateBusy) return false;
-    setMissionCreateBusy(true);
-    try {
-      const mission = await createMission(vaultId, {
-        ...input,
-        id: input.id || crypto.randomUUID(),
-      });
-      await loadVaultData(vaultId);
-      if (activeVaultIdRef.current !== vaultId) return false;
-      openMission(mission.id);
-      ensureMissionChannelLoaded(mission.channelId);
-      return true;
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Could not create mission');
-      return false;
-    } finally {
-      setMissionCreateBusy(false);
-    }
-  }, [ensureMissionChannelLoaded, loadVaultData, missionCreateBusy, openMission]);
 
   // Redeem a vault share link. Unlike the chat invite above this joins the
   // vault itself, so the whole vault appears in the switcher.
   useEffect(() => {
     const match = window.location.pathname.match(/^\/vault-invite\/([^/]+)$/);
     const token = match ? decodeURIComponent(match[1]) : '';
-
     if (!token || !user || acceptedInviteTokenRef.current === token) return;
     acceptedInviteTokenRef.current = token;
     (async () => {
@@ -1776,39 +1670,21 @@ export default function App() {
   // first note. This runs when vault data arrives, not when a user closes the
   // final tab, so an intentional empty workspace remains possible.
   useEffect(() => {
-    if (!activeVaultId || (notes.length === 0 && missions.length === 0)) return;
-
+    if (!activeVaultId || notes.length === 0) return;
     const availableIds = new Set(notes.map((note) => note.id));
-    const availableMissionIds = new Set(missions.map((mission) => missionTabId(mission.id)));
     const hasSelectedPage = Layout.getActiveTabIds(workspaceStore.active.layout)
       .some((id) => {
         const tab = workspaceStore.active.openTabs.find((candidate) => candidate.id === id);
-        return Boolean(tab && (
-          tab.type === 'new'
-          || tab.type === 'superkanban'
-          || (tab.type === 'mission' && availableMissionIds.has(id))
-          || (tab.type !== 'mission' && availableIds.has(id))
-        ));
+        return Boolean(tab && (tab.type === 'new' || tab.type === 'superkanban' || availableIds.has(id)));
       });
     if (hasSelectedPage) return;
 
-    const lastOpenTab = [...workspaceStore.active.openTabs].reverse().find((tab) => (
-      tab.type === 'mission' ? availableMissionIds.has(tab.id) : availableIds.has(tab.id)
-    ));
-    if (lastOpenTab?.type === 'mission') {
-      const missionId = missionIdFromTab(lastOpenTab.id);
-      if (missionId) openMission(missionId, 'replace');
-      return;
-    }
-    if (!lastOpenTab && missions.length > 0) {
-      openMission(missions[0].id, 'replace');
-      return;
-    }
+    const lastOpenTab = [...workspaceStore.active.openTabs].reverse().find((tab) => availableIds.has(tab.id));
     const fallback = lastOpenTab
       ? notes.find((note) => note.id === lastOpenTab.id)
       : notes.find((note) => note.content_preview.trim().startsWith(CHAT_NOTE_MARKER)) ?? notes[0];
     if (fallback) openNote(fallback.id, 'replace');
-  }, [activeVaultId, missions, notes, openMission, openNote]);
+  }, [activeVaultId, notes, openNote]);
 
   useEffect(() => {
     if (!user || !focusedTab || (focusedTab.type !== 'note' && focusedTab.type !== 'chat')) return;
@@ -1946,17 +1822,8 @@ export default function App() {
 
   const visibleChatChannelIds = useMemo(() => {
     const tabIds = Layout.getActiveTabIds(layout);
-    return tabIds.flatMap((tabId) => {
-      const tab = openTabs.find((candidate) => candidate.id === tabId);
-      if (tab?.type === 'chat') return [tab.id];
-      if (tab?.type === 'mission') {
-        const missionId = missionIdFromTab(tab.id);
-        const channelId = missions.find((mission) => mission.id === missionId)?.channelId;
-        return channelId ? [channelId] : [];
-      }
-      return [];
-    });
-  }, [layout, missions, openTabs]);
+    return tabIds.filter((tabId) => openTabs.some((tab) => tab.id === tabId && tab.type === 'chat'));
+  }, [layout, openTabs]);
 
   const visibleChatChannelIdsRef = useRef(visibleChatChannelIds);
   visibleChatChannelIdsRef.current = visibleChatChannelIds;
@@ -1993,7 +1860,6 @@ export default function App() {
       syncChatPresenceRooms(socket);
     };
     const handleConnect = () => {
-      setMissionRefreshToken((value) => value + 1);
       joinActiveVault();
       void loadVaultData(activeVaultId, { soft: true });
       scheduleCommunityRefresh(150);
@@ -2028,33 +1894,26 @@ export default function App() {
     };
     const handleNoteChanged = (data: { noteId: string; vaultId: string }) => {
       if (data.vaultId !== activeVaultId) return;
-      setMissionRefreshToken((value) => value + 1);
       scheduleSoftVaultReload();
       // Refresh the body only if the note is open and has no unsaved edits.
       const entry = workspaceStore.active.noteContents[data.noteId];
       if (entry && entry.draft === entry.note.content) void loadNoteContent(data.noteId);
     };
     const handleNoteCreated = (data: { vaultId: string }) => {
-      if (data.vaultId === activeVaultId) {
-        setMissionRefreshToken((value) => value + 1);
-        scheduleSoftVaultReload();
-      }
+      if (data.vaultId === activeVaultId) scheduleSoftVaultReload();
     };
     const handleNoteDeleted = (data: { noteId: string; vaultId: string }) => {
       if (data.vaultId !== activeVaultId) return;
-      setMissionRefreshToken((value) => value + 1);
       scheduleSoftVaultReload();
       chatMessageStore.remove(data.noteId);
       closeTabRef.current(data.noteId);
     };
     const handleChatMessageUpdated = (data: { vaultId: string; channelId: string; message: ChatMessage }) => {
       if (data.vaultId !== activeVaultId) return;
-      setMissionRefreshToken((value) => value + 1);
       chatMessageStore.update(data.channelId, (existing) => applyRemoteChatMessage(existing, data.message));
     };
     const handleChatMessageDeleted = (data: { vaultId: string; channelId: string; messageId: string }) => {
       if (data.vaultId !== activeVaultId) return;
-      setMissionRefreshToken((value) => value + 1);
       if (!chatMessageStore.hasChannel(data.channelId)) return;
       chatMessageStore.update(data.channelId, (existing) => {
         const next = existing.filter((message) => message.id !== data.messageId);
@@ -2561,7 +2420,6 @@ export default function App() {
   }
 
   const handleLogout = () => {
-
     stopDesktopRunnerHost();
     void api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('docs_token');
@@ -2615,70 +2473,7 @@ export default function App() {
   const handleChatJumpHandled = useCallback(() => setChatJumpTarget(null), []);
 
   /** Render the content of a tab inside its pane. */
-  const renderMissionChat = useCallback((channelId: string, channelName: string): ReactNode => (
-    <Suspense fallback={<div className="pane-empty chat-loading-empty"><LoadingIndicator label="Loading chat" /></div>}>
-      <ChatView
-        channelId={channelId}
-        channelName={channelName}
-        isLoadingMessages={loadingChatChannels[channelId] === true}
-        currentUser={currentUsername}
-        currentUserId={user?.id}
-        presence={applyLocalUserProfile(chatPresenceByChannel[channelId] ?? EMPTY_CHAT_PRESENCE, user)}
-        availableAgents={AVAILABLE_CHAT_AGENTS}
-        registeredAgents={chatState.registeredAgentsByChannel[channelId] ?? EMPTY_CHAT_AGENTS}
-        vaultAgents={vaultAgents}
-        runnerHealth={runnerHealth}
-        onRegisterAgent={handleRegisterChatAgent}
-        onRemoveAgent={handleRemoveChatAgent}
-        onUpsertVaultAgent={handleUpsertVaultAgent}
-        onDeleteVaultAgent={handleDeleteVaultAgent}
-        onDeleteAgentProfile={handleDeleteAgentProfile}
-        onAddVaultAgentToChannel={handleAddVaultAgentToChannel}
-        onInviteUser={handleInviteChatUser}
-        onRemoveParticipant={handleRemoveChatParticipant}
-        onLeaveChannel={handleLeaveChatChannel}
-        onSendMessage={handleSendChatMessage}
-        onDeleteMessage={handleDeleteChatMessage}
-        onForwardMessage={handleForwardChatMessage}
-        onCancelRun={handleCancelChatRun}
-        notes={notes}
-        onOpenNote={openNote}
-        onOpenSharedNote={handleOpenSharedChatNote}
-        membersOpen={chatMembersOpen}
-        onMembersOpenChange={setChatMembersOpen}
-        vaultId={activeVaultId || undefined}
-        onHydrateMessage={handleHydrateChatMessage}
-        sidebarMode="hidden"
-      />
-    </Suspense>
-  ), [
-    activeVaultId, chatMembersOpen, chatPresenceByChannel,
-    chatState.registeredAgentsByChannel, currentUsername, handleAddVaultAgentToChannel,
-    handleCancelChatRun,
-    handleDeleteAgentProfile, handleDeleteChatMessage, handleForwardChatMessage,
-    handleHydrateChatMessage, handleInviteChatUser, handleLeaveChatChannel,
-    handleRemoveChatAgent, handleRemoveChatParticipant, handleRegisterChatAgent,
-    handleSendChatMessage, handleUpsertVaultAgent, notes, openNote,
-    handleOpenSharedChatNote, handleDeleteVaultAgent, loadingChatChannels, runnerHealth, user, vaultAgents,
-  ]);
   const renderTabContent = useCallback((tab: Tab): ReactNode => {
-    if (tab.type === 'mission') {
-      const id = missionIdFromTab(tab.id);
-      if (!id || !activeVaultId || !user) return <div className="pane-empty">Mission unavailable</div>;
-      return (
-        <Suspense fallback={<div className="pane-empty"><LoadingIndicator label="Loading mission" /></div>}>
-          <MissionWorkspace
-            vaultId={activeVaultId}
-            missionId={id}
-            currentUser={user}
-            onOpenNote={openNote}
-            renderChat={renderMissionChat}
-            refreshToken={missionRefreshToken}
-            onMissionChanged={() => { void loadVaultData(activeVaultId); }}
-          />
-        </Suspense>
-      );
-    }
     if (tab.type === 'new') {
       return (
         <div className="new-tab-page">
@@ -2771,13 +2566,14 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData, renderMissionChat, missionRefreshToken]);
+  }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData]);
 
   if ((window as unknown as { electronAPI?: unknown }).electronAPI && !user && !serverAuthRequested) {
     return <DesktopVaultChooser vaults={[]} activeVaultId={null} onSelect={() => {}}
       onCreate={async () => false} onContinue={() => {}}
       onConnectLocal={() => { setAuthError(''); setServerAuthRequested(true); }} />;
   }
+
 
   if (!authReady && !serverAuthRequested) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 
@@ -2911,14 +2707,6 @@ export default function App() {
           activeVaultId={activeVaultId}
           folders={folders}
           notes={notes}
-          missions={missions}
-          vaultAgents={vaultAgents}
-          onOpenMission={(id) => {
-            openMission(id);
-            if (isMobileViewport()) setSidebarOpen(false);
-          }}
-          onCreateMission={handleCreateMission}
-          missionCreateBusy={missionCreateBusy}
           activeNoteId={activeTabId}
           updateCounts={communityUpdates.counts}
           agentActivity={agentActivity}
@@ -3159,7 +2947,7 @@ export default function App() {
             <Suspense fallback={null}>
               <ChatView
                 channelId={vaultSidebarChannel}
-                channelName={vaultSidebarChannelName}
+                channelName={notes.find((note) => note.id === vaultSidebarChannel)?.title || 'Vault'}
                 currentUser={currentUsername}
                 currentUserId={user?.id}
                 presence={applyLocalUserProfile(chatPresenceByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_PRESENCE, user)}

@@ -170,6 +170,7 @@ test('coordinator helper starts and delegates a mission with structured API call
     title: 'Release',
     coordinatorIdentityId: 'identity-sol',
     briefContent: 'Ship safely',
+    channelId: 'channel-1', rootMessageId: 'root-message', coordinatorRegistrationId: 'reg-sol',
   });
   assert.equal(missionStart.body?.task, undefined);
   const delegatedTasks = requests.filter((request) => request.method === 'POST' && request.path === taskCreatePath);
@@ -222,7 +223,7 @@ test('mission start creates a vault mission without a coordinator self-task', as
   const address = server.address(); assert(address && typeof address === 'object');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-chat-control-plane-'));
   const config = path.join(dir, 'helper.json');
-  fs.writeFileSync(config, JSON.stringify({ registrationId:'reg-sol', displayName:'Sol' }));
+  fs.writeFileSync(config, JSON.stringify({ registrationId:'reg-sol', displayName:'Sol', chatTriggeringMessageId:'root-message' }));
   t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
   await execFileAsync(process.execPath, [cli, 'mission', 'start', '--title', 'Control', '--message', 'Request', '--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault-1', '--channel', 'channel-1'], {
     env:{ ...process.env, CASCADE_HELPER_CONFIG:config, CASCADE_RUN_ID:'4242' },
@@ -233,6 +234,7 @@ test('mission start creates a vault mission without a coordinator self-task', as
   assert.match(String(bodies[1]?.id), /^[0-9a-f-]{36}$/);
   assert.deepEqual({ ...bodies[1], id: undefined }, {
     id: undefined, title: 'Control', coordinatorIdentityId: 'identity-sol', briefContent: 'Request',
+    channelId: 'channel-1', rootMessageId: 'root-message', coordinatorRegistrationId: 'reg-sol',
   });
 });
 test('mission notes, approval, and explicit task outcomes use frozen payloads', async (t) => {

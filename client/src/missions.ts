@@ -43,6 +43,10 @@ export type MissionSummary = Pick<MissionRecord, 'id' | 'title' | 'status' | 'ph
 };
 
 export type MissionCreateInput = {
+  /** Creation stays in this existing conversation; never allocates a channel. */
+  channelId: string;
+  rootMessageId: string;
+  coordinatorRegistrationId: string;
   id: string;
   title: string;
   coordinatorIdentityId: string;

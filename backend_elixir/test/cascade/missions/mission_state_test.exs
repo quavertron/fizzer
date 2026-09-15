@@ -1531,11 +1531,14 @@ defmodule Cascade.Missions.MissionStateTest do
     assert SQL.all("SELECT name,sql FROM sqlite_master ORDER BY name") == schema_before
   end
 
-  test "mission workspace notes stay outside the vault folder tree", ctx do
+  test "mission briefs remain private while the existing conversation stays listed and unchanged", ctx do
+    channel_before = ContentStore.get_note(ctx.channel.id)
     state = approved_workspace(ctx, "Internal workspace")
     [brief] = state.mission.notes
     assert ContentStore.get_note(brief.noteId).is_listed == 0
-    assert ContentStore.get_note(state.channel_id).is_listed == 0
+    assert state.channel_id == ctx.channel.id
+    assert ContentStore.get_note(state.channel_id) == channel_before
+    assert channel_before.is_listed == 1
     assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{
       title: "Internal milestone", kind: "milestone", content: "Keep in the mission"
     })
@@ -1555,10 +1558,12 @@ defmodule Cascade.Missions.MissionStateTest do
     assert {:ok, _} = Store.create_workspace_note(ctx.user.id, ctx.vault.id, state.mission.id, %{id: linked.id, title: linked.title, kind: "milestone"})
     SQL.exec("UPDATE notes SET is_listed=1 WHERE id IN (?,?)", [brief.noteId, state.channel_id])
     before = SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
+    channel_before = ContentStore.get_note(state.channel_id)
     SQL.exec("DELETE FROM chat_mission_migrations WHERE name='mission-internal-notes-unlisted-v1'")
     assert :ok == MissionSchema.ensure!()
     assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [brief.noteId])
-    assert [0] == SQL.one("SELECT is_listed FROM notes WHERE id=?", [state.channel_id])
+    assert ContentStore.get_note(state.channel_id) == channel_before
+    assert channel_before.is_listed == 1
     assert before == SQL.one("SELECT content,revision_counter FROM notes WHERE id=?", [brief.noteId])
     assert ContentStore.get_note(linked.id).is_listed == 1
     # An explicit later choice to list a brief is not undone on every startup.
@@ -1571,6 +1576,9 @@ defmodule Cascade.Missions.MissionStateTest do
     {:ok, created} =
       Store.create_workspace(ctx.user.id, ctx.vault.id, %{
         id: Ecto.UUID.generate(),
+        channelId: ctx.channel.id,
+        rootMessageId: ctx.root.id,
+        coordinatorRegistrationId: ctx.coordinator.id,
         title: title,
         coordinatorIdentityId: ctx.coordinator_identity.id,
         briefContent: "Approved delivery brief."

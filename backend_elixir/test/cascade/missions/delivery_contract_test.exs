@@ -433,8 +433,14 @@ defmodule Cascade.Missions.DeliveryContractTest do
   end
 
   defp workspace_fixture(ctx, vault_id, identity_id, id, title) do
+    channel = ContentStore.create_note(vault_id, ctx.user_id, %{title: "Existing room #{id}", content: "cascade://chat-channel"})
+    {:ok, coordinator} = Agents.add_to_channel(ctx.user_id, vault_id, channel.id, identity_id, %{orchestrator: true})
+    {:ok, root} = Cascade.Chat.Messages.create(ctx.user, vault_id, channel.id, %{id: Ecto.UUID.generate(), body: "#{title} brief"})
     Store.create_workspace(ctx.user_id, vault_id, %{
       id: id,
+      channelId: channel.id,
+      rootMessageId: root.id,
+      coordinatorRegistrationId: coordinator.id,
       title: title,
       coordinatorIdentityId: identity_id,
       briefContent: "#{title} brief"

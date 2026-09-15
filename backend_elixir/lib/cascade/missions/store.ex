@@ -131,16 +131,26 @@ defmodule Cascade.Missions.Store do
     error -> {:error, Exception.message(error)}
   end
 
-  @doc "Creates one vault-scoped mission workspace and its durable brief."
+  @doc "Creates a mission brief in an explicitly supplied existing conversation. Never allocates a channel."
   def create_workspace(user_id, vault_id, input, opts \\ []) do
     with vault when not is_nil(vault) <- ContentStore.get_writable_vault(vault_id, user_id),
+         {:ok, route} <- Channel.assert_channel(field(input, :channelId), user_id),
+         true <- route.localVaultId == vault_id,
+         {:ok, root} <- Messages.get(route.sourceChannelId, user_id, field(input, :rootMessageId)),
+         {:ok, coordinator} <- assert_coordinator(user_id, route.sourceChannelId, field(input, :coordinatorRegistrationId)),
          {:ok, mission_id} <- workspace_id(field(input, :id)),
          title when title != "" <- clean(field(input, :title), 180),
          identity_id when identity_id != "" <-
            clean(field(input, :coordinatorIdentityId), 120),
+         true <- SQL.one("SELECT id FROM chat_agent_members WHERE channel_id=? AND vault_agent_id=?", [route.sourceChannelId, identity_id]) == [coordinator.id],
+         :ok <- reject_worker_control(opts, :start),
          brief when brief != "" <-
            clean(nonblank(field(input, :briefContent), title), 12_000) do
       fingerprint = mission_id
+      channel_id = route.sourceChannelId
+      root_id = root.id
+      coordinator_id = coordinator.id
+      opts = Keyword.merge(opts, channel_id: route.sourceChannelId, root_id: root.id, coordinator_id: coordinator.id)
       resources_key = {__MODULE__, :workspace_resources}
       Process.put(resources_key, %{})
 
@@ -153,7 +163,7 @@ defmodule Cascade.Missions.Store do
             SQL.one(
               """
               SELECT m.id,m.vault_id,m.coordinator_registration_id,m.title,m.objective,
-                     c.vault_agent_id
+                     c.vault_agent_id,m.channel_id,m.root_message_id
               FROM chat_missions m
               LEFT JOIN chat_agent_members c
                 ON c.channel_id=m.channel_id AND c.id=m.coordinator_registration_id
@@ -166,15 +176,15 @@ defmodule Cascade.Missions.Store do
 
           result =
             case existing do
-              [^mission_id, ^vault_id, _registration_id, existing_title, existing_brief,
-               ^identity_id] ->
+              [^mission_id, ^vault_id, ^coordinator_id, existing_title, existing_brief,
+               ^identity_id, ^channel_id, ^root_id] ->
                 if existing_title == title and existing_brief == brief do
                   get_workspace(user_id, vault_id, mission_id)
                 else
                   {:error, "Mission retry has different creation options"}
                 end
 
-              [_existing_id, _other_vault, _registration_id, _title, _brief, _identity_id] ->
+              [_existing_id, _other_vault, _registration_id, _title, _brief, _identity_id, _channel_id, _root_id] ->
                 {:error, "Mission id is already in use"}
               nil ->
                 create_workspace_attempt(
@@ -211,6 +221,7 @@ defmodule Cascade.Missions.Store do
       end
     else
       nil -> {:error, "Vault not found"}
+      false -> {:error, "Chat channel not found"}
       "" -> {:error, "Mission title, coordinator identity, and brief are required"}
       {:error, _} = error -> error
     end
@@ -2757,35 +2768,11 @@ defmodule Cascade.Missions.Store do
   end
 
 
-  defp workspace_root_message_with_creation(
-         user,
-         vault_id,
-         channel_id,
-         message_id,
-         body,
-         _registration_id
-       ) do
+  defp workspace_root_message_with_creation(user, _vault_id, channel_id, message_id, _body, _registration_id) do
     case Messages.get(channel_id, user.id, message_id) do
-      {:ok, message} ->
-        {:ok, message, false}
-
-      _ ->
-        case Messages.create(
-               user,
-               vault_id,
-               channel_id,
-               %{
-                 id: message_id,
-                 body: body,
-                 createdAt: DateTime.utc_now() |> DateTime.to_iso8601()
-               }
-             ) do
-          {:ok, message} -> {:ok, message, true}
-          other -> other
-        end
+      {:ok, message} -> {:ok, message, false}
+      error -> error
     end
-  rescue
-    error -> {:error, Exception.message(error)}
   end
 
   defp create_workspace_attempt(
@@ -2798,24 +2785,13 @@ defmodule Cascade.Missions.Store do
          brief,
          opts
        ) do
-    channel_id = "mission-channel-#{mission_id}"
-    root_id = "mission-root-#{mission_id}"
+    channel_id = Keyword.fetch!(opts, :channel_id)
+    root_id = Keyword.fetch!(opts, :root_id)
     brief_id = "mission-brief-#{mission_id}"
     user = user!(user_id)
     track_workspace_resource(:mission_id, mission_id, true)
 
-    with {:ok, channel, channel_created?} <-
-           workspace_note_with_creation(
-             vault_id,
-             user_id,
-             %{
-               id: channel_id,
-               title: title,
-               content: "cascade://chat-channel\nmission_id=#{mission_id}",
-               is_listed: false
-             }
-           ),
-         :ok <- track_workspace_resource(:channel_id, channel.id, channel_created?),
+    with channel when is_map(channel) <- ContentStore.get_note(channel_id),
          {:ok, coordinator, member_created?} <-
            workspace_coordinator(user_id, vault_id, channel.id, identity_id),
          :ok <- track_workspace_resource(:member_id, coordinator.id, member_created?),
@@ -2885,15 +2861,13 @@ defmodule Cascade.Missions.Store do
         [channel_id, identity_id]
       )
 
-    case Agents.add_to_channel(
-           user_id,
-           vault_id,
-           channel_id,
-           identity_id,
-           %{"orchestrator" => true, "ambientGroupChat" => true}
-         ) do
-      {:ok, coordinator} -> {:ok, coordinator, is_nil(existing)}
-      other -> other
+    with [registration_id] <- existing,
+         {:ok, route} <- Channel.assert_channel(channel_id, user_id),
+         true <- route.localVaultId == vault_id,
+         {:ok, coordinator} <- assert_coordinator(user_id, channel_id, registration_id) do
+      {:ok, coordinator, false}
+    else
+      _ -> {:error, "Existing channel coordinator is required"}
     end
   end
   defp ensure_workspace_brief(mission_id) do
