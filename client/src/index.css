@@ -4602,6 +4602,13 @@ button.chat-avatar.is-clickable:focus-visible {
   max-width: 100%;
   height: auto;
 }
+.chat-message-chunk pre:has(> .chat-svg) {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  overflow: visible;
+}
 .chat-message-meta {
   display: flex;
   align-items: baseline;

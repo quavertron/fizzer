@@ -1,5 +1,6 @@
 use ratatui::layout::Rect;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -154,8 +155,17 @@ fn encode(item: &Placement) -> io::Result<Vec<u8>> {
 
 pub enum InlinePart<'a> {
     Text(&'a str),
-    Svg(&'a str),
+    Svg(Cow<'a, str>),
 }
+
+fn render_mermaid(source: &str) -> Option<String> {
+    merman::render::HeadlessRenderer::new()
+        .with_diagram_id("fizzer-mermaid")
+        .render_svg_resvg_safe_sync(source)
+        .ok()
+        .flatten()
+}
+
 pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
     let mut parts = Vec::new();
     let lower = input.to_ascii_lowercase();
@@ -174,13 +184,23 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
             };
             let close = after + close_offset;
             cursor = close + count;
-            // Inline code and non-SVG fences are examples, not images.
             let body = input[after..close].find('\n').map(|n| after + n + 1);
             match body {
-                Some(body)
-                    if count >= 3 && input[after..body].trim().eq_ignore_ascii_case("svg") =>
-                {
-                    Some((start, cursor, body, close))
+                Some(body) if count >= 3 => {
+                    let language = input[after..body].trim();
+                    if language.eq_ignore_ascii_case("svg") {
+                        Some((
+                            start,
+                            cursor,
+                            InlinePart::Svg(Cow::Borrowed(&input[body..close])),
+                        ))
+                    } else if language.eq_ignore_ascii_case("mermaid") {
+                        render_mermaid(&input[body..close]).map(|svg| {
+                            (start, cursor, InlinePart::Svg(Cow::Owned(svg)))
+                        })
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
@@ -191,18 +211,23 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
                 .get(start + 4)
                 .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>');
             if lower[start..].starts_with("<svg") && boundary {
-                lower[start..]
-                    .find("</svg>")
-                    .map(|end| (start, start + end + 6, start, start + end + 6))
+                lower[start..].find("</svg>").map(|end| {
+                    let end = start + end + 6;
+                    (
+                        start,
+                        end,
+                        InlinePart::Svg(Cow::Borrowed(&input[start..end])),
+                    )
+                })
             } else {
                 None
             }
         };
-        if let Some((start, end, body, close)) = found {
+        if let Some((start, end, part)) = found {
             if start > text_start {
                 parts.push(InlinePart::Text(&input[text_start..start]));
             }
-            parts.push(InlinePart::Svg(&input[body..close]));
+            parts.push(part);
             cursor = end;
             text_start = end;
         }
@@ -237,9 +262,9 @@ mod tests {
             split_inline_svgs(body).as_slice(),
             [
                 InlinePart::Text("Example `<svg>...</svg>`, then "),
-                InlinePart::Svg("<svg><circle/></svg>"),
+                InlinePart::Svg(svg),
                 InlinePart::Text(" end")
-            ]
+            ] if svg == "<svg><circle/></svg>"
         ));
     }
     #[test]
@@ -280,5 +305,24 @@ mod tests {
             })
             .collect();
         assert_eq!(svg, ["<svg><circle/></svg>", "<svg><rect/></svg>\n"]);
+    }
+    #[test]
+    fn renders_mermaid_fences_as_svg() {
+        let body = "before\n```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```\nafter";
+        let parts = split_inline_svgs(body);
+        assert!(matches!(
+            parts.as_slice(),
+            [InlinePart::Text("before\n"), InlinePart::Svg(svg), InlinePart::Text("\nafter")]
+                if svg.starts_with("<svg") && svg.contains("Start") && svg.contains("Done")
+        ));
+    }
+
+    #[test]
+    fn invalid_mermaid_fences_stay_text() {
+        let body = "```mermaid\nthis is not a diagram\n```";
+        assert!(matches!(
+            split_inline_svgs(body).as_slice(),
+            [InlinePart::Text(text)] if *text == body
+        ));
     }
 }
