@@ -746,6 +746,7 @@ ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, passw
     });
     if (!res.ok) {
       const body = await res.text();
+      console.error('[Main] Remote server login failed', { origin: trimmed, status: res.status, body });
       return { success: false, error: `Login failed (${res.status}): ${body}` };
     }
     const data = await res.json();
@@ -754,6 +755,10 @@ ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, passw
     const vaultsRes = await remoteRequest(`${trimmed}/api/vaults`, {
       headers: { Authorization: `Bearer ${data.token}` },
     });
+    if (!vaultsRes.ok) {
+      const body = await vaultsRes.text();
+      console.error('[Main] Remote vault listing failed', { origin: trimmed, status: vaultsRes.status, body });
+    }
     const vaultsData = vaultsRes.ok ? await vaultsRes.json() : { vaults: [] };
     const remoteVaults = (vaultsData.vaults || []).map((v) => ({
       id: v.id,
@@ -767,6 +772,7 @@ ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, passw
 
     return { success: true, origin: trimmed, user: data.user, vaults: remoteVaults };
   } catch (error) {
+    console.error('[Main] Remote server connection error', { origin, error: error?.stack || error?.message || String(error) });
     return { success: false, error: error.message };
   }
 });

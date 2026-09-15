@@ -2708,15 +2708,28 @@ export default function App() {
           onJoinVault={handleJoinVault}
           onConnectRemoteServer={async (origin, username, password) => {
             const electronAPI = (window as unknown as { electronAPI?: {
-              connectRemoteInstance?: (input: { origin: string; username: string; password: string }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[] }>;
-              openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean }>;
+              connectRemoteInstance?: (input: { origin: string; username: string; password: string }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[]; error?: string }>;
+              openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
             } }).electronAPI;
             const result = await electronAPI?.connectRemoteInstance?.({ origin, username, password });
-            if (!result?.success || !result.origin) return false;
+            if (!result?.success || !result.origin) {
+              console.error('[Fizzer] Remote server connection failed', {
+                origin,
+                error: result?.error || 'No origin returned',
+              });
+              return false;
+            }
             const firstVault = result.vaults?.[0];
             if (firstVault && electronAPI.openConnection) {
               const opened = await electronAPI.openConnection({ id: firstVault.id, origin: result.origin });
-              if (!opened.success) return false;
+              if (!opened.success) {
+                console.error('[Fizzer] Remote vault open failed', {
+                  origin: result.origin,
+                  vaultId: firstVault.id,
+                  error: opened.error || 'Open connection failed',
+                });
+                return false;
+              }
             }
             await loadVaults();
             return true;
