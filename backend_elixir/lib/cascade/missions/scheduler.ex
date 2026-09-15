@@ -118,6 +118,7 @@ defmodule Cascade.Missions.Scheduler do
     result =
       SQL.transaction(fn ->
         reconcile(mission_id)
+        Cascade.Missions.Progression.reconcile(mission_id)
         Cascade.Missions.Children.resume_ready(mission_id)
         scheduled = Store.schedulable(mission_id)
         dispatches = Enum.map(scheduled.candidates, &materialize_candidate!/1)
@@ -358,6 +359,9 @@ defmodule Cascade.Missions.Scheduler do
              message,
              wake.coordinatorRegistrationId
            ) do
+      unless SQL.one("SELECT id FROM chat_mission_events WHERE source_key=?", ["coordinator-dispatch:" <> dispatch.id]) do
+        Store.record_event(wake.mission.id, %{kind: "coordinator_dispatch", summary: dispatch.id, source_key: "coordinator-dispatch:" <> dispatch.id})
+      end
       if Map.has_key?(wake, :interpretation),
         do: Cascade.Missions.Interpretation.admitted(wake.mission.id, dispatch.id)
 

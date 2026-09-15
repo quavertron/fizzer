@@ -2724,7 +2724,7 @@ export default function App() {
               return false;
             }
             const firstVault = result.vaults?.[0];
-            if (firstVault && electronAPI.openConnection) {
+            if (firstVault && electronAPI?.openConnection) {
               const opened = await electronAPI.openConnection({ id: firstVault.id, origin: result.origin });
               if (!opened.success) {
                 console.error('[Fizzer] Remote vault open failed', {

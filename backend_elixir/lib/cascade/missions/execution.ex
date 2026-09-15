@@ -196,7 +196,7 @@ defmodule Cascade.Missions.Execution do
           fn ->
             with {:ok, _current, current_execution} <- refresh_execution(dispatch.id),
                  true <- current_execution == execution,
-                 true <- Cascade.Missions.ExecutionAdmission.claim_allowed?(dispatch.id),
+                 :ok <- Cascade.Missions.ExecutionAdmission.claim(dispatch.id),
                  {:ok, run} <-
                    start_chat_run(
                      execution,

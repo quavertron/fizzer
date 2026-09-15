@@ -5,6 +5,7 @@ import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply
 import { api, type NoteSummary } from '../api';
 import { normalizeMention } from '../chat/mentions';
 import { createChannelWorkItem } from '../chat/workItems';
+import { VoiceRoom } from './VoiceRoom';
 import { buildReplyPreview, buildReplyRef } from '../chat/replies';
 import type {
   ChatAgentOption,
@@ -24,6 +25,7 @@ import { ChatChannelSettings } from './ChatChannelSettings';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatGroupRow, getRunningMessageState } from './ChatGroupRow';
 import { ChatMissionCard } from './ChatMissionCard';
+import { isHumanMissionRoot, missionCoordinatorCarrier } from '../chat/missionAttribution';
 import { usePopupMenu } from '../ui/popupMenu';
 import { ChatSidebarButtons } from './ChatSidebarButtons';
 import { ChatWorkTrace } from './ChatWorkTrace';
@@ -888,6 +890,8 @@ export const ChatView = memo(function ChatView({
           )}
         </header>
 
+        {vaultId && <VoiceRoom key={`${vaultId}:${channelId}`} vaultId={vaultId} channelId={channelId} />}
+
         <div
           ref={messagesRef}
           className="chat-messages"
@@ -954,7 +958,7 @@ export const ChatView = memo(function ChatView({
                 return registration ? `agent:${registration.vaultAgentId || registration.id}`
                   : `${getMessageAvatarKind(message)}:${message.registrationId || message.author.trim()}`;
               };
-              const renderGroupRow = (group: ChatMessageGroup, traceContent?: ReactNode, contextMenuMessage?: ChatMessage) => {
+              const renderPlainGroupRow = (group: ChatMessageGroup, traceContent?: ReactNode, contextMenuMessage?: ChatMessage) => {
                 const head = group.messages[0];
                 const continuesPrevious = Boolean(previousMessage && canGroupChatMessages(previousMessage, head, displayIdentity));
                 previousMessage = group.messages.at(-1);
@@ -1006,6 +1010,18 @@ export const ChatView = memo(function ChatView({
                   />
                 );
               };
+              const renderGroupRow = (group: ChatMessageGroup, traceContent?: ReactNode, contextMenuMessage?: ChatMessage): ReactNode => {
+                if (!group.messages.some(isHumanMissionRoot)) return renderPlainGroupRow(group, traceContent, contextMenuMessage);
+                return group.messages.flatMap((message) => {
+                  if (!isHumanMissionRoot(message)) return [renderPlainGroupRow({ messages: [message] })];
+                  return [
+                    renderPlainGroupRow({ messages: [{ ...message, mission: undefined }] }),
+                    renderPlainGroupRow({ messages: [missionCoordinatorCarrier(message)] },
+                      <ChatMissionCard mission={message.mission!} vaultId={vaultId} channelId={message.channelId}
+                        replyMessage={message} onReply={startReply} onContextMenu={openMessageContextMenu} />, message),
+                  ];
+                });
+              };
               return transcriptSegments.flatMap((segment) => {
                 if (segment.kind === 'work') {
                   // A trace is always nested in an agent row. System notices
@@ -1031,12 +1047,12 @@ export const ChatView = memo(function ChatView({
                   } : segment.carrier;
                   const traceSelected = selectedMessageId != null
                     && segment.trace.some((message) => message.id === selectedMessageId);
-                  const missionArtifacts = [
-                    ...(carrier.mission ? [carrier] : []),
+                  const missionArtifacts = [...new Map([
+                    ...(host.mission ? [host] : []),
                     ...segment.fullGroups
                     .flatMap((group) => group.messages)
                     .filter((message) => Boolean(message.mission)),
-                  ];
+                  ].map((message) => [message.mission!.id, message])).values()];
                   const displayCarrier = carrier.mission ? { ...carrier, mission: undefined, replyTo: undefined } : carrier;
                   const missionHasTrace = missionArtifacts.length > 0 && segment.trace.length > 0;
                   const workTrace = (
@@ -1070,7 +1086,10 @@ export const ChatView = memo(function ChatView({
                       />
                     ))
                     : workTrace;
-                  const nodes: ReactNode[] = [renderGroupRow({ messages: [displayCarrier] }, unifiedMission, missionArtifacts[0])];
+                  const nodes: ReactNode[] = missionArtifacts.filter(isHumanMissionRoot)
+                    .map((message) => renderPlainGroupRow({ messages: [{ ...message, mission: undefined }] }));
+                  const coordinatorCarrier = missionArtifacts[0] ? missionCoordinatorCarrier(missionArtifacts[0]) : displayCarrier;
+                  nodes.push(renderPlainGroupRow({ messages: [coordinatorCarrier] }, unifiedMission, missionArtifacts[0]));
                   for (const group of segment.fullGroups) {
                     const messagesWithoutMissions = group.messages.filter((message) => !message.mission);
                     if (messagesWithoutMissions.length) nodes.push(renderGroupRow({ messages: messagesWithoutMissions }));

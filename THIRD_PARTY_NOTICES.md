@@ -1,5 +1,11 @@
 # Third-party notices
 
+Voice rooms include the unmodified LiveKit client (Apache-2.0). HTML previews
+bundle unmodified DOMPurify (Apache-2.0 OR MPL-2.0) with Fizzer's guard code.
+Their license texts are served in `third-party/` and the preview sanitizer's
+license is also included in the backend release's `priv/` directory. Sources:
+<https://github.com/livekit/client-sdk-js> and <https://github.com/cure53/DOMPurify>.
+
 Fizzer Desktop includes `@resvg/resvg-js` 2.6.2 and its platform-specific
 native binding for rendering SVG attachments. resvg-js is distributed under
 the Mozilla Public License 2.0.

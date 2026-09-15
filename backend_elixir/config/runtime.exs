@@ -48,6 +48,13 @@ if config_env() != :test do
           valid = Enum.all?(owners, fn o ->
             is_map(o) and is_integer(o["ownerId"]) and o["ownerId"] > 0 and
               o["maxConcurrent"] in 1..2 and is_list(o["tasks"]) and is_list(o["retainedRuns"]) and
+              (is_nil(o["futureOwnerMessageAfterSeq"]) or (is_integer(o["futureOwnerMessageAfterSeq"]) and o["futureOwnerMessageAfterSeq"] >= 0)) and
+              (is_nil(o["qualificationBudget"]) or (is_map(o["qualificationBudget"]) and
+                is_integer(o["qualificationBudget"]["afterRunId"]) and o["qualificationBudget"]["afterRunId"] >= 0 and
+                o["qualificationBudget"]["maxStarts"] in 1..16)) and
+              is_list(o["workflows"] || []) and Enum.all?(o["workflows"] || [], fn w ->
+                is_map(w) and Enum.all?(~w(missionId vaultId channelId rootMessageId), &valid_id.(w[&1]))
+              end) and
               Enum.all?(o["tasks"], fn t ->
                 is_map(t) and t["ownerId"] == o["ownerId"] and is_integer(t["attempt"]) and t["attempt"] >= 0 and
                   Enum.all?(~w(taskId missionId workItemId registrationId vaultId channelId identityId), &valid_id.(t[&1])) and

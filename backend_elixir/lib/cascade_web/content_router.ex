@@ -41,6 +41,7 @@ defmodule CascadeWeb.ContentRouter do
 
   post "/api/notes/:id/assets", do: ContentController.upload_asset(conn, id)
   get "/api/notes/:id/assets/:assetId", do: ContentController.serve_asset(conn, id, assetId)
+  get "/api/html-previews/:id/:assetId", do: ContentController.preview_html(conn, id, assetId)
 
   get "/api/notes/:id/backlinks", do: ContentController.backlinks(conn, id)
   get "/api/vaults/:id/tags", do: ContentController.list_tags(conn, id)

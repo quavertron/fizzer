@@ -50,6 +50,15 @@ function assertOrderedWithin(haystack, ...lines) {
   }
 }
 
+test('rendered cutover template retains voice signalling and hides control and tokens', () => {
+  assert.match(nginxTemplate, /location \^~ \/voice\/twirp\/ \{ return 404; \}/);
+  const voice = nginxTemplate.match(/location \^~ \/voice\/ \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(voice, 'a manual host include is lost during the next deployment');
+  assert.match(voice, /proxy_pass http:\/\/127\.0\.0\.1:7880\//);
+  assert.match(voice, /proxy_set_header Upgrade \$http_upgrade/);
+  assert.match(voice, /access_log off/);
+});
+
 test('state-identical releases use a warmed backup and never close the maintenance gate', () => {
   const rolling = functionBody('rolling_cutover');
   assertOrderedWithin(

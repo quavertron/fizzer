@@ -15,7 +15,7 @@ defmodule CascadeElixir.MixProject do
   def application do
     [
       mod: {Cascade.Application, []},
-      extra_applications: [:crypto, :logger]
+      extra_applications: [:crypto, :logger, :inets, :ssl]
     ]
   end
 

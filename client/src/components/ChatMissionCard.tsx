@@ -155,14 +155,14 @@ export function ChatMissionCard({
     }
   }
   async function stopMission() {
-    if (!vaultId || !channelId || stopping) return;
+    if (!vaultId || !channelId || stopping || !mission.coordinatorRegistrationId) return;
     setStopping(true);
     setHistoryError('');
     try {
       await api(`/api/vaults/${vaultId}/channels/${channelId}/missions/${mission.id}/finish`, {
         method: 'POST',
         body: JSON.stringify({
-          coordinatorRegistrationId: mission.coordinatorMention || mission.coordinator,
+          coordinatorRegistrationId: mission.coordinatorRegistrationId,
           status: 'canceled',
           summary: 'Stopped by user.',
         }),

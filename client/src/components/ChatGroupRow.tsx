@@ -1,4 +1,5 @@
 import { LoadingIndicator } from './LoadingIndicator';
+import { HtmlAttachment } from './HtmlAttachment';
 import type { AgentOwnership } from '../chat/agents';
 import { isLiveAgentStatus } from '../chat/runBlocks';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
@@ -223,6 +224,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               const isTappable = hasRunWidget || hasThoughtBlocks || message.status === 'canceled';
               const identity = !message.mission ? missionIdentities?.get(message.id) : undefined;
               const selected = selectedMessageId === message.id;
+              const actionMessage = message.id.startsWith('mission-coordinator-row:') ? (contextMenuMessage || message) : message;
               const jumpHighlighted = jumpHighlightMessageId === message.id;
               return (<Fragment key={message.id}>
                 <SwipeToReply
@@ -230,11 +232,11 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   style={identity ? { '--mission-accent': missionAccent(identity.id) } as CSSProperties : undefined}
                   title={identity ? `${identity.title} · ${identity.role}${identity.taskTitle ? ` · ${identity.taskTitle}` : ''}` : undefined}
                   className={`chat-message-chunk ${identity ? 'has-mission-accent' : ''} ${isTappable ? 'has-run-widget' : ''} ${selected ? 'selected' : ''} ${jumpHighlighted ? 'is-jump-highlighted' : ''}`}
-                  onReply={() => onReply(message)}
+                  onReply={() => onReply(actionMessage)}
                   onClick={() => {
                     if (isTappable) onToggleSelect(message.id);
                   }}
-                  onContextMenu={(event) => onContextMenu(event, message)}
+                  onContextMenu={(event) => onContextMenu(event, actionMessage)}
                 >
                   <ChatQuoteRefs
                     message={message}
@@ -288,6 +290,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                             </video>
                             {attachment.name && <span className="chat-msg-video-label">{attachment.name}</span>}
                           </div>
+                        ) : attachment.media_type === 'text/html' ? (
+                          <HtmlAttachment key={attachmentIndex} attachment={attachment} />
                         ) : (
                           <a
                             key={attachmentIndex}

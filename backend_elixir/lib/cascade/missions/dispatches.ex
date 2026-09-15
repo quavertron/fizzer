@@ -19,16 +19,15 @@ defmodule Cascade.Missions.Dispatches do
             do: [],
             else: resolve_targets(user_id, channel_id, message, members)
 
-        requested_agent = field(message, :registrationId) || field(message, :agentId)
-        requested_mention = leading_mention(field(message, :body, ""))
-        requested = requested_agent || requested_mention
+        # Sender attribution is not an invocation target. Unregistered external
+        # agents are valid authors; only an actual leading mention names a target.
+        requested = leading_mention(field(message, :body, ""))
 
         cond do
           present?(requested) and
               not Enum.any?(members, fn registration ->
-                registration.id == requested_agent or registration.agentId == requested_agent or
-                  Schema.normalize_mention(registration.mention, registration.agentId) ==
-                    requested_mention
+                String.downcase(Schema.normalize_mention(registration.mention, registration.agentId)) ==
+                  String.downcase(requested)
               end) ->
             {:error, "Agent not found: #{requested}"}
 
@@ -213,9 +212,9 @@ defmodule Cascade.Missions.Dispatches do
   # reconcile the same durable batch first; only acknowledgment retires the wake.
   # Check every execution refresh, including the transaction that starts the run.
   defp interpretation_waiting_for_human?(dispatch) do
-    SQL.one(
+    SQL.all(
       """
-      SELECT 1 FROM chat_mission_interpretations i
+      SELECT d.id,r.status FROM chat_mission_interpretations i
       JOIN chat_agent_dispatches d ON d.registration_id=?
       JOIN chat_messages m ON m.id=d.message_id
       LEFT JOIN runs r ON r.chat_dispatch_id=d.id
@@ -223,10 +222,10 @@ defmodule Cascade.Missions.Dispatches do
         AND COALESCE(m.registration_id,'')='' AND COALESCE(m.agent_id,'')=''
         AND COALESCE(m.mission_task_id,'')='' AND m.id NOT LIKE 'sys-%'
         AND ((d.run_id IS NULL AND r.id IS NULL) OR r.status IN ('queued','running'))
-      LIMIT 1
       """,
       [dispatch.registration.id, dispatch.id]
-    ) == [1]
+    )
+    |> Enum.any?(fn [id, status] -> status in ["queued", "running"] or Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id) end)
   end
 
   defp target_unchanged?(dispatch) do
