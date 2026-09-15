@@ -524,6 +524,36 @@ defmodule Cascade.Missions.NotificationsTest do
     assert delegate["cwd"] == prepared["path"]
     # The inert runner consumes the packet without spawning a provider.
     assert Cascade.Missions.Execution.execute_dispatch(item.dispatch.id) == {:ok, run}
+
+    # A later original stage needs no second manual repository bind: it inherits
+    # the completed dependency's actual Git workspace and exact commit.
+    File.write!(Path.join(prepared["path"], "evidence.txt"), "inert dependency artifact\n")
+    {_, 0} = System.cmd("git", ["-C", prepared["path"], "add", "evidence.txt"])
+    {_, 0} = System.cmd("git", ["-C", prepared["path"], "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "dependency artifact"])
+    {commit, 0} = System.cmd("git", ["-C", prepared["path"], "rev-parse", "HEAD"])
+    [root] = SQL.one("SELECT root_message_id FROM chat_missions WHERE id=?", [c.mission])
+    workflow = %{"missionId" => c.mission, "vaultId" => c.vault, "channelId" => c.channel, "rootMessageId" => root}
+    Application.put_env(:cascade_elixir, :execution_admission, put_in(policy, ["owners", Access.at(0), "workflows"], [workflow]))
+    SQL.exec("UPDATE chat_missions SET phase='executing' WHERE id=?", [c.mission])
+    {:ok, next} = Store.add_task(c.user.id, c.channel, c.mission, %{title: "Original implementation", assignee: c.worker.id, coordinatorRegistrationId: c.coordinator.id, purpose: "implementation", workspaceMode: "isolated", dependsOn: [c.task]})
+    Runs.finish(run.id, "completed", "Research evidence recorded")
+    {:ok, settled} = Scheduler.settle_run(run.id, "completed", "Research evidence recorded")
+    [next_dispatch] = settled.scheduled.dispatches
+    assert next_dispatch.message.missionTaskId == next.task.id
+    started_next = Task.async(fn -> Cascade.Missions.Execution.execute_dispatch(next_dispatch.dispatch.id) end)
+    {:ok, packet} = Session.poll(sid, 2_000)
+    {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
+    {:ok, %{id: ack_id, data: ["workspace:prepare", payload]}} = SocketIO.decode(encoded)
+    assert payload["dir"] == prepared["path"]
+    {output, 0} = System.cmd("node", ["-e", script, module, Jason.encode!(payload)], env: [{"CASCADE_WORKTREE_ROOT", Path.join(dir,"isolated")}])
+    next_prepared = Jason.decode!(output)
+    assert next_prepared["ok"] == true
+    assert next_prepared["baseCommit"] == String.trim(commit)
+    assert File.read!(Path.join(next_prepared["path"], "evidence.txt")) == "inert dependency artifact\n"
+    send_packet.(SocketIO.ack("/runners", ack_id, [next_prepared]))
+    assert {:ok, next_run} = Task.await(started_next, 10_000)
+    assert next_run.id != run.id
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [next_dispatch.dispatch.id]) == [1]
   end
 
   test "a forged completed status cannot produce a completion receipt", c do

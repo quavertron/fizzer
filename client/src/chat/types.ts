@@ -125,6 +125,7 @@ export interface ChatMission {
   objective: string;
   status: 'active' | 'reviewing' | 'attention' | 'blocked' | 'completed' | 'canceled';
   coordinator: string;
+  coordinatorRegistrationId?: string;
   coordinatorMention: string;
   tasks: ChatMissionTask[];
   summary: string;

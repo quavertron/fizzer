@@ -223,6 +223,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               const isTappable = hasRunWidget || hasThoughtBlocks || message.status === 'canceled';
               const identity = !message.mission ? missionIdentities?.get(message.id) : undefined;
               const selected = selectedMessageId === message.id;
+              const actionMessage = message.id.startsWith('mission-coordinator-row:') ? (contextMenuMessage || message) : message;
               const jumpHighlighted = jumpHighlightMessageId === message.id;
               return (<Fragment key={message.id}>
                 <SwipeToReply
@@ -230,11 +231,11 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   style={identity ? { '--mission-accent': missionAccent(identity.id) } as CSSProperties : undefined}
                   title={identity ? `${identity.title} · ${identity.role}${identity.taskTitle ? ` · ${identity.taskTitle}` : ''}` : undefined}
                   className={`chat-message-chunk ${identity ? 'has-mission-accent' : ''} ${isTappable ? 'has-run-widget' : ''} ${selected ? 'selected' : ''} ${jumpHighlighted ? 'is-jump-highlighted' : ''}`}
-                  onReply={() => onReply(message)}
+                  onReply={() => onReply(actionMessage)}
                   onClick={() => {
                     if (isTappable) onToggleSelect(message.id);
                   }}
-                  onContextMenu={(event) => onContextMenu(event, message)}
+                  onContextMenu={(event) => onContextMenu(event, actionMessage)}
                 >
                   <ChatQuoteRefs
                     message={message}

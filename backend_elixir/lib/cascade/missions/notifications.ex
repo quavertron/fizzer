@@ -43,7 +43,12 @@ defmodule Cascade.Missions.Notifications do
               %{mission: mission, tasks: tasks} ->
                 Enum.each(tasks, fn task ->
                   if eligible?(task.id, task.attempt) do
-                    if notice = notice(task, mission), do: save!(mission, task, notice)
+                    exhausted = SQL.one("SELECT summary FROM chat_mission_events WHERE mission_id=? AND task_id=? AND kind='automatic_review_repair_exhausted' LIMIT 1", [id, task.id])
+                    receipt = case exhausted do
+                      [reason] -> {"repair-exhausted", "Request remains blocked; automatic correction limit reached.", reason}
+                      _ -> notice(task, mission)
+                    end
+                    if receipt, do: save!(mission, task, receipt)
                   end
                 end)
 

@@ -115,6 +115,10 @@ defmodule Cascade.Missions.Store do
                   )
               })
 
+              if root[:actorUserId] == user_id and root[:agentId] in [nil, ""] and root[:registrationId] in [nil, ""] and
+                   SQL.one("SELECT username FROM users WHERE id=?", [user_id]) == [root.author] do
+                record_event(mission_id, %{kind: "workflow_enrolled", title: "Durable workflow", summary: root.id})
+              end
               Cascade.Missions.Interpretation.initialize(mission_id)
               refresh!(mission_id)
           end
@@ -710,7 +714,7 @@ defmodule Cascade.Missions.Store do
         occupied =
           SQL.all(
             """
-            SELECT DISTINCT t.assignee_registration_id
+            SELECT DISTINCT t.assignee_registration_id,t.id,t.status
             FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
             WHERE m.channel_id=? AND m.phase IN ('planning','executing')
               AND m.status IN ('active','reviewing','attention','blocked')
@@ -719,6 +723,7 @@ defmodule Cascade.Missions.Store do
             """,
             [mission.channel_id]
           )
+          |> Enum.filter(fn [_registration, id, status] -> status == "running" or Cascade.Missions.ExecutionAdmission.task_allowed?(id) end)
           |> Enum.map(&hd/1)
           |> MapSet.new()
 
@@ -2583,7 +2588,8 @@ defmodule Cascade.Missions.Store do
   defp queue_reason(_task, waiting, _attention) when waiting != [], do: "dependency"
   defp queue_reason(%{dispatch_id: id}, _waiting, _attention) when not is_nil(id), do: "queued"
   defp queue_reason(_task, _waiting, _attention), do: "agent-busy"
-  defp record_event(mission_id, input) do
+  @doc false
+  def record_event(mission_id, input) do
     SQL.exec(
       """
       INSERT INTO chat_mission_events

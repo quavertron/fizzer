@@ -156,6 +156,37 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
   end
 
+  test "future owner work survives disconnect and queued transport without reviving old work", ctx do
+    alias Cascade.Missions.ExecutionAdmission
+    alias Cascade.Runs.RunnerLifecycle
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    [seq] = SQL.one("SELECT MAX(rowid) FROM chat_messages")
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => 2, "tasks" => [], "retainedRuns" => [], "futureOwnerMessageAfterSeq" => seq}]}
+    Application.put_env(:cascade_elixir, :execution_admission, policy)
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{body: "New owner request, fixture transport only"})
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    assert ExecutionAdmission.dispatch_allowed?(dispatch.id)
+    refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    assert {:retry, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch.id]) == [nil]
+    register_runner!(ctx.sid)
+    assert {:ok, _} = Session.poll(ctx.sid, 1_000)
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    [encoded, _] = Store.pending_delivery(run.id, ctx.owner.id)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    register_runner!(ctx.sid)
+    assert {:ok, _} = Session.poll(ctx.sid, 1_000)
+    assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    Session.emit(ctx.sid, "/runners", "run:delegate", [Jason.decode!(encoded)])
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    assert packets =~ "run:delegate"
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch.id]) == [1]
+    assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [ctx.dispatch.id]) == [nil]
+  end
+
   @tag :race_audit
   test "two BEAM processes claim one dispatch without duplicate delegation", ctx do
     SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
