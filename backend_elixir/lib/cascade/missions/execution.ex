@@ -137,6 +137,7 @@ defmodule Cascade.Missions.Execution do
             )
             |> PromptContext.append_context(context)
             |> PromptContext.append_mission_context(dispatch, execution.runner_user_id)
+            |> Cascade.Missions.ExecutionAdmission.constrain_prompt(execution.runner_user_id)
 
           start_dispatch(dispatch, execution, %{built | prompt: prompt}, resume, inline_svgs)
         else
@@ -195,6 +196,7 @@ defmodule Cascade.Missions.Execution do
           fn ->
             with {:ok, _current, current_execution} <- refresh_execution(dispatch.id),
                  true <- current_execution == execution,
+                 true <- Cascade.Missions.ExecutionAdmission.claim_allowed?(dispatch.id),
                  {:ok, run} <-
                    start_chat_run(
                      execution,
@@ -439,16 +441,37 @@ defmodule Cascade.Missions.Execution do
            """
            SELECT p.worktree_path,p.repository,p.workspace_mode
            FROM chat_mission_tasks child
-           JOIN chat_mission_tasks parent ON parent.id=child.parent_task_id
+           JOIN chat_mission_tasks parent ON parent.id=child.parent_task_id AND parent.mission_id=child.mission_id
            JOIN work_items p ON p.id=parent.work_item_id
-           WHERE child.work_item_id=? AND p.created_by=?
+           WHERE child.work_item_id=? AND p.created_by=? AND p.vault_id=? AND p.channel_id=?
            """,
-           [item.id, execution.runner_user_id]
+           [item.id, execution.runner_user_id, item.vaultId, item.channelId]
          ) do
       [path, _, _] when path not in [nil, ""] -> path
       [_, _, "isolated"] -> ""
       [_, repository, _] -> nonblank(repository, fallback)
-      _ -> fallback
+      _ -> dependency_workspace_source(item, execution, fallback)
+    end
+  end
+
+  # Sequential review/implementation stages use their exact completed dependency,
+  # not an arbitrary process cwd. Multiple different sources require explicit
+  # reconciliation; never choose a branch by query order.
+
+  defp dependency_workspace_source(item, execution, fallback) do
+    sources = SQL.all("""
+      SELECT DISTINCT p.worktree_path
+      FROM chat_mission_tasks child
+      JOIN json_each(child.depends_on_json) dependency
+      JOIN chat_mission_tasks parent ON parent.id=dependency.value AND parent.mission_id=child.mission_id
+      JOIN work_items p ON p.id=parent.work_item_id
+      WHERE child.work_item_id=? AND parent.status='completed' AND p.created_by=?
+        AND p.vault_id=? AND p.channel_id=? AND COALESCE(p.worktree_path,'')<>''
+      """, [item.id, execution.runner_user_id, item.vaultId, item.channelId])
+    case sources do
+      [[path]] -> path
+      [] -> fallback
+      _ -> ""
     end
   end
 

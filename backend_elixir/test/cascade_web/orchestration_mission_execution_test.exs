@@ -122,6 +122,40 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     }
   end
 
+  test "scoped recovery blocks old disconnected dispatch and queued transport on reconnect without canceling retained work", ctx do
+    alias Cascade.Missions.ExecutionAdmission
+    alias Cascade.Runs.RunnerLifecycle
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    [encoded, attempts] = Store.pending_delivery(run.id, ctx.owner.id)
+    baseline = SQL.all("SELECT id,status FROM runs ORDER BY id")
+    dispatches = SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id")
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => 2, "tasks" => [], "retainedRuns" => []}]}
+    Application.put_env(:cascade_elixir, :execution_admission, policy)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    refute RunnerLifecycle.online?(ctx.owner.id)
+    RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    register_runner!(ctx.sid)
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    refute packets =~ "run:delegate"
+    assert RunnerLifecycle.online?(ctx.owner.id)
+    RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    Session.emit(ctx.sid, "/runners", "run:delegate", [Jason.decode!(encoded)])
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    refute packets =~ "run:delegate"
+    assert Store.pending_delivery(run.id, ctx.owner.id) == [encoded, attempts]
+    assert SQL.all("SELECT id,status FROM runs ORDER BY id") == baseline
+    assert SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id") == dispatches
+    retained = %{"runId" => run.id, "vaultId" => ctx.owner_vault.id, "dispatchId" => ctx.dispatch.id}
+    Application.put_env(:cascade_elixir, :execution_admission, put_in(policy, ["owners", Access.at(0), "retainedRuns"], [retained]))
+    assert ExecutionAdmission.run_allowed?(run.id, ctx.owner.id)
+    assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
+  end
+
   @tag :race_audit
   test "two BEAM processes claim one dispatch without duplicate delegation", ctx do
     SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])

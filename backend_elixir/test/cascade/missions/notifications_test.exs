@@ -480,6 +480,50 @@ defmodule Cascade.Missions.NotificationsTest do
 
     Notifications.reconcile(c.mission, fn _ -> :ok end)
     assert length(receipts(c)) == 1
+
+    # Recover the SAME dispatch through the real repository binder and the real
+    # desktop Git workspace module. No model executable is involved in this fixture.
+    dir = Path.join(System.tmp_dir!(), "fizzer-recovery-#{c.task}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {_, 0} = System.cmd("git", ["init", "-b", "fixture", dir], stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"], stderr_to_stdout: true)
+    alias Cascade.Missions.{ExecutionAdmission, RepositoryBinding}
+    binding = ExecutionAdmission.task_binding(c.task)
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => c.user.id, "maxConcurrent" => 2, "retainedRuns" => [], "tasks" => [binding]}]}
+    Application.put_env(:cascade_elixir, :execution_admission, policy)
+    SQL.exec("UPDATE work_items SET branch=? WHERE id=?", ["cascade/fixture/" <> c.task, binding["workItemId"]])
+    {:ok, preview} = RepositoryBinding.preview(c.user.id, binding["workItemId"])
+    {:ok, _} = RepositoryBinding.bind(c.user.id, binding["workItemId"], %{"repository" => dir, "expectedRevision" => preview.revision})
+    Cascade.Realtime.Hub.register_runner(c.user.id, sid, "/runners", %{})
+    started = Task.async(fn -> Cascade.Missions.Execution.execute_dispatch(item.dispatch.id) end)
+    {:ok, packet} = Session.poll(sid, 2_000)
+    {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
+    {:ok, %{id: ack_id, data: ["workspace:prepare", payload]}} = SocketIO.decode(encoded)
+    assert payload["dir"] == dir
+    module = Path.expand("../../../../cascade-electron/worktrees.cjs", __DIR__)
+    script = "require(process.argv[1]).prepareWorkspace(JSON.parse(process.argv[2])).then(x=>console.log(JSON.stringify(x)))"
+    {output, 0} = System.cmd("node", ["-e", script, module, Jason.encode!(payload)], env: [{"CASCADE_WORKTREE_ROOT", Path.join(dir,"isolated")}])
+    prepared = Jason.decode!(output)
+    assert prepared["ok"] == true
+    assert prepared["repository"] == dir
+    assert prepared["path"] != dir
+    assert File.dir?(prepared["path"])
+    send_packet.(SocketIO.ack("/runners", ack_id, [prepared]))
+    assert {:ok, run} = Task.await(started, 10_000)
+    {:ok, recovered_item} = Cascade.WorkItems.get(c.user.id, binding["workItemId"])
+    assert recovered_item.worktreePath == prepared["path"]
+    assert SQL.one("SELECT count(*) FROM runs WHERE chat_dispatch_id=?", [item.dispatch.id]) == [1]
+    assert SQL.one("SELECT dispatch_id,run_id FROM chat_mission_tasks WHERE id=?", [c.task]) == [item.dispatch.id, run.id]
+    {:ok, packet} = Session.poll(sid, 2_000)
+    assert packet =~ "run:delegate"
+    {:ok, [%{data: delegate_encoded}]} = EngineIO.decode_payload(packet)
+    {:ok, %{data: ["run:delegate", delegate]}} = SocketIO.decode(delegate_encoded)
+    assert delegate["cwd"] == prepared["path"]
+    # The inert runner consumes the packet without spawning a provider.
+    assert Cascade.Missions.Execution.execute_dispatch(item.dispatch.id) == {:ok, run}
   end
 
   test "a forged completed status cannot produce a completion receipt", c do

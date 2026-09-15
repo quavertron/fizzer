@@ -65,8 +65,9 @@ defmodule Cascade.Runs.RunnerLifecycle do
            [run_id]
          ) do
       [dispatch, owner] when owner in [nil, owner_id] ->
-        dispatch in [nil, ""] or
-          Cascade.Missions.Dispatches.delivery_allowed?(dispatch, run_id, owner_id)
+        Cascade.Missions.ExecutionAdmission.run_allowed?(run_id, owner_id) and
+          (dispatch in [nil, ""] or
+            Cascade.Missions.Dispatches.delivery_allowed?(dispatch, run_id, owner_id))
 
       _ ->
         false
@@ -78,7 +79,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
   def delivery_allowed?(_, _), do: false
 
   def replay_delivery(run_id, owner_id) do
-    if online?(owner_id) do
+    if online?(owner_id) and delivery_allowed?(run_id, owner_id) do
       case Store.pending_delivery(run_id, owner_id) do
         [_payload, attempts] when attempts >= 5 ->
           summary =

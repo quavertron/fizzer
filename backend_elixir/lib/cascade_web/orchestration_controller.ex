@@ -164,6 +164,20 @@ defmodule CascadeWeb.OrchestrationController do
   def update_work_item(conn, id),
     do: work_action(conn, fn user -> WorkItems.update(user.id, id, body(conn)) end, 200, :item)
 
+  def repository_binding(conn, id),
+    do: work_action(conn, fn user -> Cascade.Missions.RepositoryBinding.preview(user.id, id) end, 200, :binding)
+
+  def execution_admission(conn) do
+    authenticated(conn, fn conn, user ->
+      policy = Cascade.Missions.ExecutionAdmission.policy()
+      owner = Enum.find((policy || %{})["owners"] || [], &(&1["ownerId"] == user.id))
+      JSON.send(conn, 200, %{contract: "execution_admission_exact_v1", ownerId: user.id, restricted: not is_nil(owner), policy: owner})
+    end)
+  end
+
+  def bind_repository(conn, id),
+    do: work_action(conn, fn user -> Cascade.Missions.RepositoryBinding.bind(user.id, id, body(conn)) end, 200, :item)
+
   def report_git_state(conn, id),
     do:
       work_action(

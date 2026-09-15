@@ -39,6 +39,33 @@ if config_env() != :test do
 
   repo_root = System.get_env("CASCADE_REPO_ROOT") || Path.expand("../..", __DIR__)
   data_dir = System.get_env("CASCADE_DATA_DIR") || repo_root
+  admission_file = Path.join(data_dir, "execution-admission.json")
+  admission = case File.read(admission_file) do
+    {:ok, bytes} ->
+      case Jason.decode!(bytes) do
+        %{"version" => 1, "owners" => owners} = value when is_list(owners) ->
+          valid_id = fn id -> is_binary(id) and byte_size(id) in 1..160 end
+          valid = Enum.all?(owners, fn o ->
+            is_map(o) and is_integer(o["ownerId"]) and o["ownerId"] > 0 and
+              o["maxConcurrent"] in 1..2 and is_list(o["tasks"]) and is_list(o["retainedRuns"]) and
+              Enum.all?(o["tasks"], fn t ->
+                is_map(t) and t["ownerId"] == o["ownerId"] and is_integer(t["attempt"]) and t["attempt"] >= 0 and
+                  Enum.all?(~w(taskId missionId workItemId registrationId vaultId channelId identityId), &valid_id.(t[&1])) and
+                  Map.has_key?(t, "dispatchId") and (is_nil(t["dispatchId"]) or valid_id.(t["dispatchId"]))
+              end) and Enum.all?(o["retainedRuns"], fn r ->
+                is_map(r) and is_integer(r["runId"]) and r["runId"] > 0 and valid_id.(r["vaultId"]) and
+                  Map.has_key?(r, "dispatchId") and (is_nil(r["dispatchId"]) or valid_id.(r["dispatchId"]))
+              end)
+          end)
+          if not valid or length(Enum.uniq_by(owners, & &1["ownerId"])) != length(owners),
+            do: raise("Invalid execution admission bindings")
+          value
+        _ -> raise "Invalid execution admission policy"
+      end
+    {:error, :enoent} -> nil
+    {:error, _} -> raise "Cannot read execution admission policy"
+  end
+  config :cascade_elixir, :execution_admission, admission
   server = parse_bool.(System.get_env("CASCADE_SERVER"), true)
 
   config :cascade_elixir,
