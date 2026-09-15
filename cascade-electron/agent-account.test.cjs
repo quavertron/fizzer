@@ -73,6 +73,18 @@ test('launch always drops to fizzer without password collection or human HOME ov
   assert.ok(!args.includes('-S'));
 });
 
+test('launch passes the human Antigravity executable to the fizzer account', () => {
+  const old = process.env.ANTIGRAVITY_BIN;
+  process.env.ANTIGRAVITY_BIN = '/Users/example/.gemini/antigravity/bin/agentapi';
+  try {
+    const args = account.launchArguments('/usr/bin/node', '/tmp/worker.cjs', '/tmp/socket');
+    assert.ok(args.includes('ANTIGRAVITY_BIN=/Users/example/.gemini/antigravity/bin/agentapi'));
+  } finally {
+    if (old === undefined) delete process.env.ANTIGRAVITY_BIN;
+    else process.env.ANTIGRAVITY_BIN = old;
+  }
+});
+
 test('missing vault reports terminal failure before worker startup', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'missing-vault-'));
   const events = [];

@@ -32,9 +32,15 @@ function setupCommand({ resourcesPath = process.resourcesPath, packaged = false 
   return packaged ? `${command} ${shellQuote(path.join(directory, 'alock'))}` : command;
 }
 function launchArguments(node, worker, socket) {
-  const providerBinaries = ['CLAUDE_BIN', 'CODEX_BIN', 'GROK_BIN', 'COPILOT_BIN', 'HERMES_BIN', 'AKRON_BIN', 'OMP_BIN', 'PI_BIN']
+  const providerBinaries = ['CLAUDE_BIN', 'CODEX_BIN', 'GROK_BIN', 'COPILOT_BIN', 'HERMES_BIN', 'AKRON_BIN', 'OMP_BIN', 'PI_BIN', 'ANTIGRAVITY_BIN']
     .filter(name => typeof process.env[name] === 'string' && process.env[name])
     .map(name => `${name}=${process.env[name]}`);
+  // Antigravity installs its executable in the human home by default. It is
+  // readable on a normal macOS installation, but is not on the fizzer PATH.
+  if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_BIN='))) {
+    const candidate = path.join(os.homedir(), '.gemini', 'antigravity', 'bin', 'agentapi');
+    if (fs.existsSync(candidate)) providerBinaries.push(`ANTIGRAVITY_BIN=${candidate}`);
+  }
   return ['-n', '-H', '-u', 'fizzer', '--', '/usr/bin/env',
     `PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
     'ELECTRON_RUN_AS_NODE=1', 'FIZZER_AGENT_ACCOUNT_CHILD=1',
