@@ -62,7 +62,8 @@ Quitting Fizzer stops the child process.
 ## Inline SVG
 
 Raw `<svg>...</svg>` documents and `svg` fenced blocks in chat are sent to the
-bundled native purrvect encoder. Inline backtick examples and non-SVG code fences
+bundled native purrvect encoder, built from `tui/vendor/purrvect` at the repository
+root. Inline backtick examples and non-SVG code fences
 stay text. The TUI handles placement and resize; purrvect owns the SVG transport.
 This requires a terminal with the purrvect SVG adapter, such as patched Ghostty;
 ordinary Kitty-protocol support alone does not implement this extension.

@@ -6,6 +6,6 @@
     "nab": {"repository": "https://gitlab.com/diegocabello/nab.git", "base": "2a0f229727f69ffeaa1a7f3eb0a0d728766533d4", "localChanges": true},
     "libdtob": {"repository": "https://gitlab.com/diegocabello/libdtob.git", "base": "8e94ea0c726a4dfdf9ed435ffcdf4d030b3630ee", "localChanges": false},
     "awatch": {"repository": "https://gitlab.com/diegocabello/awatch.git", "base": "76004de5380fbef277a7300691d9d106c50e5a46", "localChanges": true},
-    "purrvect": {"repository": "https://gitlab.com/diegocabello/purrvect.git", "base": "f1efb3b0d422333e6c6b7298badf476a10e266ef", "localChanges": true}
+    "purrvect": {"repository": "https://gitlab.com/diegocabello/purrvect.git", "path": "tui/vendor/purrvect", "base": "f1efb3b0d422333e6c6b7298badf476a10e266ef", "localChanges": true}
   }
 }

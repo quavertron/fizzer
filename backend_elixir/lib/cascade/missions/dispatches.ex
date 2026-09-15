@@ -19,12 +19,23 @@ defmodule Cascade.Missions.Dispatches do
             do: [],
             else: resolve_targets(user_id, channel_id, message, members)
 
-        Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
-          case create(user_id, channel_id, message, registration.id) do
-            {:ok, dispatch} -> {:cont, {:ok, dispatches ++ [dispatch]}}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
+        requested_agent = field(message, :registrationId) || field(message, :agentId)
+
+        cond do
+          present?(requested_agent) and
+              not Enum.any?(members, fn registration ->
+                registration.id == requested_agent or registration.agentId == requested_agent
+              end) ->
+            {:error, "Agent not found: #{requested_agent}"}
+
+          true ->
+            Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
+              case create(user_id, channel_id, message, registration.id) do
+                {:ok, dispatch} -> {:cont, {:ok, dispatches ++ [dispatch]}}
+                {:error, _} = error -> {:halt, error}
+              end
+            end)
+        end
       end
     end
   end

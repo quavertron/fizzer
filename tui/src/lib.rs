@@ -853,7 +853,6 @@ fn normalize_remote_origin(input: &str) -> Result<String, String> {
     if !url.username().is_empty() || url.password().is_some() || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
         return Err("Use a server origin without credentials or a path".into());
     }
-    if url.scheme() == "http" && !private { return Err("Remote servers outside the private LAN must use HTTPS".into()); }
     Ok(url.origin().ascii_serialization())
 }
 

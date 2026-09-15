@@ -61,9 +61,10 @@ export function buildAgentTools(destination = path.join(root, '.native-tools')) 
   if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Agent tools support macOS and Linux.');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-native-'));
   try {
-    for (const name of ['alock', 'nab', 'libdtob', 'awatch', 'purrvect']) {
+    for (const name of ['alock', 'nab', 'libdtob', 'awatch']) {
       fs.cpSync(path.join(root, 'vendor', name), path.join(temporary, name), { recursive: true });
     }
+    fs.cpSync(path.join(root, 'tui/vendor/purrvect'), path.join(temporary, 'purrvect'), { recursive: true });
     // Preserve upstream relative include paths while sharing one codec build.
     for (const name of ['alock', 'awatch']) fs.symlinkSync('../libdtob', path.join(temporary, name, 'libdtob'));
     fs.symlinkSync('../nab', path.join(temporary, 'alock', 'nab'));

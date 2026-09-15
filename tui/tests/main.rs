@@ -65,11 +65,11 @@ fn codex_picker_navigation_does_not_import_until_selected_and_escape_closes() {
 }
 
 #[test]
-fn remote_origins_default_to_https_and_reject_public_plaintext() {
+fn remote_origins_default_to_https_but_allow_explicit_http() {
     assert_eq!(normalize_remote_origin("example.com:8443").unwrap(), "https://example.com:8443");
     assert_eq!(normalize_remote_origin("127.0.0.1:3000").unwrap(), "http://127.0.0.1:3000");
     assert_eq!(normalize_remote_origin("192.168.1.20:4000").unwrap(), "http://192.168.1.20:4000");
-    assert!(normalize_remote_origin("http://example.com").is_err());
+    assert_eq!(normalize_remote_origin("http://example.com").unwrap(), "http://example.com");
     assert!(normalize_remote_origin("https://user:pass@example.com").is_err());
 }
 

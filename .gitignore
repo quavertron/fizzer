@@ -59,7 +59,6 @@ bin/cascade-tui.exe
 *.owner.sqlite*
 .package/
 .native-tools/
-tui/vendor/purrvect/
 *.tgz
 
 *.*.nab

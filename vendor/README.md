@@ -12,7 +12,8 @@ Upstream READMEs may describe test commands available only in the full projects.
 - nab: embedded history engine and standalone CLI
 - libdtob: one shared codec source and build for alock, nab and awatch
 - awatch: edit monitor
-- purrvect: SVG rendering and terminal transport
+- purrvect: TUI-only SVG rendering and terminal transport, sourced from
+  [`tui/vendor/purrvect`](../tui/vendor/purrvect)
 
 `npm run build:agent-tools` builds in a temporary directory and writes the four
 executables plus purrvect's runtime libraries to `.native-tools/`. It preserves
@@ -25,8 +26,9 @@ are provided by the target OS. Build packages on the target OS/architecture.
 Electron and npm/TUI packaging use this same helper bundle; installers place it
 under `/usr/local/libexec/fizzer` after administrator authentication.
 
-The old local `tui/vendor/purrvect` checkout is left untouched but is no longer
-a Fizzer dependency; the authoritative copy is `vendor/purrvect`.
+Purrvect's authoritative source snapshot lives in `tui/vendor/purrvect` because
+it is a TUI dependency. The shared packaging build reads it from there when
+assembling the native helper bundle; it is ordinary Fizzer source, not a submodule.
 
 The TUI calls native `purrvect encode` over stdin, with explicit image IDs and
 placement dimensions. Its Rust module handles placement and chat text only;
