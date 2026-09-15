@@ -18,6 +18,18 @@ test('account runner resolves stale fizzer workspace through legacy cascade path
   } finally { fs.rmSync(parent, { recursive: true, force: true }); }
 });
 
+test('account runner maps remote container workspace to a local directory', () => {
+  const previous = process.env.FIZZER_AGENT_WORKSPACE;
+  process.env.FIZZER_AGENT_WORKSPACE = os.tmpdir();
+  try {
+    assert.equal(account.resolveWorkspace('/data'), fs.realpathSync(os.tmpdir()));
+    assert.equal(account.resolveWorkspace('/var/lib/cascade/vaults/demo'), fs.realpathSync(os.tmpdir()));
+  } finally {
+    if (previous === undefined) delete process.env.FIZZER_AGENT_WORKSPACE;
+    else process.env.FIZZER_AGENT_WORKSPACE = previous;
+  }
+});
+
 test('explicit Settings setup remains available after TUI decline without changing installation state', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'account-state-'));
   const previous = process.env.CASCADE_DATA_DIR;
