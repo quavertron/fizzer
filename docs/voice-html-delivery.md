@@ -45,8 +45,11 @@ Voice additionally needs a private random LiveKit keypair and sidecar:
    existing app Docker network in protected `/etc/fizzer/voice.env`.
 3. `docker compose --env-file /etc/fizzer/voice.env -f deploy/voice.compose.yml config`
    then `up -d`. This uses a pinned image, resource limits and private control API.
-4. Include `deploy/voice.nginx.conf` inside the existing HTTPS server block; validate
-   nginx before reload. Reuse the existing domain/certificate; no new domain required.
+4. The maintained `deploy/nginx.conf.template` includes voice signalling and denies
+   the SFU control API; normal Actions cutover renders and validates it. Custom
+   self-hosted nginx configurations can use `deploy/voice.nginx.conf`. Do not add a
+   production host-only include: the next cutover replaces it. Reuse the existing
+   domain/certificate; no new domain required.
 5. Pass these variables into the application container via its deployment environment:
    FIZZER_VOICE_URL=wss://EXISTING_HOST/voice,
    FIZZER_VOICE_API=http://fizzer-voice:7880,

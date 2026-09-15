@@ -59,6 +59,23 @@ server {
     proxy_next_upstream error timeout http_502 http_503 http_504;
     proxy_next_upstream_tries 2;
 
+    # Keep voice signalling in the rendered release template: a host-only include
+    # is replaced during rolling cutover. The sidecar's control API stays private.
+    location ^~ /voice/twirp/ { return 404; }
+    location ^~ /voice/ {
+        proxy_pass http://127.0.0.1:7880/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        # Join URLs contain short-lived tokens; never write them to access logs.
+        access_log off;
+    }
+
     location ^~ /api/auth/ {
         limit_req zone=cascade_auth_per_ip burst=20 nodelay;
         limit_conn cascade_connections_per_ip 20;
