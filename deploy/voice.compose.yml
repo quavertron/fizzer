@@ -1,0 +1,26 @@
+# Optional sidecar on the EXISTING Fizzer Docker network. No app/runner restart.
+# docker compose --env-file /etc/fizzer/voice.env -f deploy/voice.compose.yml up -d
+services:
+  voice:
+    image: livekit/livekit-server:v1.9.11@sha256:289262ffae8b827f45186331aa315d08ed275eb30f9b0add337ec57948e44ca1
+    restart: unless-stopped
+    init: true
+    command: ["--config", "/etc/livekit.yaml"]
+    cpus: 1
+    mem_limit: 512m
+    read_only: true
+    tmpfs: ["/tmp"]
+    ports:
+      - "127.0.0.1:7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+      - "3478:3478/udp"
+    volumes:
+      - "${FIZZER_VOICE_CONFIG:?absolute protected LiveKit config path}:/etc/livekit.yaml:ro"
+    networks:
+      fizzer:
+        aliases: [fizzer-voice]
+networks:
+  fizzer:
+    external: true
+    name: "${FIZZER_VOICE_NETWORK:?existing app Docker network}"

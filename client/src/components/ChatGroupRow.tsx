@@ -1,4 +1,5 @@
 import { LoadingIndicator } from './LoadingIndicator';
+import { HtmlAttachment } from './HtmlAttachment';
 import type { AgentOwnership } from '../chat/agents';
 import { isLiveAgentStatus } from '../chat/runBlocks';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
@@ -289,6 +290,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                             </video>
                             {attachment.name && <span className="chat-msg-video-label">{attachment.name}</span>}
                           </div>
+                        ) : attachment.media_type === 'text/html' ? (
+                          <HtmlAttachment key={attachmentIndex} attachment={attachment} />
                         ) : (
                           <a
                             key={attachmentIndex}

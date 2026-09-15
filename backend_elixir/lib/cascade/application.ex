@@ -15,7 +15,8 @@ defmodule Cascade.Application do
         Cascade.Runs.Supervisor,
         Cascade.Realtime.VerifiedTokenCache,
         Cascade.Realtime.AuthBatcher,
-        CascadeWeb.RateLimiter
+        CascadeWeb.RateLimiter,
+        Cascade.Chat.Voice
       ] ++
         qmd_children() ++
         [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.TransportCallbacks}] ++

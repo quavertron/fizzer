@@ -21,6 +21,43 @@ defmodule CascadeWeb.ChatRouter do
 
   plug :dispatch
 
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/join" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.join(user, vault_id, channel_id) do
+        {:ok, session} -> JSON.send(put_resp_header(conn, "cache-control", "no-store"), 200, session)
+        {:error, :unavailable} -> JSON.send(conn, 503, %{error: "Voice service is not available"})
+        _ -> JSON.send(conn, 403, %{error: "Channel access required"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/leave" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.leave(user, vault_id, channel_id, conn.body_params["identity"]) do
+        {:ok, _} -> JSON.send(conn, 200, %{left: true})
+        _ -> JSON.send(conn, 403, %{error: "Unable to remove voice participant"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/html-assets-v1" do
+    authenticated(conn, :any, :vault, fn conn, user ->
+      with {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+           "text/html" <- conn.body_params["media_type"],
+           true <- is_binary(conn.body_params["data"]),
+           true <- is_binary(conn.body_params["filename"] || "preview.html") do
+        try do
+          asset = Cascade.Content.Assets.upload(channel_id, user.id, conn.body_params)
+          JSON.send(conn, 201, Map.merge(asset, %{media_type: "text/html", name: String.slice(to_string(conn.body_params["filename"] || "preview.html"), 0, 200), data: ""}))
+        rescue
+          e in ArgumentError -> JSON.send(conn, 400, %{error: Exception.message(e)})
+        end
+      else
+        _ -> JSON.send(conn, 403, %{error: "Writable channel and text/html required"})
+      end
+    end)
+  end
+
   get "/api/app-context" do
     authenticated(conn, :any, nil, fn conn, user ->
       JSON.send(conn, 200, Cascade.Runs.AppContext.get(user.id))

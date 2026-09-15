@@ -25,7 +25,7 @@ Usage:
   cascade-chat history                 recent messages for the current channel
   cascade-chat attachment              write a message's images/files to disk
                         (--message-id <id>; default: newest message with media)
-  cascade-chat send --message <text>    send a standalone message to the channel
+  cascade-chat send --message <text> [--file preview.html]    send a standalone message with optional HTML
   cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
                                         create a typed single-agent handoff
   cascade-chat continuation              read unfinished coordinator responsibility
@@ -1188,6 +1188,7 @@ async function main() {
     const collaborationRelation = optionString(args, 'relation');
     const collaborationRequested = Boolean(collaborationTarget || collaborationSource || collaborationRelation);
     if (collaborationRequested) {
+      if (args.file) fail('--file cannot be combined with a typed handoff.');
       if (!collaborationTarget || !collaborationSource || !collaborationRelation) {
         fail('typed handoff requires --to, --reply-to, and --relation.');
       }
@@ -1233,6 +1234,19 @@ async function main() {
         approvals: [],
       };
     }
+    let attachments;
+    if (args.file) {
+      if (typeof args.file !== 'string' || !/\.html?$/i.test(args.file)) fail('--file requires a .html or .htm file.');
+      const stat = fs.statSync(args.file);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 1048576) fail('HTML file must be 1 byte to 1 MiB.');
+      const bytes = fs.readFileSync(args.file);
+      try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { fail('HTML must be UTF-8.'); }
+      const asset = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/html-assets-v1`, {
+        media_type: 'text/html', filename: path.basename(args.file), data: bytes.toString('base64'),
+      });
+      if (!asset.url?.startsWith(`/api/notes/${channelId}/assets/`)) fail('Upload returned an invalid channel asset URL.');
+      attachments = [{ url: asset.url, name: path.basename(args.file), media_type: 'text/html', data: '' }];
+    }
     const message = {
       id: `agent-${idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       channelId,
@@ -1242,6 +1256,7 @@ async function main() {
       ...(agentId ? { agentId } : {}),
       ...(registrationId ? { registrationId } : {}),
       ...(changeRequest ? { changeRequest } : {}),
+      ...(attachments ? { attachments } : {}),
     };
     const result = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/messages`, message);
     const sent = result.message || message;

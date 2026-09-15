@@ -447,6 +447,22 @@ defmodule CascadeWeb.ContentController do
     end)
   end
 
+  def preview_html(conn, note_id, asset_id) do
+    authenticated(conn, [user_only: true], fn conn, auth ->
+      with_readable_note(conn, note_id, auth.user.id, fn _note ->
+        case Assets.resolve_path(note_id, asset_id) do
+          path when is_binary(path) ->
+            if Path.extname(path) == ".html" do
+              CascadeWeb.HtmlPreview.send(conn, File.read!(path))
+            else
+              JSON.send(conn, 404, %{error: "HTML asset not found"})
+            end
+          _ -> JSON.send(conn, 404, %{error: "HTML asset not found"})
+        end
+      end, "Not found")
+    end)
+  end
+
   def serve_asset(conn, note_id, asset_id) do
     if note_id == "agent-avatars" do
       serve_agent_avatar(conn, asset_id)

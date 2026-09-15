@@ -1280,7 +1280,10 @@ defmodule Cascade.ChatDomainTest do
 
   test "chat route catalog is complete and has no duplicates" do
     catalog = CascadeWeb.ChatRoutes.catalog()
-    assert length(catalog) == 36
+    assert length(catalog) == 39
+    for suffix <- ["voice/join", "voice/leave", "html-assets-v1"] do
+      assert {"POST", "/api/vaults/:vault_id/channels/:channel_id/" <> suffix} in catalog
+    end
     for {method, suffix} <- [{"GET", "execution-v1"}, {"GET", "settings-v1"}, {"PATCH", "settings-v1"}] do
       assert {method, "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/" <> suffix} in catalog
     end

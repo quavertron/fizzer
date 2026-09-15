@@ -42,6 +42,7 @@ function inferredMediaType(file: File) {
   const name = file.name.toLowerCase();
   if (name.endsWith('.md')) return 'text/markdown';
   if (name.endsWith('.txt')) return 'text/plain';
+  if (/\.html?$/.test(name)) return 'text/html';
   if (name.endsWith('.pdf')) return 'application/pdf';
   return 'application/octet-stream';
 }
@@ -440,7 +441,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
         ref={fileInputRef}
         type="file"
         className="chat-media-input"
-        accept="image/*,video/*,audio/*,.pdf,.txt,.md"
+        accept="image/*,video/*,audio/*,.pdf,.txt,.md,.html,.htm"
         multiple
         onChange={handleUpload}
       />
