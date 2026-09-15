@@ -46,7 +46,10 @@ async function fixture(t) {
       return send(201, { contract: 'messages_no_invoke_v1', message, dispatches: [] });
     }
     const message = state.messages.get(req.url.split('/').pop());
-    if (message) return send(200, { message: state.corruptMessage ? { ...message, images: [] } : message });
+    if (message) {
+      if (state.loseReadback) return send(500, {});
+      return send(200, { message: state.corruptMessage ? { ...message, images: [] } : message });
+    }
     return send(404, {});
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
@@ -72,6 +75,43 @@ test('real private socket to HTTP: upload, bearer no-invoke send, byte readback 
   f.state.corruptMessage = true; assert.equal((await f.call(send(f))).error, 'readback_mismatch');
   assert.equal((await f.call({ ...send(f), body: 'Changed' })).error, 'idempotency_conflict');
   assert.ok(!f.state.calls.some(([, route]) => /agents|runs|dispatch/.test(route)));
+});
+test('explicit-vault text-only send uses no upload, retains scope and reconciles exact durable ID', async t => {
+  const f = await fixture(t);
+  const s = { ...send(f), uploads: [] };
+  const caps = await f.call({ op: 'mediaCapabilities' });
+  assert.equal(caps.textOnly, true); assert.equal(caps.minImages, 0);
+  assert.equal((await f.call({ ...s, mode: 'reconcile' })).error, 'intent_not_found');
+  assert.equal((await f.call({ ...s, vaultId: randomUUID() })).error, 'owner_scope_mismatch');
+  assert.equal((await f.call({ ...s, channelId: randomUUID() })).error, 'note_out_of_scope');
+  f.state.unsupported = true;
+  assert.equal((await f.call(s)).error, 'nonping_backend_unsupported'); f.state.unsupported = false;
+  for (const body of ['', ' ', '@agent', '/compact', 'x'.repeat(8001)])
+    assert.equal((await f.call({ ...s, body })).error, 'invalid_request');
+  assert.equal(f.state.posts, 0);
+  f.state.loseReadback = true;
+  assert.equal((await f.call(s)).error, 'upstream_500');
+  await f.restart(); f.state.loseReadback = false;
+  const result = await f.call({ ...s, mode: 'reconcile' });
+  assert.equal(result.status, 200, JSON.stringify(result));
+  assert.equal(result.message.id, [...f.state.messages.keys()][0]);
+  assert.equal(result.message.body, s.body); assert.equal(result.message.channelId, f.channelId);
+  assert.deepEqual(result.message.images, []); assert.deepEqual(result.verifiedUploads, []);
+  assert.deepEqual(await f.call(s), result);
+  assert.equal((await f.call({ ...s, body: 'Changed' })).error, 'idempotency_conflict');
+  assert.equal(f.state.posts, 1); assert.equal(f.state.uploads, 0);
+  assert.ok(!f.state.calls.some(([, route]) => /assets|agents|runs|dispatch/.test(route)));
+  assert.ok(f.state.calls.filter(([method]) => method === 'POST').every(([, route]) =>
+    route === '/api/auth/agent-token' || route === `/api/vaults/${f.vaultId}/channels/${f.channelId}/messages-no-invoke-v1`));
+});
+test('lost text-only POST response remains unknown without replay after restart', async t => {
+  const f = await fixture(t); const s = { ...send(f), uploads: [] };
+  f.state.loseSend = true;
+  assert.equal((await f.call(s)).error, 'upstream_500');
+  await f.restart(); f.state.loseSend = false;
+  assert.equal((await f.call({ ...s, mode: 'reconcile' })).error, 'uncertain_write');
+  assert.equal((await f.call(s)).error, 'uncertain_write');
+  assert.equal(f.state.posts, 1); assert.equal(f.state.uploads, 0);
 });
 test('invalid files, permission and capability refusals precede mutation', async t => {
   const f = await fixture(t);
