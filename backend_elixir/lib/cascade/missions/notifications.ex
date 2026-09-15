@@ -14,7 +14,9 @@ defmodule Cascade.Missions.Notifications do
       SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=1
     ) AND (m.status<>'completed' OR EXISTS (
       SELECT 1 FROM chat_mission_events e WHERE e.mission_id=m.id AND e.kind='task_notification'
-        AND NOT EXISTS (SELECT 1 FROM chat_mission_events s WHERE s.source_key='task-notification-sent:' || e.id)
+        AND (NOT EXISTS (SELECT 1 FROM chat_mission_events s WHERE s.source_key='task-notification-sent:' || e.id)
+          OR EXISTS (SELECT 1 FROM chat_messages msg WHERE msg.id=json_extract(e.summary,'$.messageId')
+            AND msg.agent_id IS NULL AND msg.author='Fizzer task status'))
     ))
     """)
     |> Map.new(fn [id, owner] -> {{:notification, id}, owner} end)
@@ -25,6 +27,14 @@ defmodule Cascade.Missions.Notifications do
       SQL.transaction(
         fn ->
           if allowed?(id) do
+            # Repair only this outbox's own legacy receipts: automation must not
+            # look like a fresh human instruction to history consumers.
+            SQL.exec("""
+            UPDATE chat_messages SET agent_id='fizzer-task-status'
+            WHERE agent_id IS NULL AND registration_id IS NULL AND author='Fizzer task status'
+              AND id IN (SELECT json_extract(summary,'$.messageId') FROM chat_mission_events
+                WHERE mission_id=? AND kind='task_notification')
+            """, [id])
             case Store.notification_state(id) do
               %{mission: mission, tasks: tasks} ->
                 Enum.each(tasks, fn task ->
@@ -128,6 +138,7 @@ defmodule Cascade.Missions.Notifications do
           %{
             id: message_id,
             author: "Fizzer task status",
+            agentId: "fizzer-task-status",
             body: body,
             status: "completed",
             missionTaskId: t.id,
@@ -138,7 +149,7 @@ defmodule Cascade.Missions.Notifications do
               relationship: "builds_on"
             }
           },
-          access: :system
+          access: :agent
         )
 
       SQL.exec(

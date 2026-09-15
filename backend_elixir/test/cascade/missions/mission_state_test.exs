@@ -656,6 +656,7 @@ defmodule Cascade.Missions.MissionStateTest do
     assert message.body =~ "Task failed"
     assert message.body =~ "Needs review"
     assert message[:registrationId] == nil
+    assert message[:agentId] == "fizzer-task-status"
     assert SQL.all("SELECT id FROM chat_messages WHERE channel_id=? AND id<>? ORDER BY id", [ctx.channel.id, notice_id]) == before
     assert SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [ctx.channel.id]) == dispatches
     assert SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [ctx.user.id]) == runs

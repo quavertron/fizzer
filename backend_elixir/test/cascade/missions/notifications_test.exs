@@ -97,6 +97,10 @@ defmodule Cascade.Missions.NotificationsTest do
     :ok = Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
     [[id, body]] = receipts(c)
     assert id == "task-notification:#{c.task}:0:blocked"
+    assert SQL.one("SELECT agent_id,registration_id FROM chat_messages WHERE id=?", [id]) == ["fizzer-task-status", nil]
+    SQL.exec("UPDATE chat_messages SET agent_id=NULL WHERE id=?", [id])
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert SQL.one("SELECT agent_id FROM chat_messages WHERE id=?", [id]) == ["fizzer-task-status"]
     assert body =~ "owner login is required"
     assert SQL.one("SELECT COUNT(*) FROM runs") == before_runs
     assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [c.task]) == ["blocked"]
@@ -328,6 +332,12 @@ defmodule Cascade.Missions.NotificationsTest do
            ) == [0]
 
     Notifications.reconcile(c.mission, fn _ -> :ok end)
+    refute Map.has_key?(Notifications.jobs(), {:notification, c.mission})
+    [[id, _]] = receipts(c)
+    SQL.exec("UPDATE chat_messages SET agent_id=NULL WHERE id=?", [id])
+    assert Map.has_key?(Notifications.jobs(), {:notification, c.mission})
+    Notifications.reconcile(c.mission, fn _ -> flunk("metadata repair republished an acknowledged receipt") end)
+    assert SQL.one("SELECT agent_id FROM chat_messages WHERE id=?", [id]) == ["fizzer-task-status"]
     refute Map.has_key?(Notifications.jobs(), {:notification, c.mission})
   end
 

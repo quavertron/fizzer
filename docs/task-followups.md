@@ -1,6 +1,6 @@
 # Server-owned task follow-ups
 
-`Cascade.Missions.Notifications` is independent of model interpretation and runner availability. Its bounded reannouncer job uses the existing mission event outbox and system-attributed chat persistence, with no invocation/member/reply hooks and no new schema. Scheduler calls also save receipts immediately. A `Noop` event sink cannot acknowledge delivery; periodic maintenance drains those saved messages.
+`Cascade.Missions.Notifications` is independent of model interpretation and runner availability. Its bounded reannouncer job uses the existing mission event outbox and system-labeled automation chat persistence (`agentId: fizzer-task-status`, never a human instruction), with no invocation/member/reply hooks and no new schema. Scheduler calls also save receipts immediately. A `Noop` event sink cannot acknowledge delivery; periodic maintenance drains those saved messages.
 
 Each task attempt/outcome category has an immutable ID:
 
