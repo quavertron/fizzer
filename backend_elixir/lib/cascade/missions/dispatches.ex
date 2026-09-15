@@ -149,6 +149,7 @@ defmodule Cascade.Missions.Dispatches do
        (r.status='queued' AND lease.run_id IS NULL AND r.started_at < datetime('now','-30 seconds')))
     ORDER BY m.rowid,d.rowid
     """)
+    |> Enum.filter(fn [id, _, _, _] -> Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id) end)
     |> Enum.map(fn [id, registration_id, task_id, owner_id] ->
       %{
         id: id,
@@ -163,6 +164,12 @@ defmodule Cascade.Missions.Dispatches do
   end
 
   def for_execution(dispatch_id) do
+    if Cascade.Missions.ExecutionAdmission.dispatch_allowed?(dispatch_id),
+      do: admitted_for_execution(dispatch_id),
+      else: {:deferred, "Dispatch is outside the operator's exact execution admission."}
+  end
+
+  defp admitted_for_execution(dispatch_id) do
     with [nil, nil] <-
            SQL.one("SELECT failed_at,run_id FROM chat_agent_dispatches WHERE id=?", [dispatch_id]),
          {:ok, user_id, channel_id} <- requester(dispatch_id),

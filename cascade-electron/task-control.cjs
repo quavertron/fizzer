@@ -86,8 +86,8 @@ async function control(input, c) {
     if (input.op !== 'appPlan') fail('intent_not_found');
     if (fs.readdirSync(c.receiptDir).length >= 1000) fail('receipt_limit');
     const before = await snapshot();
-    const plan = {...intent, before, audience, requiresGrant, atomicPrecondition:action === 'updateAgentSettings' || action === 'updateMission',
-      effects: repositoryBinding ? 'Binds only this unbound isolated mission work item repository; the existing pending dispatch may retry and spend provider tokens under unchanged assignee settings. No new task, run, approval, cwd or privilege change. Fresh whole-item guard, not backend atomic CAS.' : action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
+    const plan = {...intent, before, audience, requiresGrant, atomicPrecondition:repositoryBinding || action === 'updateAgentSettings' || action === 'updateMission',
+      effects: repositoryBinding ? 'Atomically binds only this unbound isolated mission work item repository; the existing pending dispatch may retry under unchanged assignee settings and exact operator admission. No new task, direct run, approval, cwd or privilege change.' : action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
       attribution:'Along local receipt; backend account attribution. Shared/public writes unavailable.'};
     r = {intentDigest:hash(intent), plan, planDigest:hash(plan), state:'planned'};
     c.durableWrite(file,r,true);
@@ -189,10 +189,9 @@ async function control(input, c) {
         id(w.channelId); id(w.assigneeRegistrationId); id(w.sourceId);
         const e = await execution(w.channelId, w.assigneeRegistrationId);
         if (e.yolo !== false) fail('specific_approval_required');
-        // Entire item (including source task, runs and updatedAt) and SELECT-only
-        // execution settings are compared again immediately before the PATCH.
-        // Backend work-item PATCH has no atomic revision CAS; preview says so.
-        return {item:w, executionSettings:e};
+        const b = (await c.browser(`/api/work-items/${a.workItemId}/repository-binding-v1`)).binding;
+        if (b?.contract !== 'repository_binding_atomic_v1' || !/^[0-9a-f]{64}$/.test(b.revision || '') || hash(b.item) !== hash(w) || b.binding?.taskId !== w.sourceId || b.binding?.ownerId !== c.ownerId || b.binding?.vaultId !== a.vaultId || b.binding?.workItemId !== a.workItemId) fail('readback_mismatch');
+        return {item:w, executionSettings:e, binding:b};
       }
       if (action === 'startRun' && (!['open','blocked','review'].includes(d.item.status) || d.item.runIds?.length)) fail('running_work');
       return d.item;
@@ -238,7 +237,8 @@ async function control(input, c) {
     if (action === 'createWorkItem') {
       d = await c.browser(base+'/work-items','POST',{title:a.title,brief:a.brief,contract:a.contract,verification:a.verification,sourceKind:'manual',sourceId:'along:'+input.requestId,workspaceMode:'shared',priority:0,tokenBudget:0,dependsOn:[],channelId:null,assigneeRegistrationId:null});
       r.target = d.item?.id;
-    } else if (action === 'updateWorkItem') await c.browser(`/api/work-items/${a.workItemId}`,'PATCH',a.patch);
+    } else if (repositoryBinding) await c.browser(`/api/work-items/${a.workItemId}/repository-binding-v1`,'PUT',{repository:a.patch.repository,expectedRevision:r.plan.before.binding.revision});
+    else if (action === 'updateWorkItem') await c.browser(`/api/work-items/${a.workItemId}`,'PATCH',a.patch);
     else if (action === 'createMission') await c.browser(base+'/missions','POST',{id:a.missionId,title:a.title,coordinatorIdentityId:a.coordinatorIdentityId,briefContent:a.briefContent,channelId:a.channelId,rootMessageId:a.rootMessageId,coordinatorRegistrationId:a.coordinatorRegistrationId});
     else if (action === 'updateMission') await c.browser(`/api/notes/${a.noteId}`,'PUT',{content:a.content,expectedRevision:r.plan.before.note.revision});
     else if (action === 'approveMission') await c.browser(base+`/missions/${a.missionId}/approve`,'POST',{expectedRevisions:Object.fromEntries(r.plan.before.notes.map(n => [n.noteId,n.revision]))});

@@ -729,6 +729,7 @@ defmodule Cascade.Missions.Store do
           |> Enum.with_index()
           |> Enum.filter(fn {task, _index} ->
             task.status == "pending" and is_nil(task.dispatch_id) and
+              Cascade.Missions.ExecutionAdmission.task_allowed?(task.id) and
               task_schedulable?(mission, task, by_id) and
               not Cascade.Missions.Children.joining?(task.id)
           end)
@@ -1161,6 +1162,11 @@ defmodule Cascade.Missions.Store do
 
   @doc "Claims a coalesced interpretation without waiting for independent workers."
   def claim_wake(mission_id) do
+    if Cascade.Missions.ExecutionAdmission.mission_wake_allowed?(mission_id),
+      do: admitted_claim_wake(mission_id), else: {:ok, nil}
+  end
+
+  defp admitted_claim_wake(mission_id) do
     with {:ok, update} <- refresh(mission_id) do
       case Cascade.Missions.Interpretation.claim(update) do
         nil ->

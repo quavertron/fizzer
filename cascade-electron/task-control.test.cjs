@@ -32,6 +32,13 @@ async function fixture(t) {
     if(p.startsWith('/api/work-items/')) {
       const [, , , id,suffix]=p.split('/'), item=items.get(id);
       if(!item) return reply(404,{});
+      if(suffix==='repository-binding-v1') {
+        const binding={taskId:item.sourceId,ownerId:1,vaultId:v,workItemId:id};
+        const revision=hash(JSON.parse(JSON.stringify({item,binding})));
+        if(get) return reply(200,{binding:{contract:'repository_binding_atomic_v1',item,binding,revision}});
+        assert.equal(req.method,'PUT');assert.equal(body.expectedRevision,revision);
+        item.repository=body.repository;return changed({item});
+      }
       if(!get && suffix==='runs') {assert.equal(typeof body.runId,'number');item.runIds.push(body.runId);if(state.linkLost)return reply(500,{});}
       else if(!get) Object.assign(item,body);
       return get ? reply(200,{item:state.wrong?{...item,vaultId:'wrong'}:item,reviews:[],siblings:[]}):changed({item});
@@ -101,12 +108,12 @@ const repositoryArgs=f=>{
 };
 test('repository-only binding requires owner grant and reconciles a lost response without replay',async t=>{
   const f=await fixture(t),args=repositoryArgs(f),p=await f.plan('updateWorkItem',args);
-  assert.equal(p.requiresGrant,true);assert.equal(p.atomicPrecondition,false);assert.match(p.effects,/existing pending dispatch/);
+  assert.equal(p.requiresGrant,true);assert.equal(p.atomicPrecondition,true);assert.match(p.effects,/existing pending dispatch/);
   assert.equal((await f.apply(p)).error,'specific_approval_required');assert.equal(count(f),0);
   f.grant(p);f.state.lost=true;assert.equal((await f.apply(p)).error,'upstream_500');
   f.state.lost=false;await f.restart();const n=count(f),r=await f.apply(p,'appReconcile');
   assert.equal(r.state,'verified');assert.equal(r.result.item.repository,args.patch.repository);assert.equal(count(f),n);
-  assert.deepEqual(f.calls.filter(c=>c.method!=='GET').map(c=>[c.method,c.path,c.body]),[['PATCH',`/api/work-items/${f.w}`,args.patch]]);
+  assert.deepEqual(f.calls.filter(c=>c.method!=='GET').map(c=>[c.method,c.path,c.body]),[['PUT',`/api/work-items/${f.w}/repository-binding-v1`,{repository:args.patch.repository,expectedRevision:p.before.binding.revision}]]);
 });
 test('repository binding rejects mixed patches, running/bound work, yolo and changed item/settings',async t=>{
   const f=await fixture(t),args=repositoryArgs(f);
