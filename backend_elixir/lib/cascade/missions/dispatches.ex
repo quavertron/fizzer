@@ -20,13 +20,17 @@ defmodule Cascade.Missions.Dispatches do
             else: resolve_targets(user_id, channel_id, message, members)
 
         requested_agent = field(message, :registrationId) || field(message, :agentId)
+        requested_mention = leading_mention(field(message, :body, ""))
+        requested = requested_agent || requested_mention
 
         cond do
-          present?(requested_agent) and
+          present?(requested) and
               not Enum.any?(members, fn registration ->
-                registration.id == requested_agent or registration.agentId == requested_agent
+                registration.id == requested_agent or registration.agentId == requested_agent or
+                  Schema.normalize_mention(registration.mention, registration.agentId) ==
+                    requested_mention
               end) ->
-            {:error, "Agent not found: #{requested_agent}"}
+            {:error, "Agent not found: #{requested}"}
 
           true ->
             Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
@@ -703,6 +707,13 @@ defmodule Cascade.Missions.Dispatches do
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
+  end
+
+  defp leading_mention(text) do
+    case Regex.run(~r/^\s*@\s*([[:alnum:]_.-]+)/u, to_string(text), capture: :all_but_first) do
+      [mention] -> mention
+      _ -> nil
+    end
   end
 
   defp mentions?(text, registration) do
