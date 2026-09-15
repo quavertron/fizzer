@@ -125,6 +125,8 @@ defmodule CascadeWeb.ExternalAgentAccessTest do
       assert sent["message"]["actorUserId"] == user.id
       assert sent["message"]["status"] == "completed"
       assert sent["message"]["replyTo"] == nil
+      assert sent["message"]["images"] == nil
+      assert sent["message"]["attachments"] == nil
 
       assert api(:get, channel <> "/#{sent["message"]["id"]}", nil, token)["message"] ==
                sent["message"]

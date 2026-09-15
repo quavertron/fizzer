@@ -41,7 +41,8 @@ async function fixture(t) {
       if (req.method === 'GET') return send(200, { contract: 'messages_no_invoke_v1', mediaContract: state.unsupported ? null : 'channel_png_assets_v1', actorUserId: 1, vaultId, channelId });
       state.posts++; assert.equal(body.replyTo, null); assert.equal(body.runId, null); assert.equal(body.blocks, null); assert.equal(body.status, 'completed');
       assert.deepEqual(body.attachments, []); assert.ok(body.images.every(i => state.assets.has(i.url)));
-      const message = { ...body, id: randomUUID(), actorUserId: 1, channelId }; state.messages.set(message.id, message);
+      const message = { ...body, images: body.images.length ? body.images : null, attachments: null,
+        id: randomUUID(), actorUserId: 1, channelId }; state.messages.set(message.id, message);
       if (state.loseSend) return send(500, {});
       return send(201, { contract: 'messages_no_invoke_v1', message, dispatches: [] });
     }
@@ -96,7 +97,7 @@ test('explicit-vault text-only send uses no upload, retains scope and reconciles
   assert.equal(result.status, 200, JSON.stringify(result));
   assert.equal(result.message.id, [...f.state.messages.keys()][0]);
   assert.equal(result.message.body, s.body); assert.equal(result.message.channelId, f.channelId);
-  assert.deepEqual(result.message.images, []); assert.deepEqual(result.verifiedUploads, []);
+  assert.equal(result.message.images, null); assert.deepEqual(result.verifiedUploads, []);
   assert.deepEqual(await f.call(s), result);
   assert.equal((await f.call({ ...s, body: 'Changed' })).error, 'idempotency_conflict');
   assert.equal(f.state.posts, 1); assert.equal(f.state.uploads, 0);
