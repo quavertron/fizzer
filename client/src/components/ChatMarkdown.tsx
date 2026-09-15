@@ -1,4 +1,5 @@
 import { LoadingIndicator } from './LoadingIndicator';
+import { MermaidDiagram } from './MermaidDiagram';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Capacitor } from '@capacitor/core';
@@ -436,6 +437,10 @@ export const ChatMessageText = memo(function ChatMessageText({
           .sanitize(value, { USE_PROFILES: { svg: true, svgFilters: true } })
           .replace(/\s(?:href|xlink:href|src)=["']https?:\/\/[^"']*["']/gi, '');
         return <span className="chat-svg" dangerouslySetInnerHTML={{ __html: clean }} />;
+      }
+
+      if (!isInline && match && match[1].toLowerCase() === 'mermaid') {
+        return <MermaidDiagram source={value} />;
       }
 
       if (!isInline && (!match || match[1] === 'json')) {

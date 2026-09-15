@@ -1159,7 +1159,7 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     if marks_message { message_markers.push((row, m_idx)); }
                 }
                 inline_svgs.push(InlineSvgBlock { start_line: start_line.unwrap_or(0), rows,
-                    image_id: crate::purrvect::image_id(&msg.id, svg_index, svg), svg: svg.to_string() });
+                    image_id: crate::purrvect::image_id(&msg.id, svg_index, &svg), svg: svg.into_owned() });
               }
             }}
 

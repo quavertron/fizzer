@@ -25,6 +25,7 @@ vt100 = "0.16"
 arboard = "3"
 base64 = "0.22"
 png = "0.17"
+merman = { version = "=0.6.2", default-features = false, features = ["render"] }
 
 [patch.crates-io]
 ratatui = { path = "vendor/ratatui/ratatui" }
