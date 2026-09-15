@@ -25,6 +25,7 @@ backend_elixir/deps
 .env.*
 !deploy/.env.example
 docs
+!docs/user-guide.md
 scripts/*
 !scripts/copy-cli-agent-wrappers.cjs
 !scripts/check-elixir-data-compat.mjs
