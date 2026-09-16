@@ -19,6 +19,17 @@ to persisted data compatibility.
 | Electron main process or packaging | `npm run test:release:desktop` |
 | Multiple boundaries | Run only the affected suites above |
 
+`test:cli-agents` and `test:electron` (including `test:release:desktop`) keep
+successful console output to progress dots and a diagnostics path. They run the
+same Node tests and write complete spec-reporter output into a unique private
+OS temporary directory. Failures print that full log and retain the original
+nonzero status; interrupts terminate the runner. Keep the printed log with a
+handoff when its details matter; OS temporary files are not durable CI artifacts.
+For a focused Node regression, use `node scripts/test-node.mjs path/to/test.mjs`
+(or `--typescript` before TypeScript test paths). The runner's own focused check
+is `node --test scripts/test-node.test.mjs`. This changes reporting, not gate
+selection or eligibility to reuse prior results.
+
 Keep one cross-boundary test per risky flow:
 
 - `npm run test:chat-mission` for durable mission state across clients and reload.
