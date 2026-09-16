@@ -429,6 +429,33 @@ defmodule Cascade.Missions.Interpretation do
   defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
   defp canonical(value), do: value
 
+  # Store.finish is the sole delivery authority. Its transaction may project the
+  # delivery/phase change over evidence already explicitly interpreted; it must
+  # not acknowledge a raced finding, question, note edit or unfinished batch.
+  def before_delivery(id) do
+    initialize(id)
+    record = row(id)
+    fingerprint(snapshot(id, record.state))
+  end
+
+  def delivery_recorded(id, before) do
+    record = row(id)
+    evidence = snapshot(id, record.state)
+    digest = fingerprint(evidence)
+
+    if not record.stopped and record.dispatch == nil and record.pending == "" do
+      if record.handled == before do
+        SQL.exec("UPDATE chat_mission_interpretations SET handled_fingerprint=? WHERE mission_id=?",
+          [digest, id])
+      else
+        # Genuine unhandled material stays durable and eligible after closure.
+        SQL.exec("UPDATE chat_mission_interpretations SET pending_fingerprint=?,pending_context_json=? WHERE mission_id=?",
+          [digest, Jason.encode!(evidence), id])
+      end
+    end
+    :ok
+  end
+
   # Called under the scheduler's existing transaction. One outstanding batch per
   # objective; evidence arriving during a turn is picked up after its acknowledgment.
   def claim(update) do
@@ -916,8 +943,11 @@ defmodule Cascade.Missions.Interpretation do
       true ->
         state = merge_state(record.state, input, Map.put(update.mission, :createdBy, user.id))
 
+        # Read/write compatibility for old completion events only. New delivery
+        # never needs a model to copy the canonical outcome into a second flag.
         state =
-          if record.context["delivery"] != nil,
+          if record.context["delivery"] != nil and
+               SQL.one("SELECT 1 FROM chat_mission_events WHERE source_key=?", ["mission-completed:#{id}"]) == nil,
             do: Map.put(state, "executionCompleted", true),
             else: state
 

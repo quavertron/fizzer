@@ -1119,6 +1119,8 @@ defmodule Cascade.Missions.Store do
             end
 
             verification = clean(field(input, :verification), 8_000)
+            interpretation =
+              if final_status == "completed", do: Cascade.Missions.Interpretation.before_delivery(mission.id)
 
             SQL.exec("UPDATE chat_missions SET verification=? WHERE id=?", [
               verification,
@@ -1138,8 +1140,12 @@ defmodule Cascade.Missions.Store do
               title: mission.title,
               from_status: mission.status,
               to_status: final_status,
-              summary: summary
+              summary: summary,
+              source_key: if(final_status == "completed", do: "mission-completed:#{mission.id}")
             })
+
+            if final_status == "completed",
+              do: Cascade.Missions.Interpretation.delivery_recorded(mission.id, interpretation)
 
             if final_status == "canceled", do: cancel_open_tasks(mission, tasks)
 
@@ -1248,7 +1254,12 @@ defmodule Cascade.Missions.Store do
             sync_work_item(mission.created_by, mission, settled,
               run_id: run_id,
               release: not Cascade.Missions.Children.joining?(task.id),
-              verification: if(settled.status == "completed", do: settled.summary, else: nil)
+              # An explicitly completed task already owns its evidence. Provider
+              # exit must neither manufacture a verifier receipt from prose nor
+              # overwrite a real one (and trigger a second interpretation wake).
+              verification:
+                if(task.status not in @terminal_task_statuses and settled.status == "completed",
+                  do: settled.summary, else: nil)
             )
 
             update = refresh!(task.mission_id)
@@ -1443,6 +1454,13 @@ defmodule Cascade.Missions.Store do
 
       Enum.any?(tasks, &(&1.status == "pending" and dependency_attention?(&1, by_id))) ->
         "attention"
+
+      Enum.any?(tasks, &completion_evidence_pending?/1) and
+          Enum.all?(tasks, fn task ->
+            task.status != "completed" or completion_evidence_pending?(task) or
+              completion_evidence_ready?(task, mission)
+          end) ->
+        "active"
 
       Enum.all?(
         tasks,
@@ -1739,6 +1757,7 @@ defmodule Cascade.Missions.Store do
 
           Map.merge(task, %{
             evidence_ready: completion_evidence_ready?(task, mission),
+            evidence_pending: completion_evidence_pending?(task),
             waiting_for: waiting,
             dependency_attention: dependency_attention?(task, by_id),
             stage_ready: required_stage_dependency?(task, dependencies(task), by_id)
@@ -1749,6 +1768,13 @@ defmodule Cascade.Missions.Store do
 
   defp completion_evidence_ready?(task, mission),
     do: direct_evidence_ready?(task, mission) or recovered_evidence_ready?(task, mission)
+
+  # One execution-settlement predicate for the status projection and receipts.
+  # A result recorded just before provider exit is not missing evidence yet.
+  defp completion_evidence_pending?(%{status: "completed"} = task),
+    do: SQL.one("SELECT 1 FROM runs WHERE id=? AND chat_dispatch_id=? AND status IN ('queued','running')",
+          [task.run_id, task.dispatch_id]) == [1]
+  defp completion_evidence_pending?(_), do: false
 
   defp direct_evidence_ready?(%{status: status}, _mission) when status != "completed",
     do: false

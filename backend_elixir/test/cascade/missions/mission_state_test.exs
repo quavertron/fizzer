@@ -549,7 +549,9 @@ defmodule Cascade.Missions.MissionStateTest do
 
 
 
-  test "approved missions require the complete implementation delivery chain", ctx do
+  for completion_state <- [:handled, :raced, :pending] do
+  @completion_state completion_state
+  test "approved delivery is canonical with #{@completion_state} interpretation evidence", ctx do
     state = approved_workspace(ctx, "Complete delivery")
     assert state.mission.phase == "executing"
     assert is_binary(state.mission.approvedAt)
@@ -612,18 +614,87 @@ defmodule Cascade.Missions.MissionStateTest do
     assert Enum.find(verification_done.mission.tasks, &(&1.id == verification.task.id)).verificationPassed ==
              true
 
-    assert {:ok, finished} =
-             Store.finish(ctx.user.id, state.channel_id, state.mission.id, %{
-               coordinatorRegistrationId: state.coordinator_id,
-               status: "completed",
-               summary: "Delivered the approved change.",
-               verification: "Independent review, integration, and verification evidence recorded."
-             })
+    # The coordinator has already explicitly handled all current evidence.
+    # Recording delivery must not create another interpretation obligation.
+    [dispatch_id] = SQL.one("SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id])
+    {:ok, coordinator_run} = RunStore.start(ctx.vault.id, nil, "Delivery coordinator", "codex",
+      owner_user_id: ctx.user.id, chat_dispatch_id: dispatch_id)
+    :ok = Dispatches.attach_run(dispatch_id, coordinator_run.id)
+    Cascade.Missions.Interpretation.dispatch_prompt(dispatch_id)
+    {:ok, interpretation} = Cascade.Missions.Interpretation.get(ctx.user.id, state.channel_id, state.mission.id, state.coordinator_id)
+    assert {:ok, _} = Cascade.Missions.Interpretation.record(ctx.user, state.channel_id, state.mission.id,
+      state.coordinator_id, %{"revision" => interpretation.revision, "fingerprint" => interpretation.fingerprint,
+        "assessment" => "Delivered the approved change.", "noMaterialChange" => true},
+      coordinator_run.id, Cascade.Chat.Events.Noop)
+
+    if @completion_state != :handled do
+      [item] = SQL.one("SELECT work_item_id FROM chat_mission_tasks WHERE id=?", [verification.task.id])
+      {:ok, _} = Cascade.WorkItems.update(ctx.user.id, item, %{verification: "New exact verification evidence after the saved assessment"})
+    end
+    if @completion_state == :pending, do: assert([_] = Scheduler.schedule(state.mission.id).wakeDispatches)
+
+    completion = %{
+      coordinatorRegistrationId: state.coordinator_id,
+      status: "completed",
+      summary: "Delivered the approved change.",
+      verification: "Independent review, integration, and verification evidence recorded."
+    }
+    before_ack = SQL.one("SELECT handled_fingerprint,pending_fingerprint,state_json FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id])
+    assert_raise RuntimeError, "interrupted completion transaction", fn ->
+      SQL.transaction(fn ->
+        assert {:ok, _} = Store.finish(ctx.user.id, state.channel_id, state.mission.id, completion)
+        raise "interrupted completion transaction"
+      end)
+    end
+    assert SQL.one("SELECT handled_fingerprint,pending_fingerprint,state_json FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id]) == before_ack
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE source_key=?", ["mission-completed:#{state.mission.id}"]) == [0]
+    assert {:ok, finished} = Store.finish(ctx.user.id, state.channel_id, state.mission.id, completion)
 
     assert finished.mission.status == "completed"
     assert finished.mission.phase == "closed"
     assert Enum.map(finished.mission.tasks, & &1.purpose) ==
              ["implementation", "review", "integration", "verification"]
+
+    if @completion_state != :handled do
+      scheduled = Scheduler.schedule(state.mission.id)
+      if @completion_state == :raced, do: assert(length(scheduled.wakeDispatches) == 1)
+      if @completion_state == :pending, do: assert(scheduled.wakeDispatches == [])
+      [pending] = SQL.one("SELECT dispatch_id FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id])
+      assert Cascade.Missions.Interpretation.dispatch_prompt(pending) =~ "New exact verification evidence"
+      {:ok, latest} = Cascade.Missions.Interpretation.get(ctx.user.id, state.channel_id, state.mission.id, state.coordinator_id)
+      # This is genuine newly introduced material, not a second completion flag.
+      assert {:ok, _} = Cascade.Missions.Interpretation.record(ctx.user, state.channel_id, state.mission.id,
+        state.coordinator_id, %{"revision" => latest.revision, "fingerprint" => latest.fingerprint,
+          "noMaterialChange" => true}, coordinator_run.id, Cascade.Chat.Events.Noop)
+    end
+
+    # Explicit delivery is the authority. No provider should be purchased to
+    # copy it to Interpretation.executionCompleted after the delivery commit.
+    before = SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [state.channel_id])
+    for _ <- 1..3 do
+      assert %{dispatches: [], wakeDispatches: []} = Scheduler.schedule(state.mission.id)
+      assert {:ok, projection} = Store.refresh(state.mission.id)
+      assert projection.mission.status == "completed"
+      assert {:ok, root} = Store.root_message(projection)
+      assert root.mission["status"] == "completed"
+    end
+    assert SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [state.channel_id]) == before
+    refute [state.mission.id, ctx.user.id] in Scheduler.maintenance_missions()
+    assert SQL.one("SELECT json_extract(state_json,'$.executionCompleted') FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id]) == [nil]
+    assert {:ok, _} = Store.finish(ctx.user.id, state.channel_id, state.mission.id, %{
+      coordinatorRegistrationId: state.coordinator_id, status: "completed"})
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE source_key=?", ["mission-completed:#{state.mission.id}"]) == [1]
+    :ok = RunStore.finish(coordinator_run.id, "completed", "Provider settled after delivery")
+
+    # A new BEAM reads only persisted state; no in-memory suppression or worker.
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    script = Path.expand("../../support/lifecycle_process_probe.exs", __DIR__)
+    {output, code} = System.cmd(System.find_executable("elixir"), paths ++ [script, config, state.mission.id, "restart"],
+      env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true)
+    assert code == 0, output
+    assert SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [state.channel_id]) == before
+  end
   end
 
   test "periodic recovery reports failure offline without dispatch until a runner reconnects", ctx do

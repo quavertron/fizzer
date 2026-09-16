@@ -572,7 +572,10 @@ defmodule Cascade.Missions.NotificationsTest do
     [item] = Scheduler.schedule(c.mission).dispatches
     run = dispatch_run(c, item.dispatch)
     {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
-    {:ok, _} = Store.update_task(c.user.id, c.channel, c.task, %{status: "completed", summary: "Candidate ready"})
+    {:ok, projected} = Store.update_task(c.user.id, c.channel, c.task, %{status: "completed", summary: "Candidate ready"})
+    assert projected.mission.status == "active"
+    {:ok, root} = Store.root_message(projected)
+    assert root.mission["status"] == "active"
     Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
     assert receipts(c) == []
 
@@ -584,12 +587,29 @@ defmodule Cascade.Missions.NotificationsTest do
     assert String.ends_with?(id, ":completed")
   end
 
+  test "a settling task cannot hide another completed task with missing evidence", c do
+    [item] = Scheduler.schedule(c.mission).dispatches
+    run = dispatch_run(c, item.dispatch)
+    {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
+    {:ok, _} = Store.update_task(c.user.id, c.channel, c.task, %{status: "completed", summary: "Result pending run settlement"})
+    {:ok, missing} = Store.add_task(c.user.id, c.channel, c.mission, %{
+      coordinatorRegistrationId: c.coordinator.id, assignee: c.worker.id,
+      purpose: "research", title: "Missing bound execution"})
+    {:ok, projected} = Store.update_task(c.user.id, c.channel, missing.task.id, %{status: "completed", summary: "Unverified claim"})
+    assert projected.mission.status == "attention"
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert [[id, _]] = receipts(c)
+    assert id == "task-notification:#{missing.task.id}:0:evidence-missing"
+  end
+
   test "a canceled run still reports missing completion evidence", c do
     [item] = Scheduler.schedule(c.mission).dispatches
     run = dispatch_run(c, item.dispatch)
     {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
     SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary='Candidate ready' WHERE id=?", [c.task])
     Runs.finish(run.id, "canceled", "Owner stopped")
+    {:ok, projected} = Store.refresh(c.mission)
+    assert projected.mission.status == "attention"
     Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
     assert [[id, _]] = receipts(c)
     assert String.ends_with?(id, ":evidence-missing")

@@ -104,6 +104,35 @@ defmodule Cascade.Missions.InterpretationTest do
     {result, input}
   end
 
+  for receipt <- ["", "Observed exact artifact abc123; verifier receipt retained"] do
+  @receipt receipt
+  test "settling explicit result preserves verification #{inspect(receipt)} without another interpretation", c do
+    receipt = @receipt
+    [worker] = Scheduler.schedule(c.mission).dispatches
+    worker_run = run(c, worker.dispatch)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, worker_run.id)
+    finding(c, "Explicit observed result; not a deployment receipt", "completed")
+    [work_item] = SQL.one("SELECT work_item_id FROM chat_mission_tasks WHERE id=?", [c.task])
+    {:ok, _} = Cascade.WorkItems.update(c.user.id, work_item, %{verification: receipt})
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    coordinator = run(c, wake.dispatch)
+    assert {{:ok, _}, _} = record(c, coordinator, %{"noMaterialChange" => true,
+      "assessment" => "Research result recorded; implementation remains a separate responsibility."})
+    before = state(c).evidence
+    assert SQL.one("SELECT verification FROM work_items WHERE id=?", [work_item]) == [receipt]
+    :ok = Runs.finish(worker_run.id, "completed", "Generic provider goodbye")
+    for _ <- 1..2 do
+      assert {:ok, result} = Scheduler.settle_run(worker_run.id, "completed", "Generic provider goodbye")
+      assert result.scheduled.wakeDispatches == []
+      assert Scheduler.schedule(c.mission).wakeDispatches == []
+    end
+    assert SQL.one("SELECT verification FROM work_items WHERE id=?", [work_item]) == [receipt]
+    assert state(c).evidence.findings == before.findings
+    {:ok, projection} = Store.refresh(c.mission)
+    refute projection.mission.status == "completed"
+  end
+  end
+
   test "accepted scope is source-linked and frozen; optional suggestions never become implicit blockers", c do
     finding(c, "Candidate ready")
     [wake] = Scheduler.schedule(c.mission).wakeDispatches

@@ -86,7 +86,9 @@ defmodule Cascade.Missions.Scheduler do
         SELECT 1 FROM chat_mission_interpretations i
         WHERE i.mission_id=m.id AND i.stopped=0
           AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL
-            OR json_extract(i.state_json,'$.executionCompleted') IS NOT 1
+            OR (json_extract(i.state_json,'$.executionCompleted') IS NOT 1
+              AND NOT EXISTS (SELECT 1 FROM chat_mission_events e
+                WHERE e.mission_id=m.id AND e.source_key='mission-completed:' || m.id))
             OR EXISTS (
               SELECT 1 FROM json_each(i.state_json,'$.commitments') c
               WHERE json_extract(c.value,'$.status')='open'
