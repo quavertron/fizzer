@@ -1,0 +1,19 @@
+Baseline e619d577; actual App, unchanged product from git archive.
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Ctrl-S must submit one immediate PUT
+
+0 !== 1
+
+    at file:///home/jt/.fizzer/worktrees/cascade/22130d04-implement-reliable-note-saving-a-c593d7/scripts/test-note-saving-browser.mjs:56:9 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 0,
+  expected: 1,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.11.1

@@ -13,14 +13,17 @@
  * @component
  */
 
-import { useEffect, useState, lazy, Suspense, type DragEvent } from 'react';
+import { useEffect, useState, useSyncExternalStore, lazy, Suspense, type DragEvent } from 'react';
 import type { Tab } from './components/TabBar';
 
 // Same split as the main app: CodeMirror loads with the editor, not the shell.
 const NoteEditor = lazy(() =>
   import('./components/NoteEditor').then((m) => ({ default: m.NoteEditor })),
 );
-import { api, type Note } from './api';
+import { api, type Vault } from './api';
+import { WorkspaceStore, reconcileWorkspaceNoteContent, type WorkspaceNote } from './workspace';
+import { emptySession } from './chat/session';
+import { NoteSaving, noteSaveStatus } from './noteSaving';
 
 type MergeApi = {
   mergeTab?: (input: { tab: Tab; screenX: number; screenY: number }) => Promise<{ success: boolean; merged?: boolean }>;
@@ -31,8 +34,12 @@ function getMergeApi(): MergeApi | undefined {
 }
 
 export function PopoutApp({ descriptor }: { descriptor: Tab }) {
-  const [note, setNote] = useState<Note | null>(null);
-  const [draft, setDraft] = useState('');
+  const [store] = useState(() => new WorkspaceStore(emptySession()));
+  const [saving] = useState(() => new NoteSaving(store));
+  const [writable, setWritable] = useState(false);
+  saving.canWrite = () => writable;
+  useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const entry = store.active.noteContents[descriptor.id];
   const [error, setError] = useState<string | null>(null);
   const title = descriptor.title;
 
@@ -41,11 +48,13 @@ export function PopoutApp({ descriptor }: { descriptor: Tab }) {
   useEffect(() => {
     if (descriptor.type !== 'note') return;
     let cancelled = false;
-    api<{ note: Note }>(`/api/notes/${descriptor.id}`)
-      .then((data) => {
+    Promise.all([api<{ note: WorkspaceNote }>(`/api/notes/${descriptor.id}`), api<{ vaults: Vault[] }>('/api/vaults')])
+      .then(([data, membership]) => {
         if (cancelled) return;
-        setNote(data.note);
-        setDraft(data.note.content);
+        store.switchVault(data.note.vault_id);
+        store.set('noteContents', prev => ({ ...prev, [descriptor.id]: reconcileWorkspaceNoteContent(prev[descriptor.id], data.note) }));
+        const role = membership.vaults.find(v => v.id === data.note.vault_id)?.role;
+        setWritable(role === 'owner' || role === 'editor');
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load note');
@@ -53,25 +62,28 @@ export function PopoutApp({ descriptor }: { descriptor: Tab }) {
     return () => { cancelled = true; };
   }, [descriptor.id, descriptor.type]);
 
-  const saveNote = async () => {
-    if (!note) return;
-    try {
-      const data = await api<{ note: Note }>(`/api/notes/${note.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ content: draft }),
-      });
-      setNote(data.note);
-      setDraft(data.note.content);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save note');
-    }
-  };
+  const saveNote = () => store.activeVaultId ? saving.save(store.activeVaultId, descriptor.id) : Promise.resolve();
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        if (store.activeVaultId) void saving.save(store.activeVaultId, descriptor.id).catch(() => {});
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    window.addEventListener('beforeunload', saving.protectUnload);
+    return () => {
+      window.removeEventListener('keydown', keydown);
+      window.removeEventListener('beforeunload', saving.protectUnload);
+      saving.dispose();
+    };
+  }, [descriptor.id, saving, store]);
 
   // Merge back when the header is released outside this window (dropEffect none).
   const handleHeaderDragEnd = (event: DragEvent) => {
     if (event.dataTransfer.dropEffect !== 'none') return;
     const mergeApi = getMergeApi();
-    if (!mergeApi?.mergeTab) return;
+    if (!mergeApi?.mergeTab || saving.hasUnresolved()) return;
     const tab: Tab = { ...descriptor, title };
     void mergeApi.mergeTab({ tab, screenX: event.screenX, screenY: event.screenY });
   };
@@ -84,7 +96,10 @@ export function PopoutApp({ descriptor }: { descriptor: Tab }) {
   } else {
     body = (
       <Suspense fallback={<div className="editor-loading" />}>
-        <NoteEditor note={note} content={draft} onContentChange={setDraft} onSave={saveNote} />
+        <NoteEditor note={entry?.note ?? null} content={entry?.draft ?? ''}
+          onContentChange={draft => { if (store.activeVaultId) saving.change(store.activeVaultId, descriptor.id, draft); }}
+          onSave={saveNote} saveStatus={entry ? noteSaveStatus(entry) : undefined}
+          readOnly={!writable} titleEditable={false} />
       </Suspense>
     );
   }

@@ -245,6 +245,7 @@ export async function saveRemoteVault(record: RemoteVaultRecord): Promise<void> 
 }
 
 export type ApiOptions = RequestInit & {
+  /** Empty string explicitly selects this instance; undefined follows the active vault. */
   origin?: string;
   token?: string;
 };
@@ -266,7 +267,7 @@ export async function api<T>(path: string, options: ApiOptions = {}) {
   let targetOrigin = options.origin;
   let targetToken = options.token;
 
-  if (!targetOrigin) {
+  if (targetOrigin === undefined) {
     const match = /^\/api\/vaults\/([^/]+)/.exec(path);
     if (match) {
       const vaultId = match[1];

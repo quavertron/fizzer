@@ -6,11 +6,15 @@ import { emptyWorkspace, type PersistedSession, type PersistedWorkspace } from '
 /** Notes carry an optimistic-concurrency revision when served by the API. */
 export type WorkspaceNote = Note & { revision?: string };
 export type WorkspaceNoteContent = {
-  /** Most recently observed server record (may be newer than a dirty draft). */
+  /** Acknowledged baseline; refreshes cannot replace it while work is unresolved. */
   note: WorkspaceNote;
   draft: string;
   /** Revision the current draft was based on, never silently rebased. */
   baseRevision?: string;
+  saving?: boolean;
+  saveRequest?: object;
+  saveError?: string;
+  saveBlocked?: boolean;
 };
 export type Workspace = PersistedWorkspace & { noteContents: Record<string, WorkspaceNoteContent> };
 type Update<T> = T | ((previous: T) => T);
@@ -28,11 +32,10 @@ export function reconcileWorkspaceNoteContent(
   previous: WorkspaceNoteContent | undefined,
   incoming: WorkspaceNote,
 ): WorkspaceNoteContent {
-  if (previous && previous.draft !== previous.note.content) {
+  if (previous && (previous.saving || previous.saveError || previous.draft !== previous.note.content)) {
     const baseRevision = previous.baseRevision ?? previous.note.revision;
     return {
-      note: incoming,
-      draft: previous.draft,
+      ...previous,
       ...(baseRevision === undefined ? {} : { baseRevision }),
     };
   }
@@ -100,7 +103,7 @@ export class WorkspaceStore {
     this.update((workspace) => ({
       ...workspace,
       openTabs: workspace.openTabs.filter((tab) => !closing.has(tab.id)),
-      noteContents: Object.fromEntries(Object.entries(workspace.noteContents).filter(([id]) => !closing.has(id))),
+      noteContents: Object.fromEntries(Object.entries(workspace.noteContents).filter(([id, entry]) => !closing.has(id) || entry.saving || entry.draft !== entry.note.content || entry.saveError)),
       layout: Layout.simplify(ids.reduce((layout, id) => Layout.removeTab(layout, id), workspace.layout)),
     }));
   }
@@ -117,7 +120,7 @@ export class WorkspaceStore {
       return {
         ...workspace,
         openTabs: tabs.some((item) => item.id === tab.id) ? tabs.map((item) => item.id === tab.id ? tab : item) : [...tabs, tab],
-        noteContents: closing ? Object.fromEntries(Object.entries(workspace.noteContents).filter(([id]) => id !== closing)) : workspace.noteContents,
+        noteContents: closing ? Object.fromEntries(Object.entries(workspace.noteContents).filter(([id, entry]) => id !== closing || entry.saving || entry.draft !== entry.note.content || entry.saveError)) : workspace.noteContents,
         layout: Layout.simplify(layout), focusedPaneId: pane.id,
       };
     });

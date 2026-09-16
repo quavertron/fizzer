@@ -1,3 +1,4 @@
+import { NoteSaving, noteSaveStatus } from './noteSaving';
 import { useVoiceSession, VoiceContext, VoiceControls, VoiceChannelView } from './components/VoiceRoom';
 import { VOICE_NOTE_MARKER, isVoiceChannel } from './chat/shared';
 import { LoadingIndicator } from './components/LoadingIndicator';
@@ -195,6 +196,12 @@ export default function App() {
   const requestedVaultRef = useRef(new URLSearchParams(window.location.search).get('vault'));
   const [workspaceStore] = useState(() => new WorkspaceStore(persistedSessionRef.current));
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
+  const [noteSaving] = useState(() => new NoteSaving(workspaceStore));
+  noteSaving.canWrite = (vaultId) => vaults.some(v => v.id === vaultId && (v.role === 'owner' || v.role === 'editor'));
+  useEffect(() => {
+    window.addEventListener('beforeunload', noteSaving.protectUnload);
+    return () => { window.removeEventListener('beforeunload', noteSaving.protectUnload); noteSaving.dispose(); };
+  }, [noteSaving]);
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
   const activeVaultId = workspaceStore.activeVaultId;
   const codexImports = useCodexImports(user ? String(user.id) : null);
@@ -220,6 +227,7 @@ export default function App() {
   const setLayout = useCallback((value: React.SetStateAction<LayoutNode>) => workspaceStore.set('layout', value), [workspaceStore]);
   const setFocusedPaneId = useCallback((value: string) => workspaceStore.set('focusedPaneId', value), [workspaceStore]);
   const setNoteContents = useCallback((value: React.SetStateAction<typeof noteContents>) => workspaceStore.set('noteContents', value), [workspaceStore]);
+  const superkanbanRequest = useRef(0);
   const [superkanbanNotes, setSuperkanbanNotes] = useState<Note[]>([]);
   const [superkanbanLiveWork, setSuperkanbanLiveWork] = useState<WorkItem[]>([]);
   const [superkanbanLoading, setSuperkanbanLoading] = useState(false);
@@ -291,6 +299,7 @@ export default function App() {
     setFolders(listing?.folders ?? []);
     setNotes(listing?.notes ?? []);
     setVaultAgents([]);
+    superkanbanRequest.current++;
     setSuperkanbanNotes([]);
     setSuperkanbanLiveWork([]);
     setSuperkanbanLoading(false);
@@ -1607,6 +1616,9 @@ export default function App() {
 
   /** Fetch every board body + live mission/work items for the aggregate tab. */
   const loadSuperkanban = useCallback(async () => {
+    const request = ++superkanbanRequest.current;
+    const epoch = workspaceStore.epoch;
+    const isCurrent = () => request === superkanbanRequest.current && epoch === workspaceStore.epoch && activeVaultIdRef.current === vaultId;
     // Previews are whitespace-collapsed by the API, so detect the marker here
     // and validate the complete note body again inside mergeKanbanSources.
     const boardSummaries = notesRef.current.filter((note) => (
@@ -1628,15 +1640,15 @@ export default function App() {
           ).then((data) => data.items || []).catch(() => [] as WorkItem[])
           : Promise.resolve([] as WorkItem[]),
       ]);
-      if (activeVaultIdRef.current !== vaultId) return;
+      if (!isCurrent()) return;
       setSuperkanbanNotes(fetched);
       setSuperkanbanLiveWork(live);
     } catch (error) {
-      if (activeVaultIdRef.current !== vaultId) return;
+      if (!isCurrent()) return;
       console.error('Error loading Superkanban:', error);
       setSuperkanbanError('Could not load all Kanban boards. Try reopening this tab.');
     } finally {
-      if (activeVaultIdRef.current === vaultId) setSuperkanbanLoading(false);
+      if (isCurrent()) setSuperkanbanLoading(false);
     }
   }, []);
 
@@ -1719,33 +1731,24 @@ export default function App() {
     if (item.messageId) setChatJumpTarget({ channelId: item.targetId, messageId: item.messageId });
   }, [loadVaultData, markCommunityTargetRead, openChatChannel, openNote, switchVaultWorkspace]);
 
-  /** Save a specific note tab's draft. */
-  const saveNoteTab = useCallback(async (tabId: string) => {
-    const vaultId = activeVaultIdRef.current;
-    const entry = workspaceStore.active.noteContents[tabId];
-    if (!vaultId || !entry) return;
+  noteSaving.onSaved = (vaultId, note) => {
+    if (workspaceStore.activeVaultId !== vaultId) return;
+    // Aggregate cards reflect committed bodies, never unacknowledged drafts.
+    superkanbanRequest.current++;
+    setSuperkanbanLoading(false);
+    setSuperkanbanNotes(previous => previous.map(item => item.id === note.id ? note : item));
     const epoch = workspaceStore.epoch;
-    const draft = entry.draft;
-    const expectedRevision = entry.baseRevision ?? entry.note.revision;
-    try {
-      const data = await api<{ note: WorkspaceNote }>(`/api/notes/${tabId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          content: draft,
-          ...(expectedRevision === undefined ? {} : { expectedRevision }),
-        }),
-      });
-      workspaceStore.completeSave(vaultId, tabId, draft, data.note, epoch);
-      if (workspaceStore.epoch === epoch && workspaceStore.activeVaultId === vaultId) void loadVaultData(vaultId);
-      return data.note;
-    } catch (error) {
-      if (error instanceof ApiError && (error.status === 409 || error.status === 428)) {
-        setNotice('This note changed elsewhere. Your draft was kept; refresh before saving again.');
-      }
-      console.error('Error saving note:', error);
-      throw error;
-    }
-  }, [loadVaultData]);
+    void loadVaultData(vaultId, { soft: true }).then(() => {
+      if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId
+        && workspaceStore.active.openTabs.some(tab => tab.type === 'superkanban')) void loadSuperkanban();
+    });
+  };
+
+  /** Save a specific note tab's draft. */
+  const saveNoteTab = useCallback((tabId: string) => {
+    const vaultId = workspaceStore.activeVaultId;
+    return vaultId ? noteSaving.save(vaultId, tabId) : Promise.resolve(undefined);
+  }, [noteSaving, workspaceStore]);
   /** Save whichever note is in the focused pane (Ctrl+S, AI panel). */
   const handleSaveActiveNote = useCallback(() => {
     const tabId = workspaceStore.focusedPane.activeTabId;
@@ -1754,12 +1757,9 @@ export default function App() {
 
   /** Track edits to a note tab's body and update its dirty flag. */
   const handleNoteChange = useCallback((tabId: string, newContent: string) => {
-    setNoteContents((prev) => {
-      const entry = prev[tabId];
-      if (!entry) return prev;
-      return { ...prev, [tabId]: { ...entry, draft: newContent } };
-    });
-  }, []);
+    const vaultId = workspaceStore.activeVaultId;
+    if (vaultId) noteSaving.change(vaultId, tabId, newContent);
+  }, [noteSaving, workspaceStore]);
   /** Rename a note tab (title + on-disk file + wikilink references). */
   const renameNoteTab = useCallback(async (tabId: string, title: string) => {
     const vaultId = workspaceStore.activeVaultId;
@@ -1896,7 +1896,12 @@ export default function App() {
       if (socketVaultReloadTimerRef.current != null) return;
       socketVaultReloadTimerRef.current = window.setTimeout(() => {
         socketVaultReloadTimerRef.current = null;
-        if (activeVaultIdRef.current) void loadVaultData(activeVaultIdRef.current, { soft: true });
+        const vaultId = activeVaultIdRef.current;
+        const epoch = workspaceStore.epoch;
+        if (vaultId) void loadVaultData(vaultId, { soft: true }).then(() => {
+          if (workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId
+            && workspaceStore.active.openTabs.some(tab => tab.type === 'superkanban')) void loadSuperkanban();
+        });
       }, 80);
     };
     const handleNoteChanged = (data: { noteId: string; vaultId: string }) => {
@@ -2072,7 +2077,7 @@ export default function App() {
       socket.off('vault:userProfileUpdated', handleUserProfileUpdated);
       socket.disconnect();
     };
-  }, [activeVaultId, vaults, user?.id, authEpoch, loadVaultData, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, loadChatPresence, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
+  }, [activeVaultId, vaults, user?.id, authEpoch, loadVaultData, loadSuperkanban, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, loadChatPresence, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
 
   useEffect(() => {
     const socket = vaultSocketRef.current;
@@ -2337,6 +2342,11 @@ export default function App() {
     const tab = workspaceStore.active.openTabs.find((t) => t.id === tabId);
     if (!tab) return;
     if (tab.type !== 'note') return;
+    const entry = workspaceStore.active.noteContents[tabId];
+    if (entry && (entry.saving || entry.saveError || entry.draft !== entry.note.content)) {
+      setNotice('Save this note before moving it to another window. Your draft is kept here.');
+      return;
+    }
     void electronAPI.popOutTab({ tab, screenX, screenY }).then((res) => {
       if (!res?.popped) return;
       workspaceStore.closeTabs([tabId]);
@@ -2448,10 +2458,9 @@ export default function App() {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 'p') { e.preventDefault(); setCommandPaletteOpen((v) => !v); }
       if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen((v) => !v); }
-      if (mod && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); setSearchOpen(true); }
       if (mod && e.key === '\\' && !(e.altKey || e.shiftKey)) { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && !e.shiftKey && e.key === 'n') { e.preventDefault(); void handleCreateNote(); }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void handleSaveActiveNote(); }
+      if (mod && !e.defaultPrevented && e.key.toLowerCase() === 's') { e.preventDefault(); void handleSaveActiveNote().catch(() => {}); }
       if (mod && e.key.toLowerCase() === 'w') {
         e.preventDefault();
         const id = workspaceStore.focusedPane.activeTabId;
@@ -2565,6 +2574,9 @@ export default function App() {
           <NoteEditor
             note={entry?.note ?? null}
             content={entry?.draft ?? ''}
+            saveStatus={noteSaveStatus(entry)}
+            readOnly={!activeVaultId || !noteSaving.canWrite(activeVaultId)}
+            titleEditable={Boolean(activeVaultId && noteSaving.canWrite(activeVaultId))}
             onContentChange={getNoteChangeHandler(tab.id)}
             onSave={getNoteSaveHandler(tab.id)}
             onRename={getNoteRenameHandler(tab.id)}
@@ -2576,7 +2588,7 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData]);
+  }, [vaults, noteSaving, noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData]);
 
   if (!authReady) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 

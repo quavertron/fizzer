@@ -1,0 +1,116 @@
+{
+  "fixture": "real App and CodeMirror; in-memory API, no disk persistence claim",
+  "writes": [
+    {
+      "id": "a",
+      "content": "Manual",
+      "expectedRevision": "note-v1:1",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Command",
+      "expectedRevision": "note-v1:2",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Autosaved",
+      "expectedRevision": "note-v1:3",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Submitted",
+      "expectedRevision": "note-v1:4",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Newer while pending",
+      "expectedRevision": "note-v1:5",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Failure retained",
+      "expectedRevision": "note-v1:6",
+      "status": 500
+    },
+    {
+      "id": "a",
+      "content": "Failure retained",
+      "expectedRevision": "note-v1:6",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Closed draft",
+      "expectedRevision": "note-v1:7",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Conflicted draft",
+      "expectedRevision": "note-v1:8",
+      "status": 409
+    },
+    {
+      "id": "b",
+      "content": "Popout immediate",
+      "expectedRevision": "note-v1:1",
+      "status": 200
+    },
+    {
+      "id": "b",
+      "content": "Popout submitted",
+      "expectedRevision": "note-v1:2",
+      "status": 200
+    },
+    {
+      "id": "b",
+      "content": "Popout newer",
+      "expectedRevision": "note-v1:3",
+      "status": 200
+    },
+    {
+      "id": "b",
+      "content": "Popout network draft",
+      "expectedRevision": "note-v1:4",
+      "status": "network"
+    },
+    {
+      "id": "b",
+      "content": "Popout network draft",
+      "expectedRevision": "note-v1:4",
+      "status": 200
+    },
+    {
+      "id": "b",
+      "content": "Popout autosave",
+      "expectedRevision": "note-v1:5",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "Denied draft",
+      "expectedRevision": "note-v1:99",
+      "status": 403
+    }
+  ],
+  "checks": [
+    "Ctrl-S sends exactly one revision-aware PUT and never opens search",
+    "Cmd-S sends one PUT; reload restores acknowledged content from controlled API",
+    "Burst edits debounce to one PUT",
+    "Search shortcut remains functional",
+    "Slow save preserves newer draft through navigation, coalesces follow-up with acknowledged revision",
+    "500 retains draft and error through navigation, no automatic retries; Ctrl-S retries successfully",
+    "Close and reopen retains pending draft and autosave",
+    "Conflict preserves draft, refuses blind retry and protects unresolved unload",
+    "Real PopoutApp uses same revision-aware shortcut, coalescing, autosave, network retry and reload contract",
+    "Real App 403 retains visible dirty draft and failure without retry loop",
+    "Viewer editor is read only",
+    "Real App noteChanged refreshes already-loaded Superkanban from committed body (controlled socket event/API)"
+  ],
+  "errors": []
+}

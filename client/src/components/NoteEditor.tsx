@@ -3,7 +3,7 @@ import type { Note, NoteSummary } from '../api';
 import { api, formatRelativeDate, type NotePublishInfo } from '../api';
 import { findEmbeddedNote, normalizeDocEmbedTarget, NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, placeholder as cmPlaceholder, Decoration, type DecorationSet, WidgetType, drawSelection } from '@codemirror/view';
-import { EditorState, type Extension, RangeSetBuilder, Prec, StateField, StateEffect } from '@codemirror/state';
+import { EditorState, type Extension, RangeSetBuilder, Prec, StateField, StateEffect, Transaction } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle, indentOnInput, bracketMatching, defaultHighlightStyle } from '@codemirror/language';
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
@@ -26,6 +26,8 @@ import {
 interface NoteEditorProps {
   note: Note | null;
   content: string;
+  saveStatus?: string;
+  readOnly?: boolean;
   onContentChange: (content: string) => void;
   onSave: () => void | Promise<unknown>;
   onRename?: (title: string) => Promise<void>;
@@ -1293,7 +1295,7 @@ export function filterLinkableNotes(notes: NoteSummary[], currentNoteId: string 
     .filter((candidate) => !needle || candidate.title.toLocaleLowerCase().includes(needle))
     .sort((a, b) => a.title.localeCompare(b.title));
 }
-export const NoteEditor = memo(function NoteEditor({ note, content, onContentChange, onSave, onRename, titleEditable = true, onExecuteDirective, onOpenWikilink, notes = [], onOpenNote, resolveWorkerMention, onWorkerMention }: NoteEditorProps) {
+export const NoteEditor = memo(function NoteEditor({ note, content, onContentChange, onSave, onRename, saveStatus, readOnly = false, titleEditable = true, onExecuteDirective, onOpenWikilink, notes = [], onOpenNote, resolveWorkerMention, onWorkerMention }: NoteEditorProps) {
   const [publishInfo, setPublishInfo] = useState<NotePublishInfo>({ published: false });
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishNotice, setPublishNotice] = useState('');
@@ -1682,15 +1684,20 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
           return true;
         },
       }),
+      EditorState.readOnly.of(readOnly),
+      EditorState.changeFilter.of(transaction => !readOnly || transaction.annotation(Transaction.remote) === true),
+      EditorView.editable.of(!readOnly),
       keymap.of([
         ...defaultKeymap,
         ...historyKeymap,
         ...searchKeymap,
         indentWithTab,
         {
-          key: 'Mod-Shift-s',
+          key: 'Mod-s',
+          shift: () => { void Promise.resolve(onSaveRef.current()).catch(() => {}); return true; },
+          stopPropagation: true,
           run: () => {
-            onSaveRef.current();
+            void Promise.resolve(onSaveRef.current()).catch(() => {});
             return true;
           },
         },
@@ -1741,7 +1748,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
         }
       }),
     ],
-    [insertNoteEmbed],
+    [insertNoteEmbed, readOnly],
   );
 
   // Create/destroy editor
@@ -1785,6 +1792,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
     if (current !== content) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: content },
+        annotations: Transaction.remote.of(true),
       });
     }
   }, [note?.id, content]);
@@ -2001,7 +2009,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
       <div className="mobile-note-actions" aria-label="Note actions">
         <button type="button" className="mobile-note-action" onClick={() => { void handleMobileSave(); }} disabled={mobileSaveState === 'saving'}>
           <Save size={18} />
-          <span>{mobileSaveState === 'saving' ? 'Saving…' : mobileSaveState === 'saved' ? 'Saved' : mobileSaveState === 'error' ? 'Retry save' : 'Save'}</span>
+          <span>{saveStatus ?? (mobileSaveState === 'saving' ? 'Saving…' : mobileSaveState === 'saved' ? 'Saved' : mobileSaveState === 'error' ? 'Retry save' : 'Save')}</span>
         </button>
         <button type="button" className="mobile-note-action" onClick={() => setNoteLinkPickerOpen(true)}>
           <Link2 size={18} />
@@ -2042,9 +2050,9 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
         <span className="status-item">{stats.chars} chars</span>
         <span className="status-item">~{stats.readingTime} min read</span>
         {viewMode === 'kanban' && <span className="status-item">Kanban · Markdown backed</span>}
-        {note.updated_at && (
-          <span className="status-item status-saved">
-            Saved {formatRelativeDate(note.updated_at)}
+        {(saveStatus || note.updated_at) && (
+          <span role="status" className={`status-item${(saveStatus ? saveStatus === 'Saved' : content === note.content) ? ' status-saved' : ''}`}>
+            {saveStatus ?? (content !== note.content ? 'Unsaved changes' : `Saved ${formatRelativeDate(note.updated_at)}`)}
           </span>
         )}
         {publishInfo.published && publishInfo.updated_at && (

@@ -38,7 +38,7 @@ describe('workspace authority', () => {
     };
     const reconciled = reconcileWorkspaceNoteContent(previous, revisedNote('remote', 'note-v1:2'));
     expect(reconciled).toEqual({
-      note: revisedNote('remote', 'note-v1:2'),
+      note: revisedNote('saved', 'note-v1:1'),
       draft: 'local draft',
       baseRevision: 'note-v1:1',
     });
@@ -71,7 +71,8 @@ describe('workspace authority', () => {
     const epoch = store.epoch;
     store.closeTabs(['note']);
     store.completeSave('a', 'note', 'submitted', note('submitted'), epoch);
-    expect(store.active.noteContents).toEqual({});
+    expect(store.active.noteContents.note.draft).toBe('submitted');
+    expect(store.active.openTabs).toEqual([]);
     store.retain(new Set());
     store.completeSave('a', 'note', 'submitted', note('submitted'), epoch);
     expect(store.workspaces).toEqual({});
