@@ -16,6 +16,7 @@ import {
   renameKanbanCard,
   renameKanbanColumn,
   setSuperkanbanMarker,
+  setKanbanColumnCompleteOnEntry,
   toggleKanbanCard,
   KanbanView,
 } from '../components/KanbanView';
@@ -292,5 +293,68 @@ describe('Markdown-backed Kanban helpers', () => {
 
   it('tolerates non-string content', () => {
     expect(parseKanbanMarkdown(undefined as unknown as string).columns).toEqual([]);
+  });
+});
+
+describe('per-category completion on entry', () => {
+  const original = '## Done\n\n* [ ] One\n+ Plain\n\n## Arbitrary (3)\n\n- [ ] Existing\n\n## Arbitrary (3)\n\n%% kanban:settings\n```\n{}\n```\n%%';
+  const columns = (text: string) => parseKanbanMarkdown(text).columns;
+  const enabled = () => setKanbanColumnCompleteOnEntry(original, columns(original)[1].id, true);
+
+  it('defaults off and persists only the actual category across rename, add and section reorder', () => {
+    expect(columns(original).every(c => !c.completeOnEntry)).toBe(true);
+    let text = enabled();
+    expect(columns(text).map(c => c.completeOnEntry)).toEqual([false, true, false]);
+    expect(columns(text)[1].cards[0].checked).toBe(false);
+    text = renameKanbanColumn(text, columns(text)[1].id, 'Accepted (4)');
+    text = addKanbanColumn(text, 'New');
+    const marked = columns(text)[1];
+    const lines = text.split('\n');
+    const section = lines.splice(marked.headingLineIndex, marked.endLineIndex - marked.headingLineIndex);
+    lines.unshift(...section);
+    text = lines.join('\n');
+    expect(columns(text)[0]).toMatchObject({ title: 'Accepted', maxItems: 4, completeOnEntry: true });
+    expect(columns(text).slice(1).every(c => !c.completeOnEntry)).toBe(true);
+    text = setKanbanColumnCompleteOnEntry(text, columns(text)[0].id, false);
+    expect(text).not.toContain('fizzer:complete-on-entry');
+    expect(text).toContain('%% kanban:settings\n```\n{}');
+  });
+
+  it.each(['before', 'after', 'background'] as const)('completes entry via %s with manual checkbox semantics; exit never reopens', placement => {
+    let text = enabled();
+    let [source, target] = columns(text);
+    const manual = toggleKanbanCard(text, source.cards[0].id);
+    text = moveKanbanCard(text, source.cards[0].id, target.id,
+      placement === 'background' ? undefined : target.cards[0].id,
+      placement === 'background' ? undefined : placement);
+    expect(text).toContain(manual.split('\n').find(line => line.includes('One')));
+    [source, target] = columns(text);
+    const moved = target.cards.find(c => c.text === 'One')!;
+    expect(moved.checked).toBe(true);
+    text = moveKanbanCard(text, moved.id, source.id);
+    expect(columns(text)[0].cards.find(c => c.text === 'One')?.checked).toBe(true);
+  });
+
+  it('does not complete same-column reorders or entry into unmarked Done', () => {
+    let text = enabled();
+    let cols = columns(text);
+    text = addKanbanCard(text, cols[1].id, 'Second');
+    cols = columns(text);
+    text = moveKanbanCard(text, cols[1].cards[0].id, cols[1].id, cols[1].cards[1].id, 'after');
+    expect(columns(text)[1].cards.every(c => !c.checked)).toBe(true);
+    cols = columns(text);
+    text = moveKanbanCard(text, cols[1].cards[0].id, cols[0].id);
+    expect(columns(text)[0].cards.every(c => !c.checked)).toBe(true);
+  });
+
+  it('keeps metadata next to empty headings when adding or moving and preserves plain bullet markers', () => {
+    let text = setKanbanColumnCompleteOnEntry(original, columns(original)[2].id, true);
+    let cols = columns(text);
+    text = moveKanbanCard(text, cols[0].cards[1].id, cols[2].id);
+    expect(columns(text)[2]).toMatchObject({ completeOnEntry: true, cards: [expect.objectContaining({ checked: true, marker: '+' })] });
+    text = deleteKanbanCard(text, columns(text)[2].cards[0].id);
+    text = addKanbanCard(text, columns(text)[2].id, 'New card');
+    expect(columns(text)[2]).toMatchObject({ completeOnEntry: true, cards: [expect.objectContaining({ checked: false })] });
+    expect(setKanbanColumnCompleteOnEntry(original, 'missing', true)).toBe(original);
   });
 });

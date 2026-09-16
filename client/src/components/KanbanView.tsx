@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type DragEvent,
   type FormEvent,
@@ -37,6 +38,7 @@ export interface KanbanColumn {
   title: string;
   rawTitle: string;
   maxItems: number;
+  completeOnEntry: boolean;
   headingLineIndex: number;
   endLineIndex: number;
   cards: KanbanCard[];
@@ -54,6 +56,7 @@ const HEADING = /^##\s+(.+?)\s*$/;
 const CARD = /^\s*([-*+])\s+(?:\[([^\]])\]\s+)?(.+?)\s*$/;
 const FRONTMATTER_KEY = /^kanban-plugin\s*:/m;
 const SETTINGS_START = '%% kanban:settings';
+const COMPLETE_ON_ENTRY = '<!-- fizzer:complete-on-entry -->';
 
 function cleanSingleLine(value: string) {
   return value.replace(/[\r\n]+/g, ' ').trim();
@@ -145,6 +148,7 @@ export function parseKanbanMarkdown(content: string): KanbanBoard {
         id: `column-${lineIndex}`,
         rawTitle,
         ...parsedTitle,
+        completeOnEntry: lines[lineIndex + 1]?.trim() === COMPLETE_ON_ENTRY,
         headingLineIndex: lineIndex,
         endLineIndex: lines.length,
         cards: [],
@@ -238,7 +242,7 @@ export function addKanbanCard(content: string, columnId: string, text: string): 
   const column = board.columns.find((item) => item.id === columnId);
   if (!column || !cleanSingleLine(text)) return content;
   const lines = content.split('\n');
-  let insertAt = (column.cards.at(-1)?.lineIndex ?? column.headingLineIndex) + 1;
+  let insertAt = (column.cards.at(-1)?.lineIndex ?? (column.headingLineIndex + Number(column.completeOnEntry))) + 1;
   // Empty Obsidian lanes conventionally keep one blank line below the heading.
   // For populated lanes, insert directly after the final card so the existing
   // blank line remains the separator before the next lane.
@@ -274,6 +278,14 @@ export function renameKanbanColumn(content: string, columnId: string, title: str
   if (!column || !clean) return content;
   const lines = content.split('\n');
   lines[column.headingLineIndex] = `## ${clean}`;
+  return lines.join('\n');
+}
+
+export function setKanbanColumnCompleteOnEntry(content: string, columnId: string, enabled: boolean): string {
+  const column = parseKanbanMarkdown(content).columns.find((item) => item.id === columnId);
+  if (!column || column.completeOnEntry === enabled) return content;
+  const lines = content.split('\n');
+  lines.splice(column.headingLineIndex + 1, enabled ? 0 : 1, ...(enabled ? [COMPLETE_ON_ENTRY] : []));
   return lines.join('\n');
 }
 
@@ -320,12 +332,17 @@ export function moveKanbanCard(
   if (!source || !target || targetCard?.id === source.id) return content;
 
   const lines = content.split('\n');
-  const movedLine = lines[source.lineIndex];
+  // Use the same checkbox mutation as manual completion, in the same note edit
+  // as the move. Persistence, permissions and conflicts remain note-save concerns.
+  const entering = !target.cards.some((card) => card.id === source.id);
+  const movedLine = entering && target.completeOnEntry && !source.checked
+    ? toggleKanbanCard(content, source.id).split('\n')[source.lineIndex]
+    : lines[source.lineIndex];
   let insertAt: number;
   if (targetCard) {
     insertAt = targetCard.lineIndex + (placement === 'after' ? 1 : 0);
   } else {
-    insertAt = (target.cards.at(-1)?.lineIndex ?? target.headingLineIndex) + 1;
+    insertAt = (target.cards.at(-1)?.lineIndex ?? (target.headingLineIndex + Number(target.completeOnEntry))) + 1;
   }
 
   lines.splice(source.lineIndex, 1);
@@ -421,7 +438,7 @@ export function KanbanView({ content, onContentChange, showSuperkanbanToggle = f
 function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = false }: KanbanViewProps) {
   const board = useMemo(() => parseKanbanMarkdown(content), [content]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const drag = useRef<{ cardId: string; content: string } | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
   const [editingCard, setEditingCard] = useState<EditingValue>(null);
   const [editingColumn, setEditingColumn] = useState<EditingValue>(null);
@@ -490,16 +507,16 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
 
   const dropCardInColumn = (event: DragEvent, column: KanbanColumn) => {
     event.preventDefault();
-    const cardId = draggedCardId || event.dataTransfer.getData('text/cascade-kanban-card');
+    const cardId = drag.current?.content === content ? drag.current.cardId : null;
     if (cardId) onContentChange(moveKanbanCard(content, cardId, column.id));
-    setDraggedCardId(null);
+    drag.current = null;
     setDropTarget(null);
   };
 
   const dropCardOnCard = (event: DragEvent, column: KanbanColumn, card: KanbanCard) => {
     event.preventDefault();
     event.stopPropagation();
-    const cardId = draggedCardId || event.dataTransfer.getData('text/cascade-kanban-card');
+    const cardId = drag.current?.content === content ? drag.current.cardId : null;
     if (cardId) {
       onContentChange(moveKanbanCard(
         content,
@@ -509,7 +526,7 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
         dropTarget?.cardId === card.id ? dropTarget.placement : 'before',
       ));
     }
-    setDraggedCardId(null);
+    drag.current = null;
     setDropTarget(null);
   };
 
@@ -615,6 +632,7 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
                 ) : (
                   <strong>{column.title}</strong>
                 )}
+                {column.completeOnEntry && <Check size={13} aria-label="Completes cards on entry" />}
                 <span className={exceeded ? 'is-exceeded' : ''}>
                   {column.cards.length}{column.maxItems > 0 ? ` / ${column.maxItems}` : ''}
                 </span>
@@ -630,6 +648,18 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
                 </button>
                 {columnMenu === column.id && (
                   <div className="kanban-column-menu" role="menu" aria-label={`${column.title} list options`}>
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={column.completeOnEntry}
+                      title="Check cards moved into this list. Existing cards stay unchanged."
+                      onClick={() => {
+                        onContentChange(setKanbanColumnCompleteOnEntry(content, column.id, !column.completeOnEntry));
+                        setColumnMenu(null);
+                      }}
+                    >
+                      <Check size={13} /> Complete cards on entry
+                    </button>
                     <button
                       type="button"
                       role="menuitem"
@@ -681,7 +711,7 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
                         key={card.id}
                         draggable={editingCard?.id !== card.id}
                         onDragStart={(event) => {
-                          setDraggedCardId(card.id);
+                          drag.current = { cardId: card.id, content };
                           event.dataTransfer.setData('text/cascade-kanban-card', card.id);
                           event.dataTransfer.effectAllowed = 'move';
                         }}
@@ -696,7 +726,7 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
                         }}
                         onDrop={(event) => dropCardOnCard(event, column, card)}
                         onDragEnd={() => {
-                          setDraggedCardId(null);
+                          drag.current = null;
                           setDropTarget(null);
                         }}
                         onDoubleClick={() => setEditingCard({ id: card.id, value: card.text })}
