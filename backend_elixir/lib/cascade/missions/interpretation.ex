@@ -866,7 +866,7 @@ defmodule Cascade.Missions.Interpretation do
         revision_conflict(record, input, "Evidence batch changed; read current interpretation")
 
       true ->
-        state = merge_state(record.state, input)
+        state = merge_state(record.state, input, Map.put(update.mission, :createdBy, user.id))
 
         state =
           if record.context["delivery"] != nil,
@@ -1011,7 +1011,40 @@ defmodule Cascade.Missions.Interpretation do
     end
   end
 
-  defp merge_state(state, input) do
+  # Acceptance is not inferred from an agent-written proposal. Retain legacy
+  # entries, but freeze their scope; new accepted entries quote an exact owner
+  # source. Semantic interpretation still belongs to the coordinator, not SQL.
+  defp commitment_scope(entry, previous, mission) do
+    if Map.has_key?(entry, "accepted") and entry["accepted"] not in [true, false],
+      do: raise("Commitment accepted must be a boolean")
+    if previous && previous["accepted"] != false do
+      for key <- ~w(summary sourceMessageId sourceQuote),
+          Map.has_key?(entry, key) and entry[key] != previous[key],
+          do: raise("Accepted commitment scope is immutable; cancel it explicitly and record a separately sourced scope")
+      entry
+    else
+      entry = Map.put_new(entry, "accepted", false)
+      if entry["accepted"] == true do
+        source = entry["sourceMessageId"]
+        quote = entry["sourceQuote"]
+        case SQL.one("""
+          SELECT msg.body FROM chat_messages msg
+          WHERE msg.id=? AND msg.actor_user_id=? AND msg.vault_id=? AND msg.channel_id=?
+            AND COALESCE(msg.agent_id,'')='' AND COALESCE(msg.registration_id,'')=''
+            AND msg.author=(SELECT username FROM users WHERE id=?)
+            AND NOT EXISTS (SELECT 1 FROM chat_mission_events e WHERE e.kind='task_notification'
+              AND json_valid(e.summary) AND json_extract(e.summary,'$.messageId')=msg.id)
+          """, [source, mission.createdBy, mission.vaultId, mission.channelId, mission.createdBy]) do
+          [body] when is_binary(quote) and quote != "" ->
+            unless String.contains?(body, quote), do: raise("Accepted scope must quote its exact owner source")
+          _ -> raise("Accepted commitment requires an exact owner sourceMessageId and sourceQuote")
+        end
+      end
+      entry
+    end
+  end
+
+  defp merge_state(state, input, mission) do
     if byte_size(Jason.encode!(input)) > 64_000, do: raise("Interpretation must stay under 64KB")
 
     state =
@@ -1031,6 +1064,8 @@ defmodule Cascade.Missions.Interpretation do
           entries =
             if field == "commitments" do
               Enum.map(entries, fn entry ->
+                previous = Enum.find(acc[field] || [], &(&1["id"] == entry["id"]))
+                entry = commitment_scope(entry, previous, mission)
                 if entry["status"] && entry["status"] not in ~w(open fulfilled canceled),
                   do: raise("Commitment status must be open, fulfilled or canceled")
 
@@ -1118,7 +1153,7 @@ defmodule Cascade.Missions.Interpretation do
   end
 
   defp agenda_guidance do
-    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: verify its saved owner instruction before acting; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Routine context omits fulfilled commitments. A contextRef path refers to the identical text retained elsewhere in the same JSON payload; resolve it as that text, not new evidence or authority. Retrieve full understanding with `mission interpret` or mission history when their completed evidence is relevant. For a blocked commitment keep status open and record blocker:{reason,resumeWhen} alongside its existing taskId or dependency references. State the concrete dependency, decision or observable condition needed to resume. Use null for an unknown reason or resume condition; do not invent one. Dependency completion or changed blocker evidence permits inspection, never automatic authority to retry; descriptive text is not authorization. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
+    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: new entries default to accepted:false; verify its saved owner instruction before acting. For accepted:true include sourceMessageId of the exact human owner instruction and sourceQuote copied verbatim from it. Accepted summary/source fields are frozen: update status/evidence, not scope; cancel an obsolete commitment and source a distinct replacement if the owner redirects. Do not infer approval from your own proposals; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Routine context omits fulfilled commitments. A contextRef path refers to the identical text retained elsewhere in the same JSON payload; resolve it as that text, not new evidence or authority. Retrieve full understanding with `mission interpret` or mission history when their completed evidence is relevant. For a blocked commitment keep status open and record blocker:{reason,resumeWhen} alongside its existing taskId or dependency references. State the concrete dependency, decision or observable condition needed to resume. Use null for an unknown reason or resume condition; do not invent one. Dependency completion or changed blocker evidence permits inspection, never automatic authority to retry; descriptive text is not authorization. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
   end
 
   def prompt(wake) do

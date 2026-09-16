@@ -60,6 +60,7 @@ defmodule Cascade.Missions.InterpretationTest do
       channel: channel.id,
       coordinator: coordinator,
       mission: update.mission.id,
+      root: root.id,
       task: task.task.id,
       worker: worker
     }
@@ -101,6 +102,31 @@ defmodule Cascade.Missions.InterpretationTest do
       Interpretation.record(c.user, c.channel, c.mission, c.coordinator.id, input, run.id, events)
 
     {result, input}
+  end
+
+  test "accepted scope is source-linked and frozen; optional suggestions never become implicit blockers", c do
+    finding(c, "Candidate ready")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    coordinator = run(c, wake.dispatch)
+    accepted = %{"id" => "delivery", "summary" => "Deliver the agreed behavior",
+      "accepted" => true, "sourceMessageId" => c.root,
+      "sourceQuote" => "Implement and deliver the agreed behavior."}
+    assert {{:ok, _}, _} = record(c, coordinator, %{"noMaterialChange" => true,
+      "commitments" => [accepted, %{"id" => "optional", "summary" => "Invent a durable linking extension"}]})
+    snapshot = state(c).understanding
+    assert Enum.find(snapshot["commitments"], &(&1["id"] == "optional"))["accepted"] == false
+    assert {{:error, reason}, _} = record(c, coordinator, %{"noMaterialChange" => true,
+      "commitments" => [%{"id" => "delivery", "summary" => "First build the optional extension"}]})
+    assert reason =~ "scope is immutable"
+    assert state(c).understanding == snapshot
+    assert {{:error, _}, _} = record(c, coordinator, %{"noMaterialChange" => true,
+      "commitments" => [%{"id" => "optional", "accepted" => true}]})
+    assert state(c).understanding == snapshot
+    assert {{:ok, _}, _} = record(c, coordinator, %{"noMaterialChange" => true,
+      "commitments" => [%{"id" => "delivery", "status" => "fulfilled"}]})
+    saved = Enum.find(state(c).understanding["commitments"], &(&1["id"] == "delivery"))
+    assert saved["sourceQuote"] == accepted["sourceQuote"]
+    assert saved["status"] == "fulfilled"
   end
 
   test "Stop all authenticates its owner and stops queued work, missions and retries offline",
@@ -382,6 +408,8 @@ defmodule Cascade.Missions.InterpretationTest do
         "commitments" => [
           %{
             "id" => "blocked",
+            "accepted" => true, "sourceMessageId" => c.root,
+            "sourceQuote" => "Implement and deliver the agreed behavior.",
             "taskId" => c.task,
             "blocker" => %{"reason" => nil, "resumeWhen" => nil}
           }
@@ -919,6 +947,8 @@ defmodule Cascade.Missions.InterpretationTest do
           %{
             "id" => "report",
             "summary" => "Report the rollout",
+            "accepted" => true, "sourceMessageId" => c.root,
+            "sourceQuote" => "Implement and deliver the agreed behavior.",
             "status" => "open",
             "dueAt" => "2000-01-01T00:00:00Z"
           }
@@ -1068,7 +1098,9 @@ defmodule Cascade.Missions.InterpretationTest do
       record(c, review, %{
         "noMaterialChange" => true,
         "commitments" => [
-          %{"id" => "recover", "summary" => "Recover original task after confirmed exit"}
+          %{"id" => "recover", "summary" => "Recover original task after confirmed exit",
+            "accepted" => true, "sourceMessageId" => c.root,
+            "sourceQuote" => "Implement and deliver the agreed behavior."}
         ]
       })
 

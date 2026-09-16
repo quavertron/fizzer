@@ -951,7 +951,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert event!(ctx.sid, "run:delegate")["runId"] != first["runId"]
   end
 
-  test "an attached mission startup without a desktop lease settles during periodic replay",
+  test "an attached mission startup without a desktop lease recovers the same job during periodic replay",
        ctx do
     first = event!(ctx.sid, "run:delegate")
     Store.finish(first["runId"], "completed", "done")
@@ -981,9 +981,15 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
 
     eventually(fn ->
       assert Store.get(run.id).status == "failed"
-      assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [task.id]) == ["failed"]
+      assert ["running", 1, replacement, work] = SQL.one("SELECT status,attempt,run_id,work_item_id FROM chat_mission_tasks WHERE id=?", [task.id])
+      refute replacement == run.id
+      assert work == task.workItemId
     end)
 
+    [replacement, dispatch] = SQL.one("SELECT run_id,dispatch_id FROM chat_mission_tasks WHERE id=?", [task.id])
+    delegated = event_for_dispatch!(ctx.sid, "run:delegate", dispatch)
+    assert delegated["runId"] == replacement
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE task_id=? AND kind='startup_recovered'", [task.id]) == [1]
     assert is_nil(Store.delegated_owner(run.id))
   end
 

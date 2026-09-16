@@ -50,12 +50,6 @@ defmodule Cascade.Chat.Continuations do
            [s.registration, s.conversation]
          ) do
       [revision, status, summary, sources, after_dispatch, dispatch] ->
-        status =
-          if status == "pending" and dispatch != nil and
-               SQL.one("SELECT status FROM runs WHERE chat_dispatch_id=?", [dispatch]) == [
-                 "completed"
-               ], do: "completed", else: status
-
         %{
           revision: revision,
           status: status,
@@ -260,6 +254,9 @@ defmodule Cascade.Chat.Continuations do
                SQL.one("SELECT status FROM runs WHERE id=?", [run]),
              s <- scope(run, true),
              old <- row(s),
+             :ok <- if(old.status == "canceled" and
+               (s.dispatch in old.sources or s.dispatch == old.after_dispatch or String.starts_with?(s.message, "sys-")),
+               do: {:error, "Owner Stop revoked this continuation; an old attempt cannot revive it"}, else: :ok),
              :ok <-
                if(input["revision"] == old.revision,
                  do: :ok,
@@ -274,7 +271,10 @@ defmodule Cascade.Chat.Continuations do
              status when status in ["pending", "waiting", "completed", "canceled"] <-
                input["status"] do
           summary = String.slice(to_string(input["summary"] || old.summary), 0, 8000)
-          sources = if old.sources == [], do: [s.dispatch], else: old.sources
+          sources =
+            if old.sources == [] or old.status == "canceled" or
+                 (old.status == "completed" and not String.starts_with?(s.message, "sys-")),
+              do: [s.dispatch], else: old.sources
           retract(old.dispatch)
 
           next = %{
@@ -419,7 +419,16 @@ defmodule Cascade.Chat.Continuations do
               case SQL.one("SELECT r.status FROM runs r WHERE r.chat_dispatch_id=?", [
                      state.dispatch
                    ]) do
-                ["completed"] -> put(s, %{state | status: "completed"})
+                ["completed"] ->
+                  cond do
+                    recovery_available?(s, state) ->
+                      # A settled attempt without a disposition is new handoff
+                      # evidence. Reconcile once, without duplicating active work.
+                      if idle?(s, state), do: enqueue(s, state, recovery_message_id(s, state))
+                    true ->
+                      put(s, %{state | status: "waiting", summary:
+                        String.slice(state.summary <> "\nCoordinator attempt completed without a responsibility disposition; accepted work remains unresolved. Bounded handoff recovery exhausted. Reconcile existing artifacts before continuing.", 0, 8000)})
+                  end
                 _ -> :ok
               end
 
@@ -439,15 +448,20 @@ defmodule Cascade.Chat.Continuations do
       ["completed"],
       ["failed"]
     ] and
-      SQL.one(
+      SQL.all(
         """
-        SELECT 1 FROM chat_agent_dispatches d LEFT JOIN runs r ON r.chat_dispatch_id=d.id
+        SELECT d.id,r.status FROM chat_agent_dispatches d LEFT JOIN runs r ON r.chat_dispatch_id=d.id
         LEFT JOIN chat_messages m ON m.id=d.message_id
         WHERE d.registration_id=? AND d.conversation_id=? AND d.failed_at IS NULL
-          AND COALESCE(m.mission_task_id,'')='' AND (d.run_id IS NULL OR r.status IN ('queued','running')) LIMIT 1
+          AND COALESCE(m.mission_task_id,'')='' AND (d.run_id IS NULL OR r.status IN ('queued','running'))
         """,
         [s.registration, s.conversation]
-      ) == nil
+      )
+      |> Enum.all?(fn [id, status] ->
+        # A historical dispatch held by the human-source fence cannot own this
+        # session's runnable slot. Actual active providers still always do.
+        status not in ["queued", "running"] and not Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+      end)
   end
 
   defp enqueue(s, state, message_id \\ nil) do
@@ -476,7 +490,7 @@ defmodule Cascade.Chat.Continuations do
         )
 
       {:ok, dispatch} = Dispatches.create(s.owner, route.localChannelId, message, s.registration)
-      put(s, %{state | dispatch: dispatch.id})
+      put(s, %{state | status: "pending", dispatch: dispatch.id})
 
       OrderedPublisher.chat(Cascade.Realtime.Events, %{
         event: "vault:chatMessageCreated",

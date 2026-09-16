@@ -6,6 +6,7 @@ defmodule Cascade.Missions.Progression do
   # Runs inside the scheduler transaction. Existing task/work-item ownership,
   # dependency checks and outbox are reused; no independent run or model call.
   def reconcile(mission_id) do
+    recover_startup(mission_id)
     SQL.all("""
       SELECT DISTINCT m.id,m.created_by,m.channel_id,m.coordinator_registration_id,
         r.id,r.assignee_registration_id,r.summary,p.assignee_registration_id,r.anonymous,p.anonymous
@@ -62,6 +63,36 @@ defmodule Cascade.Missions.Progression do
             [] -> Store.record_event(mission, %{task_id: review, kind: "automatic_review_repair_exhausted", title: "Review correction needs owner attention", summary: "Two automatic correction rounds exhausted. The request is not delivered; coordinator must report this blocker, not retry indefinitely."})
             _ -> :ok
           end
+        end
+      end
+    end)
+  end
+
+  # Only Execution's persisted never-delegated startup observation qualifies.
+  # Arbitrary failed summaries/permission pauses never become retry authority.
+  # Same task/work item/session, one automatic startup retry, normal admission.
+  defp recover_startup(mission_id) do
+    SQL.all("""
+      SELECT m.id,m.created_by,m.channel_id,t.id,r.id
+      FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
+      JOIN runs r ON r.id=t.run_id
+      JOIN chat_mission_events e ON e.task_id=t.id AND e.run_id=r.id
+        AND e.kind='startup_interrupted' AND e.source_key='startup-interrupted:' || r.id
+      WHERE t.status='failed' AND r.status='failed'
+        AND m.phase IN ('planning','executing') AND m.status NOT IN ('completed','canceled')
+        AND (? IS NULL OR m.id=?)
+        AND NOT EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=1)
+        AND NOT EXISTS (SELECT 1 FROM chat_mission_events done WHERE done.task_id=t.id AND done.kind='startup_recovered')
+      """, [mission_id, mission_id])
+    |> Enum.each(fn [mission, owner, channel, task, run] ->
+      if ExecutionAdmission.workflow_allowed?(mission) and
+           not Cascade.Missions.Interpretation.migration_decision_pending?(mission) do
+        case Store.update_task(owner, channel, task, %{status: "pending",
+          summary: "Recover confirmed pre-provider startup interruption; preserve existing workspace and accepted scope."}) do
+          {:ok, _} -> Store.record_event(mission, %{task_id: task, run_id: run,
+            kind: "startup_recovered", source_key: "startup-recovered:#{task}",
+            summary: "One automatic retry of a never-delegated startup; same durable task and work item."})
+          _ -> :ok
         end
       end
     end)

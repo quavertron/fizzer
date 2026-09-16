@@ -555,6 +555,7 @@ defmodule Cascade.Missions.Store do
          title when title != "" <- clean(field(input, :title), 240),
          dependencies <- clean_ids(field(input, :dependsOn)),
          :ok <- validate_dependencies(mission.id, dependencies),
+         :ok <- validate_stage_dependencies(mission.id, purpose, dependencies),
          :ok <- validate_reviewer_distinct(mission.id, purpose, assignee.id, anonymous, dependencies),
          {:ok, effort} <- validate_effort(assignee, field(input, :reasoningEffort)),
          workspace_mode when workspace_mode in ~w(shared isolated) <-
@@ -1220,9 +1221,10 @@ defmodule Cascade.Missions.Store do
             next = if next == "joining", do: "pending", else: next
             cleaned = clean(summary, 4_000)
 
-            if task.status not in @terminal_task_statuses or
-                 (next == "completed" and task.status == "completed" and
-                    task.summary != cleaned) do
+            # Explicit task outcome/evidence belongs to the durable job. A later
+            # provider exit (or duplicate terminal event) must not overwrite an
+            # accepted review with the attempt's generic closing summary.
+            if task.status not in @terminal_task_statuses do
               SQL.exec(
                 "UPDATE chat_mission_tasks SET status=?,summary=?,updated_at=datetime('now') WHERE id=?",
                 [next, cleaned, task.id]
@@ -2487,38 +2489,52 @@ defmodule Cascade.Missions.Store do
       Enum.all?(dependencies, fn id ->
         case by_id[id] do
           nil -> false
-          dependency -> dependency_ready_for?(task, dependency)
+          dependency -> dependency_run_ready?(dependency) and dependency_ready_for?(task, dependency)
         end
       end)
   end
 
-  defp required_stage_dependency?(%{purpose: "integration"}, dependencies, by_id) do
+  defp dependency_run_ready?(%{run_id: nil}), do: true
+  defp dependency_run_ready?(%{run_id: id}),
+    do: SQL.one("SELECT status FROM runs WHERE id=?", [id]) == ["completed"]
+
+  # Reject a graph that can never satisfy the scheduler at declaration time.
+  # Status/outcome readiness is separate: stages may be planned before review ends.
+  defp validate_stage_dependencies(mission, purpose, dependencies) do
+    by_id = Map.new(task_rows(mission), &{&1.id, &1})
+    if stage_structure?(purpose, dependencies, by_id),
+      do: :ok,
+      else: {:error, "#{purpose} requires explicit predecessor dependencies (review with implementation/fix ancestry for integration; integration for verification)"}
+  end
+
+  defp stage_structure?("integration", dependencies, by_id) do
     Enum.any?(dependencies, fn id ->
       case by_id[id] do
-        %{purpose: "review", status: "completed", review_outcome: "accepted"} = review ->
-          Enum.any?(dependency_closure(dependencies(review), by_id), fn dependency_id ->
-            case by_id[dependency_id] do
+        %{purpose: "review"} = review ->
+          Enum.any?(dependency_closure(dependencies(review), by_id), fn predecessor ->
+            case by_id[predecessor] do
               %{purpose: purpose} when purpose in ~w(implementation fix) -> true
               _ -> false
             end
           end)
-
-        _ ->
-          false
-      end
-    end)
-  end
-
-  defp required_stage_dependency?(%{purpose: "verification"}, dependencies, by_id) do
-    Enum.any?(dependencies, fn id ->
-      case by_id[id] do
-        %{purpose: "integration", status: "completed"} -> true
         _ -> false
       end
     end)
   end
+  defp stage_structure?("verification", dependencies, by_id),
+    do: Enum.any?(dependencies, &match?(%{purpose: "integration"}, by_id[&1]))
+  defp stage_structure?(_, _, _), do: true
 
-  defp required_stage_dependency?(_task, _dependencies, _by_id), do: true
+  defp required_stage_dependency?(%{purpose: purpose}, dependencies, by_id) do
+    ready = Enum.filter(dependencies, fn id ->
+      case by_id[id] do
+        %{purpose: "review", status: "completed", review_outcome: "accepted"} -> true
+        %{purpose: "integration", status: "completed"} -> true
+        _ -> false
+      end
+    end)
+    stage_structure?(purpose, ready, by_id)
+  end
 
   defp dependency_ready_for?(%{purpose: "integration"}, %{purpose: "review"} = dependency),
     do: dependency.status == "completed" and dependency.review_outcome == "accepted"

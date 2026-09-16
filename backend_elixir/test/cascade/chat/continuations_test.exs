@@ -55,6 +55,109 @@ defmodule Cascade.Chat.ContinuationsTest do
     )
   end
 
+  test "Stop fences an in-flight writer and a new request cannot inherit canceled sources", c do
+    original = dispatch(c, "Original accepted job")
+    first = run(c, original)
+    assert {:ok, _} = Continuations.record(c.user.id, c.channel, first.id,
+      %{"revision" => 0, "status" => "pending", "summary" => "Finish original job"})
+    Continuations.stop(first.id)
+    stopped = state(c, first)
+    assert {:error, reason} = Continuations.record(c.user.id, c.channel, first.id,
+      %{"revision" => stopped.revision, "status" => "pending", "summary" => "Stale worker tries to revive"})
+    assert reason =~ "Owner Stop"
+    Runs.finish(first.id, "canceled", "Owner Stop")
+    new = dispatch(c, "A distinct authorized job")
+    next = run(c, new)
+    assert {:ok, saved} = Continuations.record(c.user.id, c.channel, next.id,
+      %{"revision" => stopped.revision, "status" => "waiting", "summary" => "Waiting for permission on the new job"})
+    assert saved.sources == [new.id]
+    Runs.finish(next.id, "completed", "Permission pause, not delivery")
+    for _ <- 1..3, do: Continuations.reconcile()
+    assert state(c, next).status == "waiting"
+    assert pending(c) == []
+  end
+
+  test "accepted continuation inherits exact human provenance, not old or automated work", c do
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    old = dispatch(c, "Old request is not an admission grant")
+    [fence] = SQL.one("SELECT MAX(rowid) FROM chat_messages")
+    Application.put_env(:cascade_elixir, :execution_admission, %{"version" => 1,
+      "owners" => [%{"ownerId" => c.user.id, "maxConcurrent" => "unlimited",
+        "futureOwnerMessageAfterSeq" => fence, "tasks" => [], "workflows" => [], "retainedRuns" => []}]})
+    original = dispatch(c, "Implement and deliver the accepted scope")
+    first = run(c, original)
+    assert {:ok, _} = Continuations.record(c.user.id, c.channel, first.id,
+      %{"revision" => 0, "status" => "pending", "summary" => "Verify the accepted release"})
+    Runs.finish(first.id, "completed", "Release pushed; verification remains")
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    script = Path.expand("../../support/lifecycle_process_probe.exs", __DIR__)
+    invoke = fn mode -> System.cmd(System.find_executable("elixir"), paths ++ [script, config, "no-mission", mode],
+      env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true) end
+    {output, code} = invoke.("rollback")
+    assert code == 23, output
+    assert pending(c) == []
+    {output, code} = invoke.("commit")
+    assert code == 24, output
+    [[id]] = pending(c)
+    {output, code} = invoke.("restart")
+    assert code == 0, output
+    assert pending(c) == [[id]]
+    assert Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    assert {:ok, _} = Dispatches.for_execution(id)
+    SQL.exec("UPDATE chat_coordinator_continuations SET sources_json=? WHERE registration_id=?",
+      [Jason.encode!([old.id]), c.coordinator.id])
+    refute Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    SQL.exec("UPDATE chat_coordinator_continuations SET sources_json=? WHERE registration_id=?",
+      [Jason.encode!([original.id]), c.coordinator.id])
+    SQL.exec("UPDATE chat_messages SET agent_id='automation' WHERE id=?", [original.messageId])
+    refute Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    SQL.exec("UPDATE chat_messages SET agent_id=NULL WHERE id=?", [original.messageId])
+    assert Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    {:ok, continuation} = Dispatches.get(c.user.id, c.channel, id)
+    resumed = run(c, continuation)
+    current = state(c, resumed)
+    assert {:ok, _} = Continuations.record(c.user.id, c.channel, resumed.id,
+      %{"revision" => current.revision, "status" => "completed", "summary" => "Release verified"})
+    # Disposition closes new admission without revoking the already-claimed
+    # provider's right to report its terminal result.
+    refute Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    assert Cascade.Missions.ExecutionAdmission.run_allowed?(resumed.id, c.user.id)
+    Continuations.stop(resumed.id)
+    for _ <- 1..3, do: Continuations.reconcile()
+    refute Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+    refute Cascade.Missions.ExecutionAdmission.run_allowed?(resumed.id, c.user.id)
+    assert pending(c) == []
+    assert state(c, first).status == "canceled"
+  end
+
+  test "a successful attempt without disposition retains unresolved ownership without spinning", c do
+    original = dispatch(c, "Deliver accepted work")
+    first = run(c, original)
+    assert {:ok, _} = Continuations.record(c.user.id, c.channel, first.id,
+      %{"revision" => 0, "status" => "pending", "summary" => "Await exact deployment result"})
+    Runs.finish(first.id, "completed", "Pushed candidate")
+    Continuations.reconcile()
+    [[id]] = pending(c)
+    {:ok, d} = Dispatches.get(c.user.id, c.channel, id)
+    resumed = run(c, d)
+    Runs.finish(resumed.id, "completed", "Only a provider exit, no outcome disposition")
+    assert state(c, resumed).status == "pending"
+    for _ <- 1..3, do: Continuations.reconcile()
+    [[retry_id]] = pending(c)
+    refute retry_id == id
+    {:ok, retry} = Dispatches.get(c.user.id, c.channel, retry_id)
+    recovery = run(c, retry)
+    Runs.finish(recovery.id, "completed", "Still no disposition")
+    for _ <- 1..3, do: Continuations.reconcile()
+    current = state(c, recovery)
+    assert current.status == "waiting"
+    assert current.sources == [original.id]
+    assert current.summary =~ "unresolved"
+    assert pending(c) == []
+  end
+
   for outcome <- [:stop, :failed] do
     @outcome outcome
     test "captured mission creation has one recovery owner and #{@outcome} preserves the right fallback",
@@ -136,6 +239,9 @@ defmodule Cascade.Chat.ContinuationsTest do
     assert prompt =~ "already-completed tool actions"
     assert prompt =~ "waiting on workers"
     resumed = run(c, continuation)
+    current = state(c, resumed)
+    assert {:ok, _} = Continuations.record(c.user.id, c.channel, resumed.id,
+      %{"revision" => current.revision, "status" => "completed", "summary" => "Remaining work handled"})
     Runs.finish(resumed.id, "completed", "Remaining work handled")
     # A new message arriving before the maintenance tick must not resurrect finished work.
     later = run(c, dispatch(c, "An unrelated new question"))

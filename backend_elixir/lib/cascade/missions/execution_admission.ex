@@ -56,7 +56,7 @@ defmodule Cascade.Missions.ExecutionAdmission do
     if policy() == nil, do: true, else: scoped_dispatch_allowed?(id)
   end
 
-  defp scoped_dispatch_allowed?(id) do
+  defp scoped_dispatch_allowed?(id, claimed \\ false) do
     case SQL.one("""
          SELECT d.target_owner_user_id,msg.vault_id,msg.channel_id,msg.mission_task_id,
            d.target_identity_id,d.registration_id,t.dispatch_id
@@ -71,7 +71,7 @@ defmodule Cascade.Missions.ExecutionAdmission do
               "identityId" => ^identity, "registrationId" => ^registration} ->
               linked == id and task_allowed?(task) and repository_ready?(task) and
                 (workflow_task?(task) or SQL.one("SELECT yolo FROM chat_agent_members WHERE id=?", [registration]) == [0])
-            _ -> coordinator_or_owner_dispatch?(id, owner, vault, channel, identity, registration)
+            _ -> coordinator_or_owner_dispatch?(id, owner, vault, channel, identity, registration, claimed)
           end
         else
           # Unpinned historical targets cannot bypass a scoped owner's boundary.
@@ -123,7 +123,7 @@ defmodule Cascade.Missions.ExecutionAdmission do
           [owner, r["vaultId"], r["dispatchId"]]
       end)
       retained or case SQL.one("SELECT chat_dispatch_id,owner_user_id FROM runs WHERE id=?", [id]) do
-        [dispatch, ^owner] when is_binary(dispatch) -> dispatch_allowed?(dispatch)
+        [dispatch, ^owner] when is_binary(dispatch) -> scoped_dispatch_allowed?(dispatch, true)
         _ -> false
       end
     else
@@ -178,27 +178,67 @@ defmodule Cascade.Missions.ExecutionAdmission do
     end
   end
 
-  defp coordinator_or_owner_dispatch?(id, owner, vault, channel, identity, registration) do
+  defp coordinator_or_owner_dispatch?(id, owner, vault, channel, identity, registration, claimed) do
     binding = SQL.one("""
       SELECT va.owner_user_id FROM chat_agent_members a JOIN vault_agents va ON va.id=a.vault_agent_id
       WHERE a.id=? AND a.channel_id=? AND va.id=?
       """, [registration, channel, identity]) == [owner]
     binding and
-      case SQL.one("""
-        SELECT m.id FROM chat_missions m
-        WHERE m.created_by=? AND m.vault_id=? AND m.channel_id=?
-          AND m.coordinator_registration_id=?
-          AND NOT EXISTS (SELECT 1 FROM chat_mission_interpretations stopped WHERE stopped.mission_id=m.id AND stopped.stopped=1)
-          AND (EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.dispatch_id=?)
-            OR EXISTS (SELECT 1 FROM chat_mission_events e WHERE e.mission_id=m.id AND e.kind='coordinator_dispatch' AND e.summary=?))
-        """, [owner, vault, channel, registration, id, id]) do
-        [mission] -> workflow_allowed?(mission)
-        _ ->
-          case SQL.one("SELECT message_id FROM chat_agent_dispatches WHERE id=?", [id]) do
-            [message] -> future_owner_message?(message, owner, vault, channel)
-            _ -> false
-          end
-      end
+      (mission_dispatch_allowed?(id, owner, vault, channel, registration) or
+        case SQL.one("SELECT message_id FROM chat_agent_dispatches WHERE id=?", [id]) do
+          [message] -> future_owner_message?(message, owner, vault, channel) or
+            continuation_allowed?(id, owner, vault, channel, identity, registration, claimed)
+          _ -> false
+        end)
+  end
+
+  defp mission_dispatch_allowed?(id, owner, vault, channel, registration) do
+    case SQL.one("""
+      SELECT m.id FROM chat_missions m
+      WHERE m.created_by=? AND m.vault_id=? AND m.channel_id=?
+        AND m.coordinator_registration_id=? AND m.status<>'canceled'
+        AND NOT EXISTS (SELECT 1 FROM chat_mission_interpretations stopped WHERE stopped.mission_id=m.id AND stopped.stopped=1)
+        AND (EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.dispatch_id=?)
+          OR EXISTS (SELECT 1 FROM chat_mission_events e WHERE e.mission_id=m.id AND e.kind='coordinator_dispatch' AND e.summary=?))
+      """, [owner, vault, channel, registration, id, id]) do
+      [mission] -> workflow_allowed?(mission)
+      _ -> false
+    end
+  end
+
+  # Inherit only the exact persisted responsibility, never a sys-message prefix
+  # or a new coordinator-written assertion of authority. All sources must pass
+  # the original human fence in this same owner/identity/session scope.
+  defp continuation_allowed?(id, owner, vault, channel, identity, registration, claimed) do
+    case SQL.one("""
+      SELECT c.sources_json,c.conversation_id
+      FROM chat_coordinator_continuations c
+      JOIN chat_agent_dispatches d ON d.id=?
+      WHERE c.owner_user_id=? AND c.channel_id=? AND c.registration_id=?
+        AND d.conversation_id=c.conversation_id AND d.failed_at IS NULL
+        AND ((c.dispatch_id=d.id AND c.status='pending') OR
+          (?=1 AND c.after_dispatch_id=d.id AND c.status IN ('pending','waiting','completed')
+            AND EXISTS (SELECT 1 FROM runs r WHERE r.chat_dispatch_id=d.id AND r.owner_user_id=c.owner_user_id)))
+      """, [id, owner, channel, registration, if(claimed, do: 1, else: 0)]) do
+      [encoded, conversation] ->
+        case Jason.decode(encoded) do
+          {:ok, sources} when is_list(sources) and sources != [] ->
+            Enum.all?(sources, fn source ->
+              case SQL.one("""
+                SELECT message_id,conversation_id FROM chat_agent_dispatches
+                WHERE id=? AND target_owner_user_id=? AND target_identity_id=?
+                  AND registration_id=? AND channel_id=?
+                """, [source, owner, identity, registration, channel]) do
+                [message, session] ->
+                  (session == conversation and future_owner_message?(message, owner, vault, channel)) or
+                    mission_dispatch_allowed?(source, owner, vault, channel, registration)
+                _ -> false
+              end
+            end)
+          _ -> false
+        end
+      _ -> false
+    end
   end
 
   defp matches?(entry, binding) do

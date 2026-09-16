@@ -25,6 +25,109 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     %{user: user, vault: owner.vault_id, channel: channel.id, worker: worker, coordinator: coordinator, root: root, mission: mission.mission.id, task: task, old: old, binding: binding, policy: policy}
   end
 
+  test "confirmed startup interruption keeps durable ownership and retries once, not on a claimed blocker", c do
+    workflow = %{"missionId" => c.mission, "vaultId" => c.vault,
+      "channelId" => c.channel, "rootMessageId" => c.root.id}
+    Application.put_env(:cascade_elixir, :execution_admission,
+      put_in(c.policy, ["owners", Access.at(0), "workflows"], [workflow]))
+    SQL.exec("UPDATE chat_mission_tasks SET status='canceled' WHERE id=?", [c.old])
+    [item] = Scheduler.schedule(c.mission).dispatches
+    work = c.binding["workItemId"]
+    fail_startup = fn dispatch ->
+      {:ok, run} = Cascade.Runs.Store.start(c.vault, nil, "Inert abandoned startup", "codex",
+        owner_user_id: c.user.id, chat_dispatch_id: dispatch.id, conversation_id: dispatch.conversationId)
+      :ok = Dispatches.attach_run(dispatch.id, run.id)
+      {:ok, _} = Store.attach_run(dispatch.id, run.id)
+      SQL.exec("UPDATE runs SET started_at=datetime('now','-60 seconds') WHERE id=?", [run.id])
+      assert {:ok, %{status: "failed"}} = Cascade.Missions.Execution.execute_dispatch(dispatch.id)
+      Scheduler.settle_run(run.id, "failed", "Server interrupted run startup before desktop delegation.")
+      run
+    end
+    first = fail_startup.(item.dispatch)
+    [replacement_id, ^work, 1] = SQL.one("SELECT dispatch_id,work_item_id,attempt FROM chat_mission_tasks WHERE id=?", [c.task])
+    assert is_binary(replacement_id)
+    refute replacement_id == item.dispatch.id
+    {:ok, replacement} = Dispatches.get(c.user.id, c.channel, replacement_id)
+    assert replacement.conversationId == item.dispatch.conversationId
+    assert Cascade.Runs.Store.get(first.id).status == "failed"
+    for _ <- 1..3, do: Scheduler.schedule(c.mission)
+    assert SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [c.task]) == [replacement_id]
+    fail_startup.(replacement)
+    for _ <- 1..3, do: Scheduler.schedule(c.mission)
+    assert SQL.one("SELECT status,attempt,work_item_id FROM chat_mission_tasks WHERE id=?", [c.task]) == ["failed", 1, work]
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE task_id=? AND kind='startup_recovered'", [c.task]) == [1]
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [c.user.id]) == [2]
+    # A model-written identical error is not the server's pre-provider evidence.
+    # Unsupported failure/permission boundaries retain the job without replay.
+    {:ok, _} = Store.update_task(c.user.id, c.channel, c.old, %{status: "pending", summary: "Explicit fixture retry"})
+    [other] = Scheduler.schedule(c.mission).dispatches
+    {:ok, failed} = Cascade.Runs.Store.start(c.vault, nil, "Inert unsupported failure", "codex",
+      owner_user_id: c.user.id, chat_dispatch_id: other.dispatch.id)
+    :ok = Dispatches.attach_run(other.dispatch.id, failed.id)
+    {:ok, _} = Store.attach_run(other.dispatch.id, failed.id)
+    Cascade.Runs.Store.finish(failed.id, "failed", "Server interrupted run startup before desktop delegation.")
+    Scheduler.settle_run(failed.id, "failed", "Server interrupted run startup before desktop delegation.")
+    for _ <- 1..3, do: Scheduler.schedule(c.mission)
+    assert SQL.one("SELECT status,attempt FROM chat_mission_tasks WHERE id=?", [c.old]) == ["failed", 1]
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE task_id=? AND kind='startup_recovered'", [c.old]) == [0]
+  end
+
+  test "worker exit and scheduler process death preserve accepted review and advance integration exactly once", c do
+    workflow = %{"missionId" => c.mission, "vaultId" => c.vault,
+      "channelId" => c.channel, "rootMessageId" => c.root.id}
+    Application.put_env(:cascade_elixir, :execution_admission,
+      put_in(c.policy, ["owners", Access.at(0), "workflows"], [workflow]))
+    SQL.exec("UPDATE chat_missions SET phase='executing' WHERE id=?", [c.mission])
+    SQL.exec("UPDATE chat_mission_tasks SET purpose='implementation',status='completed' WHERE id=?", [c.task])
+    SQL.exec("UPDATE chat_mission_tasks SET status='canceled' WHERE id=?", [c.old])
+    {:ok, review} = Store.add_task(c.user.id, c.channel, c.mission, %{
+      title: "Exact candidate review", coordinatorRegistrationId: c.coordinator.id,
+      purpose: "review", dependsOn: [c.task]})
+    assert {:error, _} = Store.add_task(c.user.id, c.channel, c.mission, %{
+      title: "Orphan integration", coordinatorRegistrationId: c.coordinator.id,
+      purpose: "integration"})
+    {:ok, integration} = Store.add_task(c.user.id, c.channel, c.mission, %{
+      title: "Release reviewed candidate", coordinatorRegistrationId: c.coordinator.id,
+      purpose: "integration", dependsOn: [review.task.id]})
+    [item] = Scheduler.schedule(c.mission).dispatches
+    {:ok, run} = Cascade.Runs.Store.start(c.vault, nil, "Inert review", "codex",
+      owner_user_id: c.user.id, chat_dispatch_id: item.dispatch.id,
+      conversation_id: item.dispatch.conversationId)
+    :ok = Dispatches.attach_run(item.dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
+    {:ok, _} = Store.update_task(c.user.id, c.channel, review.task.id, %{
+      status: "completed", reviewOutcome: "accepted", summary: "Accepted exact candidate abc123; independent checks retained"})
+    evidence = SQL.one("SELECT summary,review_outcome,depends_on_json,work_item_id FROM chat_mission_tasks WHERE id=?", [review.task.id])
+    assert Scheduler.schedule(c.mission).dispatches == []
+    Cascade.Runs.Store.finish(run.id, "completed", "Generic provider goodbye")
+    # No scheduler terminal event delivered: a fresh process must reconcile.
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    script = Path.expand("../../support/lifecycle_process_probe.exs", __DIR__)
+    invoke = fn mode -> System.cmd(System.find_executable("elixir"), paths ++ [script, config, c.mission, mode],
+      env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true) end
+    {output, code} = invoke.("rollback")
+    assert code == 23, output
+    assert SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [integration.task.id]) == [nil]
+    {output, code} = invoke.("commit")
+    assert code == 24, output
+    [dispatch] = SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [integration.task.id])
+    assert is_binary(dispatch)
+    {output, code} = invoke.("restart")
+    assert code == 0, output
+    for _ <- 1..3, do: Scheduler.settle_run(run.id, "completed", "Duplicate provider event")
+    assert SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [integration.task.id]) == [dispatch]
+    assert evidence == SQL.one("SELECT summary,review_outcome,depends_on_json,work_item_id FROM chat_mission_tasks WHERE id=?", [review.task.id])
+    assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches d JOIN chat_messages msg ON msg.id=d.message_id WHERE msg.mission_task_id=?", [integration.task.id]) == [1]
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [c.user.id]) == [1]
+    # Stop while the release dispatch is queued wins even after restart.
+    {:ok, _} = Store.update_task(c.user.id, c.channel, integration.task.id, %{status: "canceled", summary: "Owner Stop"})
+    {output, code} = invoke.("restart")
+    assert code == 0, output
+    assert {:deferred, _} = Dispatches.for_execution(dispatch)
+    assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [integration.task.id]) == ["canceled"]
+  end
+
   test "exact owner/vault/task/attempt bindings gate schedule and immutable original dispatch", c do
     Application.put_env(:cascade_elixir, :execution_admission, c.policy)
     assert ExecutionAdmission.task_allowed?(c.task)
@@ -204,6 +307,15 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     assert SQL.one("SELECT dispatch_id,status FROM chat_mission_tasks WHERE id=?", [next.task.id]) == [item.dispatch.id, "pending"]
     assert ExecutionAdmission.dispatch_allowed?(item.dispatch.id)
     refute SQL.one("SELECT status FROM chat_missions WHERE id=?", [c.mission]) == ["completed"]
+    assert {:ok, _} = Cascade.Chat.Continuations.record(c.user.id, c.channel, run.id,
+      %{"revision" => 0, "status" => "pending", "summary" => "Follow through on the admitted mission"})
+    Cascade.Runs.Store.finish(run.id, "completed", "Saved exact continuation")
+    Cascade.Chat.Continuations.reconcile()
+    [[continuation]] = SQL.all("SELECT dispatch_id FROM chat_coordinator_continuations WHERE registration_id=?", [c.coordinator.id])
+    assert is_binary(continuation)
+    assert ExecutionAdmission.dispatch_allowed?(continuation)
+    SQL.exec("UPDATE chat_mission_interpretations SET stopped=1 WHERE mission_id=?", [c.mission])
+    refute ExecutionAdmission.dispatch_allowed?(continuation)
   end
 
   test "qualification start budget is durable and does not block future owner messages", c do

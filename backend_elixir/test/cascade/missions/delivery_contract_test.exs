@@ -161,7 +161,7 @@ defmodule Cascade.Missions.DeliveryContractTest do
     {:ok, worker} =
       Agents.add_to_channel(ctx.user_id, ctx.vault.id, created.channelId, worker_identity.id)
 
-    {:ok, integration} =
+    assert {:error, integration_error} =
       Store.add_task(ctx.user_id, created.channelId, approved.id, %{
         coordinatorRegistrationId: approved.coordinatorRegistrationId,
         title: "Integration without review",
@@ -169,7 +169,7 @@ defmodule Cascade.Missions.DeliveryContractTest do
         purpose: "integration"
       })
 
-    {:ok, verification} =
+    assert {:error, verification_error} =
       Store.add_task(ctx.user_id, created.channelId, approved.id, %{
         coordinatorRegistrationId: approved.coordinatorRegistrationId,
         title: "Verification without integration",
@@ -177,8 +177,9 @@ defmodule Cascade.Missions.DeliveryContractTest do
         purpose: "verification"
       })
 
-    candidates = Store.schedulable(approved.id).candidates
-    refute Enum.any?(candidates, &(&1.taskId in [integration.task.id, verification.task.id]))
+    assert integration_error =~ "explicit predecessor"
+    assert verification_error =~ "explicit predecessor"
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [approved.id]) == [0]
   end
 
   test "finish requires a covered chain and accepts only an explicit fix and re-review", ctx do

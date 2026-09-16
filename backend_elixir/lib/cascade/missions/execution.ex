@@ -71,6 +71,14 @@ defmodule Cascade.Missions.Execution do
                [run.id]
              ) == [1] do
           error = "Server interrupted run startup before desktop delegation."
+          # Persist the concrete pre-provider failure, not a model-written
+          # blocker. Progression can recover this exact never-delegated attempt.
+          case SQL.one("SELECT mission_id,id FROM chat_mission_tasks WHERE dispatch_id=?", [dispatch_id]) do
+            [mission, task] ->
+              SQL.exec("INSERT OR IGNORE INTO chat_mission_events (mission_id,task_id,run_id,kind,source_key,summary) VALUES (?,?,?,'startup_interrupted',?,?)",
+                [mission, task, run.id, "startup-interrupted:#{run.id}", error])
+            _ -> :ok
+          end
           Store.finish(run.id, "failed", error)
           Store.publish(run.id, "status", %{status: "failed", summary: error})
         end
