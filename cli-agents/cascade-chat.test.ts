@@ -203,6 +203,20 @@ test('coordinator helper starts and delegates a mission with structured API call
   });
   assert.ok(requests.every((request) => request.runId === '777'));
   assert.equal(JSON.parse(fs.readFileSync(config, 'utf8')).usedChatSend, undefined);
+  for (const purpose of ['implementation', 'review']) {
+    await execFileAsync(process.execPath, [cli, 'mission', 'delegate', '--mission', 'mission-1',
+      '--task', purpose, '--purpose', purpose, '--message', 'Bounded own worker', ...common], { env: withCoordinator });
+    const body = requests.at(-1)?.body;
+    assert.equal(body?.coordinatorRegistrationId, 'reg-sol');
+    assert.equal(body?.anonymous, true);
+    assert.equal(body?.reasoningEffort, '');
+    assert.equal(Object.hasOwn(body!, 'assignee'), false);
+  }
+  await execFileAsync(process.execPath, [cli, 'mission', 'delegate', '--mission', 'mission-1',
+    '--to', 'reg-sol', '--anonymous', '--task', 'Explicit self', '--purpose', 'review',
+    '--message', 'Fresh session', ...common], { env: withCoordinator });
+  assert.equal(requests.at(-1)?.body?.anonymous, true);
+  assert.equal(requests.at(-1)?.body?.assignee, 'reg-sol');
 });
 
 test('mission start creates a vault mission without a coordinator self-task', async (t) => {

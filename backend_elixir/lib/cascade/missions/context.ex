@@ -344,11 +344,11 @@ defmodule Cascade.Missions.Context do
   end
 
   defp workflow_guidance("planning", _task) do
-    "Plan and research as needed, then delegate implementation within the explicit user request or accepted scope without asking for approval again. Preserve Stop and unresolved historical resumption decisions; ask only for missing authority or a material scope change."
+    "Plan and research as needed, then delegate implementation within the explicit user request or accepted scope without asking for approval again. Default to your own anonymous self-subagents: omit --to from `cascade-chat mission delegate` (API: omit assignee), inheriting your provider, model, profile and reasoning settings in separate task sessions. Use a named assignee only for an explicit human assignment override; never fall back to another channel agent. Preserve Stop and unresolved historical resumption decisions; ask only for missing authority or a material scope change."
   end
 
   defp workflow_guidance("executing", _task) do
-    "Execute the authorized scope through research as needed, implementation, independent agent review, fixes/re-review, integration, then verification. Do not require repeated human review of already authorized work. A provider success is not review acceptance or verification."
+    "Execute the authorized scope through research as needed, implementation, independent agent review, fixes/re-review, integration, then verification. Default to your own anonymous self-subagents: omit --to from `cascade-chat mission delegate` (or omit assignee in the task API). Each task inherits your provider, model, profile and reasoning settings in a fresh session; review must use a separate task/session from implementation. Use a named assignee only for an explicit human assignment override, never as an automatic fallback. Do not require repeated human review of already authorized work. A provider success is not review acceptance or verification."
   end
 
   defp workflow_guidance("closed", _task) do

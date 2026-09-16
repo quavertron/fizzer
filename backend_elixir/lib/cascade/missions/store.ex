@@ -548,13 +548,14 @@ defmodule Cascade.Missions.Store do
          {:ok, coordinator} <- assert_coordinator(user_id, channel_id, coordinator_id),
          true <- mission.coordinator_registration_id == coordinator.id,
          :ok <- reject_worker_control(opts, :delegate),
-         {:ok, assignee} <- find_assignee(user_id, channel_id, field(input, :assignee)),
-         anonymous <- truthy?(field(input, :anonymous)),
+         {:ok, assignee} <-
+           find_assignee(user_id, channel_id, nonblank(field(input, :assignee), coordinator.id)),
+         anonymous <- field(input, :assignee) in [nil, ""] or truthy?(field(input, :anonymous)),
          :ok <- validate_self_assignment(assignee, coordinator, anonymous, opts),
          title when title != "" <- clean(field(input, :title), 240),
          dependencies <- clean_ids(field(input, :dependsOn)),
          :ok <- validate_dependencies(mission.id, dependencies),
-         :ok <- validate_reviewer_distinct(mission.id, purpose, assignee.id, dependencies),
+         :ok <- validate_reviewer_distinct(mission.id, purpose, assignee.id, anonymous, dependencies),
          {:ok, effort} <- validate_effort(assignee, field(input, :reasoningEffort)),
          workspace_mode when workspace_mode in ~w(shared isolated) <-
            clean(nonblank(field(input, :workspaceMode), "shared"), 20) do
@@ -2309,7 +2310,7 @@ defmodule Cascade.Missions.Store do
     if assignee.id == coordinator.id and not anonymous and not Keyword.get(opts, :primary, false),
       do:
         {:error,
-         "Delegate this task to another channel agent, or pass anonymous for a self-subagent"},
+         "Omit assignee for a coordinator self-subagent, or pass anonymous for an explicit self-subagent"},
       else: :ok
   end
 
@@ -2322,11 +2323,16 @@ defmodule Cascade.Missions.Store do
   defp validate_task_purpose(%{phase: "closed"}, _), do: {:error, "Mission is already closed"}
   defp validate_task_purpose(_, _), do: {:error, "Mission phase is invalid"}
 
-  defp validate_reviewer_distinct(_mission_id, purpose, _assignee, _dependencies)
+  defp validate_reviewer_distinct(_mission_id, purpose, _assignee, _anonymous, _dependencies)
        when purpose != "review",
        do: :ok
 
-  defp validate_reviewer_distinct(mission_id, "review", assignee, dependencies) do
+  # Anonymous tasks have separate mission:<task-id> provider sessions. Review
+  # independence is a fresh worker, not a requirement to downgrade its model.
+  defp validate_reviewer_distinct(_mission_id, "review", _assignee, true, _dependencies),
+    do: :ok
+
+  defp validate_reviewer_distinct(mission_id, "review", assignee, false, dependencies) do
     by_id = Map.new(task_rows(mission_id), &{&1.id, &1})
 
     if Enum.any?(dependency_closure(dependencies, by_id), fn id ->

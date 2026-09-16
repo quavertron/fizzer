@@ -92,9 +92,14 @@ membership setting, not a separate project-management surface:
   planning includes research as needed; within the explicit user request or accepted
   scope, the coordinator assigns implementation, independent agent review, fixes,
   integration, and verification tasks;
-- every assignment names a registered agent and declares its purpose:
-  `research|implementation|review|fix|integration|verification`. The
-  coordinator must not anonymously delegate work to itself;
+- every assignment declares its purpose:
+  `research|implementation|review|fix|integration|verification`. By default omit
+  `--to` (API: omit `assignee`) to use the coordinator's own anonymous subagent.
+  The existing runner inherits the coordinator registration's provider, model,
+  Hermes profile and reasoning settings, with a fresh `mission:<task-id>` session.
+  `--effort` is an optional supported per-task override. Use `--to @agent` only
+  for an explicit human assignment override; missing/unavailable targets fail
+  rather than falling back to another agent. Existing tasks are not reassigned;
 - mission notes are shared milestone/feature records. Workers report findings
   and outcomes through their task summaries; note edits never implicitly
   dispatch work or approve a mission.
@@ -107,12 +112,12 @@ cascade-chat members
 cascade-chat mission start --title "..." --message "Brief and acceptance request"
 cascade-chat mission note create --mission <id> --kind milestone --title "..." --content "..."
 cascade-chat mission note list --mission <id>
-cascade-chat mission delegate --mission <id> --to @researcher --task "Investigate ..." --purpose research --message "..." --brief-note <note-id>
-cascade-chat mission delegate --mission <id> --to @implementer --task "Implement ..." --purpose implementation --message "..." --brief-note <note-id>
-cascade-chat mission delegate --mission <id> --to @reviewer --task "Review ..." --purpose review --message "..." --brief-note <note-id> --after <implementation-task-id>
+cascade-chat mission delegate --mission <id> --task "Investigate ..." --purpose research --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --task "Implement ..." --purpose implementation --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --task "Review ..." --purpose review --message "..." --brief-note <note-id> --after <implementation-task-id>
 cascade-chat mission update --task <review-task-id> --status completed --review-outcome accepted --summary "..."
-cascade-chat mission delegate --mission <id> --to @integrator --task "Integrate ..." --purpose integration --message "..." --after <review-task-id>
-cascade-chat mission delegate --mission <id> --to @verifier --task "Verify ..." --purpose verification --message "..." --after <integration-task-id>
+cascade-chat mission delegate --mission <id> --task "Integrate ..." --purpose integration --message "..." --after <review-task-id>
+cascade-chat mission delegate --mission <id> --task "Verify ..." --purpose verification --message "..." --after <integration-task-id>
 cascade-chat mission update --task <verification-task-id> --status completed --verification-passed true --summary "Observed checks and artifact/live evidence"
 cascade-chat mission status --mission <id>
 cascade-chat mission history --mission <id>
@@ -131,8 +136,10 @@ against current note revisions, including historical resumption:
 cascade-chat mission approve --mission <id> --expected-revisions '{"<note-id>":1}'
 ```
 
-The server rejects approval from agent credentials. A reviewer must be distinct
-from the implementation/fix assignee it reviews. Review acceptance and passed
+The server rejects approval from agent credentials. Anonymous review runs in a
+distinct task/provider session, even when it inherits the same coordinator model.
+A non-anonymous reviewer must be distinct from the implementation/fix assignee
+it reviews. Review acceptance and passed
 verification are explicit task outcomes; provider completion alone is not
 evidence of either.
 

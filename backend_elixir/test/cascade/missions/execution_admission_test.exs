@@ -112,6 +112,26 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     assert Scheduler.schedule(c.mission).dispatches == []
   end
 
+  test "anonymous review repair retains coordinator self workers and fresh review tasks", c do
+    workflow = %{"missionId" => c.mission, "vaultId" => c.vault, "channelId" => c.channel, "rootMessageId" => c.root.id}
+    Application.put_env(:cascade_elixir, :execution_admission,
+      put_in(c.policy, ["owners", Access.at(0), "workflows"], [workflow]))
+    SQL.exec("UPDATE chat_missions SET phase='executing' WHERE id=?", [c.mission])
+    input = %{coordinatorRegistrationId: c.coordinator.id, title: "Own implementation", purpose: "implementation"}
+    {:ok, implementation} = Store.add_task(c.user.id, c.channel, c.mission, input)
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed' WHERE id=?", [implementation.task.id])
+    {:ok, review} = Store.add_task(c.user.id, c.channel, c.mission,
+      Map.merge(input, %{title: "Own review", purpose: "review", dependsOn: [implementation.task.id]}))
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed',review_outcome='changes_requested',summary='Fix fixture' WHERE id=?", [review.task.id])
+    for _ <- 1..2, do: SQL.transaction(fn -> Cascade.Missions.Progression.reconcile(c.mission) end)
+    [[fix, assignee, 1]] = SQL.all("SELECT id,assignee_registration_id,anonymous FROM chat_mission_tasks WHERE mission_id=? AND purpose='fix'", [c.mission])
+    assert assignee == c.coordinator.id
+    [[check, ^assignee, 1]] = SQL.all("SELECT id,assignee_registration_id,anonymous FROM chat_mission_tasks WHERE mission_id=? AND title LIKE 'Re-review %'", [c.mission])
+    refute check in [fix, implementation.task.id, review.task.id]
+    assert SQL.one("SELECT depends_on_json FROM chat_mission_tasks WHERE id=?", [check]) == [Jason.encode!([fix])]
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='automatic_review_repair'", [c.mission]) == [1]
+  end
+
   test "research completion advances the original dependency despite quiet coordinator acknowledgment", c do
     workflow = %{"missionId" => c.mission, "vaultId" => c.vault, "channelId" => c.channel, "rootMessageId" => c.root.id}
     Application.put_env(:cascade_elixir, :execution_admission, put_in(c.policy, ["owners", Access.at(0), "workflows"], [workflow]))

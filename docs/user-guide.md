@@ -341,7 +341,7 @@ Set a project folder when you want an agent to edit a repository or inspect a de
 
 ### Coordinate multiple agents
 
-A channel may designate one agent as its coordinator. The coordinator can answer simple questions directly and create a mission for non-trivial work. It can delegate tasks to other registered agents or to isolated anonymous worker sessions. Those workers execute a single assigned task; they do not become extra coordinators.
+A channel may designate one agent as its coordinator. The coordinator can answer simple questions directly and create a mission for non-trivial work. By default it delegates to its own anonymous worker sessions, inheriting its provider, model, profile and reasoning settings. Review uses a separate fresh worker session. Explicit human assignments to other registered agents remain supported; there is no automatic fallback to them. Those workers execute a single assigned task; they do not become extra coordinators. Existing tasks and history are not reassigned.
 
 Enable coordination when the channel benefits from a single dispatcher—for example, a project room with one planning agent and several specialist agents. Do not enable several competing coordinators for the same channel.
 

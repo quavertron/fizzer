@@ -430,6 +430,70 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     end
   end
 
+  @tag :self_subagents
+  test "default implementation and review inherit coordinator runtime without a legacy fallback", ctx do
+    alias Cascade.Missions.Store, as: Missions
+    alias Cascade.Missions.Scheduler
+
+    # Leave the old Sol registration present: selecting it would be observable.
+    for {agent, profile, effort} <- [{"codex", "", "xhigh"}, {"hermes", "fixture-astra", ""}] do
+      {:ok, identity} = Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
+        agentId: agent, hermesProfile: profile, model: "gpt-6-astra",
+        displayName: "Coordinator #{agent}", mention: "astra-#{agent}"
+      })
+      {:ok, coordinator} = Agents.add_to_channel(ctx.owner.id, ctx.owner_vault.id,
+        ctx.owner_channel.id, identity.id, %{orchestrator: true, reasoningEffort: effort})
+      {:ok, root} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id,
+        %{body: "Implement bounded fixture #{agent}"})
+      {:ok, mission} = Missions.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id,
+        %{rootMessageId: root.id, coordinatorRegistrationId: coordinator.id, title: "Own workers #{agent}"})
+      approve_mission(ctx, mission)
+      input = %{coordinatorRegistrationId: coordinator.id, title: "Implement #{agent}", purpose: "implementation"}
+      assert {:ok, implementation} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, input)
+      assert implementation.task.assigneeRegistrationId == coordinator.id
+      assert implementation.task.anonymous
+      assert {:ok, review} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        %{input | title: "Review #{agent}", purpose: "review"} |> Map.put(:dependsOn, [implementation.task.id]))
+      assert review.task.assigneeRegistrationId == coordinator.id
+      assert review.task.anonymous
+
+      for added <- [implementation, review] do
+        [scheduled] = Scheduler.schedule(mission.mission.id).dispatches
+        assert scheduled.dispatch.registration.id == coordinator.id
+        assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(scheduled.dispatch.id)
+        assert run.conversation_id == "mission:#{added.task.id}"
+        [encoded, _] = Store.pending_delivery(run.id, ctx.owner.id)
+        payload = Jason.decode!(encoded)
+        assert payload["agent"] == agent
+        assert payload["model"] == "gpt-6-astra"
+        assert payload["hermesProfile"] == profile
+        assert payload["reasoningEffort"] == if(effort == "", do: nil, else: effort)
+        assert payload["chatRegistrationId"] == coordinator.id
+        refute payload["resumeSessionId"]
+        assert payload["prompt"] =~ "worker assigned to Fizzer mission task #{added.task.id}"
+        if added.task.purpose == "review", do: assert(payload["prompt"] =~ "do not act as the implementer")
+        if dir = System.get_env("FIZZER_SELF_SUBAGENT_FIXTURE_DIR") do
+          File.mkdir_p!(dir)
+          File.write!(Path.join(dir, "#{agent}-#{added.task.purpose}.json"), encoded)
+        end
+        Store.finish(run.id, "completed", "Offline fixture artifact")
+        SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary='Offline fixture artifact',review_outcome=? WHERE id=?",
+          [if(added.task.purpose == "review", do: "accepted", else: ""), added.task.id])
+      end
+
+      assert {:ok, override} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        Map.merge(input, %{title: "Human override #{agent}", assignee: ctx.registration.id}))
+      assert override.task.assigneeRegistrationId == ctx.registration.id
+      refute override.task.anonymous
+      assert {:error, _} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        Map.merge(input, %{title: "Missing target", assignee: "missing-agent"}))
+      # A missing coordinator reference must not resolve to another member.
+      assert {:error, _} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        %{input | title: "No fallback", coordinatorRegistrationId: "missing-coordinator"})
+      SQL.exec("UPDATE chat_agent_members SET orchestrator=0 WHERE id=?", [coordinator.id])
+    end
+  end
+
   test "worker steering resumes its provider session and cwd without stopping the coordinator",
        ctx do
     SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])

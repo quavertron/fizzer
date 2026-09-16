@@ -8,7 +8,7 @@ defmodule Cascade.Missions.Progression do
   def reconcile(mission_id) do
     SQL.all("""
       SELECT DISTINCT m.id,m.created_by,m.channel_id,m.coordinator_registration_id,
-        r.id,r.assignee_registration_id,r.summary,p.assignee_registration_id
+        r.id,r.assignee_registration_id,r.summary,p.assignee_registration_id,r.anonymous,p.anonymous
       FROM chat_missions m JOIN chat_mission_tasks r ON r.mission_id=m.id
       JOIN json_each(r.depends_on_json) dep
       JOIN chat_mission_tasks p ON p.id=dep.value AND p.mission_id=m.id
@@ -16,7 +16,7 @@ defmodule Cascade.Missions.Progression do
         AND NOT EXISTS (SELECT 1 FROM chat_mission_interpretations i WHERE i.mission_id=m.id AND i.stopped=1)
         AND r.status='completed' AND r.purpose='review' AND r.review_outcome='changes_requested'
         AND p.purpose IN ('implementation','fix') AND p.status='completed'
-        AND r.assignee_registration_id<>p.assignee_registration_id
+        AND (r.anonymous=1 OR r.assignee_registration_id<>p.assignee_registration_id)
         AND (SELECT COUNT(DISTINCT source.assignee_registration_id) FROM json_each(r.depends_on_json) rd
           JOIN chat_mission_tasks source ON source.id=rd.value AND source.mission_id=m.id
           WHERE source.purpose IN ('implementation','fix'))=1
@@ -25,18 +25,18 @@ defmodule Cascade.Missions.Progression do
           WHERE f.mission_id=m.id AND f.purpose='fix' AND d.value=r.id)
       ORDER BY r.created_at,r.id
       """, [mission_id, mission_id])
-    |> Enum.each(fn [mission, owner, channel, coordinator, review, reviewer, summary, implementer] ->
+    |> Enum.each(fn [mission, owner, channel, coordinator, review, reviewer, summary, implementer, review_anonymous, implementation_anonymous] ->
       if ExecutionAdmission.workflow_allowed?(mission) and not Cascade.Missions.Interpretation.migration_decision_pending?(mission) do
         [count] = SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='automatic_review_repair'", [mission])
         if count < 2 do
           {:ok, fix} = Store.add_task(owner, channel, mission, %{
             coordinatorRegistrationId: coordinator, title: "Resolve review #{review}",
-            assignee: implementer, purpose: "fix", workspaceMode: "isolated", dependsOn: [review],
+            assignee: implementer, anonymous: implementation_anonymous == 1, purpose: "fix", workspaceMode: "isolated", dependsOn: [review],
             prompt: "Resolve this independent review in the inherited candidate workspace. Stay within the original owner scope; no new deployment or permission authority. Review #{review}:\n#{summary}"
           })
           {:ok, check} = Store.add_task(owner, channel, mission, %{
             coordinatorRegistrationId: coordinator, title: "Re-review #{review}",
-            assignee: reviewer, purpose: "review", workspaceMode: "isolated", dependsOn: [fix.task.id],
+            assignee: reviewer, anonymous: review_anonymous == 1, purpose: "review", workspaceMode: "isolated", dependsOn: [fix.task.id],
             prompt: "Independently verify the correction to review #{review}. Record reviewOutcome=accepted or changes_requested with actual evidence. Do not implement or deploy."
           })
           # Only untouched downstream integrations may be rewired. Preserve the

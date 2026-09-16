@@ -37,7 +37,7 @@ Usage:
   cascade-chat mission status [--mission <id|current>] [--json | --detail]
   cascade-chat mission interpret --mission <id> [--detail] [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
-  cascade-chat mission delegate --mission <id> --to @agent --task T --purpose P --message I [--brief-note <id>] [--after <task-id,...>] [--priority N] [--effort E] [--isolated]
+  cascade-chat mission delegate --mission <id> --task T --purpose P --message I [--to @agent] [--anonymous] [--brief-note <id>] [--after <task-id,...>] [--priority N] [--effort E] [--isolated]
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
   cascade-chat mission join            inspect child results; end turn to wait and resume for integration
   cascade-chat mission steer --task <id> --message <instruction>
@@ -913,12 +913,11 @@ async function main() {
     }
     if (sub === 'delegate') {
       if (!registrationId) fail('mission delegate can only be used from a registered coordinator run.');
-      if (args.anonymous === true) fail('mission delegate no longer supports anonymous self-delegation; assign a named agent with --to.');
       const assignee = String(args.to || '').trim();
       const title = String(args.task || args.title || '').trim();
       const purpose = String(args.purpose || '').trim().toLowerCase();
       const allowedPurposes = ['research', 'implementation', 'review', 'fix', 'integration', 'verification'];
-      if (!assignee) fail('mission delegate needs --to <@agent>.');
+
       if (!title) fail('mission delegate needs --task <title>.');
       if (!allowedPurposes.includes(purpose)) fail('mission delegate needs --purpose research|implementation|review|fix|integration|verification.');
       const fromStdin = args.message === true || args.message === undefined;
@@ -935,7 +934,8 @@ async function main() {
           coordinatorRegistrationId: registrationId,
           title,
           purpose,
-          assignee,
+          ...(assignee ? { assignee } : {}),
+          ...(!assignee || args.anonymous === true ? { anonymous: true } : {}),
           prompt,
           ...(args['brief-note'] !== undefined ? { briefNoteId: String(args['brief-note']).trim() } : {}),
           dependsOn: String(args.after || '').split(',').map((item) => item.trim()).filter(Boolean),
