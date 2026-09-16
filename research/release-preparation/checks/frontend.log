@@ -1,0 +1,24 @@
+
+> fizzer@0.2.0 test:release:frontend
+> npm run typecheck:client && npm test
+
+
+> fizzer@0.2.0 typecheck:client
+> tsc --noEmit -p client/tsconfig.json
+
+
+> fizzer@0.2.0 test
+> npm --workspace=client run test
+
+
+> client@0.0.0 test
+> vitest run
+
+
+ RUN  v4.1.9 /home/jt/.fizzer/worktrees/cascade/22130d04-prepare-all-in-tree-source-for-i-bf273e/client
+
+
+ Test Files  45 passed (45)
+      Tests  439 passed (439)
+   Start at  16:31:38
+   Duration  1.86s (transform 5.30s, setup 0ms, import 13.92s, tests 1.38s, environment 5ms)

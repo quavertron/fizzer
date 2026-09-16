@@ -1,0 +1,49 @@
+{
+  "fixture": "Combined exact candidates, real App Kanban; controlled API, separate backend proof",
+  "writes": [
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n- [x] Second\n",
+      "expectedRevision": "note-v1:2",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": 403
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": 409
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": "network"
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": 200
+    }
+  ],
+  "checks": [
+    "Actual App category flag + drag + Ctrl-S persists whole board; already-open Superkanban updates only after acknowledgement",
+    "Category flag and checked destination survive hard reload; next drag autosaves and reloads",
+    "403: whole flagged/moved/checked draft retained through navigation; no false saved or loop; blocked retry, no overwrite",
+    "409: whole flagged/moved/checked draft retained through navigation; no false saved or loop; blocked retry, no overwrite",
+    "network: whole flagged/moved/checked draft retained through navigation; no false saved or loop; explicit retry and reload pass"
+  ],
+  "errors": []
+}

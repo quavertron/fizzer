@@ -21,6 +21,6 @@ describe('intentional mission-workspace rollback', () => {
   it('preserves the note editor revision guard and dirty draft across remote refresh', () => {
     const previous = { note: { id: 'note1', content: 'original', revision: 'r1' } as WorkspaceNote, draft: 'local edits', baseRevision: 'r1' };
     const incoming = { ...previous.note, content: 'remote edits', revision: 'r2' };
-    expect(reconcileWorkspaceNoteContent(previous, incoming)).toEqual({ note: incoming, draft: 'local edits', baseRevision: 'r1' });
+    expect(reconcileWorkspaceNoteContent(previous, incoming)).toEqual(previous);
   });
 });

@@ -1,0 +1,3 @@
+PASS: two browsers, real backend: send, stream, cancel, shorter final, server steering, never-connected socket, dropped frames, failed hydration, suppression recovery, reload, clear then ping without resuming a completed old session, running Stop failure/retry, quiet offline outbox, close-origin before delegation, runner reconnect, logout cleanup; ZERO client POST /runs, message PATCH, or event backfill.
+Full synthetic-backend log: /tmp/bf273e-snapshot/projection-browser-complete.log
+SHA256: 2a979bb75f32a4e0d8d970610640be018d7b9cdba10d10d567ae51032b107948

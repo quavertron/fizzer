@@ -30,7 +30,8 @@ describe('empty agent row regression', () => {
         onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
       }));
       expect(markup).toContain('chat-work-trace-toggle');
-      expect(markup).toContain('Show history');
+      expect(markup).toContain('aria-expanded="false"');
+      expect(markup).toContain('1 step · Astra');
     }
   });
   it.each([{ hasImages: true }, { attachments: [{ name: 'result.txt', media_type: 'text/plain', url: '/result.txt' }] },

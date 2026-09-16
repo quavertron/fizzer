@@ -1,0 +1,13 @@
+4:31:36 PM [vite] (client) Re-optimizing dependencies because vite config has changed
+PASS root before linked trace
+PASS linked running trace
+PASS duplicate trace upserts
+PASS interruption
+PASS reconnect snapshot
+PASS fresh mount from canonical rows
+PASS original reply context and exact coordinator Stop
+PASS explicit deletion
+PASS authoritative offline deletion
+PASS attachment-only mission root
+PASS ordinary human
+PASS agent-created mission without duplicate prose

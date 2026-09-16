@@ -1,0 +1,42 @@
+
+> fizzer@0.2.0 test:release:backend
+> npm run test:elixir-release
+
+
+> fizzer@0.2.0 test:elixir-release
+> npm run test:elixir:mix-check
+
+
+> fizzer@0.2.0 test:elixir:mix-check
+> cd backend_elixir && mix check
+
+warning: the following files do not match any of the configured `:test_load_filters` / `:test_ignore_filters`:
+
+test/support/dispatch_process_probe.exs
+test/support/notification_process_probe.exs
+test/support/progression_process_probe.exs
+
+This might indicate a typo in a test file name (for example, using "foo_tests.exs" instead of "foo_test.exs").
+
+See the configuration for `:test_pattern` under `mix help test` for more information.
+
+Running ExUnit with seed: 942037, max_cases: 32
+
+.........     warning: variable "source_mission" is unused (if the variable is not meant to be used, prefix it with an underscore)
+     │
+ 965 │     [source_mission] =
+     │      ~~~~~~~~~~~~~~
+     │
+     └─ test/cascade/missions/mission_state_test.exs:965:6: Cascade.Missions.MissionStateTest."test verified recovery cannot revive a stopped review or canceled mission"/1
+
+...................................     warning: unused alias Authority
+     │
+ 737 │       alias Cascade.Missions.{Authority, DispatchReannouncer, Scheduler}
+     │       ~
+     │
+     └─ test/cascade_web/orchestration_mission_execution_test.exs:737:7
+
+..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+Finished in 42.9 seconds (5.3s async, 37.5s sync)
+
+Result: 510 passed

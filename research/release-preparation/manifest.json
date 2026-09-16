@@ -1,0 +1,1344 @@
+{
+  "head": "b3bb36da61263879d81b09f52b7439387188fe4e",
+  "index_sha256": "0cb50158d36fd7f1a1603b5d11106ac7cc6a7e8147bdcfca359d5bd827e62c5e",
+  "files": [
+    {
+      "path": "backend_elixir/config/runtime.exs",
+      "exists": true,
+      "sha256": "36e62a11ecbdc2f61ded589484b4d4aa328477f882bba9b496c222646993d65c",
+      "candidate_sha256": "c51103582aec3f582ae0b592ebe19bac17e012abd812cc8ed40042c4838d99ed",
+      "upstream_sha256": "c51103582aec3f582ae0b592ebe19bac17e012abd812cc8ed40042c4838d99ed",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "9d676b30f3973c8428a0c97bce7d73fc0ae4773b",
+        "sha256": "36e62a11ecbdc2f61ded589484b4d4aa328477f882bba9b496c222646993d65c"
+      },
+      "base_blob": "e97f0a0c7e42386d5ff0f932bda4bb9734e9f1a6",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/config/test.exs",
+      "exists": true,
+      "sha256": "d7e0868ecc9e8b90507c2624706fb4ae88efef15ed594f04daf1568a63ffceb8",
+      "candidate_sha256": "004d28445916c11877e9aede761535e8b81630561656d9c45cec594f3d842823",
+      "upstream_sha256": "004d28445916c11877e9aede761535e8b81630561656d9c45cec594f3d842823",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "8aae1b96e6025b2665011d49001f9b0c6436a640",
+        "sha256": "d7e0868ecc9e8b90507c2624706fb4ae88efef15ed594f04daf1568a63ffceb8"
+      },
+      "base_blob": "f4a5e274e5d445184f421d0e6f4340ab20995c7f",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/accounts/community_activity.ex",
+      "exists": true,
+      "sha256": "c17ceeff435111ebe3656bcd84e00c01727d057c7fa3424a472e960c6b68d1cc",
+      "candidate_sha256": "c17ceeff435111ebe3656bcd84e00c01727d057c7fa3424a472e960c6b68d1cc",
+      "upstream_sha256": "d65bd34721490627d23d8005fba070ec9d3eba262a385dde20c77897dfe45eb4",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "0a71356e09e79cb3b091171a7a3c8e4221c712b9",
+        "sha256": "d65bd34721490627d23d8005fba070ec9d3eba262a385dde20c77897dfe45eb4"
+      },
+      "base_blob": "0a71356e09e79cb3b091171a7a3c8e4221c712b9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/application.ex",
+      "exists": true,
+      "sha256": "7ac53bba86d308bf606f414a941d836f92ad4560e564885d7440ab4fe4f6fea4",
+      "candidate_sha256": "b6473c7b19b6295acc05f95ebd51be18ec41b75669045af430a531e4c7c9baf4",
+      "upstream_sha256": "b6473c7b19b6295acc05f95ebd51be18ec41b75669045af430a531e4c7c9baf4",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "85d81b43b153943406713e62eee75c7d6516e5b5",
+        "sha256": "7ac53bba86d308bf606f414a941d836f92ad4560e564885d7440ab4fe4f6fea4"
+      },
+      "base_blob": "08f370040a6ce570103bf4c9bbaa852cabcfb478",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/chat/channel.ex",
+      "exists": true,
+      "sha256": "48f10ef18b67005eb6d5a4707771f35c75341b58581a8aca9997b681904d01a1",
+      "candidate_sha256": "27b83d039816fb58cdb1ae80d2f7b61686e7727a4a83a2acb6335e134c0ba0ca",
+      "upstream_sha256": "27b83d039816fb58cdb1ae80d2f7b61686e7727a4a83a2acb6335e134c0ba0ca",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "7d242c952961a5975d4dc8af942e045e5d25a6d1",
+        "sha256": "cb69b0d45e744a384e88fed2803905eb8308fc0981e271cbd1463dea5a35430b"
+      },
+      "base_blob": "7d242c952961a5975d4dc8af942e045e5d25a6d1",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/chat/dispatch_prompt.ex",
+      "exists": true,
+      "sha256": "79e18a9c439a167b9d3c977087de34cc4b9c443b153ee65fe0c719e7648f014e",
+      "candidate_sha256": "0a8d965d14940a11786f6ddb9093bcf3e818e8bb207c5c51e1d9d8101d5cec9e",
+      "upstream_sha256": "0a8d965d14940a11786f6ddb9093bcf3e818e8bb207c5c51e1d9d8101d5cec9e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "backend_elixir/lib/cascade/chat/messages.ex",
+      "exists": true,
+      "sha256": "32e10cf07ef955b2b4e7dd1dd910a936edb2a5d26aa086239f3328211c735917",
+      "candidate_sha256": "5ace2ffce2118703547ed617faa506697233dd312714c2baddaf9f385d69824f",
+      "upstream_sha256": "5ace2ffce2118703547ed617faa506697233dd312714c2baddaf9f385d69824f",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "544b7a3601bd2bf8152e002e5a91f2348abb4315",
+        "sha256": "32e10cf07ef955b2b4e7dd1dd910a936edb2a5d26aa086239f3328211c735917"
+      },
+      "base_blob": "ab96e5ff5319ff94bf39f6e8d2cb9ed39adff53c",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/content/store.ex",
+      "exists": true,
+      "sha256": "a716d969b9adfed54ea57d33380953381022506e0fe3d41a97443321369fc4e8",
+      "candidate_sha256": "3215dd99a08dc3d776d98600fc7fd930bf4aaac7c92163e747cd73f4a71ce74e",
+      "upstream_sha256": "3215dd99a08dc3d776d98600fc7fd930bf4aaac7c92163e747cd73f4a71ce74e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "b45b3324c1e83566867e3161047ef191f0b0adfb",
+        "sha256": "a716d969b9adfed54ea57d33380953381022506e0fe3d41a97443321369fc4e8"
+      },
+      "base_blob": "560bfcc5e9fefbf85d11fec8147aef13fa6fbff7",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/missions/dispatch_reannouncer.ex",
+      "exists": true,
+      "sha256": "617b67769187042742a39fd3df6d436f95a3fdd4b87e7998eaeeadef38b240ca",
+      "candidate_sha256": "7186b54d08ad4ebb14340b0c899e045262c07f82d606cfdb25b8192adccbb34f",
+      "upstream_sha256": "7186b54d08ad4ebb14340b0c899e045262c07f82d606cfdb25b8192adccbb34f",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2015cae121f17add43910138f2aa475eb2c147ec",
+        "sha256": "617b67769187042742a39fd3df6d436f95a3fdd4b87e7998eaeeadef38b240ca"
+      },
+      "base_blob": "afff129ed37b044f053c2d05b96df32b9a1e2808",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/missions/dispatches.ex",
+      "exists": true,
+      "sha256": "83fe6c82b7a7b0374161f225c413cef7dd1b4d20c097fa3bd566a1db4b31fb8d",
+      "candidate_sha256": "585f46db88f5243403ebe84a8d7fd8e021cf0eeedfb938f7e2fbfc3ef775f94d",
+      "upstream_sha256": "585f46db88f5243403ebe84a8d7fd8e021cf0eeedfb938f7e2fbfc3ef775f94d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "e97b5577158538c0931c0bd953f98358aa100814",
+        "sha256": "83fe6c82b7a7b0374161f225c413cef7dd1b4d20c097fa3bd566a1db4b31fb8d"
+      },
+      "base_blob": "d1585fc597d581454ee1583dac873206a3ad30cf",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/missions/scheduler.ex",
+      "exists": true,
+      "sha256": "7535a7e8d888f46e2f067157bd6d9547a5ae8bc1dfd2e4c007018c9c4d5218e2",
+      "candidate_sha256": "8cc39cf8f862e91c23094b6bf678c151f4b175bfd36af935ec695b4e71eec67e",
+      "upstream_sha256": "8cc39cf8f862e91c23094b6bf678c151f4b175bfd36af935ec695b4e71eec67e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2869a64eee1e2d64c9807385fb067789faea5512",
+        "sha256": "7535a7e8d888f46e2f067157bd6d9547a5ae8bc1dfd2e4c007018c9c4d5218e2"
+      },
+      "base_blob": "4e732e95887d386b25cb51cca4d3a8d094f32e81",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/missions/schema.ex",
+      "exists": true,
+      "sha256": "03ae5afbceeec0125f79b6a351d49054ae9c41c9cfcd2d8672ca90b4fde0b50c",
+      "candidate_sha256": "d95ab8f743027f5fd7e109201bb492f3daca566651225415b48e6234bb0435d2",
+      "upstream_sha256": "d95ab8f743027f5fd7e109201bb492f3daca566651225415b48e6234bb0435d2",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "d4a83ce3e9accd699a83dafca54c29ead1a4f24d",
+        "sha256": "03ae5afbceeec0125f79b6a351d49054ae9c41c9cfcd2d8672ca90b4fde0b50c"
+      },
+      "base_blob": "de1ce4174733883167c554f0a5275f08c9642175",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/runs/prompt_context.ex",
+      "exists": true,
+      "sha256": "d691879ea0d2e3a20022c64065bc45af615726d0a65e0451da3f55c38e947795",
+      "candidate_sha256": "8ac08bd58ecfc661af8006ba038d080d3ce17a038af2e396347e10c59b4a3e4e",
+      "upstream_sha256": "8ac08bd58ecfc661af8006ba038d080d3ce17a038af2e396347e10c59b4a3e4e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2267e9044083b0194f1efff36bc9923f9d73213c",
+        "sha256": "d691879ea0d2e3a20022c64065bc45af615726d0a65e0451da3f55c38e947795"
+      },
+      "base_blob": "b16a25513068a8ae831f161bbce34478264de467",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/runs/runner_lifecycle.ex",
+      "exists": true,
+      "sha256": "7e9487ee2764d33b887cb4add289f0e948d76fa99417ec3b6e0af4423daea890",
+      "candidate_sha256": "7c349f9c0f2f8597e7a4c7168f6ce689a64dff922ff78f3c0e911de943e48f6b",
+      "upstream_sha256": "7c349f9c0f2f8597e7a4c7168f6ce689a64dff922ff78f3c0e911de943e48f6b",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "460a5a0549b6e927241fd86c6eddac293847ee42",
+        "sha256": "7e9487ee2764d33b887cb4add289f0e948d76fa99417ec3b6e0af4423daea890"
+      },
+      "base_blob": "646088b2d2016cb02dc1102d8c1647fa1432b967",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/runs/store.ex",
+      "exists": true,
+      "sha256": "5dded2e5f1826360323691fe4dd70b442ecbc6aefc30ecfb83cb4bdce106edaa",
+      "candidate_sha256": "63f76c8aaf4f85636b57c7e01e89245248754b24a43cb31164e0dbf997497199",
+      "upstream_sha256": "63f76c8aaf4f85636b57c7e01e89245248754b24a43cb31164e0dbf997497199",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "fa22c3da5f82d2614495442c62bfe104c1102661",
+        "sha256": "5dded2e5f1826360323691fe4dd70b442ecbc6aefc30ecfb83cb4bdce106edaa"
+      },
+      "base_blob": "6051c7a7e3f8704330370b7eddfad8211cf2af3d",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade/work_items.ex",
+      "exists": true,
+      "sha256": "450d7866690ae2c8fc5674ffc60f519b825d331bc1251e4a50edea29ad92a8bd",
+      "candidate_sha256": "450d7866690ae2c8fc5674ffc60f519b825d331bc1251e4a50edea29ad92a8bd",
+      "upstream_sha256": "a7d96adc35a8868773ecfa6143e4256f2699d29559cc725bad1deef7dd7f2730",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "1baf13b5eab3370742b1df9c9222614e967ef6ed",
+        "sha256": "450d7866690ae2c8fc5674ffc60f519b825d331bc1251e4a50edea29ad92a8bd"
+      },
+      "base_blob": "16e52a0025ad660e39dec0252fe1712651e33aa8",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/authorization.ex",
+      "exists": true,
+      "sha256": "d7d8e6724ac9f8108e598fbc36706b10175133700206f8a6fad4c958d7d0b6cb",
+      "candidate_sha256": "e80d6a0d051bc060cf21353e2c1155d0f04527a10481453f29792e6992b8cc2b",
+      "upstream_sha256": "e80d6a0d051bc060cf21353e2c1155d0f04527a10481453f29792e6992b8cc2b",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "e5b1cfbccf83c23b925bf4b428bf30f83bce45e9",
+        "sha256": "81aa79639771fe287a6303e31fa9ce55346cd2ef2d160ea98740b6b4fc4f2e48"
+      },
+      "base_blob": "e5b1cfbccf83c23b925bf4b428bf30f83bce45e9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/chat_router.ex",
+      "exists": true,
+      "sha256": "1dfe4999b4fb1feaf24c859365f921ee58876aef05604c0badbc81526b3d6d80",
+      "candidate_sha256": "55f99257baad7b8ccb5db5fe3b2f75d42c08c71f8b41d965dba6d79758cc7c79",
+      "upstream_sha256": "55f99257baad7b8ccb5db5fe3b2f75d42c08c71f8b41d965dba6d79758cc7c79",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "de207beda7f644e7adda0d0697bcc85284e37036",
+        "sha256": "50fa5277a8e36bd2e69b39526e8307d815ef0180576363710759f8a48e9d4d91"
+      },
+      "base_blob": "46ad03f1ff3820512d18c12e79e87c74cd88bbe7",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/content_controller.ex",
+      "exists": true,
+      "sha256": "5d27264918befcd25a771b28c9321e1ec89bdc569f9c908ca4e92036d4bb0a3b",
+      "candidate_sha256": "d77952ad828edee4c2f259a139673b805dbd0d143c5c1c0bbe6da48b1d1ae23b",
+      "upstream_sha256": "7fcda4f225ff424eef43e77f70809b9d4bb102fad4bcc7b5a2f381086c1419b3",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2832a3494073864e632a4176d09567d1d8d49598",
+        "sha256": "5d27264918befcd25a771b28c9321e1ec89bdc569f9c908ca4e92036d4bb0a3b"
+      },
+      "base_blob": "48f45b0b19978f4cf035f1e425354ad5a5d2e639",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/content_http.ex",
+      "exists": true,
+      "sha256": "1ebb0b250545f24e535489d773ecf296e70f11646f37a074ebb4d976212bd21a",
+      "candidate_sha256": "1ebb0b250545f24e535489d773ecf296e70f11646f37a074ebb4d976212bd21a",
+      "upstream_sha256": null,
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/extended_content_controller.ex",
+      "exists": true,
+      "sha256": "195fb4a2b156b6f2d36804530263de63892c994422dbdf7191996c75731c371f",
+      "candidate_sha256": "64def2f8991c08b7c21976fe47d7720971965f5ecc7e147db2d2bf729ac573f1",
+      "upstream_sha256": "bd6de9556cd2425dc8e127accad6333c0d7ad646a7fe58933764921d0605bdb1",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "305810f3bd44af84ab88398ff7512755aa839b6c",
+        "sha256": "195fb4a2b156b6f2d36804530263de63892c994422dbdf7191996c75731c371f"
+      },
+      "base_blob": "71a85fd506634cd29d5d8b1176d5fdb1eb2f2bf6",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/mission_router.ex",
+      "exists": true,
+      "sha256": "7ea9528fde3710fe671aa28bd7eead460369d7e10b6b45807d1d283274804ff9",
+      "candidate_sha256": "f65616a2258642f9c79b694fd287d7252c8f827fe2f8cd44fbd2779c54ecdc6d",
+      "upstream_sha256": "f65616a2258642f9c79b694fd287d7252c8f827fe2f8cd44fbd2779c54ecdc6d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "5dec063517afe754bf4114be583c631caacfdc72",
+        "sha256": "7ea9528fde3710fe671aa28bd7eead460369d7e10b6b45807d1d283274804ff9"
+      },
+      "base_blob": "9a1f1af922d1b0b0ff167ce49e88bbcea98b0b72",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/lib/cascade_web/orchestration_controller.ex",
+      "exists": true,
+      "sha256": "ad84eb4dbf185697d824db2cfc545cd59994b299f61141b10951a782dc754cd5",
+      "candidate_sha256": "f368fc5e48482448aaab49b851838f11ed89f6fb4f08d4f757cb3ff4244da381",
+      "upstream_sha256": "f368fc5e48482448aaab49b851838f11ed89f6fb4f08d4f757cb3ff4244da381",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "ea6d2deea969f122d110aabe605e09e3d13a7911",
+        "sha256": "ad84eb4dbf185697d824db2cfc545cd59994b299f61141b10951a782dc754cd5"
+      },
+      "base_blob": "bb705e012fdf8beeca61e3c58eea2f95dce9d234",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/accounts/accounts_domain_test.exs",
+      "exists": true,
+      "sha256": "fc0455004fdcc1a31d0db7560f7b8960f9b74bafa92cfb747fd686e1790f01b5",
+      "candidate_sha256": "fc0455004fdcc1a31d0db7560f7b8960f9b74bafa92cfb747fd686e1790f01b5",
+      "upstream_sha256": "f6f905ea4a960e6789e4679cb10115196f01fda098560481cd2ad2512fa071dd",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "466cf45f9ff5798ca42b777269cd3d4adc566563",
+        "sha256": "f6f905ea4a960e6789e4679cb10115196f01fda098560481cd2ad2512fa071dd"
+      },
+      "base_blob": "466cf45f9ff5798ca42b777269cd3d4adc566563",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/application_supervision_test.exs",
+      "exists": true,
+      "sha256": "7e36ebf78cd7da0edf7407e6324ea06996c404d2991ad62abb1578f40e317fb4",
+      "candidate_sha256": "5e7224db28c329d94597cfb7cdee99a8ba35d36662e0592175fac6b38286abbc",
+      "upstream_sha256": "5e7224db28c329d94597cfb7cdee99a8ba35d36662e0592175fac6b38286abbc",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "e17b9c0bfbe783f92ac0f5f62c2de0efd768fe9c",
+        "sha256": "7e36ebf78cd7da0edf7407e6324ea06996c404d2991ad62abb1578f40e317fb4"
+      },
+      "base_blob": "4f720cd92de5ff8ba7aa4e4c87c8c8fce0339ece",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/chat/chat_domain_test.exs",
+      "exists": true,
+      "sha256": "80571020c776d6a9e04ca6df887b36b9e2483a6c36d30c4906a05c0de745c8a8",
+      "candidate_sha256": "7cb4af6ebb0ad828f66bde392ae2f2f987d21b109f3bc6f892d4d6b9a1d3d439",
+      "upstream_sha256": "7cb4af6ebb0ad828f66bde392ae2f2f987d21b109f3bc6f892d4d6b9a1d3d439",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "422d73cd0e7aa1271bc64f8b4044a7738d87d9c4",
+        "sha256": "8f940c74baa8f71a904dfc739fc590e560751610da00a1631c81d31d2b5229a6"
+      },
+      "base_blob": "818abf8577f457f956f5b78b7ba45f57dfa5ebf9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/chat/dispatch_prompt_test.exs",
+      "exists": true,
+      "sha256": "5ad0af2d9d1c81a93c37bca05d6d7bbb4b862bb9bb705d2eb05e67f440756eaf",
+      "candidate_sha256": "a786f4aedfb597a4c30765a2135877508aa9a5137e5cfce9c206d5c9a6d953b3",
+      "upstream_sha256": "a786f4aedfb597a4c30765a2135877508aa9a5137e5cfce9c206d5c9a6d953b3",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "backend_elixir/test/cascade/content/content_domain_test.exs",
+      "exists": true,
+      "sha256": "2c630b09545cd475c9a5f8f17a3dadd96402b61468eab3f0edba64e7f14db062",
+      "candidate_sha256": "37d6e9c6ee5a2896ee3826ed156df199ac9621486b5585aa9adf297d8f2a6826",
+      "upstream_sha256": "6c172282551813bc2e25dc250b4cbffd2fe1a13624c8a076d0e6cdadc4cb3ae4",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "82858e81376856e63ef86c27e4c20a379dd2ffa3",
+        "sha256": "2c630b09545cd475c9a5f8f17a3dadd96402b61468eab3f0edba64e7f14db062"
+      },
+      "base_blob": "4aacc713307f05bdffc31d84de1d7c0c8b35df18",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/extended_content_domain_test.exs",
+      "exists": true,
+      "sha256": "15ad75e03f4550b1c44efe61bcd93fb60df25efb52d2fcff4d465ad0bfd01e35",
+      "candidate_sha256": "4f458c3b809a765329fa56d63a25e60eba4f3fbfdbcfc2200e8e41157592172b",
+      "upstream_sha256": "84f3f8f68feab85c21eb735dbea61f78830622f1f6ae0b57508cbd245e1b6f94",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "7ccf29c543e68bae7bf7a370e12ec879699130cf",
+        "sha256": "15ad75e03f4550b1c44efe61bcd93fb60df25efb52d2fcff4d465ad0bfd01e35"
+      },
+      "base_blob": "718d3134fc5a4c2321ec372b2882c023bf0e99d3",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/missions/mission_state_test.exs",
+      "exists": true,
+      "sha256": "d4d127898077c0fc9bcfc4cb9cdb6e7a36e6059665b5210a3e307d44ba33fb5c",
+      "candidate_sha256": "53a5295b7fcd8bcc5d76d36c8e744952e20c6e26f3a2de4be6bd896449a32042",
+      "upstream_sha256": "0081357324f58767afa18084f86b3c1d26a2eb3e42fc7816dcbb392348844044",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "ad61a2b1d29afdd07e079a583dd0e4ae07a867e3",
+        "sha256": "d4d127898077c0fc9bcfc4cb9cdb6e7a36e6059665b5210a3e307d44ba33fb5c"
+      },
+      "base_blob": "586826a064d2967b7e5e44fe47573212576a6bc5",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade/work_items_test.exs",
+      "exists": true,
+      "sha256": "06b1428317890f86d00c724ce007346438e77ec350baf9aaa22d04493eb6a0d1",
+      "candidate_sha256": "06b1428317890f86d00c724ce007346438e77ec350baf9aaa22d04493eb6a0d1",
+      "upstream_sha256": "c6bed4991411cb2c6a90ea183179bba72016dcbb97451f44c136fc7f45af2251",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "6d13118f8ffb0de5df7370714fb5c25635971bdc",
+        "sha256": "06b1428317890f86d00c724ce007346438e77ec350baf9aaa22d04493eb6a0d1"
+      },
+      "base_blob": "0d93633f02d4688f653b0b5b4f2728d7c4ed52d9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade_web/external_agent_access_test.exs",
+      "exists": true,
+      "sha256": "f79c9fe4d73d265c970141bc06dc1aefa95d5686aa0fe6c84c27b92b903ffbb1",
+      "candidate_sha256": "ca77241ddccfaad40e50c9ee9b70e31ad9f5c1896865f2f626076ca5b8a2442a",
+      "upstream_sha256": "ca77241ddccfaad40e50c9ee9b70e31ad9f5c1896865f2f626076ca5b8a2442a",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "backend_elixir/test/cascade_web/mission_router_test.exs",
+      "exists": true,
+      "sha256": "264af741e8880d3f79710dfc71e7f499f0bf9205b79aff2f1e34a45b9f29e54d",
+      "candidate_sha256": "2e45e15af5a315e3580d19ffd73143efde0f77d23724cd0682f211b72dbd8002",
+      "upstream_sha256": "2e45e15af5a315e3580d19ffd73143efde0f77d23724cd0682f211b72dbd8002",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "08e68cc9fafbe86450ffe41291b38d5f14a71aca",
+        "sha256": "264af741e8880d3f79710dfc71e7f499f0bf9205b79aff2f1e34a45b9f29e54d"
+      },
+      "base_blob": "eb00a72b7f98e76d775c3782d2150ab7a55ba0b1",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "backend_elixir/test/cascade_web/orchestration_chat_dispatch_test.exs",
+      "exists": true,
+      "sha256": "243e13d19de501e218bcaf989de6f7f471e202c61379c9e178b80a037fd1f29b",
+      "candidate_sha256": "654d1210da526543c2bb0f8fa257e8a73ca1f4b34abc521c49ff248265ab520e",
+      "upstream_sha256": "654d1210da526543c2bb0f8fa257e8a73ca1f4b34abc521c49ff248265ab520e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "a7ec5905242cf11097cc0bcc706136432ee694dd",
+        "sha256": "243e13d19de501e218bcaf989de6f7f471e202c61379c9e178b80a037fd1f29b"
+      },
+      "base_blob": "c6556d3d2e82309413999c1ab9ba534df4010f7b",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/agent-runner.cjs",
+      "exists": true,
+      "sha256": "db9a00bb42308a818f7c31d795e42de42eb42a40348c49402956245f7c6c6bd3",
+      "candidate_sha256": "9409b31fdf56e6c4c836506f3ca037409f53960f3fb6578705de3622f6d9e0f6",
+      "upstream_sha256": "9409b31fdf56e6c4c836506f3ca037409f53960f3fb6578705de3622f6d9e0f6",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "5636deb5637a27104ed4c1f13d2dd03e8b40f111",
+        "sha256": "ff8df823739274d0324c6a405ac9416fec4825bb98aa125635b4e35c7c22f7d5"
+      },
+      "base_blob": "5636deb5637a27104ed4c1f13d2dd03e8b40f111",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/agent-runner.test.cjs",
+      "exists": true,
+      "sha256": "7ff89e5b86b90fb0ce0b3a97c24b0be20433c625423ab8dade85fa6a05193ec8",
+      "candidate_sha256": "a537d1d0546a0d636e515f86074878a4fcc35b6ee42dd8bd4108485d8713cb28",
+      "upstream_sha256": "a537d1d0546a0d636e515f86074878a4fcc35b6ee42dd8bd4108485d8713cb28",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "6e0f216edafaaf4edb3d85e9ea41c1e4cd7404e2",
+        "sha256": "a3876a0d0099e00567a39c863f5940558ad88fc48819c305bf9980f9d977b861"
+      },
+      "base_blob": "6e0f216edafaaf4edb3d85e9ea41c1e4cd7404e2",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/along-avatar.cjs",
+      "exists": true,
+      "sha256": "605277440e0215b0641bb1edeb995d1ba7fd8d1ca92371ede84878c4bb361e3d",
+      "candidate_sha256": "605277440e0215b0641bb1edeb995d1ba7fd8d1ca92371ede84878c4bb361e3d",
+      "upstream_sha256": "605277440e0215b0641bb1edeb995d1ba7fd8d1ca92371ede84878c4bb361e3d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/along-avatar.test.cjs",
+      "exists": true,
+      "sha256": "0573a8975649011e95dd76b463070f4caaea42d005012d31c89c558277b0255a",
+      "candidate_sha256": "0573a8975649011e95dd76b463070f4caaea42d005012d31c89c558277b0255a",
+      "upstream_sha256": "0573a8975649011e95dd76b463070f4caaea42d005012d31c89c558277b0255a",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/app-control.cjs",
+      "exists": true,
+      "sha256": "371b8546ea14461c754c79211746b5f64e853a703a3f6af7b1c9795b366e1adf",
+      "candidate_sha256": "93200f595ffdc9ced42c6e885fa26eaea517816945486804560053e462a3b833",
+      "upstream_sha256": "93200f595ffdc9ced42c6e885fa26eaea517816945486804560053e462a3b833",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/app-control.test.cjs",
+      "exists": true,
+      "sha256": "e0d9acd579c0e87c04985182690129f2bebdee5b5f844dfea6159c354783db2b",
+      "candidate_sha256": "40842ce65aa76ca6259e58f7e33573804dee7df4f16d0b6da6cd0393afc9dd50",
+      "upstream_sha256": "40842ce65aa76ca6259e58f7e33573804dee7df4f16d0b6da6cd0393afc9dd50",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/external-agent-access.cjs",
+      "exists": true,
+      "sha256": "7b9741e0d08f37bd96fa55faddb6757d164d80e194fe7bb13c12d3f8847c646a",
+      "candidate_sha256": "3c621c98d11caf145a5441f757b781abd8a0fe200ff334f5192513360ba4a97d",
+      "upstream_sha256": "3c621c98d11caf145a5441f757b781abd8a0fe200ff334f5192513360ba4a97d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/external-agent-access.test.cjs",
+      "exists": true,
+      "sha256": "25529520a3ff1d82a0f19fdeb609e6c8c52f7e22344676e5e8e1c4a86d42c400",
+      "candidate_sha256": "37bb2b759bcf62c3505a32bad253fe018dd25d5cfe4bd02bd186790357436c6f",
+      "upstream_sha256": "37bb2b759bcf62c3505a32bad253fe018dd25d5cfe4bd02bd186790357436c6f",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cascade-electron/main.cjs",
+      "exists": true,
+      "sha256": "bd51b3561c5e41a130d9f9fd432e3d6db36684ec872d3de6d570a6824f980db9",
+      "candidate_sha256": "06d0ddd18ba826d54779f3d638fde11578f3d7620a12ef7376c904913e28cb24",
+      "upstream_sha256": "06d0ddd18ba826d54779f3d638fde11578f3d7620a12ef7376c904913e28cb24",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "454af4d8318e32f852e805abe8890b72d176a8a9",
+        "sha256": "6e23ee2338b6681873ccba88516fd440f7f84dbb00eb2fa19b9bf9299debbd17"
+      },
+      "base_blob": "454af4d8318e32f852e805abe8890b72d176a8a9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/main.test.cjs",
+      "exists": true,
+      "sha256": "c3e7f20d0f25f19daddbbf450826d58696892b6143e30e7f4e25e1b6b7849317",
+      "candidate_sha256": "38c7be477f43f978f45dee9a108c555bbdba97f8df66fdea65c23cb9102a86b4",
+      "upstream_sha256": "38c7be477f43f978f45dee9a108c555bbdba97f8df66fdea65c23cb9102a86b4",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2d44cba41eceb3da6cfa20cdfe4f56c3b07d58fe",
+        "sha256": "61502c49192c0524e591804e7f303139fb1c2ac6494ba01bbc2f10eb7708d08d"
+      },
+      "base_blob": "2d44cba41eceb3da6cfa20cdfe4f56c3b07d58fe",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/worktrees.cjs",
+      "exists": true,
+      "sha256": "589aa3f4393993b809319ab9ae4fdf6a1705ade46a013d9354514f5e7ad3cf4f",
+      "candidate_sha256": "c9524d8f50e29b9b2550e8c16d2dbe89d656e10b1af1af0e9b2a9804ee1e34d5",
+      "upstream_sha256": "c9524d8f50e29b9b2550e8c16d2dbe89d656e10b1af1af0e9b2a9804ee1e34d5",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "50ec7703c005cb1ffb145ef04194d1bd2f77f871",
+        "sha256": "5d8607a2e6308e0678df8a6314909023f16a6911942b8fd993e3560ac8bd19ba"
+      },
+      "base_blob": "50ec7703c005cb1ffb145ef04194d1bd2f77f871",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cascade-electron/worktrees.test.cjs",
+      "exists": true,
+      "sha256": "fc7873aa2cfaf98f7fd2288d96c9bbc274f365cf743f8730a3e19cf162a76ce1",
+      "candidate_sha256": "fc7873aa2cfaf98f7fd2288d96c9bbc274f365cf743f8730a3e19cf162a76ce1",
+      "upstream_sha256": "fc7873aa2cfaf98f7fd2288d96c9bbc274f365cf743f8730a3e19cf162a76ce1",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "88bbcf6e886b34e65b5d8e50acefad96dbf47a4d",
+        "sha256": "ac93580075a6f93b86740e8009a0894a95b0f3eb029154e2d1e55a06a7a70c8e"
+      },
+      "base_blob": "88bbcf6e886b34e65b5d8e50acefad96dbf47a4d",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cli-agents/cli-agent.ts",
+      "exists": true,
+      "sha256": "ae4e6973ef2b579414c7a3f197e720a1530ae99906abb8ac3759445b78763c24",
+      "candidate_sha256": "1eb3be7f9aec23d79b7378a239c41d43acc5dea63b9b9c54ecbea5e807b8240a",
+      "upstream_sha256": "1eb3be7f9aec23d79b7378a239c41d43acc5dea63b9b9c54ecbea5e807b8240a",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "252de0af478cf75017bd9a0e233b095e72f64529",
+        "sha256": "2ac1deccfa035eebf262553121dffd31033aaf6e645aa7c96e37c8fe1aa07f3b"
+      },
+      "base_blob": "252de0af478cf75017bd9a0e233b095e72f64529",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "cli-agents/hermes-profile-command.test.ts",
+      "exists": true,
+      "sha256": "1599c24579949b0755388760fa40ec5fea284be311b97d2b40360e0fe2857f60",
+      "candidate_sha256": "1599c24579949b0755388760fa40ec5fea284be311b97d2b40360e0fe2857f60",
+      "upstream_sha256": "1599c24579949b0755388760fa40ec5fea284be311b97d2b40360e0fe2857f60",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "cli-agents/hermes-profile-command.ts",
+      "exists": true,
+      "sha256": "23bc7c1ff5e062574b6fd46e1bfacd04dceb2471f65177e1326c36e3d2ea59f2",
+      "candidate_sha256": "23bc7c1ff5e062574b6fd46e1bfacd04dceb2471f65177e1326c36e3d2ea59f2",
+      "upstream_sha256": "23bc7c1ff5e062574b6fd46e1bfacd04dceb2471f65177e1326c36e3d2ea59f2",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/App.tsx",
+      "exists": true,
+      "sha256": "cdf5ba22d416faefde15a0681bf581cd057d0835d00ffb41b96dc0ac0eb28241",
+      "candidate_sha256": "c393996f57a813a615ef4b816e0add678241516aadb530983b57740a61a3b358",
+      "upstream_sha256": "3c114285a302f13e93b3db2c86732a333d8f3421ea1bea058dc3b57c85f6b519",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "b05bc23715d9fcc70b849b6e49fd94fb61b0bec5",
+        "sha256": "cdf5ba22d416faefde15a0681bf581cd057d0835d00ffb41b96dc0ac0eb28241"
+      },
+      "base_blob": "d781bc34c1d534ce19074bd9e5dc5ca559bf18e5",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/agents.ts",
+      "exists": true,
+      "sha256": "ddd6dd55fa8e7035cb19f1a1cbca9be7b00ab16ac11f93f13a7c4fc7541e737b",
+      "candidate_sha256": "5d20ddf3398c978fcf07f2a7658ec27fce7ff583e121f367bb2aa97ece17b886",
+      "upstream_sha256": "5d20ddf3398c978fcf07f2a7658ec27fce7ff583e121f367bb2aa97ece17b886",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "907b2df2f67927e24ab7f9f624431371272373bc",
+        "sha256": "ddd6dd55fa8e7035cb19f1a1cbca9be7b00ab16ac11f93f13a7c4fc7541e737b"
+      },
+      "base_blob": "ecb60e969a7c83e62b853b6bcac2d0bc9363aaf2",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/dispatch.ts",
+      "exists": true,
+      "sha256": "1cbb2ea49d62b9fe85475d91b705be70a7577665506a3b0fe46fe344afd3f1d0",
+      "candidate_sha256": "1cbb2ea49d62b9fe85475d91b705be70a7577665506a3b0fe46fe344afd3f1d0",
+      "upstream_sha256": "1cbb2ea49d62b9fe85475d91b705be70a7577665506a3b0fe46fe344afd3f1d0",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "0504ddc04918f8937348025641f2fdace1c1d6d0",
+        "sha256": "1cbb2ea49d62b9fe85475d91b705be70a7577665506a3b0fe46fe344afd3f1d0"
+      },
+      "base_blob": "ec8b8ea7c03091cadef03d6dd07ed588dfabf542",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/harnessActivity.ts",
+      "exists": true,
+      "sha256": "cfb4e6a35ef3b40c7f4eb3b7d0d63d88b9b8bfdfab197600f1166d22e13c2d69",
+      "candidate_sha256": "80c10d00e80f243ef0587f500f16bf2b3de4262f0939e037f77e9306deb215e8",
+      "upstream_sha256": "e487897c434c3b893a685904038428ea5b0c0e5831fdefc83cc7b0eb38199c45",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "2adca1ae4dfdab767d1422c3e31aaf99fa533a54",
+        "sha256": "c1fe76f393970626a1760a7893ff1f6e6beec2325184bfffaf64c9705f627880"
+      },
+      "base_blob": "2adca1ae4dfdab767d1422c3e31aaf99fa533a54",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/mentions.ts",
+      "exists": true,
+      "sha256": "9b64bda82f1c12b2f01bac049d612ab730c59682f57a3c2cd7c95a3d78f629a0",
+      "candidate_sha256": "9b64bda82f1c12b2f01bac049d612ab730c59682f57a3c2cd7c95a3d78f629a0",
+      "upstream_sha256": "9b64bda82f1c12b2f01bac049d612ab730c59682f57a3c2cd7c95a3d78f629a0",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "1faf90172a09dc66920a60871f7cc5ddbea6958c",
+        "sha256": "9b64bda82f1c12b2f01bac049d612ab730c59682f57a3c2cd7c95a3d78f629a0"
+      },
+      "base_blob": "540ece107399f330b09aeccb9155e299bbfdc5d0",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/messageStore.ts",
+      "exists": true,
+      "sha256": "f9fa5b6604387eadef1aea8aa9156e4496da2c1e6347021f938331ff9604502c",
+      "candidate_sha256": "e254283c723a2ad8a1f6eb8c1bb5bd14bae1ba560f50fdee17901e3bcec0c971",
+      "upstream_sha256": "e254283c723a2ad8a1f6eb8c1bb5bd14bae1ba560f50fdee17901e3bcec0c971",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "295cbda0afa121be3b24d27228db0e658d702815",
+        "sha256": "f9fa5b6604387eadef1aea8aa9156e4496da2c1e6347021f938331ff9604502c"
+      },
+      "base_blob": "9feabc8417d174776e0b5d1aed02b9d222673783",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/relationships.ts",
+      "exists": true,
+      "sha256": "067c6830ab208fd602a2efa956256e741b6b2d0dfeba74862161094479f49f4e",
+      "candidate_sha256": "067c6830ab208fd602a2efa956256e741b6b2d0dfeba74862161094479f49f4e",
+      "upstream_sha256": "067c6830ab208fd602a2efa956256e741b6b2d0dfeba74862161094479f49f4e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "a8197ebaef3bed28c32c6a2cd2df76aff91dd6d5",
+        "sha256": "067c6830ab208fd602a2efa956256e741b6b2d0dfeba74862161094479f49f4e"
+      },
+      "base_blob": "0aa73c4de86a8aac5f4cba4067c6c40a8ba7d5c7",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/runBlocks.ts",
+      "exists": true,
+      "sha256": "bcb378216efff29b97dd35f5c53b56b8c6a87b11df887cff2edbc93e0a136f6d",
+      "candidate_sha256": "bcb378216efff29b97dd35f5c53b56b8c6a87b11df887cff2edbc93e0a136f6d",
+      "upstream_sha256": "bcb378216efff29b97dd35f5c53b56b8c6a87b11df887cff2edbc93e0a136f6d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "5054d29f00c637dbdd2969be435ac67db99f2733",
+        "sha256": "2ee2f6b46de3f323af8ea0ee72d5137d706f867dcb3a033322506f7ab242b614"
+      },
+      "base_blob": "987f576272819e0df5161ce85a1a5c1544befce1",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/sessionTurns.ts",
+      "exists": false,
+      "candidate_sha256": null,
+      "upstream_sha256": null,
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": "6f38fe00dbb32b0debba80bbd02dc8f2420f971f",
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/chat/shared.ts",
+      "exists": true,
+      "sha256": "803dd6b1f5c2a4e01a5ac4169facb81d84dd43c6e420916778355756a8a782c2",
+      "candidate_sha256": "147a419163cf771bfda496d0e869f2c84ac201c938b6956fe0c2644ea8b3ae4f",
+      "upstream_sha256": "147a419163cf771bfda496d0e869f2c84ac201c938b6956fe0c2644ea8b3ae4f",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "5b6331abfa51d503112a9453794839740a70262c",
+        "sha256": "620b3bfc2cb4bb45a757d7b1d7b324b45167634c1d6c5db8d12654a377ab7b42"
+      },
+      "base_blob": "366fad3b4423c340ccd0007a68d4f9775c870119",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/types.ts",
+      "exists": true,
+      "sha256": "7b648193546e1fb8c4554921905c125401d568d15887d3a0b5e0bbe94a7c043d",
+      "candidate_sha256": "bd2426a676d6a1f5844fc88973b7be92b6a997303e2ce8c57c5496218e629155",
+      "upstream_sha256": "bd2426a676d6a1f5844fc88973b7be92b6a997303e2ce8c57c5496218e629155",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "83150c1f85bcd16b0657af491547ddb62a683942",
+        "sha256": "7b648193546e1fb8c4554921905c125401d568d15887d3a0b5e0bbe94a7c043d"
+      },
+      "base_blob": "eb227c60a6b90036a60b9b4e3ec50bcb1d657f26",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/chat/workTrace.ts",
+      "exists": true,
+      "sha256": "0023ddadb677fcbaeabdd5ba1439398853eee581f439e73c6ae3ec5e92a93076",
+      "candidate_sha256": "75b12ddee2858c0e8b2de67d7b47cb41b683b111d23b0bd70c4bf1c359c229a1",
+      "upstream_sha256": "5532f3d7af47397c23ab7406b4396074010c5a78a861ee6f532e68ae6b97191e",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "c548658ec2722b238eb091b5596def716367d127",
+        "sha256": "33079c42219a7fd63eec997426122a275a0cd8f9bcab8cfa64907d97b7b87f26"
+      },
+      "base_blob": "a4d03835c36f6b9b0bbe311b9eb8e4b50190fcee",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/CascadeRunPanel.tsx",
+      "exists": true,
+      "sha256": "0584b447285210650caf488f5e7e16483b63257e3378a668075d6e355be2d0f4",
+      "candidate_sha256": "1e0427304d477fa57e90e3786cea63d0a8843286448ca65c18fc1502533f45e2",
+      "upstream_sha256": "1e0427304d477fa57e90e3786cea63d0a8843286448ca65c18fc1502533f45e2",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "9e21c48fc9adb27a41ea5f44811ae3742cc01483",
+        "sha256": "0584b447285210650caf488f5e7e16483b63257e3378a668075d6e355be2d0f4"
+      },
+      "base_blob": "98ae026bbc6e5519171bedfc76e25aa59657adfd",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/ChatGroupRow.tsx",
+      "exists": true,
+      "sha256": "ae1700ac66dda9435ee03901b1bdff6810242f41e8bb2237f3dc237b0a62328a",
+      "candidate_sha256": "f72dc58e75632f1ea55a02c32459f2e97a960cf1e64b6bd7ead243a63ed51aaa",
+      "upstream_sha256": "f72dc58e75632f1ea55a02c32459f2e97a960cf1e64b6bd7ead243a63ed51aaa",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "dd9727afd98fb42ede7ad078af5b5bb26f1c4817",
+        "sha256": "ae1700ac66dda9435ee03901b1bdff6810242f41e8bb2237f3dc237b0a62328a"
+      },
+      "base_blob": "83617c1749f4e47bd849ebe1a77fc04f1ae06949",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/ChatMissionCard.tsx",
+      "exists": true,
+      "sha256": "072092e948256df4fed11731f28550c41e172302b2cc29f65c6ca1d65f56f92d",
+      "candidate_sha256": "88a0b94ac4a7177e2141b05f799fcb26ec3085cdfa0c873e5bf71ce7f3e301f4",
+      "upstream_sha256": "4cd61bb7dade974c31f077c7ba879a32a0f5848f11ccd344257e78f6040c16f3",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "a0f89b36029ed9c7a0912b14bf36c4d1a7690a35",
+        "sha256": "0aa223760b55bba54598d3f8b46e0f90e3aecc5759a7dfeba6ab854f588f7921"
+      },
+      "base_blob": "a0f89b36029ed9c7a0912b14bf36c4d1a7690a35",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/ChatView.tsx",
+      "exists": true,
+      "sha256": "9953cbc9f60d941b9e2096cb89af4215c6fc59507497dc71089599365219d20d",
+      "candidate_sha256": "d524de708a278eeb68ae265f7d4d021448753597889b26cc4e7b428856a2b38c",
+      "upstream_sha256": "d524de708a278eeb68ae265f7d4d021448753597889b26cc4e7b428856a2b38c",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "9df924242732970208ed9fc383993aaa8f19f000",
+        "sha256": "9953cbc9f60d941b9e2096cb89af4215c6fc59507497dc71089599365219d20d"
+      },
+      "base_blob": "1e4eda5e7854f53cd6f2342277b406c33cba2ec9",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/ChatWorkTrace.tsx",
+      "exists": true,
+      "sha256": "7c83813702cdda651748e310510ebcfb418c687b20d7f2f62a677374fb631fc7",
+      "candidate_sha256": "b3354be21387da79cab71fb53515a77cdb9def9859df8872b86947e79896fa6b",
+      "upstream_sha256": "6cc38b58dbad264bc2f1a7f2e3007e66dbb612e6a9673f9699d8669fafb20aee",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "0e26303804b1af0adc75622116ffa435c2ba3092",
+        "sha256": "0aacb72feebd2684b5eaca70410157b50b14c53aea9f254ba7f962bba7409010"
+      },
+      "base_blob": "30207770469de296ec8018ab5195d9002d3e4023",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/CommandPalette.tsx",
+      "exists": true,
+      "sha256": "dd812e3773be790d8a345d86b0419b40fa7f238482e4ec30ec32bf96279278e1",
+      "candidate_sha256": "dd812e3773be790d8a345d86b0419b40fa7f238482e4ec30ec32bf96279278e1",
+      "upstream_sha256": "40e407b6c9e8dee028c5ad4ab70b8ba735a6125136cf96aa03eafb18c91034b3",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "a335c6acb00da12bc8c5cf2d6706faee6b59ee2b",
+        "sha256": "dd812e3773be790d8a345d86b0419b40fa7f238482e4ec30ec32bf96279278e1"
+      },
+      "base_blob": "67b22eac31fdcd97c8fe98619255c4894e885228",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/components/SearchListOverlay.tsx",
+      "exists": true,
+      "sha256": "24bc2f7479736bae6eac06c679d445b1c360ff868ce5d7cc22f44d24d8c7b281",
+      "candidate_sha256": "24bc2f7479736bae6eac06c679d445b1c360ff868ce5d7cc22f44d24d8c7b281",
+      "upstream_sha256": null,
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/components/SearchOverlay.tsx",
+      "exists": true,
+      "sha256": "564a695a584885880a3942da21b8c41d2010ffee0d0126c1cf5664268a502f02",
+      "candidate_sha256": "564a695a584885880a3942da21b8c41d2010ffee0d0126c1cf5664268a502f02",
+      "upstream_sha256": "557019ef776e7419575f0ebaffe08d022cab1ee843c55a120309fc9c77ce42b9",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "d103c24f7e889cca9eccc7b99c582a50f600f312",
+        "sha256": "564a695a584885880a3942da21b8c41d2010ffee0d0126c1cf5664268a502f02"
+      },
+      "base_blob": "b875153e3102abab9be5606aa905627c7dcc3239",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/index.css",
+      "exists": true,
+      "sha256": "c344c7a6a6efd289953c3e0ce7954209841562ca124a01dc3157e02b660b5d49",
+      "candidate_sha256": "c901b85ba82c29ecf90b89154b21431d14f6d204e76592a8aafdc6abb6e76267",
+      "upstream_sha256": "26376ef132ba42c3687eaaeac36881ce1a0ee4c1487562c350c575e3c18848d3",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "34d905a9fd8982cecae0aa5ec11b1fb66f267276",
+        "sha256": "c344c7a6a6efd289953c3e0ce7954209841562ca124a01dc3157e02b660b5d49"
+      },
+      "base_blob": "9e66244013f5e4a40e2d50d908b0edc442f2df76",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/agents.test.ts",
+      "exists": true,
+      "sha256": "ee89932ad1088936d1e0e9e4b0a115bb9909a03f2a8a8e913244860a2aeeccc6",
+      "candidate_sha256": "ee89932ad1088936d1e0e9e4b0a115bb9909a03f2a8a8e913244860a2aeeccc6",
+      "upstream_sha256": "ee89932ad1088936d1e0e9e4b0a115bb9909a03f2a8a8e913244860a2aeeccc6",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "ee26c89fd42e27e2715f0a80ecb3740f0b0f257e",
+        "sha256": "ee89932ad1088936d1e0e9e4b0a115bb9909a03f2a8a8e913244860a2aeeccc6"
+      },
+      "base_blob": "92f36af04ad34cf9231e63963520979811c2ad85",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/avatarStyles.test.ts",
+      "exists": true,
+      "sha256": "95af79b371c859bcf7804dda3f27265b97f0a9379bdf97588e2f3bdd49a5d18c",
+      "candidate_sha256": "95af79b371c859bcf7804dda3f27265b97f0a9379bdf97588e2f3bdd49a5d18c",
+      "upstream_sha256": "91b7b952fe3c67b1019282164c0f6fc89f587750235669e420791a14e37530dc",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "edc0b53b18a77070b64c37c3f778e738b9b252ec",
+        "sha256": "95af79b371c859bcf7804dda3f27265b97f0a9379bdf97588e2f3bdd49a5d18c"
+      },
+      "base_blob": "2c4f7b75da376313c3076c2ad3314937d522f73c",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/chatSteering.test.ts",
+      "exists": true,
+      "sha256": "2ec6af24a41965fa277edf6da8117a4a740470eada829e5d7c29afafcce0c425",
+      "candidate_sha256": "d0701636b6018dec497ac1f9ec3e01af1fcc1c4350cd8ccf6e54177a61dfb4ce",
+      "upstream_sha256": "d47c08682c281b5bbd0ce56124449f9e8184f75eb8af297e63653197a56ef66b",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "3bb3a597cf63e62275f1d29fbe6bd8679f38ff5d",
+        "sha256": "baf2482140e1a8f07766f674dbdab4cb804b781e77df06c7622b2a6be295c33b"
+      },
+      "base_blob": "8c056f9d5df3edb36c1e0ee772abac988cea086e",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/dispatch.test.ts",
+      "exists": true,
+      "sha256": "43df9edb8e1a3c304039e04b76e3f0b79e659783d477b98001b2125b3c9295fe",
+      "candidate_sha256": "43df9edb8e1a3c304039e04b76e3f0b79e659783d477b98001b2125b3c9295fe",
+      "upstream_sha256": "43df9edb8e1a3c304039e04b76e3f0b79e659783d477b98001b2125b3c9295fe",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/tests/emptyRenderRegression.test.ts",
+      "exists": true,
+      "sha256": "a69f1384c9aade71d29604e02ee1c901c0afd280acdcfba1e23b0c183eec6ee4",
+      "candidate_sha256": "7da81e23b39a87461965ee9562a4f08fb08a62274268df423a359540bfe45a21",
+      "upstream_sha256": null,
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/tests/harnessActivity.test.ts",
+      "exists": true,
+      "sha256": "624345b7a4e7bc417a80d308a4d559e8d7f8ab2c8cb64aa1f6b52bd197c24708",
+      "candidate_sha256": "60c0527b8bd169cfff364354f92b329f3ce9a63463e5b15da78364bf27f3b61e",
+      "upstream_sha256": "60c0527b8bd169cfff364354f92b329f3ce9a63463e5b15da78364bf27f3b61e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "a3b5aef4fa8a4fd54e61c40b650a7e67826747a3",
+        "sha256": "624345b7a4e7bc417a80d308a4d559e8d7f8ab2c8cb64aa1f6b52bd197c24708"
+      },
+      "base_blob": "3b63a9b63e3d41d6a02aaced60a07a199e49b125",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/mentions.test.ts",
+      "exists": true,
+      "sha256": "6a956e93ae02925a0291feb2e767c1b42d0020d6ef569000ec833aee488cdc88",
+      "candidate_sha256": "6a956e93ae02925a0291feb2e767c1b42d0020d6ef569000ec833aee488cdc88",
+      "upstream_sha256": "6a956e93ae02925a0291feb2e767c1b42d0020d6ef569000ec833aee488cdc88",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "d95ab236f8b61db5390e03d1e7443f89667c3608",
+        "sha256": "6a956e93ae02925a0291feb2e767c1b42d0020d6ef569000ec833aee488cdc88"
+      },
+      "base_blob": "454ce85b7fc3d7a879adef9a74cf6dbb28f4671b",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/messageStore.test.ts",
+      "exists": true,
+      "sha256": "1afa06477aeaa68d9b897d9a480750a2f92d6a0530ea8f4dbd5ef257a5ccc3a3",
+      "candidate_sha256": "9841271725c68b46ba23417d0924edcd3fe762a66559823b819e8b86a31d9731",
+      "upstream_sha256": "9841271725c68b46ba23417d0924edcd3fe762a66559823b819e8b86a31d9731",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "71e4421d388db47b881b141f1afafdce6a5dadd1",
+        "sha256": "1afa06477aeaa68d9b897d9a480750a2f92d6a0530ea8f4dbd5ef257a5ccc3a3"
+      },
+      "base_blob": "7fd2f9a6629c1b2ea8e84faf204c91c0b08d98fc",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/runBlocks.test.ts",
+      "exists": true,
+      "sha256": "db0b07b92e0b5bbd2163246168014d07f74bfec5c92847df871544c63bf96d0a",
+      "candidate_sha256": "47a062212376a3e8543fe485fd45816687b0f3d5ae28ddfac6360ab54fbec85d",
+      "upstream_sha256": "47a062212376a3e8543fe485fd45816687b0f3d5ae28ddfac6360ab54fbec85d",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "ab38eed315b84eb9f6cda8bd7802760607d006cc",
+        "sha256": "db0b07b92e0b5bbd2163246168014d07f74bfec5c92847df871544c63bf96d0a"
+      },
+      "base_blob": "1146d303d9e6b7e61e7f1061e6feb733f7a939ff",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "client/src/tests/sessionTurns.test.ts",
+      "exists": false,
+      "candidate_sha256": null,
+      "upstream_sha256": null,
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": "07593ec2a76dddb48eb468c9dcf04acff3908fd7",
+      "present_in_primary_index": false
+    },
+    {
+      "path": "client/src/tests/workTrace.test.ts",
+      "exists": true,
+      "sha256": "e109e0d0419906f61b714ddb871f3c8ed13cb41a8bc0b89a72fbb0ccdd1dc54d",
+      "candidate_sha256": "4a7733884e67c7a7ef6774b0781905134f681cc7e614566691edf4294a2e6c2c",
+      "upstream_sha256": "bca0aee7af88d3c352c11c182f43e8c9abdc2838332af6e420bde716b847ee0c",
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "9aedc0f39b4bd70cb73e9d4a163ca89a0fc1892c",
+        "sha256": "db0a98b699944d3b5b8a1ad547f029bb7a5adf81a227d1615d030dd28fc2a129"
+      },
+      "base_blob": "9aedc0f39b4bd70cb73e9d4a163ca89a0fc1892c",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "docs/external-agent-access.md",
+      "exists": true,
+      "sha256": "11782b4c3051f027de4d2c787a98bb3be110e535a0f16e19c822101099ef40b0",
+      "candidate_sha256": "ba5d6666026253f234de9f3149c81fb88fbef59b402c7dcf25c0ce8902c971f4",
+      "upstream_sha256": "ba5d6666026253f234de9f3149c81fb88fbef59b402c7dcf25c0ce8902c971f4",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "scripts/check-elixir-data-compat.mjs",
+      "exists": true,
+      "sha256": "a40718ee7cf74e0eee2f49bdebba7cf13a83806dd5e4dd063f1e859ad11f1127",
+      "candidate_sha256": "f7fde6fb101bec18d4e431935264c85780cd8db5bce64608d03ae08211304b40",
+      "upstream_sha256": "f7fde6fb101bec18d4e431935264c85780cd8db5bce64608d03ae08211304b40",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "aacc65c204e5af6fbb7c5d58b7eff334c62a405f",
+        "sha256": "a40718ee7cf74e0eee2f49bdebba7cf13a83806dd5e4dd063f1e859ad11f1127"
+      },
+      "base_blob": "9cd20010c682c08aba577503710622b8e5cec28f",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "scripts/check-elixir-data-compat.test.mjs",
+      "exists": true,
+      "sha256": "3443528be618f0bbdf6bc15824e581afc3bf8b21c60461d0aebdb120fd3a6f74",
+      "candidate_sha256": "bfbe81b25d18344480c7942a2a752527a09b48b8ad55257c5159345340df786e",
+      "upstream_sha256": "bfbe81b25d18344480c7942a2a752527a09b48b8ad55257c5159345340df786e",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "94d5532056528f9f7870ff8e1c92c6d8b4d12bbe",
+        "sha256": "3443528be618f0bbdf6bc15824e581afc3bf8b21c60461d0aebdb120fd3a6f74"
+      },
+      "base_blob": "91ea9e58a0e5f345c83ccd8a9d8d7f8da5a2119c",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "scripts/copy-cli-agent-wrappers.cjs",
+      "exists": true,
+      "sha256": "1b4aaf1a55c807b770cc6a0d7943369e54486b77760b137ba0163f1d0cccc311",
+      "candidate_sha256": "c081752afd5bb380ab0f421576acfec8aa9ea68f680daf5e1ffe78a35f2c9233",
+      "upstream_sha256": "c081752afd5bb380ab0f421576acfec8aa9ea68f680daf5e1ffe78a35f2c9233",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "b31c602a05af47f917feefa20692a032383ff4a0",
+        "sha256": "60ce394ae7bd58ae0f662a55ed42a5897ab74e227e52d0bb928c106bb218a700"
+      },
+      "base_blob": "b31c602a05af47f917feefa20692a032383ff4a0",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "scripts/external-agent-client.cjs",
+      "exists": true,
+      "sha256": "cdb3dd164e1708de7d9bd3e1ef47c4aad29b06618cae7ec0a1ed361ea8301d3b",
+      "candidate_sha256": "cdb3dd164e1708de7d9bd3e1ef47c4aad29b06618cae7ec0a1ed361ea8301d3b",
+      "upstream_sha256": "cdb3dd164e1708de7d9bd3e1ef47c4aad29b06618cae7ec0a1ed361ea8301d3b",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    },
+    {
+      "path": "scripts/test-chat-mission-e2e.mjs",
+      "exists": true,
+      "sha256": "087c5c224dc569a3b5ec9027d3c501a3ca17c87b49eb3e435e6b319462d90967",
+      "candidate_sha256": "87350d85e72933f8a7462178164b8c4ae1a5b2687db39689646697ce2797828a",
+      "upstream_sha256": "87350d85e72933f8a7462178164b8c4ae1a5b2687db39689646697ce2797828a",
+      "disposition": "already shipped or superseded by current master",
+      "primary_unchanged": true,
+      "index_entry": {
+        "mode": "100644",
+        "blob": "b489fb9418b500aa1f970045ae368fd782473228",
+        "sha256": "087c5c224dc569a3b5ec9027d3c501a3ca17c87b49eb3e435e6b319462d90967"
+      },
+      "base_blob": "60813952842f60d3bda7129b85c2f4ed5f604d1c",
+      "present_in_primary_index": true
+    },
+    {
+      "path": "scripts/test-chat-projection-browser.mjs",
+      "exists": true,
+      "sha256": "d68f5d00aada69820b9772a47f2bc630456c497d87ac14407425439ab77f4c08",
+      "candidate_sha256": "4fd736510049a74e2a09519080af84dea62943a8d54fed5b5e84fea41a07010e",
+      "upstream_sha256": null,
+      "disposition": "included; reconciled with current master and accepted candidates",
+      "primary_unchanged": true,
+      "index_entry": null,
+      "base_blob": null,
+      "present_in_primary_index": false
+    }
+  ],
+  "primary_index_unchanged": true,
+  "snapshot_commit": "cdf8513b51d4633c2a9c003832af743707bfc120",
+  "upstream": "e619d5770bcd4c9e4c9b301be091e7d54e75cea5",
+  "snapshot_location": "/tmp/bf273e-snapshot",
+  "authority_note": "af78b3c9-fa42-46a3-9945-9df7235283f0",
+  "authority_revision": "note-v1:1",
+  "snapshot_artifacts": {
+    "primary.index": "0cb50158d36fd7f1a1603b5d11106ac7cc6a7e8147bdcfca359d5bd827e62c5e",
+    "staged.patch": "946647c3b6a513b44b2880c01a4cb22e0de22fa1883c6eb8915ecf1fe6db0dee",
+    "unstaged.patch": "aa8cc88b9131a03893b7a3755750b5a0c2cfd442af58d808904e3f0c7c2517a5",
+    "combined.patch": "699d40b229314972fdedec2f59395e2af361e418efd719a24f0d65ea4717de0a"
+  }
+}

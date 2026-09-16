@@ -10,7 +10,7 @@ import { hasVisibleChatMessageContent, isEmptyChatMessage, isLiveAgentPlaceholde
 import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
 import { missionMessageIdentities, type MissionMessageIdentity } from './missionIdentity';
-import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
+import { humanizeActivityLine, previewStructuredDetail, recentActivityLines } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
 
 export interface ChatMessageGroup {

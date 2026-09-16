@@ -1,0 +1,9 @@
+4:30:27 PM [vite] (client) Re-optimizing dependencies because vite config has changed
+PASS after summary/status/layout 1280 running keyboard/click
+PASS after summary/status/layout 1280 completed keyboard/click
+PASS after summary/status/layout 1280 failed keyboard/click
+PASS after summary/status/layout 1280 canceled keyboard/click
+PASS after summary/status/layout 390 running keyboard/click
+PASS after summary/status/layout 390 completed keyboard/click
+PASS after summary/status/layout 390 failed keyboard/click
+PASS after summary/status/layout 390 canceled keyboard/click

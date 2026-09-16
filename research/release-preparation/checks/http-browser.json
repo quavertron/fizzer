@@ -1,0 +1,43 @@
+{
+  "fixture": "Combined real App -> loopback Bandit Router -> isolated SQLite and markdown files. Auth session, listing and sockets controlled; note GET/PUT real HTTP.",
+  "writes": [
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n- [ ] Second\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n",
+      "expectedRevision": "note-v1:1",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n- [x] Second\n",
+      "expectedRevision": "note-v1:2",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [ ] First\n- [x] Second\n",
+      "expectedRevision": "note-v1:3",
+      "status": "network"
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [ ] First\n- [x] Second\n",
+      "expectedRevision": "note-v1:3",
+      "status": 200
+    },
+    {
+      "id": "a",
+      "content": "---\nkanban-plugin: board\nsuperkanban: true\n---\n## Queue\n\n## Accepted\n<!-- fizzer:complete-on-entry -->\n- [ ] Existing\n- [x] First\n- [x] Second\n",
+      "expectedRevision": "note-v1:4",
+      "status": 409
+    }
+  ],
+  "checks": [
+    "Actual App category flag + drag + Ctrl-S persists whole board; already-open Superkanban updates only after acknowledgement",
+    "Category flag and checked destination survive hard reload; next drag autosaves and reloads",
+    "Real note GET/PUT traversed isolated HTTP backend; actual markdown file matches flagged moved checked board after reload",
+    "Browser network failure retains draft; explicit retry persists to real backend/file and survives reload",
+    "Genuine concurrent backend revision returns HTTP 409, retains checked draft and leaves externally committed file unchanged"
+  ],
+  "errors": []
+}

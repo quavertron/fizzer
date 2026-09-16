@@ -299,30 +299,30 @@ defmodule CascadeWeb.ContentController do
 
   def search(conn, vault_id) do
     content(conn, {:vault, vault_id}, fn conn, auth, _resource ->
-        conn = fetch_query_params(conn)
-        query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
+      conn = fetch_query_params(conn)
+      query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
 
-        if query == "" do
-          JSON.send(conn, 200, %{results: []})
-        else
-          scope =
-            case conn.query_params
-                 |> Map.get("scope", "notes")
-                 |> to_string()
-                 |> String.downcase() do
-              value when value in ["notes", "chat", "all"] -> value
-              _ -> "notes"
-            end
+      if query == "" do
+        JSON.send(conn, 200, %{results: []})
+      else
+        scope =
+          case conn.query_params
+               |> Map.get("scope", "notes")
+               |> to_string()
+               |> String.downcase() do
+            value when value in ["notes", "chat", "all"] -> value
+            _ -> "notes"
+          end
 
-          results =
-            Store.search(vault_id, query, %{
-              scope: scope,
-              limit: Map.get(conn.query_params, "limit", "40"),
-              redact_private: agent?(auth)
-            })
+        results =
+          Store.search(vault_id, query, %{
+            scope: scope,
+            limit: Map.get(conn.query_params, "limit", "40"),
+            redact_private: agent?(auth)
+          })
 
-          JSON.send(conn, 200, %{results: results})
-        end
+        JSON.send(conn, 200, %{results: results})
+      end
     end)
   end
 
@@ -424,18 +424,20 @@ defmodule CascadeWeb.ContentController do
   end
 
   def preview_html(conn, note_id, asset_id) do
-    authenticated(conn, [user_only: true], fn conn, auth ->
-      with_readable_note(conn, note_id, auth.user.id, fn _note ->
-        case Assets.resolve_path(note_id, asset_id) do
-          path when is_binary(path) ->
-            if Path.extname(path) == ".html" do
-              CascadeWeb.HtmlPreview.send(conn, File.read!(path))
-            else
-              JSON.send(conn, 404, %{error: "HTML asset not found"})
-            end
-          _ -> JSON.send(conn, 404, %{error: "HTML asset not found"})
-        end
-      end, "Not found")
+    content(conn, {:note, note_id}, [user_only: true, missing: "Not found"], fn conn,
+                                                                                _auth,
+                                                                                _note ->
+      case Assets.resolve_path(note_id, asset_id) do
+        path when is_binary(path) ->
+          if Path.extname(path) == ".html" do
+            CascadeWeb.HtmlPreview.send(conn, File.read!(path))
+          else
+            JSON.send(conn, 404, %{error: "HTML asset not found"})
+          end
+
+        _ ->
+          JSON.send(conn, 404, %{error: "HTML asset not found"})
+      end
     end)
   end
 
@@ -498,46 +500,46 @@ defmodule CascadeWeb.ContentController do
   @doc "Append one newly generated local-agent caption to a writable note."
   def append_orbit_caption(conn, note_id) do
     content(conn, {:note, note_id}, [write: true], fn conn, auth, existing ->
-          label = caption_value(body_value(conn, "label", "Agent"), 120)
-          status = caption_value(body_value(conn, "status", ""), 240)
+      label = caption_value(body_value(conn, "label", "Agent"), 120)
+      status = caption_value(body_value(conn, "status", ""), 240)
 
-          if status == "" do
-            JSON.send(conn, 422, %{error: "Caption status is required"})
-          else
-            entry = "- #{label} — #{status}"
-            lines = String.split(existing.content, "\n")
+      if status == "" do
+        JSON.send(conn, 422, %{error: "Caption status is required"})
+      else
+        entry = "- #{label} — #{status}"
+        lines = String.split(existing.content, "\n")
 
-            if Enum.member?(lines, entry) do
-              JSON.send(conn, 200, %{logged: false})
-            else
-              proposal_base =
-                if agent?(auth), do: Privacy.redact_blocks(existing.content), else: existing.content
+        if Enum.member?(lines, entry) do
+          JSON.send(conn, 200, %{logged: false})
+        else
+          proposal_base =
+            if agent?(auth), do: Privacy.redact_blocks(existing.content), else: existing.content
 
-              content = String.trim_trailing(proposal_base) <> "\n" <> entry <> "\n"
+          content = String.trim_trailing(proposal_base) <> "\n" <> entry <> "\n"
 
-              opts = [
-                expected_revision: Privacy.note_revision(existing),
-                actor_origin: if(agent?(auth), do: :agent, else: :human),
-                auth: mutation_auth(conn, auth)
-              ]
+          opts = [
+            expected_revision: Privacy.note_revision(existing),
+            actor_origin: if(agent?(auth), do: :agent, else: :human),
+            auth: mutation_auth(conn, auth)
+          ]
 
-              case Store.update_note(note_id, content, auth.user.id, opts) do
-                {:error, %{error: "revision_required"}} ->
-                  JSON.send(conn, 428, %{error: "revision_required"})
+          case Store.update_note(note_id, content, auth.user.id, opts) do
+            {:error, %{error: "revision_required"}} ->
+              JSON.send(conn, 428, %{error: "revision_required"})
 
-                {:error, %{error: "revision_conflict", note: current}} ->
-                  JSON.send(conn, 409, %{
-                    error: "revision_conflict",
-                    note: Privacy.redact_note(current, agent?(auth))
-                  })
+            {:error, %{error: "revision_conflict", note: current}} ->
+              JSON.send(conn, 409, %{
+                error: "revision_conflict",
+                note: Privacy.redact_note(current, agent?(auth))
+              })
 
-                note ->
-                  Versions.create(note.id, note.content, "orbit-caption")
-                  emit_note_changed(conn, note)
-                  JSON.send(conn, 200, %{logged: true})
-              end
-            end
+            note ->
+              Versions.create(note.id, note.content, "orbit-caption")
+              emit_note_changed(conn, note)
+              JSON.send(conn, 200, %{logged: true})
           end
+        end
+      end
     end)
   end
 
@@ -568,6 +570,7 @@ defmodule CascadeWeb.ContentController do
     do: emit(conn, %{event: "vault:noteChanged", noteId: id, vaultId: vault_id, title: title})
 
   defp emit_note_changed(_conn, _note), do: :ok
+
   defp mutation_auth(conn, auth) do
     base = %{actor_id: auth.user.id, origin: if(agent?(auth), do: :agent, else: :human)}
 
@@ -606,7 +609,6 @@ defmodule CascadeWeb.ContentController do
       _ -> nil
     end
   end
-
 
   defp emit(conn, intent) do
     options = Map.get(conn.assigns, :domain_options, [])

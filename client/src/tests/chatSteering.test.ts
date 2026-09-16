@@ -1,3 +1,5 @@
+import { ChatMissionCard } from '../components/ChatMissionCard';
+import { CascadeRunPanel } from '../components/CascadeRunPanel';
 import { applyRemoteChatMessage, captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
 import { ChatGroupRow } from "../components/ChatGroupRow";
 import { createElement } from 'react';
@@ -140,7 +142,7 @@ describe('agent steering presentation', () => {
     expect(markup).not.toContain('crp-term-stream');
   });
 
-  it('shows delegated task names and waiting state in a collapsed active mission', () => {
+  it('shows the pending task summary in a collapsed queued mission', () => {
     const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
       mission: {
         id: 'mission', rootMessageId: 'root', title: 'Fix progress', objective: '',
@@ -155,10 +157,9 @@ describe('agent steering presentation', () => {
       traceContent: createElement('span', null, 'Checking current progress'),
     }));
     expect(markup).toContain('Validate the implementation');
-    expect(markup).toContain('pending');
-    expect(markup).toContain('waiting for dependencies');
-    expect(markup).toContain('subagent');
-    expect(markup).toContain('Checking current progress');
+    expect(markup).toContain('Queued · Validate the implementation');
+    expect(markup).toContain('queued');
+    expect(markup).not.toContain('Checking current progress');
     expect(markup).not.toContain('chat-mission-card is-active is-live is-open');
   });
 
@@ -168,7 +169,7 @@ describe('agent steering presentation', () => {
       selectedMessageId: null, onCancelRun: () => {}, onContextMenu: () => {},
       onReply: () => {}, runningMessageState: new Map(),
     }));
-    expect(markup).toContain('Completed activity');
+    expect(markup).toContain('Validation passed.');
     expect(markup).not.toContain('chat-work-trace-body');
   });
 
@@ -209,8 +210,7 @@ describe('agent steering presentation', () => {
     expect(markup).toContain('is-live');
     expect(markup.includes('is-embedded')).toBe(embedded);
     expect(markup.includes('is-open')).toBe(false);
-    expect(markup).not.toContain(live.body);
-    expect(markup).toContain('Working…');
+    expect(markup).toContain(live.body);
     expect(markup).not.toContain('chat-work-lines');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain('chat-work-trace-body');

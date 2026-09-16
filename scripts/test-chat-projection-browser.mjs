@@ -86,6 +86,14 @@ try {
       });
       await page.route('**/runs/*/cancel', (route) => failStop
         ? route.fulfill({ status: 503, json: { error: 'Injected stop outage' } }) : route.continue());
+      // Current recovery polls channel snapshots, not individual run messages.
+      await page.route(/\/channels\/[^/]+\/messages(?:\?.*)?$/, (route) => {
+        if (failHydration && route.request().method() === 'GET') {
+          failedHydrations++;
+          return route.fulfill({ status: 503, json: { error: 'Injected snapshot outage' } });
+        }
+        return route.continue();
+      });
       await page.route('**/messages/agent-dispatch-*', (route) => {
         if (failStop && route.request().method() === 'DELETE') {
           return route.fulfill({ status: 503, json: { error: 'Injected stop outage' } });
@@ -184,43 +192,21 @@ try {
   await bothSee('Fresh session confirmed.');
   runner.disconnect();
   await until(async () => !(await request('/api/me/desktop-runner', null, token)).online, 'runner offline');
-  const canceledDispatches = [];
-  for (const mobile of [false, true]) {
-    await pages[0].setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 });
-    if (mobile) await pages[0].locator('#sidebar').getByTitle('Collapse sidebar', { exact: true }).tap();
-    const stopped = await admit(`@sol cancel this queued ${mobile ? 'touch' : 'desktop'} request`);
-    const id = `agent-dispatch-${stopped.dispatches[0].id}`;
-    canceledDispatches.push(id);
-    const stop = pages[0].locator(`[data-message-id="${id}"]`).getByRole('button', { name: 'Stop run', exact: true });
-    await stop.waitFor();
-    if (!mobile) {
-      failStop = true;
-      await stop.click();
-      await until(async () => await stop.isEnabled() && await stop.getAttribute('title') === 'Injected stop outage', 'queued Stop failure is retryable');
-      failStop = false;
-    }
-    if (mobile) await stop.tap();
-    else await stop.click();
-    for (const page of pages) await until(async () => !(await page.locator(`[data-message-id="${id}"]`).count()), 'queued shell removed on both clients');
-  }
-  await pages[0].setViewportSize({ width: 1280, height: 900 });
+  // Master keeps offline outbox work quiet until runner registration (b512bc75).
+  // A queued Stop control requires an actual shell; do not invent one here.
   const admission = await admit('@sol finish after my browser closes');
   assert(admission.dispatches.length > 0, 'Admission returns durable dispatches');
   assert.equal(delegated.length, 7, 'No delegation while the runner is offline');
   await pages[0].close();
   pages.shift();
   await pages[0].getByRole('log').getByText('@sol finish after my browser closes', { exact: true }).waitFor();
-  await pages[0].getByRole('log').getByText(/^queued(?:…|\.{3})?$/i).first().waitFor();
+  assert.equal(await pages[0].locator(`[data-message-id="agent-dispatch-${admission.dispatches[0].id}"]`).count(), 0, 'Offline outbox does not manufacture a queued reply');
   runner.connect();
   await until(() => delegated[7], 'server delegation after origin close and runner reconnect');
   emit(delegated[7].runId, 'status', { status: 'completed', summary: 'Completed without the origin browser.' });
   await bothSee('Completed without the origin browser.');
   await delay(1_500);
-  assert.equal(delegated.length, 8, 'Canceled queued requests never delegate after runner reconnect');
-  for (const id of canceledDispatches) {
-    const response = await fetch(`${backend.baseUrl}/api/vaults/${vault.id}/channels/${channel.id}/messages/${id}`, { headers: { authorization: `Bearer ${token}` } });
-    assert.equal(response.status, 404, 'Canceled queued shell remains deleted');
-  }
+  assert.equal(delegated.length, 8, 'Offline dispatch delegates exactly once after runner reconnect');
   await pages[0].getByTitle('Log out', { exact: true }).click();
   const readsAtLogout = requests.filter((r) => r.path.includes('/messages')).length;
   await delay(16_000);
@@ -229,7 +215,7 @@ try {
   assert.equal(requests.filter((r) => r.method === 'PATCH' && r.path.includes('/messages/')).length, 0, 'No renderer patches agent messages');
   assert.equal(requests.filter((r) => /\/runs\/\d+\/events$/.test(r.path)).length, 0, 'No per-run event backfill');
   assert.deepEqual(errors, []);
-  console.log('PASS: two browsers, real backend: send, stream, cancel, shorter final, server steering, never-connected socket, dropped frames, failed hydration, suppression recovery, reload, clear then ping without resuming a completed old session, queued observer UI, desktop/touch queued Stop, failed Stop retry, close-origin before delegation, runner reconnect without canceled dispatches, logout cleanup; ZERO client POST /runs, message PATCH, or event backfill.');
+  console.log('PASS: two browsers, real backend: send, stream, cancel, shorter final, server steering, never-connected socket, dropped frames, failed hydration, suppression recovery, reload, clear then ping without resuming a completed old session, running Stop failure/retry, quiet offline outbox, close-origin before delegation, runner reconnect, logout cleanup; ZERO client POST /runs, message PATCH, or event backfill.');
 } finally {
   await browser?.close();
   runner?.disconnect();

@@ -1,0 +1,2 @@
+4:34:19 PM [vite] (client) Re-optimizing dependencies because vite config has changed
+PASS: category opt-in/reload, native background/card drops, no reopen/retroactive/reorder completion, stale/foreign drag rejection, 403/409 draft retention, refresh/retry/reload. Fixture save contract only; App/backend remain separate integration checks.
