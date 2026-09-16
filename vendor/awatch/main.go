@@ -398,7 +398,7 @@ func appendGitDiff(out []string, ev *EditEvent) []string {
 	if ev.diffErr != "" {
 		return append(out, fmt.Sprintf("  %sdiff unavailable: %s%s", colorYellow, ev.diffErr, colorReset))
 	}
-	for _, line := range ev.diffLines {
+	for _, line := range balanceDiffWhitespace(ev.diffLines) {
 		color := colorReset
 		switch {
 		case strings.HasPrefix(line, "@@"):
@@ -411,6 +411,92 @@ func appendGitDiff(out []string, ev *EditEvent) []string {
 		out = append(out, fmt.Sprintf("  %s%s%s", color, line, colorReset))
 	}
 	return out
+}
+
+func balanceDiffWhitespace(lines []string) []string {
+	var result []string
+	var currentHunk []string
+
+	flush := func() {
+		if len(currentHunk) > 0 {
+			result = append(result, balanceHunk(currentHunk)...)
+			currentHunk = nil
+		}
+	}
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			flush()
+			result = append(result, line)
+		} else {
+			currentHunk = append(currentHunk, line)
+		}
+	}
+	flush()
+	return result
+}
+
+func balanceHunk(lines []string) []string {
+	var commonPrefix string
+	first := true
+
+	for _, line := range lines {
+		if len(line) == 0 || (line[0] != '+' && line[0] != '-' && line[0] != ' ') {
+			continue
+		}
+		content := line[1:]
+		if strings.Trim(content, " \t\r\n") == "" {
+			continue
+		}
+		ws := leadingWhitespace(content)
+		if first {
+			commonPrefix = ws
+			first = false
+		} else {
+			commonPrefix = commonPrefixOf(commonPrefix, ws)
+			if commonPrefix == "" {
+				break
+			}
+		}
+	}
+
+	if commonPrefix == "" || first {
+		return lines
+	}
+
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) == 0 || (line[0] != '+' && line[0] != '-' && line[0] != ' ') {
+			out = append(out, line)
+			continue
+		}
+		prefix := line[0]
+		content := line[1:]
+		if strings.Trim(content, " \t\r\n") == "" {
+			out = append(out, string(prefix))
+		} else {
+			out = append(out, string(prefix)+strings.TrimPrefix(content, commonPrefix))
+		}
+	}
+	return out
+}
+
+func leadingWhitespace(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return s[:i]
+}
+
+func commonPrefixOf(a, b string) string {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:n]
 }
 
 // gitDiffLines delegates alignment and hunk generation to Git. Headers naming

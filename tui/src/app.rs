@@ -10,6 +10,7 @@ pub const HEADER_HEIGHT: u16 = 1;
 pub struct InlineSvgBlock {
     pub start_line: usize,
     pub rows: u16,
+    pub width: Option<u16>,
     pub image_id: u32,
     pub svg: String,
 }

@@ -1,3 +1,5 @@
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use ratatui::layout::Rect;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -54,12 +56,14 @@ pub fn image_id(message_id: &str, index: usize, svg: &str) -> u32 {
 #[derive(Default)]
 pub struct Display {
     shown: HashMap<u32, Rect>,
+    uploaded: HashSet<u32>,
     enabled: bool,
 }
 impl Display {
     pub fn new() -> Self {
         Self {
             shown: HashMap::new(),
+            uploaded: HashSet::new(),
             enabled: is_kitty_terminal(),
         }
     }
@@ -76,23 +80,49 @@ impl Display {
             .filter(|id| !ids.contains(id))
             .collect::<Vec<_>>()
         {
-            delete(out, id)?;
+            delete_placement(out, id)?;
             self.shown.remove(&id);
         }
+
+        if self.uploaded.len() > 64 {
+            let evictable: Vec<u32> = self
+                .uploaded
+                .iter()
+                .copied()
+                .filter(|id| !self.shown.contains_key(id))
+                .take(self.uploaded.len() - 64)
+                .collect();
+            for id in evictable {
+                delete(out, id)?;
+                self.uploaded.remove(&id);
+            }
+        }
+
         for item in current {
+            if item.area.width == 0 || item.area.height == 0 {
+                continue;
+            }
             if self.shown.get(&item.image_id) == Some(&item.area) {
                 continue;
             }
-            if self.shown.contains_key(&item.image_id) {
-                delete(out, item.image_id)?;
+            if self.uploaded.contains(&item.image_id) {
+                if self.shown.contains_key(&item.image_id) {
+                    delete_placement(out, item.image_id)?;
+                }
+                place_existing(out, &item)?;
+            } else {
+                if self.shown.contains_key(&item.image_id) {
+                    delete(out, item.image_id)?;
+                }
+                transmit(out, &item)?;
+                self.uploaded.insert(item.image_id);
             }
-            transmit(out, &item)?;
             self.shown.insert(item.image_id, item.area);
         }
         out.flush()
     }
     pub fn clear(&mut self, out: &mut impl Write) -> io::Result<()> {
-        for id in self.shown.keys().copied().collect::<Vec<_>>() {
+        for id in self.uploaded.drain() {
             delete(out, id)?;
         }
         self.shown.clear();
@@ -102,6 +132,20 @@ impl Display {
 fn delete(out: &mut impl Write, id: u32) -> io::Result<()> {
     write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
 }
+fn delete_placement(out: &mut impl Write, id: u32) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")
+}
+fn place_existing(out: &mut impl Write, item: &Placement) -> io::Result<()> {
+    write!(
+        out,
+        "\x1b7\x1b[{};{}H\x1b_Ga=p,i={},c={},r={},q=2\x1b\\\x1b8",
+        item.area.y + 1,
+        item.area.x + 1,
+        item.image_id,
+        item.area.width,
+        item.area.height,
+    )
+}
 fn transmit(out: &mut impl Write, item: &Placement) -> io::Result<()> {
     let encoded = encode(item)?;
     write!(out, "\x1b7\x1b[{};{}H", item.area.y + 1, item.area.x + 1)?;
@@ -109,33 +153,50 @@ fn transmit(out: &mut impl Write, item: &Placement) -> io::Result<()> {
     out.write_all(b"\x1b8")
 }
 
-// The native helper owns the SVG protocol. Rust only places its output in the TUI.
 fn encode(item: &Placement) -> io::Result<Vec<u8>> {
-    let binary = std::env::var_os("FIZZER_PURRVECT_BIN")
-        .map(PathBuf::from)
-        .or_else(|| {
-            [
-                std::env::current_exe()
-                    .ok()
-                    .map(|p| p.with_file_name("purrvect")),
-                Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.native-tools/purrvect")),
-                Some(PathBuf::from("/usr/local/libexec/fizzer/purrvect")),
-            ]
-            .into_iter()
-            .flatten()
-            .find(|p| p.is_file())
-        })
-        .unwrap_or_else(|| PathBuf::from("purrvect"));
-    static ENCODE_CACHE: Mutex<Option<HashMap<(u32, u16, u16), Vec<u8>>>> = Mutex::new(None);
-    let cache_key = (item.image_id, item.area.width, item.area.height);
-    if let Ok(guard) = ENCODE_CACHE.lock() {
-        if let Some(cache) = guard.as_ref() {
-            if let Some(bytes) = cache.get(&cache_key) {
-                return Ok(bytes.clone());
-            }
-        }
+    if let Some(binary) = std::env::var_os("FIZZER_PURRVECT_BIN") {
+        return encode_external(PathBuf::from(binary), item);
+    }
+    encode_native(item)
+}
+
+fn encode_native(item: &Placement) -> io::Result<Vec<u8>> {
+    let bytes = item.svg.as_bytes();
+    if bytes.is_empty() {
+        return Err(io::Error::other("purrvect: SVG must be 1 byte to 4 MiB"));
+    }
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        return Err(io::Error::other("purrvect: SVG must be 1 byte to 4 MiB"));
     }
 
+    let mut output = Vec::new();
+    let chunk_size = 3072;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let n = std::cmp::min(chunk_size, bytes.len() - offset);
+        let slice = &bytes[offset..offset + n];
+        let more = if offset + n < bytes.len() { 1 } else { 0 };
+        if offset == 0 {
+            let header = format!(
+                "\x1b_Ga=T,f=1001,t=d,c={},r={},i={},q=2,m={};",
+                item.area.width, item.area.height, item.image_id, more
+            );
+            output.extend_from_slice(header.as_bytes());
+        } else {
+            let header = format!("\x1b_Gm={};", more);
+            output.extend_from_slice(header.as_bytes());
+        }
+        let encoded_chunk = BASE64_STANDARD.encode(slice);
+        output.extend_from_slice(encoded_chunk.as_bytes());
+        output.extend_from_slice(b"\x1b\\");
+        offset += n;
+    }
+    output.push(b'\r');
+    Ok(output)
+}
+
+fn encode_external(binary: PathBuf, item: &Placement) -> io::Result<Vec<u8>> {
     let mut child = Command::new(binary)
         .args([
             "encode",
@@ -160,19 +221,67 @@ fn encode(item: &Placement) -> io::Result<Vec<u8>> {
         )));
     }
     written?;
-    if let Ok(mut guard) = ENCODE_CACHE.lock() {
-        let cache = guard.get_or_insert_with(HashMap::new);
-        if cache.len() > 100 {
-            cache.clear();
-        }
-        cache.insert(cache_key, result.stdout.clone());
-    }
     Ok(result.stdout)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InlinePart<'a> {
     Text(&'a str),
-    Svg(Cow<'a, str>),
+    Svg {
+        svg: Cow<'a, str>,
+        width: Option<u16>,
+        height: Option<u16>,
+    },
+}
+
+fn parse_fence_dimensions(header: &str) -> Option<(&str, Option<u16>, Option<u16>)> {
+    let mut parts = header.split_whitespace();
+    let lang = parts.next()?;
+    if !lang.eq_ignore_ascii_case("svg") && !lang.eq_ignore_ascii_case("mermaid") {
+        return None;
+    }
+    let mut width = None;
+    let mut height = None;
+    let mut iter = parts.peekable();
+    while let Some(tok) = iter.next() {
+        let lower = tok.to_ascii_lowercase();
+        if lower == "--height" || lower == "-h" || lower == "--rows" || lower == "-r" {
+            if let Some(val) = iter.next() {
+                if let Ok(h) = val.parse::<u16>() {
+                    height = Some(h.clamp(1, 100));
+                }
+            }
+        } else if lower == "--width" || lower == "-w" || lower == "--cols" || lower == "-c" {
+            if let Some(val) = iter.next() {
+                if let Ok(w) = val.parse::<u16>() {
+                    width = Some(w.clamp(1, 4096));
+                }
+            }
+        } else if let Some(val) = lower
+            .strip_prefix("height=")
+            .or_else(|| lower.strip_prefix("rows="))
+            .or_else(|| lower.strip_prefix("h="))
+            .or_else(|| lower.strip_prefix("--height="))
+            .or_else(|| lower.strip_prefix("--rows="))
+        {
+            if let Ok(h) = val.parse::<u16>() {
+                height = Some(h.clamp(1, 100));
+            }
+        } else if let Some(val) = lower
+            .strip_prefix("width=")
+            .or_else(|| lower.strip_prefix("cols="))
+            .or_else(|| lower.strip_prefix("w="))
+            .or_else(|| lower.strip_prefix("--width="))
+            .or_else(|| lower.strip_prefix("--cols="))
+        {
+            if let Ok(w) = val.parse::<u16>() {
+                width = Some(w.clamp(1, 4096));
+            }
+        } else if let Ok(n) = tok.parse::<u16>() {
+            height = Some(n.clamp(1, 100));
+        }
+    }
+    Some((lang, width, height))
 }
 
 fn render_mermaid(source: &str) -> Option<String> {
@@ -229,17 +338,33 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
             let body = input[after..close].find('\n').map(|n| after + n + 1);
             match body {
                 Some(body) if count >= 3 => {
-                    let language = input[after..body].trim();
-                    if language.eq_ignore_ascii_case("svg") {
-                        Some((
-                            start,
-                            cursor,
-                            InlinePart::Svg(Cow::Borrowed(&input[body..close])),
-                        ))
-                    } else if language.eq_ignore_ascii_case("mermaid") {
-                        render_mermaid(&input[body..close]).map(|svg| {
-                            (start, cursor, InlinePart::Svg(Cow::Owned(svg)))
-                        })
+                    let header = input[after..body].trim();
+                    if let Some((lang, width, height)) = parse_fence_dimensions(header) {
+                        if lang.eq_ignore_ascii_case("svg") {
+                            Some((
+                                start,
+                                cursor,
+                                InlinePart::Svg {
+                                    svg: Cow::Borrowed(&input[body..close]),
+                                    width,
+                                    height,
+                                },
+                            ))
+                        } else if lang.eq_ignore_ascii_case("mermaid") {
+                            render_mermaid(&input[body..close]).map(|svg| {
+                                (
+                                    start,
+                                    cursor,
+                                    InlinePart::Svg {
+                                        svg: Cow::Owned(svg),
+                                        width,
+                                        height,
+                                    },
+                                )
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -258,7 +383,11 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
                     (
                         start,
                         end,
-                        InlinePart::Svg(Cow::Borrowed(&input[start..end])),
+                        InlinePart::Svg {
+                            svg: Cow::Borrowed(&input[start..end]),
+                            width: None,
+                            height: None,
+                        },
                     )
                 })
             } else {
@@ -310,7 +439,6 @@ mod tests {
         ));
     }
     #[test]
-    #[ignore = "requires npm run build:agent-tools"]
     fn native_encoder_preserves_chunked_svg_and_placement() {
         use base64::Engine;
         let svg = format!("<svg><!--{}--></svg>", "x".repeat(9000));
@@ -388,5 +516,81 @@ mod tests {
             split_inline_svgs(body).as_slice(),
             [InlinePart::Text(text)] if *text == body
         ));
+    }
+
+    #[test]
+    fn display_sync_uses_placement_on_scroll_without_retransmitting() {
+        let mut display = Display {
+            shown: HashMap::new(),
+            uploaded: HashSet::new(),
+            enabled: true,
+        };
+        let item1 = Placement {
+            image_id: 42,
+            area: Rect::new(5, 10, 30, 10),
+            svg: "<svg><rect/></svg>".to_string(),
+        };
+
+        // 1. First sync: initial placement and transmit
+        begin_frame();
+        place(item1.clone());
+        let mut out1 = Vec::new();
+        display.sync(&mut out1).unwrap();
+        let text1 = String::from_utf8(out1).unwrap();
+        assert!(text1.contains("\x1b_Ga=T,f=1001,t=d,c=30,r=10,i=42,q=2,m=0;"));
+        assert!(display.uploaded.contains(&42));
+        assert_eq!(display.shown.get(&42), Some(&item1.area));
+
+        // 2. Idle sync: no movement, no output
+        let mut out_idle = Vec::new();
+        display.sync(&mut out_idle).unwrap();
+        assert!(out_idle.is_empty());
+
+        // 3. Scroll sync: y changed from 10 to 9
+        begin_frame();
+        let item2 = Placement {
+            image_id: 42,
+            area: Rect::new(5, 9, 30, 10),
+            svg: "<svg><rect/></svg>".to_string(),
+        };
+        place(item2.clone());
+        let mut out2 = Vec::new();
+        display.sync(&mut out2).unwrap();
+        let text2 = String::from_utf8(out2).unwrap();
+        assert!(text2.contains("\x1b_Ga=d,d=i,i=42,q=2\x1b\\"));
+        assert!(text2.contains("\x1b7\x1b[10;6H\x1b_Ga=p,i=42,c=30,r=10,q=2\x1b\\\x1b8"));
+        assert!(!text2.contains("a=T"));
+        assert!(display.uploaded.contains(&42));
+
+        // 4. Scrolled off screen: delete placement only
+        begin_frame();
+        let mut out3 = Vec::new();
+        display.sync(&mut out3).unwrap();
+        let text3 = String::from_utf8(out3).unwrap();
+        assert_eq!(text3, "\x1b_Ga=d,d=i,i=42,q=2\x1b\\");
+        assert!(display.uploaded.contains(&42));
+        assert!(!display.shown.contains_key(&42));
+
+        // 5. Scrolled back on screen: re-place with a=p without retransmitting a=T
+        begin_frame();
+        let item3 = Placement {
+            image_id: 42,
+            area: Rect::new(5, 12, 30, 10),
+            svg: "<svg><rect/></svg>".to_string(),
+        };
+        place(item3);
+        let mut out4 = Vec::new();
+        display.sync(&mut out4).unwrap();
+        let text4 = String::from_utf8(out4).unwrap();
+        assert!(text4.contains("\x1b_Ga=p,i=42,c=30,r=10,q=2\x1b\\"));
+        assert!(!text4.contains("a=T"));
+
+        // 6. Clear display on exit: purges uploaded image with d=I
+        let mut out5 = Vec::new();
+        display.clear(&mut out5).unwrap();
+        let text5 = String::from_utf8(out5).unwrap();
+        assert_eq!(text5, "\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
+        assert!(display.uploaded.is_empty());
+        assert!(display.shown.is_empty());
     }
 }
