@@ -159,11 +159,36 @@ pub enum InlinePart<'a> {
 }
 
 fn render_mermaid(source: &str) -> Option<String> {
-    merman::render::HeadlessRenderer::new()
+    let site_config = merman::MermaidConfig::from_value(serde_json::json!({
+        "theme": "dark",
+        "themeVariables": {
+            "darkMode": true,
+            "background": "transparent",
+            "mainBkg": "#21262d",
+            "nodeBorder": "#58a6ff",
+            "lineColor": "#8b949e",
+            "textColor": "#f0f6fc",
+            "primaryTextColor": "#f0f6fc",
+            "primaryColor": "#21262d",
+            "primaryBorderColor": "#58a6ff",
+            "edgeLabelBackground": "#161b22"
+        }
+    }));
+    let mut svg = merman::render::HeadlessRenderer::new()
         .with_diagram_id("fizzer-mermaid")
+        .with_site_config(site_config)
         .render_svg_resvg_safe_sync(source)
         .ok()
-        .flatten()
+        .flatten()?;
+
+    let thorvg_style = "<style>.label-container { fill: #21262d; stroke: #58a6ff; stroke-width: 1.5px; }rect.label-container { fill: #21262d; stroke: #58a6ff; stroke-width: 1.5px; }polygon.label-container { fill: #21262d; stroke: #58a6ff; stroke-width: 1.5px; }.merman-foreignobject-fallback-text { fill: #f0f6fc; font-family: Arial, sans-serif; }.flowchart-link { stroke: #8b949e; stroke-width: 1.5px; fill: none; }.arrowMarkerPath { fill: #8b949e; stroke: #8b949e; }.marker { fill: #8b949e; stroke: #8b949e; }</style>";
+
+    if let Some(idx) = svg.find('>') {
+        svg.insert_str(idx + 1, thorvg_style);
+    }
+    let svg = svg.replace("fill=\"#333\"", "fill=\"#f0f6fc\"");
+    let svg = svg.replace("background-color:white", "background-color:transparent");
+    Some(svg)
 }
 
 pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
@@ -306,6 +331,28 @@ mod tests {
             .collect();
         assert_eq!(svg, ["<svg><circle/></svg>", "<svg><rect/></svg>\n"]);
     }
+
+    #[test]
+    fn renders_mermaid_dark_mode_flowchart() {
+        let body = "```mermaid\nflowchart LR\n    A[Start] --> B(Process)\n    B --> C{Decision}\n    C -- Yes --> D[Done]\n    C -- No --> B\n```";
+        let parts = split_inline_svgs(body);
+        let svgs: Vec<_> = parts
+            .into_iter()
+            .filter_map(|p| match p {
+                InlinePart::Svg(s) => Some(s),
+                InlinePart::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(svgs.len(), 1);
+        let svg = &svgs[0];
+        assert!(svg.contains("Start"));
+        assert!(svg.contains("Process"));
+        assert!(svg.contains("Decision"));
+        assert!(svg.contains("Done"));
+        assert!(svg.contains(".label-container"));
+        assert!(svg.contains("#21262d"));
+    }
+
     #[test]
     fn renders_mermaid_fences_as_svg() {
         let body = "before\n```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```\nafter";

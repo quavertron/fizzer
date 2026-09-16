@@ -27,6 +27,16 @@ extern "C" PurrvectDocument *purrvect_load(const void *data, size_t length) {
         auto doc = std::make_unique<PurrvectDocument>();
         if (tvg_engine_init(0) != TVG_RESULT_SUCCESS) return nullptr;
         doc->initialized = true;
+        static const char *font_candidates[] = {
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/SFNS.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf"
+        };
+        for (const char *path : font_candidates) {
+            if (tvg_font_load(path) == TVG_RESULT_SUCCESS) break;
+        }
         doc->picture = tvg_picture_new();
         if (!doc->picture) return nullptr;
         if (tvg_picture_load_data(doc->picture, static_cast<const char *>(data),
