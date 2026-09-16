@@ -212,7 +212,7 @@ export default function App() {
   const [folders, setFolders] = useState<Folder[]>(initialVaultListing?.folders ?? []);
   const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [chatState, setChatState] = useState<ChatState>(loadChatState);
-  const voice = useVoiceSession(activeVaultId, user?.id);
+  const voice = useVoiceSession(activeVaultId, user?.id, vaults.find(v => v.id === activeVaultId)?.name, authEpoch);
   const [loadingChatChannels, setLoadingChatChannels] = useState<Record<string, boolean>>({});
   const [chatPresenceByChannel, setChatPresenceByChannel] = useState<Record<string, ChatChannelPresence>>({});
   const [channelVaultIds, setChannelVaultIds] = useState<Record<string, string>>({});
@@ -2438,6 +2438,7 @@ export default function App() {
   }
 
   const handleLogout = () => {
+    void voice.leave();
     stopDesktopRunnerHost();
     void api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('docs_token');
@@ -3095,7 +3096,8 @@ export default function App() {
       )}
       <Suspense fallback={null}><AndroidUpdatePrompt /></Suspense>
 
-      <VoiceControls />
+      <div ref={voice.audio} hidden data-voice-audio-host />
+      {!sidebarOpen && <div className="voice-controls-detached"><VoiceControls /></div>}
       {notice && <div className="toast" role="status">{notice}</div>}
     </main>
     </VoiceContext.Provider>

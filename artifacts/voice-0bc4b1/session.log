@@ -1,0 +1,15 @@
+{
+  "checks": [
+    "idle authorized avatar",
+    "connected absent preserves and explicit clear removes",
+    "local effective API_BASE and auth pinned after mapping replacement; navigation and control remount retain audio",
+    "explicit same-ID room switch and remote to remote/local navigation retain source and privacy",
+    "same-user auth replacement disconnects",
+    "late token cancellation leaves through captured source",
+    "logout fences delayed capture",
+    "source authorization failure disconnects and clears audio",
+    "late source roster cannot paint new source"
+  ],
+  "passed": 9,
+  "kind": "React headless; mocked SFU/HTTP; no device capture"
+}

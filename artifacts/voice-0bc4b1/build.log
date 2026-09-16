@@ -1,0 +1,14 @@
+
+> fizzer@0.2.0 prebuild
+> npm install --ignore-scripts --include=dev --no-audit --no-fund
+
+
+up to date in 515ms
+
+> fizzer@0.2.0 build
+> tsc && node scripts/copy-cli-agent-wrappers.cjs && npm run build:html-preview
+
+
+> fizzer@0.2.0 build:html-preview
+> node scripts/build-html-preview.mjs
+

@@ -1,0 +1,59 @@
+{
+  "source": "/tmp/fizzer-voice-0bc4b1",
+  "kind": "real React in headless Chromium; mocked LiveKit and HTTP; no media/device/server access",
+  "checks": [
+    {
+      "case": "vault navigation retains connected room",
+      "pass": false,
+      "actual": {
+        "status": "",
+        "channel": null,
+        "disconnects": 1,
+        "stops": 1
+      }
+    },
+    {
+      "case": "authorized participant photo renders",
+      "pass": false,
+      "actual": "AAlex"
+    },
+    {
+      "case": "existing presence merge preserves absent and honors explicit clear",
+      "pass": true,
+      "actual": {
+        "lean": "photo",
+        "clear": ""
+      }
+    },
+    {
+      "case": "do not reuse local-user overlay for intentional clear",
+      "pass": false,
+      "actual": "old"
+    },
+    {
+      "case": "current API vault route survives active origin change",
+      "pass": true,
+      "actual": {
+        "url": "https://source.invalid/api/vaults/source/channels/room/voice/deafen",
+        "authorization": "Bearer source-token"
+      }
+    },
+    {
+      "case": "source route is not an immutable join-time snapshot",
+      "pass": false,
+      "actual": {
+        "url": "https://replacement.invalid/api/vaults/source/channels/room/voice/leave",
+        "authorization": "Bearer replacement-token"
+      }
+    },
+    {
+      "case": "existing logout user-change cleanup",
+      "pass": true
+    },
+    {
+      "case": "voice controls occupy sidebar footer slot (source structure)",
+      "pass": false,
+      "actual": "VoiceControls rendered at App.tsx:3086; fixed CSS; absent from Sidebar"
+    }
+  ]
+}

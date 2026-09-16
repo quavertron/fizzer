@@ -1,0 +1,53 @@
+{
+  "typedCreationPreservesFolderAndText": true,
+  "creationErrorAccessible": true,
+  "appNavigation": true,
+  "vaultNavigationRetainsAudio": true,
+  "authorizedAvatarAndClear": true,
+  "footerAboveAccount": true,
+  "musicAndVoiceFooterCoexist": true,
+  "audioEnergy": 0.6684008769132227,
+  "speaking": true,
+  "inboundRtp": [
+    {
+      "bytes": 117572,
+      "packets": 476,
+      "connectionState": "connected",
+      "iceConnectionState": "connected"
+    }
+  ],
+  "selectedCandidates": [
+    {
+      "type": "relay",
+      "protocol": "udp",
+      "address": "172.23.0.2"
+    }
+  ],
+  "authorizedRoster": true,
+  "switchPreservesPrivacy": true,
+  "phoneControls": true,
+  "reconnect": true,
+  "revocationLatencyMs": 1288,
+  "revocation": true,
+  "permissionDenial": true,
+  "defaultAndRestoredVoiceNeverCapture": true,
+  "phoneKeyboardJoin": true,
+  "pendingCaptureCancelled": true,
+  "cliUploadDownload": true,
+  "localInteraction": true,
+  "hostile": {
+    "parentDOM": "SecurityError",
+    "storage": "SecurityError",
+    "cookie": "SecurityError",
+    "rtc": "TypeError",
+    "fetch": "TypeError",
+    "socket": "blocked",
+    "srcdoc": "TypeError",
+    "innerHTML": "TypeError",
+    "policy": "TypeError",
+    "popup": "blocked",
+    "blankRealm": "SecurityError",
+    "topNav": "SecurityError"
+  },
+  "blockedExternalRequests": 0
+}

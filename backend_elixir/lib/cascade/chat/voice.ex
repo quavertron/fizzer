@@ -91,11 +91,18 @@ defmodule Cascade.Chat.Voice do
   def participants(user, vault, channel) do
     with {:ok, route} <- authorized_route(vault, channel, user.id),
          {:ok, result} <- rpc("ListParticipants", %{room: room(route)}) do
+      profiles =
+        Channel.participant_snapshot(route.sourceVaultId, route.sourceChannelId,
+          include_avatars: true
+        ).users
+        |> Map.new(&{&1.id, &1.avatarUrl})
+
       {:ok,
        %{
          participants:
            Enum.map(result["participants"] || [], fn peer ->
              %{
+               avatarUrl: participant_avatar(peer, route, profiles),
                identity: peer["identity"],
                name: peer["name"],
                muted:
@@ -107,6 +114,15 @@ defmodule Cascade.Chat.Voice do
              }
            end)
        }}
+    end
+  end
+
+  defp participant_avatar(peer, route, profiles) do
+    with true <- authorized_peer?(room(route), peer),
+         {:ok, %{"user" => user}} <- Jason.decode(peer["metadata"] || "") do
+      Map.get(profiles, user, "")
+    else
+      _ -> ""
     end
   end
 

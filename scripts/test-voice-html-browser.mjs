@@ -103,6 +103,38 @@ try {
  assert.equal(await a.evaluate(()=>window.fixtureStreams.length),beforeNavigation);
  await a.getByRole('button',{name:'Mute',exact:true}).waitFor();
  receipt.appNavigation=true;
+ // Keep the same received audio node and connection while browsing a second vault.
+ await a.waitForFunction(()=>document.querySelector('[data-voice-audio-host] audio'));
+ await a.evaluate(()=>{window.sourceAudio=document.querySelector('[data-voice-audio-host] audio');window.sourcePCs=window.fixturePCs.length;});
+ await a.locator(`[data-vault-id="${c.secondVault}"]`).click();
+ await a.getByRole('button',{name:'Mute',exact:true}).waitFor();
+ assert.equal(await a.evaluate(()=>window.sourceAudio===document.querySelector('[data-voice-audio-host] audio')&&window.fixturePCs.length===window.sourcePCs),true);
+ assert.match(await a.locator('.sidebar .voice-connection').innerText(),/Voice fixture/);
+ await a.locator(`[data-vault-id="${c.vault}"]`).click();
+ await a.getByRole('button',{name:'Join Voice fixture voice channel',exact:true}).waitFor();
+ assert.equal(await a.evaluate(()=>window.fixtureStreams.length),beforeNavigation);
+ receipt.vaultNavigationRetainsAudio=true;
+ await a.locator('.sidebar .voice-avatar img').first().waitFor();
+ await b.locator('.sidebar .voice-avatar img').first().waitFor();
+ const cleared=await fetch(c.upstream+'/fixture/clear-avatar',{method:'POST',headers:{'x-fixture-key':c.key}});assert.equal(cleared.status,200);
+ await a.waitForFunction(()=>document.querySelectorAll('.sidebar .voice-avatar img').length===0);
+ await b.waitForFunction(()=>document.querySelectorAll('.sidebar .voice-avatar img').length===0);
+ receipt.authorizedAvatarAndClear=true;
+ const voiceBounds=await a.locator('.sidebar .voice-controls').boundingBox();
+ const accountBounds=await a.locator('.sidebar-footer').boundingBox();
+ assert.ok(voiceBounds.y+voiceBounds.height<=accountBounds.y);
+ receipt.footerAboveAccount=true;
+ // Drive the existing music footer's event contract without playing external media.
+ await a.evaluate(()=>dispatchEvent(new CustomEvent('cascade:youtube-embed-state',{detail:{videoId:'synthetic-only',title:'Synthetic music',url:'https://synthetic.invalid',state:1}})));
+ await a.locator('.sidebar-audio-player').waitFor();
+ await a.setViewportSize({width:1000,height:600});
+ const music=await a.locator('.sidebar-audio-player').boundingBox();
+ const voiceFooter=await a.locator('.sidebar .voice-controls').boundingBox();
+ const account=await a.locator('.sidebar-footer').boundingBox();
+ assert.ok(music.y+music.height<=voiceFooter.y&&voiceFooter.y+voiceFooter.height<=account.y&&account.y+account.height<=600);
+ await a.getByRole('button',{name:'Close player',exact:true}).click();
+ await a.setViewportSize({width:1280,height:900});
+ receipt.musicAndVoiceFooterCoexist=true;
 
  await b.waitForFunction(()=>document.querySelectorAll('audio').length>0);
  await b.evaluate(()=>{const ctx=new AudioContext();const analyser=ctx.createAnalyser();ctx.createMediaStreamSource(document.querySelector('audio').srcObject).connect(analyser);window.fixtureAnalyser=analyser;window.fixtureAnalyserContext=ctx;});
@@ -144,6 +176,7 @@ try {
  await a.getByRole('button',{name:'Mute',exact:true}).waitFor();
  receipt.switchPreservesPrivacy=true;
  if(output)await a.screenshot({path:path.join(output,'voice-desktop.png'),fullPage:true});
+ await a.evaluate(()=>{window.mobileAudio=document.querySelector('[data-voice-audio-host] audio');});
  // Phone layout uses the same live session and keeps controls visible with the drawer closed.
  await a.getByRole('button',{name:'Collapse members',exact:true}).click();
  await a.setViewportSize({width:390,height:844});
@@ -154,6 +187,19 @@ try {
  if(output)await a.screenshot({path:path.join(output,'voice-phone.png'),fullPage:true});
  await a.getByRole('button',{name:'Mute',exact:true}).click();
  await a.getByRole('button',{name:'Unmute',exact:true}).click();
+ for(const width of [800,390]) {
+  await a.setViewportSize({width,height:844});
+  await a.getByRole('button',{name:'Expand sidebar',exact:true}).first().click();
+  const footer=await a.locator('.sidebar .voice-controls').boundingBox();
+  const settings=await a.locator('.sidebar-footer').boundingBox();
+  assert.ok(footer.y+footer.height<=settings.y&&settings.y+settings.height<=844);
+  await a.getByRole('button',{name:'Mute',exact:true}).click();
+  await a.getByRole('button',{name:'Unmute',exact:true}).click();
+  await a.getByRole('button',{name:'Collapse sidebar',exact:true}).click();
+  await a.getByRole('button',{name:'Deafen',exact:true}).click();
+  await a.getByRole('button',{name:'Undeafen',exact:true}).click();
+  assert.equal(await a.evaluate(()=>window.mobileAudio===document.querySelector('[data-voice-audio-host] audio')),true);
+ }
  await a.setViewportSize({width:1280,height:900});
  // Reopen the drawer after mobile navigation.
  await a.getByRole('button',{name:'Expand sidebar',exact:true}).first().click();
@@ -176,7 +222,7 @@ try {
  await a.getByRole('button',{name:'Mute',exact:true}).waitFor();
  await b.waitForFunction(()=>document.querySelectorAll('.sidebar [aria-label="Voice participants"] li').length===2);
  const revokeStart=Date.now();const revoked=await fetch(c.upstream+'/fixture/revoke',{method:'POST',headers:{'x-fixture-key':c.key}});assert.equal(revoked.status,200);
- await b.getByRole('alert').filter({hasText:'Voice disconnected'}).waitFor({timeout:15000});
+ await b.getByRole('alert').filter({hasText:/Voice disconnected|Voice access ended/}).waitFor({timeout:15000});
  receipt.revocationLatencyMs=Date.now()-revokeStart;
  await b.getByRole('button',{name:'Join Voice fixture voice channel',exact:true}).click();
  await b.getByRole('alert').waitFor();receipt.revocation=true;

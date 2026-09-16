@@ -1,3 +1,16 @@
+defmodule CascadeWeb.VoiceRosterFixture do
+  import Plug.Conn
+  def init(opts), do: opts
+
+  def call(conn, _) do
+    peers = Application.fetch_env!(:cascade_elixir, :voice_roster_fixture)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{participants: peers}))
+  end
+end
+
 defmodule CascadeWeb.VoiceHtmlFixtureRouter do
   import Plug.Conn
   def init(opts), do: opts
@@ -13,6 +26,17 @@ defmodule CascadeWeb.VoiceHtmlFixtureRouter do
       ])
 
       send_resp(conn, 200, "revoked")
+    else
+      send_resp(conn, 403, "denied")
+    end
+  end
+
+  def call(%{request_path: "/fixture/clear-avatar"} = conn, _) do
+    %{key: key, user: user} = Application.fetch_env!(:cascade_elixir, :voice_fixture)
+
+    if get_req_header(conn, "x-fixture-key") == [key] do
+      Cascade.Accounts.SQL.exec("UPDATE users SET avatar_url='' WHERE id=?", [user])
+      send_resp(conn, 200, "cleared")
     else
       send_resp(conn, 403, "denied")
     end
@@ -87,6 +111,58 @@ defmodule CascadeWeb.VoiceHtmlTest do
 
     assert {:error, :forbidden} =
              Voice.deafen(c.user, c.ctx.vault_id, c.note.id, "u#{c.user.id}-x", "true")
+  end
+
+  test "roster avatars require matching server identity, metadata and authorized source", c do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {_, port}} = :inet.sockname(socket)
+    :gen_tcp.close(socket)
+
+    start_supervised!(
+      {Bandit, plug: CascadeWeb.VoiceRosterFixture, ip: {127, 0, 0, 1}, port: port}
+    )
+
+    Application.put_env(:cascade_elixir, :voice, %{
+      url: "ws://127.0.0.1:#{port}",
+      api: "http://127.0.0.1:#{port}",
+      key: "fixture",
+      secret: String.duplicate("x", 32)
+    })
+
+    on_exit(fn -> Application.delete_env(:cascade_elixir, :voice_roster_fixture) end)
+    SQL.exec("UPDATE users SET avatar_url='owner-photo' WHERE id=?", [c.user.id])
+    SQL.exec("UPDATE users SET avatar_url='outsider-photo' WHERE id=?", [c.other.id])
+
+    peer = %{
+      "identity" => "u#{c.user.id}-one",
+      "name" => "Same name",
+      "metadata" => Jason.encode!(%{user: c.user.id, vault: c.ctx.vault_id, channel: c.note.id})
+    }
+
+    peers = [
+      peer,
+      %{peer | "identity" => "u#{c.user.id}-two"},
+      %{peer | "identity" => "u#{c.other.id}-collision"},
+      %{
+        peer
+        | "metadata" =>
+            Jason.encode!(%{user: c.other.id, vault: c.ctx.vault_id, channel: c.note.id})
+      },
+      %{peer | "metadata" => "invalid"},
+      %{
+        peer
+        | "metadata" =>
+            Jason.encode!(%{user: c.user.id, vault: c.ctx.vault_id, channel: "wrong-source"})
+      }
+    ]
+
+    Application.put_env(:cascade_elixir, :voice_roster_fixture, peers)
+    assert {:ok, %{participants: roster}} = Voice.participants(c.user, c.ctx.vault_id, c.note.id)
+    assert Enum.map(roster, & &1.avatarUrl) == ["owner-photo", "owner-photo", "", "", "", ""]
+    assert {:error, :forbidden} = Voice.participants(c.other, c.ctx.vault_id, c.note.id)
+    SQL.exec("UPDATE users SET avatar_url='' WHERE id=?", [c.user.id])
+    assert {:ok, %{participants: cleared}} = Voice.participants(c.user, c.ctx.vault_id, c.note.id)
+    assert Enum.all?(cleared, &(&1.avatarUrl == ""))
   end
 
   test "HTML upload, authenticated guard, safe original download, bounds and scope", c do
@@ -276,6 +352,23 @@ defmodule CascadeWeb.VoiceHtmlTest do
           content: "cascade://voice-channel"
         })
 
+      SQL.exec("UPDATE users SET avatar_url=? WHERE id=?", [
+        "data:image/svg+xml;base64," <>
+          Base.encode64(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><rect width='20' height='20' fill='red'/></svg>"
+          ),
+        c.other.id
+      ])
+
+      second_vault = owner_vault("voice-navigation")
+
+      SQL.exec("INSERT INTO vault_members(vault_id,user_id,role,invited_by) VALUES(?,?,?,?)", [
+        second_vault.vault_id,
+        c.user.id,
+        "editor",
+        second_vault.user_id
+      ])
+
       folder = Store.create_folder(c.ctx.vault_id, %{name: "Hangouts"})
 
       fixture = %{
@@ -286,6 +379,7 @@ defmodule CascadeWeb.VoiceHtmlTest do
         textChannel: text_note.id,
         document: document.id,
         secondRoom: second_room.id,
+        secondVault: second_vault.vault_id,
         folder: folder.id,
         tokens: [Token.sign_user(c.user), Token.sign_user(c.other)],
         agent: Token.sign_agent(c.user)

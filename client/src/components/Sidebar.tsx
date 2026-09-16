@@ -28,7 +28,7 @@ import {
   type YouTubeEmbedControlDetail,
   type YouTubeEmbedStateDetail,
 } from '../mediaLinks';
-import { useVoice, VoiceParticipants } from './VoiceRoom';
+import { useVoice, VoiceParticipants, VoiceControls } from './VoiceRoom';
 import { CHAT_NOTE_MARKER, isVoiceChannel } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
 import {
@@ -897,7 +897,7 @@ export const Sidebar = memo(function Sidebar({
       <button
         id={`note-${note.id}`}
         aria-label={isVoice ? `Join ${note.title} voice channel` : undefined}
-        className={`tree-item${isVoice && voice?.channel?.id === note.id ? ' is-voice-connected' : ''}${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
+        className={`tree-item${isVoice && voice?.isCurrent(note.id) ? ' is-voice-connected' : ''}${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
         style={{ paddingLeft }}
         onClick={(e) => isVoice ? void voice?.join({ id: note.id, title: note.title }) : (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
         onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'note', id: note.id })}
@@ -1268,6 +1268,8 @@ export const Sidebar = memo(function Sidebar({
           </button>
         </div>
       </div>}
+
+      <VoiceControls />
 
       {/* Footer */}
       <div className="sidebar-footer">

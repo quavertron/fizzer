@@ -250,6 +250,14 @@ export type ApiOptions = RequestInit & {
   token?: string;
 };
 
+/** Capture routing before asynchronous voice work; an empty local base is explicit. */
+export function snapshotVaultApi(vaultId: string): ApiOptions {
+  const remote = getVaultOrigin(vaultId);
+  return remote
+    ? { origin: remote.origin, token: remote.token }
+    : { origin: API_BASE, credentials: 'include' };
+}
+
 /**
  * Generic typed fetch wrapper for the Cascade API.
  *
@@ -302,7 +310,7 @@ export async function api<T>(path: string, options: ApiOptions = {}) {
   const res = await fetch(url, {
     ...fetchOptions,
     headers,
-    credentials: targetOrigin && !url.startsWith(window.location.origin) ? 'same-origin' : 'include',
+    credentials: options.credentials ?? (targetOrigin && !url.startsWith(window.location.origin) ? 'same-origin' : 'include'),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

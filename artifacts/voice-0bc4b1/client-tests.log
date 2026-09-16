@@ -1,0 +1,13 @@
+
+> client@0.0.0 test
+> vitest run src/tests/voiceChannels.test.ts
+
+
+ RUN  v4.1.9 /tmp/fizzer-voice-0bc4b1/client
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  15:33:05
+   Duration  253ms (transform 65ms, setup 0ms, import 159ms, tests 7ms, environment 0ms)
+
