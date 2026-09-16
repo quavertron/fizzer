@@ -122,7 +122,8 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     }
   end
 
-  test "scoped recovery blocks old disconnected dispatch and queued transport on reconnect without canceling retained work", ctx do
+  for limit <- [2, "unlimited"] do
+  test "scoped recovery (#{limit}) blocks old disconnected dispatch and queued transport on reconnect without canceling retained work", ctx do
     alias Cascade.Missions.ExecutionAdmission
     alias Cascade.Runs.RunnerLifecycle
     prior = Application.get_env(:cascade_elixir, :execution_admission)
@@ -133,7 +134,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     [encoded, attempts] = Store.pending_delivery(run.id, ctx.owner.id)
     baseline = SQL.all("SELECT id,status FROM runs ORDER BY id")
     dispatches = SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id")
-    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => 2, "tasks" => [], "retainedRuns" => []}]}
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => unquote(limit), "tasks" => [], "retainedRuns" => []}]}
     Application.put_env(:cascade_elixir, :execution_admission, policy)
     Hub.unregister_runner(ctx.owner.id, ctx.sid)
     refute RunnerLifecycle.online?(ctx.owner.id)
@@ -156,13 +157,13 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
   end
 
-  test "future owner work survives disconnect and queued transport without reviving old work", ctx do
+  test "future owner work (#{limit}) survives disconnect and queued transport without reviving old work", ctx do
     alias Cascade.Missions.ExecutionAdmission
     alias Cascade.Runs.RunnerLifecycle
     prior = Application.get_env(:cascade_elixir, :execution_admission)
     on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
     [seq] = SQL.one("SELECT MAX(rowid) FROM chat_messages")
-    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => 2, "tasks" => [], "retainedRuns" => [], "futureOwnerMessageAfterSeq" => seq}]}
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => unquote(limit), "tasks" => [], "retainedRuns" => [], "futureOwnerMessageAfterSeq" => seq}]}
     Application.put_env(:cascade_elixir, :execution_admission, policy)
     {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{body: "New owner request, fixture transport only"})
     {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
@@ -185,6 +186,7 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     assert packets =~ "run:delegate"
     assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch.id]) == [1]
     assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [ctx.dispatch.id]) == [nil]
+  end
   end
 
   @tag :race_audit

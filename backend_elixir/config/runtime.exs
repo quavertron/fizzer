@@ -47,7 +47,7 @@ if config_env() != :test do
           valid_id = fn id -> is_binary(id) and byte_size(id) in 1..160 end
           valid = Enum.all?(owners, fn o ->
             is_map(o) and is_integer(o["ownerId"]) and o["ownerId"] > 0 and
-              o["maxConcurrent"] in 1..2 and is_list(o["tasks"]) and is_list(o["retainedRuns"]) and
+              o["maxConcurrent"] in [1, 2, "unlimited"] and is_list(o["tasks"]) and is_list(o["retainedRuns"]) and
               (is_nil(o["futureOwnerMessageAfterSeq"]) or (is_integer(o["futureOwnerMessageAfterSeq"]) and o["futureOwnerMessageAfterSeq"] >= 0)) and
               (is_nil(o["qualificationBudget"]) or (is_map(o["qualificationBudget"]) and
                 is_integer(o["qualificationBudget"]["afterRunId"]) and o["qualificationBudget"]["afterRunId"] >= 0 and

@@ -87,7 +87,7 @@ defmodule Cascade.Missions.ExecutionAdmission do
         cond do
           not dispatch_allowed?(id) -> {:retry, "Execution admission holds this original dispatch."}
           restricted?(owner) and not recovery_budget_available?(id, owner) -> {:retry, "Bounded recovery qualification start budget is exhausted; original work remains preserved for explicit continuation."}
-          restricted?(owner) and active_count(owner) >= limit(owner) -> {:busy, "Waiting for an admitted owner execution slot."}
+          restricted?(owner) and not capacity_available?(owner) -> {:busy, "Waiting for an admitted owner execution slot."}
           true -> :ok
         end
       _ -> {:retry, "Execution admission cannot resolve this original dispatch."}
@@ -224,7 +224,15 @@ defmodule Cascade.Missions.ExecutionAdmission do
     end
   end
   defp entries(owner), do: owner_policy(owner)["tasks"] || []
-  defp limit(owner), do: owner_policy(owner)["maxConcurrent"] || 0
+  # Capacity is independent of authorization. Only the explicit sentinel removes
+  # this owner-wide cap; missing/malformed limits remain fail-closed.
+  defp capacity_available?(owner) do
+    case owner_policy(owner)["maxConcurrent"] do
+      "unlimited" -> true
+      limit when limit in [1, 2] -> active_count(owner) < limit
+      _ -> false
+    end
+  end
   defp active_count(owner) do
     [n] = SQL.one("SELECT count(*) FROM runs WHERE owner_user_id=? AND status IN ('queued','running')", [owner])
     n

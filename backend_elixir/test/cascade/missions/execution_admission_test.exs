@@ -42,6 +42,53 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     assert SQL.one("SELECT failed_at,run_id FROM chat_agent_dispatches WHERE id=?", [item.dispatch.id]) == [nil,nil]
   end
 
+  test "explicit unlimited capacity preserves exact admission with concurrent owner runs", c do
+    Application.put_env(:cascade_elixir, :execution_admission, c.policy)
+    [item] = Scheduler.schedule(c.mission).dispatches
+    {:ok, old_dispatch} = Dispatches.create(c.user.id, c.channel, c.root, c.coordinator.id)
+
+    # Inert runs: no runner, provider or delivery is invoked. All count for the
+    # owner even when their agents/conversations differ from this dispatch.
+    for agent <- ["codex", "claude-code", "codex"] do
+      {:ok, _} = Cascade.Runs.Store.start(c.vault, nil, "Inert capacity fixture", agent,
+        owner_user_id: c.user.id, conversation_id: Ecto.UUID.generate())
+    end
+
+    for limit <- [1, 2] do
+      policy = put_in(c.policy, ["owners", Access.at(0), "maxConcurrent"], limit)
+      Application.put_env(:cascade_elixir, :execution_admission, policy)
+      assert {:busy, "Waiting for an admitted owner execution slot."} = ExecutionAdmission.claim(item.dispatch.id)
+    end
+
+    unlimited = put_in(c.policy, ["owners", Access.at(0), "maxConcurrent"], "unlimited")
+    Application.put_env(:cascade_elixir, :execution_admission, unlimited)
+    assert ExecutionAdmission.restricted?(c.user.id)
+    assert :ok = ExecutionAdmission.claim(item.dispatch.id)
+    assert {:retry, "Execution admission holds this original dispatch."} = ExecutionAdmission.claim(old_dispatch.id)
+    refute ExecutionAdmission.task_allowed?(c.old)
+    refute ExecutionAdmission.mission_wake_allowed?(c.mission)
+
+    SQL.exec("UPDATE chat_mission_tasks SET attempt=attempt+1 WHERE id=?", [c.task])
+    assert {:retry, _} = ExecutionAdmission.claim(item.dispatch.id)
+  end
+
+  test "finite capacity releases after terminal runs and malformed limits fail closed", c do
+    Application.put_env(:cascade_elixir, :execution_admission, c.policy)
+    [item] = Scheduler.schedule(c.mission).dispatches
+    {:ok, run} = Cascade.Runs.Store.start(c.vault, nil, "Inert capacity fixture", "codex", owner_user_id: c.user.id)
+    assert :ok = ExecutionAdmission.claim(item.dispatch.id)
+    one = put_in(c.policy, ["owners", Access.at(0), "maxConcurrent"], 1)
+    Application.put_env(:cascade_elixir, :execution_admission, one)
+    assert {:busy, _} = ExecutionAdmission.claim(item.dispatch.id)
+    Cascade.Runs.Store.finish(run.id, "completed", "Fixture")
+    assert :ok = ExecutionAdmission.claim(item.dispatch.id)
+    for invalid <- [nil, 0, -1, "2", "Unlimited", false] do
+      Application.put_env(:cascade_elixir, :execution_admission,
+        put_in(one, ["owners", Access.at(0), "maxConcurrent"], invalid))
+      assert {:busy, _} = ExecutionAdmission.claim(item.dispatch.id)
+    end
+  end
+
   test "future authentic owner requests and exact workflows advance without admitting old chat", c do
     [seq] = SQL.one("SELECT MAX(rowid) FROM chat_messages")
     policy = put_in(c.policy, ["owners", Access.at(0), "futureOwnerMessageAfterSeq"], seq)
