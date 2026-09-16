@@ -397,7 +397,7 @@ export function segmentTranscript(
       const trace = head.mission && missionTraces.get(head.mission.id);
       if (trace?.length) {
         segments.push({ kind: 'work', id: head.id, trace,
-          carrier: { ...head, body: '', status: undefined }, fullGroups: [], updateGroups: [] });
+          carrier: { ...head, status: undefined }, fullGroups: [], updateGroups: [] });
       } else segments.push({ kind: 'group', group: { messages: [head] } });
       index += 1;
       continue;
