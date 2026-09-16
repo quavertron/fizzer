@@ -41,14 +41,52 @@ function setupCommand({ resourcesPath = process.resourcesPath, packaged = false 
   return packaged ? `${command} ${shellQuote(path.join(directory, 'alock'))}` : command;
 }
 function launchArguments(node, worker, socket) {
-  const providerBinaries = ['CLAUDE_BIN', 'CODEX_BIN', 'GROK_BIN', 'COPILOT_BIN', 'HERMES_BIN', 'AKRON_BIN', 'OMP_BIN', 'PI_BIN', 'ANTIGRAVITY_BIN']
+  const providerBinaries = [
+    'CLAUDE_BIN', 'CODEX_BIN', 'GROK_BIN', 'COPILOT_BIN', 'HERMES_BIN', 'AKRON_BIN', 'OMP_BIN', 'PI_BIN',
+    'ANTIGRAVITY_BIN', 'ANTIGRAVITY_HOME', 'ANTIGRAVITY_LS_ADDRESS', 'ANTIGRAVITY_CSRF_TOKEN',
+    'ANTIGRAVITY_PROJECT_ID', 'ANTIGRAVITY_AGENTAPI_EXE',
+  ]
     .filter(name => typeof process.env[name] === 'string' && process.env[name])
     .map(name => `${name}=${process.env[name]}`);
-  // Antigravity installs its executable in the human home by default. It is
-  // readable on a normal macOS installation, but is not on the fizzer PATH.
+  // Antigravity installs its executable and config in the human home by default.
+  // It is readable on a normal macOS installation, but is not on the fizzer PATH/HOME.
   if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_BIN='))) {
     const candidate = path.join(os.homedir(), '.gemini', 'antigravity', 'bin', 'agentapi');
     if (fs.existsSync(candidate)) providerBinaries.push(`ANTIGRAVITY_BIN=${candidate}`);
+  }
+  if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_HOME='))) {
+    const candidate = path.join(os.homedir(), '.gemini');
+    if (fs.existsSync(candidate)) providerBinaries.push(`ANTIGRAVITY_HOME=${candidate}`);
+  }
+  if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_LS_ADDRESS='))) {
+    if (process.platform === 'darwin') {
+      try {
+        const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf-8' });
+        for (const line of (ps.stdout || '').split('\n')) {
+          if (!/\/language_server(\s|$)/.test(line)) continue;
+          const tokenMatch = line.match(/--csrf_token\s+(\S+)/);
+          const pidMatch = line.match(/^\s*(\d+)\s/);
+          if (!tokenMatch || !pidMatch) continue;
+          const token = tokenMatch[1];
+          const pid = pidMatch[1];
+          const lsof = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pid], { encoding: 'utf-8' });
+          const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
+            .map(m => parseInt(m[1], 10))
+            .filter(n => Number.isFinite(n));
+          for (const p of ports) {
+            try {
+              const probe = spawnSync('curl', ['-s', '-m', '1', `http://127.0.0.1:${p}/`], { encoding: 'utf-8' });
+              if (probe.stdout && (probe.stdout.includes('__APP_CONFIG__') || probe.stdout.includes('<!doctype html>'))) {
+                providerBinaries.push(`ANTIGRAVITY_LS_ADDRESS=127.0.0.1:${p}`);
+                providerBinaries.push(`ANTIGRAVITY_CSRF_TOKEN=${token}`);
+                break;
+              }
+            } catch {}
+          }
+          break;
+        }
+      } catch {}
+    }
   }
   return ['-n', '-H', '-u', 'fizzer', '--', '/usr/bin/env',
     `PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,

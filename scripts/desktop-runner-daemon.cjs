@@ -100,6 +100,9 @@ function connect() {
 
   runnerSocket.on('disconnect', (reason) => {
     log(`Disconnected: ${reason}`);
+    if (reason === 'io server disconnect') {
+      runnerSocket.connect();
+    }
   });
 
   runnerSocket.on('run:delegate', async (payload) => {

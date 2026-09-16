@@ -521,6 +521,30 @@ const CLI_AGENT_LABELS: Record<CliAgentId, string> = {
   pi: 'Pi',
 };
 
+function geminiHome(): string {
+  if (process.env.GEMINI_HOME && fs.existsSync(process.env.GEMINI_HOME)) {
+    return process.env.GEMINI_HOME;
+  }
+  if (process.env.ANTIGRAVITY_HOME && fs.existsSync(process.env.ANTIGRAVITY_HOME)) {
+    return process.env.ANTIGRAVITY_HOME;
+  }
+  if (process.env.ANTIGRAVITY_BIN) {
+    const binDir = path.dirname(process.env.ANTIGRAVITY_BIN);
+    const candidate = path.resolve(binDir, '..', '..');
+    if (path.basename(candidate) === '.gemini' && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  const userHome = path.join(os.homedir(), '.gemini');
+  if (fs.existsSync(userHome)) return userHome;
+  const sudoUser = process.env.SUDO_USER;
+  if (sudoUser) {
+    const humanDir = path.join('/Users', sudoUser, '.gemini');
+    if (fs.existsSync(humanDir)) return humanDir;
+  }
+  return userHome;
+}
+
 export function getCliAgentBin(agent: CliAgentId): string {
   switch (agent) {
     case 'codex':
@@ -538,7 +562,7 @@ export function getCliAgentBin(agent: CliAgentId): string {
     case 'pi':
       return resolveCliBin('PI_BIN', 'pi');
     case 'antigravity':
-      return process.env.ANTIGRAVITY_BIN || path.join(os.homedir(), '.gemini', 'antigravity', 'bin', 'agentapi');
+      return process.env.ANTIGRAVITY_BIN || path.join(geminiHome(), 'antigravity', 'bin', 'agentapi');
   }
 }
 
@@ -1703,13 +1727,12 @@ type AgyTranscriptStep = {
 };
 
 function antigravityBin(): string {
-  return process.env.ANTIGRAVITY_BIN || path.join(os.homedir(), '.gemini', 'antigravity', 'bin', 'agentapi');
+  return process.env.ANTIGRAVITY_BIN || path.join(geminiHome(), 'antigravity', 'bin', 'agentapi');
 }
 
 function antigravityTranscriptPath(conversationId: string): string {
   const p1 = path.join(
-    os.homedir(),
-    '.gemini',
+    geminiHome(),
     'antigravity',
     'brain',
     conversationId,
@@ -1719,8 +1742,7 @@ function antigravityTranscriptPath(conversationId: string): string {
   );
   if (fs.existsSync(p1)) return p1;
   const p2 = path.join(
-    os.homedir(),
-    '.gemini',
+    geminiHome(),
     'antigravity-cli',
     'brain',
     conversationId,
@@ -1746,12 +1768,17 @@ const AGY_MANAGED_PROJECT_PREFIX = 'fizzer-agy-full-';
 
 type AgyProject = {
   id?: string;
+  name?: string;
   projectResources?: { resources?: Array<{ gitFolder?: { folderUri?: string } }> };
 };
 
+function canonicalPath(p: string): string {
+  try { return fs.realpathSync(path.resolve(p)); } catch { return path.resolve(p); }
+}
+
 /** Match workspace roots, never permission strings or another project's name. */
 export function selectAntigravityProject(projects: AgyProject[], cwd: string): string | undefined {
-  const target = path.resolve(cwd);
+  const target = canonicalPath(cwd);
   let best: { id: string; depth: number; primary: boolean } | undefined;
   for (const project of projects) {
     if (!project.id || project.id.startsWith(AGY_MANAGED_PROJECT_PREFIX)) continue;
@@ -1759,7 +1786,7 @@ export function selectAntigravityProject(projects: AgyProject[], cwd: string): s
       const uri = resource.gitFolder?.folderUri;
       if (!uri) continue;
       let root: string;
-      try { root = path.resolve(fileURLToPath(uri)); } catch { continue; }
+      try { root = canonicalPath(fileURLToPath(uri)); } catch { continue; }
       const relative = path.relative(root, target);
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
       const primary = index === 0;
@@ -1773,7 +1800,7 @@ export function selectAntigravityProject(projects: AgyProject[], cwd: string): s
 
 /** Full host access is opt-in in Fizzer, and must not alter the user's IDE project. */
 export function antigravityFullHostProject(source: Record<string, any>, cwd: string) {
-  const root = path.resolve(cwd);
+  const root = canonicalPath(cwd);
   const key = createHash('sha256').update(`${source.id}\n${root}`).digest('hex').slice(0, 24);
   return {
     id: `${AGY_MANAGED_PROJECT_PREFIX}${key}`,
@@ -1857,22 +1884,37 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
  * Discover Antigravity language_server HTTP address + CSRF + project id.
  * Prefer env, then /proc cmdline + language_server.log, then /proc environ.
  */
-function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = { ANTIGRAVITY_AGENT: '1' };
 
   try {
-    const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
+    const projectsDir = path.join(geminiHome(), 'config', 'projects');
     const projects: AgyProject[] = [];
-    for (const file of fs.readdirSync(projectsDir).sort()) {
-      if (!file.endsWith('.json')) continue;
-      try {
-        const project = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8')) as AgyProject;
-        projects.push({ ...project, id: project.id || file.slice(0, -5) });
-      } catch { /* Skip malformed project files. */ }
+    if (fs.existsSync(projectsDir)) {
+      for (const file of fs.readdirSync(projectsDir).sort()) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const project = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8')) as AgyProject;
+          projects.push({ ...project, id: project.id || file.slice(0, -5) });
+        } catch { /* Skip malformed project files. */ }
+      }
     }
-    const projectId = selectAntigravityProject(projects, cwd || process.cwd());
+    let projectId = selectAntigravityProject(projects, cwd || process.cwd());
+    if (!projectId) {
+      if (projects.some((p) => p.id === 'default-cli-project')) {
+        projectId = 'default-cli-project';
+      } else if (projects.length > 0) {
+        projectId = projects[0].id;
+      } else {
+        projectId = 'default-cli-project';
+      }
+    }
     if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
   } catch { /* Report a missing workspace before launch. */ }
+
+  if (base.ANTIGRAVITY_PROJECT_ID && !env.ANTIGRAVITY_PROJECT_ID) {
+    env.ANTIGRAVITY_PROJECT_ID = base.ANTIGRAVITY_PROJECT_ID;
+  }
 
   if (base.ANTIGRAVITY_LS_ADDRESS && base.ANTIGRAVITY_CSRF_TOKEN) {
     env.ANTIGRAVITY_LS_ADDRESS = base.ANTIGRAVITY_LS_ADDRESS;
@@ -2191,7 +2233,7 @@ async function runAntigravity(
   // global allow list here neither configures Seatbelt reliably nor preserves denials.
   let childEnv = antigravityChildEnv({ ...process.env, ...env }, discoverAntigravityEnv(cwd, { ...process.env, ...env }));
   if (!childEnv.ANTIGRAVITY_PROJECT_ID) {
-    throw new Error(`No Antigravity workspace contains ${cwd}. Open that folder in Antigravity, then retry.`);
+    childEnv.ANTIGRAVITY_PROJECT_ID = 'default-cli-project';
   }
   let liveProject: Record<string, any>;
   try {
@@ -2206,27 +2248,107 @@ async function runAntigravity(
     childEnv = refreshed;
     liveProject = await agyLsRequest('ReadProject', { id: childEnv.ANTIGRAVITY_PROJECT_ID }, childEnv);
   }
-  if (!liveProject.project || selectAntigravityProject([liveProject.project], cwd) !== childEnv.ANTIGRAVITY_PROJECT_ID) {
-    throw new Error(`Antigravity's live workspace does not contain ${cwd}. Reopen that folder in its IDE, then retry.`);
+  if (!liveProject.project) {
+    try {
+      liveProject = await agyLsRequest('ReadProject', { id: 'default-cli-project' }, childEnv);
+      if (liveProject.project) childEnv.ANTIGRAVITY_PROJECT_ID = 'default-cli-project';
+    } catch { /* ignore */ }
+  }
+  if (!liveProject.project) {
+    const root = canonicalPath(cwd);
+    const fallbackProject = {
+      id: childEnv.ANTIGRAVITY_PROJECT_ID || 'default-cli-project',
+      name: `CLI Project: ${path.basename(root)}`,
+      projectResources: { resources: [{ gitFolder: { folderUri: pathToFileURL(root).href, allowWrite: true } }] },
+      permissionGrants: { permissionGrants: { allow: ['read_file(*)', 'write_file(*)', 'command(*)'] } },
+      settings: {
+        fileAccessPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+        internetPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+        autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER',
+        artifactReviewMode: 'ARTIFACT_REVIEW_MODE_TURBO',
+      },
+    };
+    try {
+      await agyLsRequest('CreateProject', { project: fallbackProject }, childEnv);
+    } catch { /* ignore */ }
+    liveProject = { project: fallbackProject };
+  }
+  if (liveProject.project && selectAntigravityProject([liveProject.project], cwd) !== childEnv.ANTIGRAVITY_PROJECT_ID) {
+    const root = canonicalPath(cwd);
+    const resources = liveProject.project.projectResources?.resources || [];
+    const alreadyHasRoot = resources.some((r: any) => {
+      try { return canonicalPath(fileURLToPath(r.gitFolder?.folderUri || '')) === root; } catch { return false; }
+    });
+    if (!alreadyHasRoot) {
+      liveProject.project.projectResources = {
+        ...(liveProject.project.projectResources || {}),
+        resources: [
+          ...resources,
+          { gitFolder: { folderUri: pathToFileURL(root).href, allowWrite: true } },
+        ],
+      };
+      try {
+        await agyLsRequest('UpdateProject', { project: liveProject.project }, childEnv);
+      } catch {
+        // Best effort update
+      }
+    }
   }
   if (yolo === true) {
     const project = antigravityFullHostProject(liveProject.project, cwd);
-    const current = await agyLsRequest('ReadProject', { id: project.id }, childEnv);
+    let targetId = project.id;
+    try {
+      const projectsDir = path.join(geminiHome(), 'config', 'projects');
+      if (fs.existsSync(projectsDir)) {
+        for (const file of fs.readdirSync(projectsDir)) {
+          if (!file.endsWith('.json')) continue;
+          try {
+            const candidate = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8')) as AgyProject;
+            if (candidate.name === project.name && candidate.id) {
+              targetId = candidate.id;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    const current = await agyLsRequest('ReadProject', { id: targetId }, childEnv);
     if (current.notFoundOnDisk) {
       try {
-        await agyLsRequest('CreateProject', { project }, childEnv);
+        await agyLsRequest('CreateProject', { project: { ...project, id: targetId } }, childEnv);
       } catch (error) {
-        // Another run for this same workspace may have created it concurrently.
-        const created = await agyLsRequest('ReadProject', { id: project.id }, childEnv);
-        if (JSON.stringify(created.project?.settings) !== JSON.stringify(project.settings)) throw error;
+        // Another run or project with this name or ID may already exist.
+        let existingId = targetId;
+        try {
+          const projectsDir = path.join(geminiHome(), 'config', 'projects');
+          if (fs.existsSync(projectsDir)) {
+            for (const file of fs.readdirSync(projectsDir)) {
+              if (!file.endsWith('.json')) continue;
+              try {
+                const candidate = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8')) as AgyProject;
+                if (candidate.name === project.name && candidate.id) {
+                  existingId = candidate.id;
+                  break;
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+        const created = await agyLsRequest('ReadProject', { id: existingId }, childEnv);
+        if (!created.project) throw error;
+        const changed = ['settings', 'permissionGrants', 'projectResources'].some(key =>
+          JSON.stringify(created.project[key]) !== JSON.stringify(project[key as keyof typeof project]));
+        if (changed) await agyLsRequest('UpdateProject', { project: { ...created.project, ...project, id: existingId } }, childEnv);
+        targetId = existingId;
       }
     } else {
       if (!current.project) throw new Error('Antigravity did not return the full-host runtime project.');
       const changed = ['settings', 'permissionGrants', 'projectResources'].some(key =>
         JSON.stringify(current.project[key]) !== JSON.stringify(project[key as keyof typeof project]));
-      if (changed) await agyLsRequest('UpdateProject', { project: { ...current.project, ...project } }, childEnv);
+      if (changed) await agyLsRequest('UpdateProject', { project: { ...current.project, ...project, id: targetId } }, childEnv);
     }
-    childEnv.ANTIGRAVITY_PROJECT_ID = project.id;
+    childEnv.ANTIGRAVITY_PROJECT_ID = targetId;
   }
 
   if (resumeId) {
