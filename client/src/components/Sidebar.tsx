@@ -156,8 +156,10 @@ export function vaultSelectionConnectorPath(
   // control beyond the landing can reverse x at steep offsets and fold the ribbon.
   const outerControlX = startX + Math.min(horizontalRun, 64, Math.max(horizontalRun / 2, verticalRun * 0.35));
   const landingControlX = endX - Math.min(horizontalRun / 2, 16);
-  return `M ${startX} ${startTop} C ${outerControlX} ${startTop}, ${landingControlX} ${endTop}, ${endX} ${endTop} `
-    + `L ${endX} ${endBottom} C ${landingControlX} ${endBottom}, ${outerControlX} ${startBottom}, ${startX} ${startBottom} Z`;
+  // Underpaint the rail: its narrow layout clips 1.5px from the measured button.
+  // Another 1.5px overlaps the button paint at fractional raster scales.
+  return `M ${startX - 3} ${startTop} L ${startX} ${startTop} C ${outerControlX} ${startTop}, ${landingControlX} ${endTop}, ${endX} ${endTop} `
+    + `L ${endX} ${endBottom} C ${landingControlX} ${endBottom}, ${outerControlX} ${startBottom}, ${startX} ${startBottom} L ${startX - 3} ${startBottom} Z`;
 }
 
 export function isMp3Link(label: string, href: string) {

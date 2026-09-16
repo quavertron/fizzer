@@ -9,7 +9,7 @@ describe('vault selection connector', () => {
       { left: 16, right: 60, top: 40, bottom: 76 },
       { left: 86, right: 300, top: 110, bottom: 142 },
     )).toBe(
-      'M 50 20 C 73.8 20, 63 90, 76 90 L 76 122 C 63 122, 73.8 56, 50 56 Z',
+      'M 47 20 L 50 20 C 73.8 20, 63 90, 76 90 L 76 122 C 63 122, 73.8 56, 50 56 L 47 56 Z',
     );
   });
 
@@ -20,8 +20,9 @@ describe('vault selection connector', () => {
       { left: 86, right: 300, top: 40, bottom: 72 },
     );
     const points = path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-    const [startX, startTop, firstControlX, , landingControlX, , endX, endTop,
+    const [underpaintX, underpaintTop, startX, startTop, firstControlX, , landingControlX, , endX, endTop,
       lineEndX, endBottom, returnControlX, , returnOuterControlX, , returnEndX, startBottom] = points;
+    expect([underpaintX, underpaintTop]).toEqual([startX - 3, startTop]);
     const horizontalRun = endX - startX;
 
     expect([startX, startTop, endX, endTop, lineEndX, endBottom, returnEndX, startBottom])
@@ -45,7 +46,7 @@ describe('steep ribbon nonintersection regression', () => {
         { left: 86, right: 300, top: 300 + offset, bottom: 332 + offset },
       );
       const p = path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
-      const [x0, y0, x1, , x2, y2, x3, y3, , bottom3, , , , bottom0] = p;
+      const [, , x0, y0, x1, , x2, y2, x3, y3, , bottom3, , , , bottom0] = p;
       expect(x1).toBeGreaterThanOrEqual(x0);
       expect(x1).toBeLessThanOrEqual(x3);
       expect(x2).toBeGreaterThanOrEqual(x0);
