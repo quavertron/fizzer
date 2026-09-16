@@ -106,10 +106,14 @@ defmodule Cascade.Missions.Notifications do
          "No actionable reason was recorded; inspect the linked task/run and supply a concrete diagnosis before retrying."
        )}
 
-  defp notice(%{status: "completed"}, _m),
-    do:
+  defp notice(%{status: "completed"} = t, _m) do
+    # Workers record their result before the runner settles. This is not missing
+    # evidence yet; the terminal run transition will reconcile the same task.
+    unless SQL.one("SELECT status FROM runs WHERE id=?", [t.run_id]) in [["queued"], ["running"]] do
       {"evidence-missing", "Completion is not verified.",
        "The recorded status lacks the bound execution/delivery evidence required by Fizzer. Review the task and supply real evidence; do not rerun completed actions blindly."}
+    end
+  end
 
   defp notice(%{status: "pending", dependency_attention: true} = t, _m),
     do:

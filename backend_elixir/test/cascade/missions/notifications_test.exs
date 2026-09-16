@@ -568,6 +568,34 @@ defmodule Cascade.Missions.NotificationsTest do
     refute body =~ "Task outcome recorded"
   end
 
+  test "worker completion before its run settles is quiet, then emits one outcome", c do
+    [item] = Scheduler.schedule(c.mission).dispatches
+    run = dispatch_run(c, item.dispatch)
+    {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
+    {:ok, _} = Store.update_task(c.user.id, c.channel, c.task, %{status: "completed", summary: "Candidate ready"})
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert receipts(c) == []
+
+    Runs.finish(run.id, "completed", "Candidate ready")
+    {:ok, _} = Scheduler.settle_run(run.id, "completed", "Candidate ready")
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert [[id, _]] = receipts(c)
+    assert String.ends_with?(id, ":completed")
+  end
+
+  test "a canceled run still reports missing completion evidence", c do
+    [item] = Scheduler.schedule(c.mission).dispatches
+    run = dispatch_run(c, item.dispatch)
+    {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary='Candidate ready' WHERE id=?", [c.task])
+    Runs.finish(run.id, "canceled", "Owner stopped")
+    Notifications.reconcile(c.mission, Cascade.Chat.Events.Noop)
+    assert [[id, _]] = receipts(c)
+    assert String.ends_with?(id, ":evidence-missing")
+    assert Scheduler.schedule(c.mission).dispatches == []
+  end
+
   test "terminal run evidence produces one outcome without rerunning completed work", c do
     [item] = Scheduler.schedule(c.mission).dispatches
     run = dispatch_run(c, item.dispatch)
