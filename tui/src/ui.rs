@@ -1297,13 +1297,14 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 
     for svg in &cache.inline_svgs {
-        let end = svg.start_line + usize::from(svg.rows);
+        let rows = (svg.rows as usize).min(visible_lines) as u16;
+        let end = svg.start_line + usize::from(rows);
         if svg.start_line >= scroll_y && end <= scroll_y + visible_lines {
             let y = area.y + 1 + (svg.start_line - scroll_y) as u16;
             let x = area.x + 3;
-            let instance_id = svg.image_id ^ (u32::from(x) << 16) ^ u32::from(y);
+            let instance_id = svg.image_id ^ (u32::from(x) << 16);
             crate::purrvect::place(crate::purrvect::Placement { image_id: instance_id.max(1),
-                area: Rect::new(x, y, body_wrap_width.min(u16::MAX as usize) as u16, svg.rows), svg: svg.svg.clone() });
+                area: Rect::new(x, y, body_wrap_width.min(u16::MAX as usize) as u16, rows), svg: svg.svg.clone() });
         }
     }
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone)]
 pub struct WindowState {
-    scroll: usize, cursor: Option<usize>, anchor: Option<usize>,
+    pub scroll: usize, cursor: Option<usize>, anchor: Option<usize>,
     input_cursor: usize, input_scroll: usize,
     message: usize, channel: usize, agent: usize, user: usize, note: usize,
     cache: crate::app::ChatRenderCache,
@@ -174,7 +174,7 @@ impl Panes {
     }
 
     pub fn contains(&self, view: ActivePane) -> bool { self.views.iter().any(|(_, v)| *v == view) }
-    fn id(&self, view: ActivePane) -> Option<PaneId> {
+    pub fn id(&self, view: ActivePane) -> Option<PaneId> {
         if self.focused() == view { self.engine.focused_pane() }
         else { self.views.iter().find(|(_, v)| *v == view).map(|(id, _)| *id) }
     }

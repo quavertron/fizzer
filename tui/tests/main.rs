@@ -634,3 +634,52 @@ fn saved_agent_updates_by_id_without_closing_another_modal() {
     assert_eq!(app.agents[1].display_name, "Updated A");
     assert_eq!(app.agent_settings_modal.as_ref().unwrap().agent.id, "b");
 }
+
+#[tokio::test]
+async fn mouse_wheel_over_composer_scrolls_chat_messages_window() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    app.show_vaults = false;
+    app.active_pane = ActivePane::ChatInput;
+    app.active_channel_id = Some("chat".into());
+    app.messages = (0..50)
+        .map(|i| serde_json::from_value(json!({"id": format!("m{i}"), "author": "Diego", "body": format!("Line {i}")})).unwrap())
+        .collect();
+    let area = Rect::new(0, 0, 100, 30);
+    panes::prepare(&app, area);
+    let composer = app.panes.borrow().rect(ActivePane::ChatInput);
+    let messages_id = app.panes.borrow().id(ActivePane::ChatMessages).unwrap();
+    let (tx, _) = mpsc::unbounded_channel();
+    let mouse = crossterm::event::MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: composer.x + 2,
+        row: composer.y + 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    handle_pane_mouse(&mut app, mouse, &tx);
+    let scrolled = app.window_states.get(&messages_id).map(|s| s.scroll).unwrap_or(0);
+    assert_eq!(scrolled, 3, "Mouse wheel over composer should scroll ChatMessages pane");
+}
+
+#[test]
+fn history_reading_anchors_scroll_when_new_messages_arrive() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    app.active_channel_id = Some("chat".into());
+    app.messages = (0..20)
+        .map(|i| serde_json::from_value(json!({"id": format!("m{i}"), "author": "Diego", "body": format!("Line {i}")})).unwrap())
+        .collect();
+    ui::ensure_chat_cache(&app, 80);
+    let old_lines = app.chat_cache.read().unwrap().lines.len();
+    app.scroll_offset = 5;
+    let (tx, _) = mpsc::unbounded_channel();
+    let new_msgs = (20..25)
+        .map(|i| serde_json::from_value(json!({"id": format!("m{i}"), "author": "Diego", "body": format!("Line {i}")})).unwrap())
+        .collect();
+    apply_backend_event(&mut app, BackendEvent::HistoryPage {
+        channel_id: "chat".into(),
+        before: None,
+        result: Ok(api::MessagesResponse { messages: new_msgs, before_seq: None, has_more: false }),
+    }, &tx);
+    let new_lines = app.chat_cache.read().unwrap().lines.len();
+    assert_eq!(app.scroll_offset, 5 + (new_lines - old_lines), "Scroll offset should increase by added lines to keep user position stationary");
+}
+

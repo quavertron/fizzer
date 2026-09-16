@@ -126,6 +126,16 @@ fn encode(item: &Placement) -> io::Result<Vec<u8>> {
             .find(|p| p.is_file())
         })
         .unwrap_or_else(|| PathBuf::from("purrvect"));
+    static ENCODE_CACHE: Mutex<Option<HashMap<(u32, u16, u16), Vec<u8>>>> = Mutex::new(None);
+    let cache_key = (item.image_id, item.area.width, item.area.height);
+    if let Ok(guard) = ENCODE_CACHE.lock() {
+        if let Some(cache) = guard.as_ref() {
+            if let Some(bytes) = cache.get(&cache_key) {
+                return Ok(bytes.clone());
+            }
+        }
+    }
+
     let mut child = Command::new(binary)
         .args([
             "encode",
@@ -150,6 +160,13 @@ fn encode(item: &Placement) -> io::Result<Vec<u8>> {
         )));
     }
     written?;
+    if let Ok(mut guard) = ENCODE_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if cache.len() > 100 {
+            cache.clear();
+        }
+        cache.insert(cache_key, result.stdout.clone());
+    }
     Ok(result.stdout)
 }
 

@@ -400,6 +400,7 @@ fn apply_backend_event_current(app: &mut App, event: BackendEvent, tx: &mpsc::Un
                         panes::rebase_history_windows(app, old_messages);
                         app.status_message = if app.history_has_more { "Older messages loaded" } else { "Beginning of channel history" }.into();
                     } else {
+                        let old_line_count = app.chat_cache.read().map(|c| c.lines.len()).unwrap_or(0);
                         if page.messages.is_empty() && page.before_seq.is_none() {
                             app.messages.clear();
                         }
@@ -410,6 +411,20 @@ fn apply_backend_event_current(app: &mut App, event: BackendEvent, tx: &mpsc::Un
                             }
                         }
                         app.messages.extend(page.messages);
+                        let width = app.chat_cache.read().map(|c| c.wrap_width).unwrap_or(80).max(1);
+                        ui::ensure_chat_cache(app, width);
+                        let new_line_count = app.chat_cache.read().map(|c| c.lines.len()).unwrap_or(0);
+                        if new_line_count > old_line_count {
+                            let added = new_line_count - old_line_count;
+                            if app.scroll_offset > 0 {
+                                app.scroll_offset = app.scroll_offset.saturating_add(added);
+                            }
+                            for state in app.window_states.values_mut() {
+                                if state.scroll > 0 {
+                                    state.scroll = state.scroll.saturating_add(added);
+                                }
+                            }
+                        }
                     }
                     app.clamp_message_selection();
                 }
@@ -1551,12 +1566,20 @@ async fn run_app(
                                     continue;
                                 }
                                 KeyCode::PageUp => {
-                                    app.scroll_up_by(5);
-                                    spawn_older_messages(app, &tx);
+                                    let messages_area = app.panes.borrow().rect(ActivePane::ChatMessages);
+                                    let visible = messages_area.height.saturating_sub(2) as usize;
+                                    ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                    app.scroll_chat_view(true, 5, visible);
+                                    if app.scroll_offset.saturating_add(visible) >= app.chat_cache.read().unwrap().lines.len() {
+                                        spawn_older_messages(app, &tx);
+                                    }
                                     continue;
                                 }
                                 KeyCode::PageDown => {
-                                    app.scroll_down_by(5);
+                                    let messages_area = app.panes.borrow().rect(ActivePane::ChatMessages);
+                                    let visible = messages_area.height.saturating_sub(2) as usize;
+                                    ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                    app.scroll_chat_view(false, 5, visible);
                                     continue;
                                 }
                                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1706,15 +1729,50 @@ async fn run_app(
                                         if is_input_tall {
                                             app.input_scroll_up();
                                         } else {
-                                            app.scroll_up_by(5);
-                                            spawn_older_messages(app, &tx);
+                                            let (messages_area, msg_id, previous) = {
+                                                let panes = app.panes.borrow();
+                                                (panes.rect(ActivePane::ChatMessages), panes.id(ActivePane::ChatMessages), panes.focused_id())
+                                            };
+                                            let visible = messages_area.height.saturating_sub(2) as usize;
+                                            if let Some(msg_id) = msg_id {
+                                                let previous_channel = app.active_channel_id.clone();
+                                                panes::activate_window(app, msg_id);
+                                                ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                                app.scroll_chat_view(true, 5, visible);
+                                                if app.scroll_offset.saturating_add(visible) >= app.chat_cache.read().unwrap().lines.len() {
+                                                    spawn_older_messages(app, &tx);
+                                                }
+                                                panes::activate_window(app, previous);
+                                                app.load_channel_buffer(previous_channel);
+                                            } else {
+                                                ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                                app.scroll_chat_view(true, 5, visible);
+                                                if app.scroll_offset.saturating_add(visible) >= app.chat_cache.read().unwrap().lines.len() {
+                                                    spawn_older_messages(app, &tx);
+                                                }
+                                            }
                                         }
                                     }
                                     KeyCode::PageDown => {
                                         if is_input_tall {
                                             app.input_scroll_down();
                                         } else {
-                                            app.scroll_down_by(5);
+                                            let (messages_area, msg_id, previous) = {
+                                                let panes = app.panes.borrow();
+                                                (panes.rect(ActivePane::ChatMessages), panes.id(ActivePane::ChatMessages), panes.focused_id())
+                                            };
+                                            let visible = messages_area.height.saturating_sub(2) as usize;
+                                            if let Some(msg_id) = msg_id {
+                                                let previous_channel = app.active_channel_id.clone();
+                                                panes::activate_window(app, msg_id);
+                                                ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                                app.scroll_chat_view(false, 5, visible);
+                                                panes::activate_window(app, previous);
+                                                app.load_channel_buffer(previous_channel);
+                                            } else {
+                                                ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
+                                                app.scroll_chat_view(false, 5, visible);
+                                            }
                                         }
                                     }
                                     KeyCode::Enter => {
@@ -2047,9 +2105,17 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
         app.awatch.mouse(mouse, inner);
         return;
     }
+    let target_window = if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
+        && view == ActivePane::ChatInput
+        && area.height < 20
+    {
+        app.panes.borrow().id(ActivePane::ChatMessages).unwrap_or(id)
+    } else {
+        id
+    };
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left) { app.panes.borrow_mut().focus_id(id); }
-        panes::activate_window(app, id);
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) { app.panes.borrow_mut().focus_id(target_window); }
+        panes::activate_window(app, target_window);
     }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -2097,7 +2163,7 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
                 ActivePane::ChatMessages | ActivePane::ChatInput => {
                     let messages_area = if view == ActivePane::ChatMessages { area } else { app.panes.borrow().rect(ActivePane::ChatMessages) };
                     ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
-                    let visible = messages_area.height.saturating_sub(1) as usize;
+                    let visible = messages_area.height.saturating_sub(2) as usize;
                     app.scroll_chat_view(up, 3, visible);
                     if up && app.scroll_offset.saturating_add(visible) >= app.chat_cache.read().unwrap().lines.len() { spawn_older_messages(app, tx); }
                 }
