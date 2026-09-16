@@ -15,8 +15,8 @@ import { captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from
 import '/src/index.css';
 const noop = () => {};
 let count = 0;
-const row = () => ({ id: 'row-' + ++count, channelId: 'scroll-test', author: 'reader',
-  body: 'Transcript message ' + count, createdAt: new Date(1700000000000 + count * 60000).toISOString() });
+const row = () => ({ id: 'row-' + ++count, channelId: 'scroll-test', author: count % 2 ? 'reader' : 'other',
+  body: ('Transcript message ' + count + '\\n\\n').repeat(1 + count % 7), createdAt: new Date(1700000000000 + count * 60000).toISOString() });
 chatMessageStore.set('scroll-test', Array.from({length: 60}, row));
 chatMessageStore.set('other-channel', Array.from({length: 60}, row));
 window.setAgentStatus = status => chatMessageStore.update('scroll-test', rows => [
@@ -29,7 +29,8 @@ window.streamOutput = text => chatMessageStore.update('scroll-test', rows => row
   row.id === 'agent-activity' ? { ...row, blocks: [{ type: 'thinking', text: 'Private reasoning' }, { type: 'text', text }] } : row));
 window.appendRow = () => chatMessageStore.update('scroll-test', rows => [...rows, row()]);
 const root = ReactDOM.createRoot(document.getElementById('root'));
-window.switchChannel = (channelId = 'scroll-test') => root.render(React.createElement(ChatView, {
+window.switchChannel = (channelId = 'scroll-test', jumpToMessageId) => root.render(React.createElement(ChatView, {
+  jumpToMessageId,
   channelId, channelName: 'Scroll test', currentUser: 'reader', vaultId: channelId === 'history-test' ? 'vault' : undefined,
   presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [], sidebarMode: 'hidden',
   onRegisterAgent: noop, onRemoveAgent: noop, onInviteUser: async () => {}, onSendMessage: noop, onCancelRun: noop,
@@ -59,10 +60,20 @@ try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 700 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    new MutationObserver(() => {
+      const groups = document.querySelectorAll('.chat-message-group');
+      if (groups.length && window.firstBodyCount == null) {
+        window.firstBodyCount = document.querySelectorAll('.chat-message-body').length;
+      }
+    }).observe(document, { subtree: true, childList: true });
+  });
   await page.goto(server.resolvedUrls.local[0] + 'scroll-test.html');
   const pane = page.locator('.chat-messages');
   await pane.waitFor();
   await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.firstBodyCount), 0,
+    'initial commit contains height placeholders, not every heavy message body');
   const bottomDistance = () => pane.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
   assert.ok(await bottomDistance() <= 1, 'mount follows recent messages');
   await page.evaluate(() => window.appendRow());
@@ -163,8 +174,34 @@ try {
   await page.waitForTimeout(300);
   assert.deepEqual(cursors, [361, 241, 121], 'exhausted history stays exhausted across recent refresh');
   assert.equal(refreshCount, 2);
+  // Search/jump force-mounts an offscreen target even before IO reveals it.
+  await page.evaluate(() => window.switchChannel('history-test', 'history-470'));
+  await page.waitForTimeout(1400);
+  const jumped = page.locator('[data-message-id="history-470"]');
+  assert.ok(await jumped.isVisible());
+  assert.ok(await jumped.evaluate(el => {
+    const pane = el.closest('.chat-messages').getBoundingClientRect();
+    const row = el.getBoundingClientRect();
+    return row.bottom > pane.top && row.top < pane.bottom;
+  }), 'jump reaches the selected message rather than a placeholder');
+  const placeholder = page.locator('.chat-message-group.is-offscreen').first();
+  assert.ok(await placeholder.count(), 'history outside the buffer remains deferred');
+  {
+    assert.equal(await placeholder.getAttribute('tabindex'), '0');
+    await placeholder.focus();
+    await page.waitForTimeout(100);
+    assert.ok(await page.evaluate(() => document.activeElement?.querySelector('.chat-message-body')),
+      'keyboard focus reveals a deferred group');
+  }
   assert.equal(await page.getByText('Beginning of conversation').count(), 0);
   assert.deepEqual(errors, [], 'chat fixture has no runtime errors');
+  const fallback = await browser.newPage();
+  await fallback.addInitScript(() => { window.IntersectionObserver = undefined; });
+  await fallback.goto(server.resolvedUrls.local[0] + 'scroll-test.html');
+  await fallback.waitForSelector('.chat-message-body');
+  assert.equal(await fallback.locator('.chat-message-group.is-offscreen').count(), 0,
+    'without IntersectionObserver, all bodies remain readable');
+  await fallback.close();
   console.log('Chat scrolling browser regression passed');
 } finally {
   await browser?.close();
