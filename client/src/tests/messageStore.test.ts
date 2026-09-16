@@ -128,7 +128,7 @@ describe('chatMessageStore', () => {
 
     chatMessageStore.update(channelId, (messages) => [
       ...messages,
-      { ...message('live-agent', channelId), agentId: 'sol', status: 'running' },
+      { ...message('live-agent', channelId), agentId: 'sol', status: 'running', runId: 1 },
     ]);
     expect(chatMessageStore.getAgentActivity()[channelId]).toBe('running');
 
@@ -146,7 +146,7 @@ describe('chatMessageStore', () => {
     chatMessageStore.set(channelId, []);
     chatMessageStore.update(channelId, (messages) => [
       ...messages,
-      { ...message('canceled-agent', channelId), agentId: 'sol', status: 'running' },
+      { ...message('canceled-agent', channelId), agentId: 'sol', status: 'running', runId: 2 },
     ]);
     chatMessageStore.update(channelId, (messages) => messages.map((item) => (
       item.id === 'canceled-agent' ? { ...item, status: 'canceled' } : item
@@ -167,13 +167,13 @@ describe('chatMessageStore', () => {
 
  it('shows orange activity only for the signed-in owner, including cached rows after account changes', () => {
    const channel = 'shared-owners';
-   const other = { ...message('other', channel), actorUserId: 2, agentId: 'claude-code', status: 'running' as const };
+   const other = { ...message('other', channel), actorUserId: 2, agentId: 'claude-code', status: 'running' as const, runId: 3 };
    const unknown = { ...other, id: 'unknown', actorUserId: undefined };
    chatMessageStore.set(channel, [other, unknown]);
    expect(chatMessageStore.getAgentActivity()[channel]).toBeUndefined();
    const own = { ...other, id: 'own', actorUserId: 1, status: 'queued' as const };
    chatMessageStore.update(channel, rows => [...rows, own]);
-   expect(chatMessageStore.getAgentActivity()[channel]).toBe('running');
+   expect(chatMessageStore.getAgentActivity()[channel]).toBe('queued');
    chatMessageStore.update(channel, rows => rows.filter(row => row.id !== 'own'));
    expect(chatMessageStore.getAgentActivity()[channel]).not.toBe('running');
    expect(chatMessageStore.getChannel(channel)).toEqual([other, unknown]);

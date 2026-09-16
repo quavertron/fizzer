@@ -683,6 +683,10 @@ button:focus-visible,
   opacity: 0.76;
 }
 .activity-dot.is-human { background: #f4f5f7; }
+.activity-dot.is-agent-queued {
+  background: transparent;
+  border: 1px solid var(--text-muted);
+}
 .activity-dot.is-agent-running {
   background: var(--accent-hover);
   box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 52%, transparent);

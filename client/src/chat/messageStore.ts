@@ -57,10 +57,10 @@ const EMPTY: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[];
 
 type Listener = () => void;
 
-export type ChannelAgentActivity = 'running' | 'finished';
+export type ChannelAgentActivity = 'running' | 'queued' | 'finished';
 
 function isRunningAgent(message: ChatMessage): boolean {
-  return Boolean(message.agentId) && isLiveAgentStatus(message.status);
+  return Boolean(message.agentId) && message.status === 'running' && message.runId != null;
 }
 
 function isFinishedAgent(message: ChatMessage): boolean {
@@ -93,11 +93,17 @@ class ChatMessageStore {
     for (const channelId of Object.keys(this.agentActivity)) this.setAgentActivity(channelId, null);
     for (const [channelId, messages] of this.channels) {
       if (messages.some(this.isOwnRunningAgent)) this.setAgentActivity(channelId, 'running');
+      else if (messages.some(this.isOwnQueuedAgent)) this.setAgentActivity(channelId, 'queued');
     }
   }
 
   private isOwnRunningAgent = (message: ChatMessage): boolean => (
     this.activityUserId != null && message.actorUserId === this.activityUserId && isRunningAgent(message)
+  );
+
+  private isOwnQueuedAgent = (message: ChatMessage): boolean => (
+    this.activityUserId != null && message.actorUserId === this.activityUserId
+    && Boolean(message.agentId) && isLiveAgentStatus(message.status) && !isRunningAgent(message)
   );
 
   /** Current messages for a channel; a shared frozen array when none are cached. */
@@ -204,9 +210,14 @@ class ChatMessageStore {
       this.setAgentActivity(channelId, 'running');
       return;
     }
+    if (next.some(this.isOwnQueuedAgent)) {
+      this.setAgentActivity(channelId, 'queued');
+      return;
+    }
 
     const previouslyRunning = previous.some(this.isOwnRunningAgent)
       || this.agentActivity[channelId] === 'running';
+    if (this.agentActivity[channelId] === 'queued') this.setAgentActivity(channelId, null);
     const previousIds = new Set(previous.map((message) => message.id));
     const receivedFinishedAgent = hadChannel
       && next.some((message) => !previousIds.has(message.id) && isFinishedAgent(message));

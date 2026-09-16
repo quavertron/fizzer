@@ -124,21 +124,16 @@ export function vaultSelectionTargetId(
   folders: ReadonlyArray<Pick<Folder, 'id' | 'parent_id'>>,
   expandedFolders: ReadonlySet<string>,
 ) {
-  if (!note.folder_id || !note.content_preview.trim().startsWith(CHAT_NOTE_MARKER)) {
-    return `note-${note.id}`;
-  }
-
-  let target = note.folder_id;
-  let folder = folders.find((candidate) => candidate.id === target);
+  let target = `note-${note.id}`;
+  let folder = folders.find((candidate) => candidate.id === note.folder_id);
   const visited = new Set<string>();
-  while (folder?.parent_id && !visited.has(folder.id)) {
+  while (folder && !visited.has(folder.id)) {
     visited.add(folder.id);
-    const parentId = folder.parent_id;
-    // A collapsed ancestor hides every row below it, including the direct folder.
-    if (!expandedFolders.has(parentId)) target = parentId;
-    folder = folders.find((candidate) => candidate.id === parentId);
+    // The outermost collapsed ancestor is the selected note's visible row.
+    if (!expandedFolders.has(folder.id)) target = `folder-${folder.id}`;
+    folder = folders.find((candidate) => candidate.id === folder!.parent_id);
   }
-  return `folder-${target}`;
+  return target;
 }
 
 type ConnectorBox = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>;
@@ -282,7 +277,8 @@ export const Sidebar = memo(function Sidebar({
       const vaultId = channelVaultIds[channelId]
         ?? (notes.some((note) => note.id === channelId) ? activeVaultId : null);
       if (!vaultId) continue;
-      if (status === 'running' || !grouped[vaultId]) grouped[vaultId] = status;
+      if (status === 'running' || !grouped[vaultId]
+        || (status === 'queued' && grouped[vaultId] === 'finished')) grouped[vaultId] = status;
     }
     return grouped;
   }, [activeVaultId, agentActivity, channelVaultIds, notes]);
@@ -290,6 +286,8 @@ export const Sidebar = memo(function Sidebar({
   const activityKind = (agentStatus: ChannelAgentActivity | undefined, hasHumanUpdates: boolean) => (
     agentStatus === 'running'
       ? 'agent-running'
+      : agentStatus === 'queued'
+        ? 'agent-queued'
       : agentStatus === 'finished'
         ? 'agent-finished'
         : hasHumanUpdates
@@ -300,6 +298,8 @@ export const Sidebar = memo(function Sidebar({
   const activityLabel = (kind: ReturnType<typeof activityKind>) => (
     kind === 'agent-running'
       ? 'Agent work in progress'
+      : kind === 'agent-queued'
+        ? 'Agent work queued — not running'
       : kind === 'agent-finished'
         ? 'Finished agent work'
         : 'New human updates'
@@ -829,7 +829,7 @@ export const Sidebar = memo(function Sidebar({
         ) : (
           <button
             id={`folder-${folder.id}`}
-            className={`tree-item is-folder${dragOverId === folder.id ? ' drag-over' : ''}${dropClass(folder.id)}`}
+            className={`tree-item is-folder${selectionTargetId === `folder-${folder.id}` ? ' active' : ''}${dragOverId === folder.id ? ' drag-over' : ''}${dropClass(folder.id)}`}
             style={{ paddingLeft }}
             onClick={() => toggleFolder(folder.id)}
             onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'folder', id: folder.id })}
@@ -869,7 +869,7 @@ export const Sidebar = memo(function Sidebar({
       <button
         key={note.id}
         id={`note-${note.id}`}
-        className={`tree-item${isChatChannel ? ' is-channel' : ' is-note'}${note.id === activeNoteId ? ' active' : ''}${dropClass(note.id)}`}
+        className={`tree-item${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
         style={{ paddingLeft }}
         onClick={(e) => (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
         onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'note', id: note.id })}

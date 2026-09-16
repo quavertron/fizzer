@@ -74,9 +74,9 @@ describe('vault selection target', () => {
   ];
   const channel = { id: 'chat', folder_id: 'inner', content_preview: 'cascade://chat-channel' };
 
-  it('anchors an open channel to its containing folder even when expanded', () => {
+  it('anchors an open channel to its own visible row when expanded', () => {
     expect(vaultSelectionTargetId(channel, folders, new Set(['outer', 'inner'])))
-      .toBe('folder-inner');
+      .toBe('note-chat');
   });
 
   it('uses the nearest visible folder when ancestors collapse', () => {
@@ -89,7 +89,7 @@ describe('vault selection target', () => {
   it('preserves root channels and ordinary note selection', () => {
     expect(vaultSelectionTargetId({ ...channel, folder_id: null }, folders, new Set()))
       .toBe('note-chat');
-    expect(vaultSelectionTargetId({ ...channel, content_preview: 'A note' }, folders, new Set()))
+    expect(vaultSelectionTargetId({ ...channel, content_preview: 'A note' }, folders, new Set(['outer', 'inner'])))
       .toBe('note-chat');
   });
 
