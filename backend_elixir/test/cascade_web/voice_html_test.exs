@@ -46,7 +46,7 @@ defmodule CascadeWeb.VoiceHtmlTest do
     note =
       Store.create_note(ctx.vault_id, ctx.user_id, %{
         title: "Voice fixture",
-        content: "cascade://chat-channel"
+        content: "cascade://voice-channel"
       })
 
     %{
@@ -56,6 +56,37 @@ defmodule CascadeWeb.VoiceHtmlTest do
       note: note,
       base: "/api/vaults/#{ctx.vault_id}/channels/#{note.id}"
     }
+  end
+
+  test "voice type persists independently of text and cannot grant text rooms voice", c do
+    text =
+      Store.create_note(c.ctx.vault_id, c.user.id, %{
+        title: "Text preserved",
+        content: "cascade://chat-channel"
+      })
+
+    assert ["cascade://voice-channel"] ==
+             SQL.one("SELECT content FROM notes WHERE id=?", [c.note.id])
+
+    assert ["cascade://chat-channel"] ==
+             SQL.one("SELECT content FROM notes WHERE id=?", [text.id])
+
+    Application.put_env(:cascade_elixir, :voice, %{})
+    assert {:error, :forbidden} = Voice.join(c.user, c.ctx.vault_id, text.id)
+    assert {:error, :unavailable} = Voice.join(c.user, c.ctx.vault_id, c.note.id)
+
+    assert request(:get, c.base <> "/voice/participants", nil, Token.sign_agent(c.user)).status ==
+             403
+
+    assert request(
+             :post,
+             c.base <> "/voice/deafen",
+             %{identity: "u#{c.other.id}-x", deafened: true},
+             Token.sign_user(c.user)
+           ).status == 403
+
+    assert {:error, :forbidden} =
+             Voice.deafen(c.user, c.ctx.vault_id, c.note.id, "u#{c.user.id}-x", "true")
   end
 
   test "HTML upload, authenticated guard, safe original download, bounds and scope", c do
@@ -227,11 +258,35 @@ defmodule CascadeWeb.VoiceHtmlTest do
         user: c.other.id
       })
 
+      text_note =
+        Store.create_note(c.ctx.vault_id, c.user.id, %{
+          title: "General",
+          content: "cascade://chat-channel"
+        })
+
+      document =
+        Store.create_note(c.ctx.vault_id, c.user.id, %{
+          title: "Project notes",
+          content: "Notes remain available during voice."
+        })
+
+      second_room =
+        Store.create_note(c.ctx.vault_id, c.user.id, %{
+          title: "Second room",
+          content: "cascade://voice-channel"
+        })
+
+      folder = Store.create_folder(c.ctx.vault_id, %{name: "Hangouts"})
+
       fixture = %{
         upstream: "http://127.0.0.1:#{port}",
         key: key,
         vault: c.ctx.vault_id,
         channel: c.note.id,
+        textChannel: text_note.id,
+        document: document.id,
+        secondRoom: second_room.id,
+        folder: folder.id,
         tokens: [Token.sign_user(c.user), Token.sign_user(c.other)],
         agent: Token.sign_agent(c.user)
       }

@@ -31,6 +31,36 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/channels/:channel_id/voice/participants" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.participants(user, vault_id, channel_id) do
+        {:ok, result} ->
+          JSON.send(put_resp_header(conn, "cache-control", "no-store"), 200, result)
+
+        {:error, :unavailable} ->
+          JSON.send(conn, 503, %{error: "Voice service is not available"})
+
+        _ ->
+          JSON.send(conn, 403, %{error: "Channel access required"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/deafen" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.deafen(
+             user,
+             vault_id,
+             channel_id,
+             conn.body_params["identity"],
+             conn.body_params["deafened"]
+           ) do
+        {:ok, _} -> JSON.send(conn, 200, %{ok: true})
+        _ -> JSON.send(conn, 403, %{error: "Unable to update voice participant"})
+      end
+    end)
+  end
+
   post "/api/vaults/:vault_id/channels/:channel_id/voice/leave" do
     authenticated(conn, :user, :vault, fn conn, user ->
       case Cascade.Chat.Voice.leave(user, vault_id, channel_id, conn.body_params["identity"]) do

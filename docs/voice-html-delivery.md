@@ -2,13 +2,28 @@
 
 ## Features
 
-Channel voice uses self-hosted LiveKit, not the agent runner. Join is explicit;
-only then is microphone capture requested. Mute, deafen (also mutes publication),
-leave, participant list and reconnect status are in ChatView. Switching channels
-or unmounting stops tracks. Human owner/editor access and the existing channel/DM
+Dedicated voice channels use self-hosted LiveKit. The channel creation dialog
+persists either the existing `cascade://chat-channel` marker (text) or
+`cascade://voice-channel` (voice) in the normal note store, including folder/order.
+Existing text notes, messages and folders are unchanged; there is no conversion or
+schema migration. The server permits voice joins only for the voice marker.
+
+Click a speaker-icon sidebar room or its explicit Join button to connect. Opening
+or restoring a room as a tab never joins. Participant rows beneath rooms show mute
+and deafen; the joined room also shows live speaking state. Unjoined room rosters
+refresh every five seconds and cannot subscribe to media. The app owns one voice
+session, so note/text navigation keeps it connected. Its persistent controls offer
+mute, deafen and disconnect, including on phone layouts. Switching rooms closes the
+old connection and tracks before connecting the next and preserves mute/deafen
+intent. Disconnect, vault/account changes, revocation and unmount clean up media;
+pending asynchronous capture is fenced against cancelled sessions.
+
+Human owner/editor access and the existing channel/DM
 route authorization are required. Agent tokens cannot join. Joken issues 30-second
 room-specific microphone-only tokens; data publication and metadata changes are
-forbidden. Every five seconds the backend checks SFU participants against current
+forbidden. Deafen status uses a human-authorized, identity-scoped server
+`UpdateParticipant` call; it never grants clients permission to edit the metadata
+used for revocation. Every five seconds the backend checks SFU participants against current
 membership, including peers surviving backend restart. Revocation depends on the
 SFU control connection being available; token expiration alone does not revoke an
 existing media session. Missing/unreachable SFU returns unavailable, never a fake room.
@@ -30,6 +45,10 @@ Preview script/CSP exceptions are limited to the exact preview response. The app
 shell additionally permits frames only at its own `/api/html-previews/` path and,
 when voice is configured, microphone for self. Other routes retain existing headers. The earlier research's single-window WebRTC override is insufficient:
 `scripts/test-html-research-bypass.mjs` demonstrates a nested-srcdoc realm bypass.
+
+Interaction reference: [Discord voice channels](https://support.discord.com/hc/en-us/articles/19583625604887-Voice-Channels-FAQs).
+State synchronization follows [LiveKit participant attributes](https://docs.livekit.io/transport/data/state/participant-attributes/)
+and [server participant management](https://docs.livekit.io/intro/basics/rooms-participants-tracks/participants/).
 
 ## Existing-host deployment (parent-owned release)
 
@@ -73,11 +92,13 @@ Install normal repository dependencies, cached Playwright Chromium and Docker.
 `PLAYWRIGHT_BROWSERS_PATH=/path/to/cache npm run test:voice-html` builds a disposable
 internal Docker network/SFU and runs real HTTP/router/CLI/UI/media tests. It cleans
 its own container/network on exit; it unsets personal display variables. Browser
-uses synthetic oscillator tracks, never the user's microphone. Optional
+uses synthetic oscillator tracks with speaker output disabled, never the user's microphone.
+The fixture renders the actual App and uses its normal human-authenticated API. Optional
 FIZZER_MEDIA_OUTPUT selects evidence directory and FIZZER_ORIGINAL_HTML_FIXTURE
 selects an existing HTML artifact to verify without modifying it.
 
-Observed: 4 focused tests passed; two headless clients transferred real audio
+Historical initial voice/HTML implementation evidence (not checks for the dedicated
+channel candidate): 4 focused tests passed; two headless clients transferred real audio
 (3705 inbound bytes, 15 packets, nonzero audio energy), selected TURN relay,
 reconnected, left/rejoined, denied microphone permission, rejected unauthorized
 joins and disconnected a revoked member in 5297 ms. CLI upload/download bytes,

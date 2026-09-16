@@ -5,7 +5,7 @@ defmodule Cascade.Chat.Channel do
   alias Cascade.Chat.Events
   alias Cascade.Content.{Assets, Store}
 
-  @marker "cascade://chat-channel"
+  @markers ["cascade://chat-channel", "cascade://voice-channel"]
   def assert_channel(channel_id, user_id) do
     row =
       SQL.one(
@@ -358,7 +358,11 @@ defmodule Cascade.Chat.Channel do
   end
 
   defp chat_note?(content, preview),
-    do: String.starts_with?(String.trim(to_string(content || preview || "")), @marker)
+    do:
+      Enum.any?(
+        @markers,
+        &String.starts_with?(String.trim(to_string(content || preview || "")), &1)
+      )
 
   defp live_kanban_id(""), do: ""
   defp live_kanban_id(nil), do: ""

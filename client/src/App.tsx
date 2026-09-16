@@ -1,3 +1,5 @@
+import { useVoiceSession, VoiceContext, VoiceControls, VoiceChannelView } from './components/VoiceRoom';
+import { VOICE_NOTE_MARKER, isVoiceChannel } from './chat/shared';
 import { LoadingIndicator } from './components/LoadingIndicator';
 import { StartupPending } from './components/StartupPending';
 import { hydrateNote } from './noteHydration';
@@ -203,6 +205,7 @@ export default function App() {
   const [folders, setFolders] = useState<Folder[]>(initialVaultListing?.folders ?? []);
   const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [chatState, setChatState] = useState<ChatState>(loadChatState);
+  const voice = useVoiceSession(activeVaultId, user?.id);
   const [loadingChatChannels, setLoadingChatChannels] = useState<Record<string, boolean>>({});
   const [chatPresenceByChannel, setChatPresenceByChannel] = useState<Record<string, ChatChannelPresence>>({});
   const [channelVaultIds, setChannelVaultIds] = useState<Record<string, string>>({});
@@ -1323,17 +1326,17 @@ export default function App() {
     })();
   }, [acceptVaultInvite, user]);
 
-  const handleCreateChannel = useCallback(async (folderId: string | null = null) => {
+  const handleCreateChannel = useCallback(async (folderId: string | null = null, type: 'text' | 'voice' = 'text', name = 'new-channel') => {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return undefined;
     try {
       const data = await api<{ note: Note }>(`/api/vaults/${vaultId}/notes`, {
         method: 'POST',
-        body: JSON.stringify({ title: 'new-channel', content: CHAT_NOTE_MARKER, folder_id: folderId ?? undefined }),
+        body: JSON.stringify({ title: name, content: type === 'voice' ? VOICE_NOTE_MARKER : CHAT_NOTE_MARKER, folder_id: folderId ?? undefined }),
       });
       await loadVaultData(vaultId);
       if (activeVaultIdRef.current !== vaultId) return undefined;
-      openChatChannel(data.note.id, data.note.title);
+      if (type === 'text') openChatChannel(data.note.id, data.note.title);
       return { id: data.note.id, title: data.note.title };
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not create channel');
@@ -1654,6 +1657,10 @@ export default function App() {
     const summary = notesRef.current.find((n) => n.id === noteId);
     if (summary) {
       const preview = summary.content_preview.trim();
+      if (isVoiceChannel(preview)) {
+        workspaceStore.openTab({ id: noteId, title: summary.title, type: 'note', dirty: false }, mode);
+        return;
+      }
       if (preview.startsWith(CHAT_NOTE_MARKER)) {
         openChatChannel(noteId, summary.title, mode);
         return;
@@ -2502,6 +2509,8 @@ export default function App() {
         </Suspense>
       );
     }
+    const voiceNote = notes.find(note => note.id === tab.id && isVoiceChannel(note.content_preview));
+    if (voiceNote) return <VoiceChannelView channel={{ id: voiceNote.id, title: voiceNote.title }} />;
     if (tab.type === 'chat') {
       const channel = notes.find((note) => note.id === tab.id && note.content_preview.trim().startsWith(CHAT_NOTE_MARKER));
       const channelGone = notes.length > 0 && !channel && !loadingChatChannels[tab.id];
@@ -2650,6 +2659,7 @@ export default function App() {
 
 
   return (
+    <VoiceContext.Provider value={voice}>
     <main
       className={`app-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}
       style={{
@@ -2752,9 +2762,9 @@ export default function App() {
             void handleCreateNote();
             if (isMobileViewport()) setSidebarOpen(false);
           }}
-          onCreateChannel={async (folderId) => {
-            const channel = await handleCreateChannel(folderId);
-            if (isMobileViewport()) setSidebarOpen(false);
+          onCreateChannel={async (folderId, type, name) => {
+            const channel = await handleCreateChannel(folderId, type, name);
+            if (type !== 'voice' && isMobileViewport()) setSidebarOpen(false);
             return channel;
           }}
           onNewNoteInFolder={(folderId) => {
@@ -3073,7 +3083,9 @@ export default function App() {
       )}
       <Suspense fallback={null}><AndroidUpdatePrompt /></Suspense>
 
+      <VoiceControls />
       {notice && <div className="toast" role="status">{notice}</div>}
     </main>
+    </VoiceContext.Provider>
   );
 }

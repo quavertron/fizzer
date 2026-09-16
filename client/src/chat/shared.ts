@@ -4,6 +4,10 @@ import type {
 } from './types';
 
 export const CHAT_NOTE_MARKER = 'cascade://chat-channel';
+export const VOICE_NOTE_MARKER = 'cascade://voice-channel';
+export function isVoiceChannel(content: string) {
+  return content.trim().split(/\s/, 1)[0] === VOICE_NOTE_MARKER;
+}
 const CHAT_MESSAGE_GROUP_WINDOW_MS = 90_000;
 
 export function createChatAgentRegistrationId() {

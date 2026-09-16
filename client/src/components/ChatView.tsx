@@ -5,7 +5,6 @@ import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply
 import { api, type NoteSummary } from '../api';
 import { normalizeMention } from '../chat/mentions';
 import { createChannelWorkItem } from '../chat/workItems';
-import { VoiceRoom } from './VoiceRoom';
 import { buildReplyPreview, buildReplyRef } from '../chat/replies';
 import type {
   ChatAgentOption,
@@ -890,7 +889,6 @@ export const ChatView = memo(function ChatView({
           )}
         </header>
 
-        {vaultId && <VoiceRoom key={`${vaultId}:${channelId}`} vaultId={vaultId} channelId={channelId} />}
 
         <div
           ref={messagesRef}

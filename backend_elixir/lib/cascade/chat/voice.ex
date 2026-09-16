@@ -5,9 +5,17 @@ defmodule Cascade.Chat.Voice do
   alias Cascade.Accounts.VaultMembers
 
   defp authorized_route(vault, channel, user) do
-    if VaultMembers.role(vault, user) in ["owner", "editor"],
-      do: Channel.assert_vault_channel(vault, channel, user),
-      else: {:error, :forbidden}
+    with true <- VaultMembers.role(vault, user) in ["owner", "editor"],
+         {:ok, route} <- Channel.assert_vault_channel(vault, channel, user),
+         [content] <-
+           Cascade.Accounts.SQL.one("SELECT content FROM notes WHERE id=?", [
+             route.sourceChannelId
+           ]),
+         true <- List.first(String.split(String.trim(content || ""))) == "cascade://voice-channel" do
+      {:ok, route}
+    else
+      _ -> {:error, :forbidden}
+    end
   end
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -75,6 +83,42 @@ defmodule Cascade.Chat.Voice do
     with {:ok, route} <- Channel.assert_vault_channel(vault, channel, user.id),
          true <- is_binary(identity) and String.starts_with?(identity, "u#{user.id}-") do
       rpc("RemoveParticipant", %{room: room(route), identity: identity})
+    else
+      _ -> {:error, :forbidden}
+    end
+  end
+
+  def participants(user, vault, channel) do
+    with {:ok, route} <- authorized_route(vault, channel, user.id),
+         {:ok, result} <- rpc("ListParticipants", %{room: room(route)}) do
+      {:ok,
+       %{
+         participants:
+           Enum.map(result["participants"] || [], fn peer ->
+             %{
+               identity: peer["identity"],
+               name: peer["name"],
+               muted:
+                 not Enum.any?(
+                   peer["tracks"] || [],
+                   &(&1["type"] in [nil, "AUDIO", 0] and &1["muted"] != true)
+                 ),
+               deafened: get_in(peer, ["attributes", "fizzer.deafened"]) == "true"
+             }
+           end)
+       }}
+    end
+  end
+
+  def deafen(user, vault, channel, identity, deafened) do
+    with {:ok, route} <- authorized_route(vault, channel, user.id),
+         true <- is_binary(identity) and String.starts_with?(identity, "u#{user.id}-"),
+         true <- is_boolean(deafened) do
+      rpc("UpdateParticipant", %{
+        room: room(route),
+        identity: identity,
+        attributes: %{"fizzer.deafened" => to_string(deafened)}
+      })
     else
       _ -> {:error, :forbidden}
     end

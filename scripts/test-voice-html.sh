@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-unset DISPLAY WAYLAND_DISPLAY SWAYSOCK
+unset DISPLAY WAYLAND_DISPLAY SWAYSOCK PULSE_SERVER
 name="fizzer-media-test-$$"
 network="$name"
 cleanup() {

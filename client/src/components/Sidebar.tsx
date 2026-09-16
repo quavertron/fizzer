@@ -28,12 +28,13 @@ import {
   type YouTubeEmbedControlDetail,
   type YouTubeEmbedStateDetail,
 } from '../mediaLinks';
-import { CHAT_NOTE_MARKER } from '../chat/shared';
+import { useVoice, VoiceParticipants } from './VoiceRoom';
+import { CHAT_NOTE_MARKER, isVoiceChannel } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
 import {
   Folder as FolderIcon, FolderOpen, FileText, Pin, Edit2, FolderPlus,
   Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
-  Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
+  Volume2, Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
 } from 'lucide-react';
 
 export function vaultOptionLabel(vault: Vault): string {
@@ -67,7 +68,7 @@ interface SidebarProps {
   onSelectNote: (id: string) => void;
   onOpenNoteInNewTab: (id: string) => void;
   onNewNote: () => void;
-  onCreateChannel: (folderId?: string | null) => Promise<{ id: string; title: string } | undefined>;
+  onCreateChannel: (folderId?: string | null, type?: 'text' | 'voice', name?: string) => Promise<{ id: string; title: string } | undefined>;
   onNewNoteInFolder: (folderId: string | null) => void;
   onSearch: () => void;
   onCollapse: () => void;
@@ -212,6 +213,14 @@ export const Sidebar = memo(function Sidebar({
   onRenameNote,
   onDeleteFolder,
 }: SidebarProps) {
+  const voice = useVoice();
+  const [createParent, setCreateParent] = useState<string | null | undefined>(undefined);
+  const [channelType, setChannelType] = useState<'text' | 'voice'>('text');
+  const [channelName, setChannelName] = useState('');
+  const [creatingChannel, setCreatingChannel] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const createDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (createParent !== undefined) createDialog.current?.showModal(); }, [createParent]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   // When the context menu shows the "Move to…" folder picker for a note.
@@ -597,14 +606,29 @@ export const Sidebar = memo(function Sidebar({
     if (folder) startRename(folder);
   }
 
-  async function createChannel(parentId: string | null) {
+  function createChannel(parentId: string | null) {
     setContextMenu(null);
-    if (parentId) expandFolder(parentId);
-    const channel = await onCreateChannel(parentId);
-    if (channel) {
-      setEditingValue(channel.title);
-      setEditingNoteId(channel.id);
-    }
+    setChannelType('text'); setChannelName(''); setCreateError(''); setCreateParent(parentId);
+  }
+
+  function closeCreateChannel() {
+    createDialog.current?.close();
+    setCreateParent(undefined);
+  }
+
+  async function submitChannel(e: React.FormEvent) {
+    e.preventDefault();
+    if (creatingChannel || !channelName.trim()) return;
+    setCreatingChannel(true); setCreateError('');
+    try {
+      const channel = await onCreateChannel(createParent, channelType, channelName.trim());
+      if (channel) {
+        if (createParent) expandFolder(createParent);
+        closeCreateChannel();
+      } else {
+        setCreateError('Could not create channel. Check your access and try again.');
+      }
+    } finally { setCreatingChannel(false); }
   }
 
   // ─── Drag and drop ──────────────────────────────────────
@@ -855,28 +879,30 @@ export const Sidebar = memo(function Sidebar({
   /** Render a single note item in the sidebar tree. */
   function renderNote(note: NoteSummary, depth: number) {
     const paddingLeft = 12 + depth * 14 + 16;
-    const isChatChannel = note.content_preview.trim().startsWith(CHAT_NOTE_MARKER);
+    const isVoice = isVoiceChannel(note.content_preview);
+    const isChatChannel = isVoice || note.content_preview.trim().startsWith(CHAT_NOTE_MARKER);
     const noteActivity = activityKind(agentActivity[note.id], (updateCounts.byTarget[note.id] || 0) > 0);
     if (editingNoteId === note.id) {
       return (
         <div key={note.id} className="tree-item tree-editing" style={{ paddingLeft }}>
-          <span className="tree-icon">{isChatChannel ? <Hash size={16} /> : <FileText size={16} />}</span>
+          <span className="tree-icon">{isVoice ? <Volume2 size={16} /> : isChatChannel ? <Hash size={16} /> : <FileText size={16} />}</span>
           {renameInput(() => setEditingNoteId(null))}
         </div>
       );
     }
     return (
+      <div key={note.id}>
       <button
-        key={note.id}
         id={`note-${note.id}`}
-        className={`tree-item${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
+        aria-label={isVoice ? `Join ${note.title} voice channel` : undefined}
+        className={`tree-item${isVoice && voice?.channel?.id === note.id ? ' is-voice-connected' : ''}${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
         style={{ paddingLeft }}
-        onClick={(e) => (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
+        onClick={(e) => isVoice ? void voice?.join({ id: note.id, title: note.title }) : (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
         onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'note', id: note.id })}
         {...noteDragProps(note.id)}
         {...noteDropProps(note, notesByFolder.get(note.folder_id) ?? [])}
       >
-        <span className="tree-icon">{isChatChannel ? <Hash size={15} /> : <FileText size={15} />}</span>
+        <span className="tree-icon">{isVoice ? <Volume2 size={15} /> : isChatChannel ? <Hash size={15} /> : <FileText size={15} />}</span>
         <span className="tree-label">{note.title || 'Untitled'}</span>
         {activityDot(noteActivity)}
         {note.is_pinned ? <span className="pin-icon"><Pin size={11} fill="currentColor" /></span> : null}
@@ -888,6 +914,8 @@ export const Sidebar = memo(function Sidebar({
           </span>
         )}
       </button>
+      {isVoice && <VoiceParticipants channelId={note.id} />}
+      </div>
     );
   }
 
@@ -950,6 +978,16 @@ export const Sidebar = memo(function Sidebar({
 
   return (
     <aside ref={sidebarRef} className="sidebar" id="sidebar" style={{ gridColumn: 1 }}>
+      {createParent !== undefined && <dialog ref={createDialog} className="voice-create" aria-labelledby="create-channel-title" onCancel={event => { event.preventDefault(); if (!creatingChannel) closeCreateChannel(); }}>
+        <form onSubmit={e => void submitChannel(e)}>
+          <h2 id="create-channel-title">Create channel</h2>
+          <label><input type="radio" name="channel-type" value="text" checked={channelType === 'text'} onChange={() => setChannelType('text')} /><Hash size={18} />Text channel</label>
+          <label><input type="radio" name="channel-type" value="voice" checked={channelType === 'voice'} onChange={() => setChannelType('voice')} /><Volume2 size={18} />Voice channel</label>
+          <label>Channel name<input type="text" autoFocus required maxLength={100} value={channelName} onChange={e => setChannelName(e.target.value)} placeholder={channelType === 'voice' ? 'Lounge' : 'general'} /></label>
+          {createError && <p role="alert">{createError}</p>}
+          <footer><button type="button" disabled={creatingChannel} onClick={closeCreateChannel}>Cancel</button><button type="submit" disabled={creatingChannel || !channelName.trim()}>{creatingChannel ? 'Creating…' : 'Create channel'}</button></footer>
+        </form>
+      </dialog>}
       <nav className="vault-rail" aria-label="Vaults">
         <button type="button" className="vault-rail-action" aria-label="Manage vaults" title="Manage vaults"
           aria-haspopup="dialog" aria-expanded={vaultMenuOpen}

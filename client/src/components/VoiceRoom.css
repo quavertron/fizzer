@@ -1,0 +1,47 @@
+.voice-controls { position: fixed; bottom: 12px; left: 12px; z-index: 120; width: 280px; max-width: calc(100vw - 24px); padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); color: var(--text-primary); box-shadow: 0 4px 20px #0005; }
+.voice-connection { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.voice-connection > svg { color: #6dc9a5; flex-shrink: 0; }
+.voice-connection > div { display: flex; flex-direction: column; min-width: 0; }
+.voice-connection strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.voice-connection [role=status] { color: var(--text-secondary); font-size: 12px; }
+.voice-buttons { display: flex; gap: 4px; margin-top: 6px; }
+.voice-buttons button { flex: 1; display: grid; place-items: center; min-height: 36px; border: 0; border-radius: 4px; color: inherit; background: var(--bg-surface); cursor: pointer; }
+.voice-buttons button[aria-pressed=true] { color: #f19b9b; }
+.voice-buttons button:disabled { opacity: .5; cursor: default; }
+.voice-buttons button:hover { background: var(--bg-overlay); }
+.voice-buttons button:focus-visible, .voice-create button:focus-visible { outline: 2px solid var(--border-active); outline-offset: 2px; }
+.voice-error { font-size: 12px; overflow-wrap: anywhere; }
+.voice-error p { margin: 6px 0; }
+.app-shell:has(.voice-controls) .sidebar-footer { padding-bottom: 120px; }
+.voice-participants { list-style: none; margin: 2px 0 6px; padding: 0 8px 0 42px; }
+.voice-participants li { display: flex; align-items: center; gap: 7px; min-height: 28px; font-size: 12px; color: var(--text-secondary); }
+.voice-avatar { width: 20px; height: 20px; display: grid; place-items: center; flex-shrink: 0; border-radius: 50%; background: var(--bg-overlay); font-size: 10px; }
+.voice-participants .is-speaking .voice-avatar { outline: 2px solid #6dc9a5; }
+.voice-peer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-roster-status { display: block; padding-left: 42px; font-size: 11px; color: var(--text-secondary); }
+.tree-item.is-voice-connected { color: #6dc9a5; background: var(--bg-raised); }
+.voice-create { margin: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); color: var(--text-primary); padding: 20px; width: min(380px, calc(100vw - 32px)); }
+.voice-create::backdrop { background: #0008; }
+.voice-create h2 { margin: 0 0 16px; font-size: 18px; }
+.voice-create label { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+.voice-create label:has(input[type=text]) { flex-direction: column; align-items: stretch; }
+.voice-create input[type=text] { min-height: 40px; }
+.voice-create footer button { min-height: 36px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-surface); }
+.voice-create button[type=submit] { background: var(--accent); color: var(--bg-deep); }
+.voice-create button:disabled { opacity: .5; }
+.voice-create footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+@media (max-width: 700px) {
+  .app-shell:has(.voice-controls) .documentation-assistant-launcher { bottom: calc(90px + env(safe-area-inset-bottom)); }
+  .app-shell:has(.voice-controls) .documentation-assistant { bottom: calc(144px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 160px); }
+  .voice-controls { bottom: max(8px, env(safe-area-inset-bottom)); left: 8px; width: calc(100vw - 16px); max-width: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .voice-connection { flex: 1; }
+  .voice-buttons { margin: 0; }
+  .voice-buttons button { width: 44px; min-height: 44px; }
+  .voice-error { width: 100%; }
+  .app-shell:has(.voice-controls) { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+}
+
+.voice-channel-view { padding: 32px; color: var(--text-primary); }
+.voice-channel-view h1 { font-size: 22px; margin: 12px 0; }
+.voice-channel-view p { color: var(--text-secondary); }
+.voice-channel-view > button { margin: 16px 0; padding: 10px 18px; }
