@@ -10,7 +10,11 @@ a hollow neutral marker means **Agent work queued — not running**. Queued rows
 remain in the transcript and snapshot-recovery path. This is a presentation of
 persisted execution state, not an independent provider heartbeat or a claim that
 queued work has been completed. Running takes precedence over queued, then
-finished, when aggregating vault activity.
+finished, when aggregating vault activity. A queued dispatch shell whose dispatch
+and run are both absent is projected as canceled with an explicit superseded
+explanation. List and exact-message reads agree; no stored message, task, dispatch
+or run is deleted or rewritten. Real pending dispatches and runs awaiting message
+attachment remain untouched.
 
 Desktop workspace preparation errors retain the desktop's bounded diagnostic
 instead of replacing a non-ok ACK with a generic message. Repository binding,

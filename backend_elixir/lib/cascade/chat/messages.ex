@@ -36,6 +36,7 @@ defmodule Cascade.Chat.Messages do
         )
         |> Enum.reverse()
         |> Enum.map(&row_to_message(&1, detail, route.localChannelId))
+        |> Enum.map(&project_superseded_queue/1)
 
       visible = Enum.reject(messages, &terminal_shell?/1)
 
@@ -62,9 +63,29 @@ defmodule Cascade.Chat.Messages do
 
   def get(channel_id, user_id, message_id) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
-      fetch(route, message_id)
+      case fetch(route, message_id) do
+        {:ok, message} -> {:ok, project_superseded_queue(message)}
+        error -> error
+      end
     end
   end
+
+  # Retrying a task can remove its old dispatch without removing its reply shell.
+  # Project that shell honestly, without rewriting history or authorizing a retry.
+  # Check runs too: insertion can precede attachment to the message/dispatch.
+  defp project_superseded_queue(%{id: "agent-dispatch-" <> id, status: "queued"} = message) do
+    if message[:agentId] && is_nil(message[:runId]) &&
+         is_nil(SQL.one("SELECT 1 FROM chat_agent_dispatches WHERE id=? UNION ALL SELECT 1 FROM runs WHERE chat_dispatch_id=? LIMIT 1", [id, id])) do
+      body = if message.body in ["Queued...", "Thinking...", ""],
+        do: "Superseded before execution; this dispatch is no longer queued.",
+        else: message.body
+      %{message | status: "canceled", body: body}
+    else
+      message
+    end
+  end
+
+  defp project_superseded_queue(message), do: message
 
   def create(user, vault_id, channel_id, input, opts \\ []) do
     access = Keyword.get(opts, :access, :user)

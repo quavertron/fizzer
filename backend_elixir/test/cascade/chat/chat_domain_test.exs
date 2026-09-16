@@ -1210,6 +1210,42 @@ defmodule Cascade.ChatDomainTest do
     end
   end
 
+  test "orphan queued shells project superseded without writes, while real dispatches and runs remain live" do
+    {vault, channel} = chat_vault(1, "Queue projection", "Room")
+    user = %{id: 1, username: "alice"}
+    {:ok, registration} = Agents.upsert_member(1, vault.id, channel.id, %{agentId: "codex", mention: "sol"})
+
+    for state <- [:pending, :orphan, :run_before_attachment] do
+      {:ok, trigger} = Messages.create(user, vault.id, channel.id, %{body: "@sol work"})
+      {:ok, dispatch} = Dispatches.create(1, channel.id, trigger, registration.id)
+      {:ok, shell} = Messages.create(user, vault.id, channel.id, %{
+        id: "agent-dispatch-#{dispatch.id}", registrationId: registration.id,
+        body: "Queued...", status: "queued"
+      }, access: :agent)
+
+      if state == :run_before_attachment do
+        assert {:ok, _} = RunStore.start(vault.id, nil, "inert execution fixture", "codex", chat_dispatch_id: dispatch.id)
+      end
+      if state != :pending, do: SQL.exec("DELETE FROM chat_agent_dispatches WHERE id=? AND run_id IS NULL", [dispatch.id])
+      before = SQL.all("SELECT id,status,body,run_id FROM chat_messages ORDER BY id")
+      runs = SQL.all("SELECT id,status,chat_dispatch_id FROM runs ORDER BY id")
+      dispatches = SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id")
+      assert {:ok, projected} = Messages.get(channel.id, user.id, shell.id)
+      assert {:ok, listed} = Messages.list(channel.id, user.id)
+      assert Enum.find(listed, &(&1.id == shell.id)).status == projected.status
+      if state == :orphan do
+        assert projected.status == "canceled"
+        assert projected.body == "Superseded before execution; this dispatch is no longer queued."
+      else
+        assert projected.status == "queued"
+        assert projected.body == "Queued..."
+      end
+      assert before == SQL.all("SELECT id,status,body,run_id FROM chat_messages ORDER BY id")
+      assert runs == SQL.all("SELECT id,status,chat_dispatch_id FROM runs ORDER BY id")
+      assert dispatches == SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id")
+    end
+  end
+
   test "message list follows commit order when client timestamps disagree" do
     {vault, channel} = chat_vault(1, "Ordered messages", "Room")
     user = %{id: 1, username: "alice"}
