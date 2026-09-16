@@ -1042,6 +1042,31 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert child_item.baseCommit == "parent-tip"
   end
 
+  test "workspace preparation preserves the bounded desktop ACK error", ctx do
+    for {reported, expected} <- [
+          {"Not a git repository", "Not a git repository"},
+          {String.duplicate("x", 501), String.duplicate("x", 500)}
+        ] do
+      started =
+        Task.async(fn ->
+          Cascade.Runs.RunnerLifecycle.prepare_workspace(
+            ctx.owner.id,
+            %{workItemId: "missing-repository", dir: "/not-a-repository"},
+            5_000
+          )
+        end)
+
+      preparation = packet!(ctx.sid, "workspace:prepare")
+
+      send_socket!(
+        ctx.sid,
+        SocketIO.ack("/runners", preparation.id, [%{ok: false, error: reported}])
+      )
+
+      assert Task.await(started, 5_000) == {:error, expected}
+    end
+  end
+
   defp mission_task(ctx, title, mode \\ "shared") do
     SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
 

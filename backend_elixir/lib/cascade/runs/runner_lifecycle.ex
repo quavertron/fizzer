@@ -149,7 +149,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
              timeout
            ),
          response when is_map(response) <- List.first(replies),
-         true <- field(response, :ok) == true,
+         :ok <- workspace_ok(response),
          {:ok, prepared} <- complete_workspace(response) do
       {:ok, prepared}
     else
@@ -515,6 +515,17 @@ defmodule Cascade.Runs.RunnerLifecycle do
     else
       {:error, "Desktop returned an incomplete workspace binding"}
     end
+  end
+
+  defp workspace_error(response) do
+    case field(response, :error) do
+      error when is_binary(error) and error != "" -> {:error, String.slice(error, 0, 500)}
+      _ -> {:error, "Desktop workspace preparation failed"}
+    end
+  end
+
+  defp workspace_ok(response) do
+    if field(response, :ok) == true, do: :ok, else: workspace_error(response)
   end
 
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
