@@ -304,6 +304,21 @@ defmodule Cascade.Chat.NextStepsTest do
            ).body == ""
   end
 
+  test "feedback source bodies appear once while decline identity and cold-start evidence survive", c do
+    enable(c)
+    first = proposal(c)
+    {:ok, decline} = Messages.create(c.user, c.vault_id, c.channel.id, %{
+      body: "STOP this proposal: preserve the demo scope exactly."
+    })
+    SQL.exec("UPDATE chat_next_step_checks SET feedback='declined',feedback_message_id=? WHERE message_id=?", [decline.id, first.id])
+    prompt = NextSteps.context(c.channel.id, c.member.id, decline.id)
+    assert length(String.split(prompt, decline.body)) == 2
+    assert prompt =~ "Recorded declined"
+    assert prompt =~ "Owner #{decline.id}: see same source above"
+    {:ok, stored} = Messages.get(c.channel.id, c.user.id, decline.id)
+    assert stored.body == decline.body
+  end
+
   test "persisted proposal suppresses repeats and retains decline reasons after a cold start",
        c do
     enable(c)

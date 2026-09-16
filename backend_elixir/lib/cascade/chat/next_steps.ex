@@ -578,7 +578,7 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
       )
 
     Enum.reverse(proposals)
-    |> Enum.map_join("\n", fn [row, id, body] ->
+    |> Enum.map_reduce(MapSet.new(), fn [row, id, body], seen ->
       replies =
         SQL.all(
           """
@@ -589,7 +589,7 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
           [channel, row, owner]
         )
 
-      decision =
+      {decision, seen} =
         case SQL.one(
                """
                  SELECT c.feedback,c.feedback_message_id,m.body FROM chat_next_step_checks c
@@ -599,10 +599,11 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
                [channel, registration, id]
              ) do
           [feedback, source, text] when not is_nil(feedback) ->
-            "Recorded #{feedback}; owner #{source}: #{String.slice(text || "[removed; revalidate]", 0, 600)}\n"
+            {owner_text, seen} = owner_context(source, text, seen)
+            {"Recorded #{feedback}; #{owner_text}\n", seen}
 
           _ ->
-            ""
+            {"", seen}
         end
 
       missions =
@@ -611,14 +612,25 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
           "Linked mission #{mission}: #{status}. #{String.slice(summary || "", 0, 600)}"
         end)
 
-      "Proposal #{id}: #{String.slice(body, 0, 900)}\n" <>
+      {replies, seen} = Enum.map_reduce(replies, seen, fn [id, body], seen ->
+        owner_context(id, body, seen)
+      end)
+
+      {"Proposal #{id}: #{String.slice(body, 0, 900)}\n" <>
         decision <>
         missions <>
         "\n" <>
-        Enum.map_join(replies, "\n", fn [id, body] ->
-          "Owner #{id}: #{String.slice(body, 0, 600)}"
-        end)
+        Enum.join(replies, "\n"), seen}
     end)
+    |> elem(0)
+    |> Enum.join("\n")
+  end
+
+  defp owner_context(id, body, seen) do
+    text = if MapSet.member?(seen, id),
+      do: "Owner #{id}: see same source above (unchanged)",
+      else: "Owner #{id}: #{String.slice(body || "[removed; revalidate]", 0, 600)}"
+    {text, MapSet.put(seen, id)}
   end
 
   defp present?(value), do: value not in [nil, ""]

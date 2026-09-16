@@ -37,6 +37,8 @@ export interface RateLimitWindow {
 }
 
 export interface RunStats {
+  usageScope?: string;
+  cachedInputIncluded?: boolean;
   model?: string;
   cwd?: string;
   command?: string;
@@ -593,7 +595,9 @@ function parseCascadeStatsJson(json: Record<string, unknown>): Partial<RunStats>
     maxTurns: num(json.maxTurns ?? json.max_turns),
     durationMs: num(json.durationMs ?? json.duration_ms),
     durationApiMs: num(json.durationApiMs ?? json.duration_api_ms),
-    contextUsed: num(json.contextUsed ?? json.context_used ?? json.totalTokens),
+    usageScope: str(json.usageScope),
+    cachedInputIncluded: bool(json.cachedInputIncluded),
+    contextUsed: num(json.contextUsed ?? json.context_used ?? (json.usageScope ? undefined : json.totalTokens)),
     contextWindow: num(json.contextWindow ?? json.context_window ?? json.maxTokens),
     contextPct: num(json.contextPct ?? json.context_pct ?? json.percentage),
     maxOutputTokens: num(json.maxOutputTokens ?? json.max_output_tokens),
@@ -624,6 +628,10 @@ function mergeRunStats(
       continue;
     }
     (next as Record<string, unknown>)[key] = value;
+  }
+  if (patch.usageScope && patch.usageScope !== 'request') {
+    delete next.contextUsed;
+    delete next.contextPct;
   }
   return next;
 }
@@ -784,14 +792,16 @@ export function buildHarnessActivity(message: ChatMessage): HarnessActivity {
   let contextUsed = hs.contextUsed;
   let contextWindow = hs.contextWindow;
   let contextPct = hs.contextPct;
-  if (contextUsed == null && (hs.inputTokens != null || hs.cacheReadTokens != null)) {
-    contextUsed = (hs.inputTokens || 0) + (hs.cacheReadTokens || 0);
+  if (contextUsed == null && (!hs.usageScope || hs.usageScope === 'request') && (hs.inputTokens != null || hs.cacheReadTokens != null)) {
+    contextUsed = (hs.inputTokens || 0) + (hs.cachedInputIncluded ? 0 : (hs.cacheReadTokens || 0));
   }
   if (contextPct == null && contextUsed != null && contextWindow != null && contextWindow > 0) {
     contextPct = Math.min(100, (contextUsed / contextWindow) * 100);
   }
 
   const stats: RunStats = {
+    usageScope: hs.usageScope,
+    cachedInputIncluded: hs.cachedInputIncluded,
     model: harness.model || hs.model,
     cwd: harness.cwd,
     command: harness.command,

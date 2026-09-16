@@ -85,6 +85,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     }
     send({ id: message.id, result: { turn: { id } } });
     setImmediate(() => {
+      send({ method: 'thread/tokenUsage/updated', params: { threadId, turnId: id, tokenUsage: {last:{inputTokens:100,cachedInputTokens:80,outputTokens:7},total:{inputTokens:900,cachedInputTokens:700,outputTokens:50},modelContextWindow:1000} } });
       if (message.params.input[0].text === 'empty turn') {
         return send({ method: 'turn/completed', params: { turn: { id, status: 'completed' } } });
       }
@@ -101,15 +102,17 @@ fs.chmodSync(fakeBin, 0o755);
 process.env.CODEX_BIN = fakeBin;
 process.env.RUNNER_CODEX_PERSISTENT = '1';
 
-const { runCliAgent, shutdownPersistentCliAgents, cancelCliAgentRun } = await import('./cli-agent.js');
+const { runCliAgent, shutdownPersistentCliAgents, cancelCliAgentRun } = await import(process.env.FIZZER_TEST_CLI_MODULE || './cli-agent.js') as typeof import('./cli-agent.js');
 
 test('Codex app-server is reused across sequential turns', async () => {
   const sessions: string[] = [];
   const blocks: any[] = [];
   const timings: any[] = [];
+  const harness: string[] = [];
   const first = await runCliAgent({
     agent: 'codex', context: '', userPrompt: 'first', cwd: scratch,
     emit(type, payload: any) {
+      if (type === 'harness') harness.push(payload.data);
       if (type === 'timing') timings.push(payload);
       if (type === 'session') sessions.push(payload.sessionId);
       if (type === 'text') blocks.push(...(payload.message?.content || []));
@@ -127,6 +130,7 @@ test('Codex app-server is reused across sequential turns', async () => {
   assert.ok(timings[2].elapsedMs >= timings[1].elapsedMs);
   assert.equal(timings[2].outcome, 'completed');
   assert.equal(first.summary, 'answer 1');
+  assert.ok(harness.some(line => line.includes('"usageScope":"request"') && line.includes('"uncachedInputTokens":20') && line.includes('"cumulativeInputTokens":900') && line.includes('"contextUsed":100')));
   assert.equal(second.summary, 'answer 2');
   assert.deepEqual(sessions, ['thread-1']);
   assert.deepEqual(blocks.map(block => block.type), ['thinking', 'text']);

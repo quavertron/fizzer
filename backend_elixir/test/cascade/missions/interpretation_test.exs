@@ -285,6 +285,45 @@ defmodule Cascade.Missions.InterpretationTest do
   end
 
 
+  test "routine context keeps active baselines and source constraints but retrieves settled dossiers", c do
+    finding(c, "Large archived evidence " <> String.duplicate("verified ", 200), "completed")
+    [wake] = Scheduler.schedule(c.mission).wakeDispatches
+    review = run(c, wake.dispatch)
+    {{:ok, _}, _} = record(c, review, %{
+      "noMaterialChange" => true,
+      "commitments" => [
+        %{"id" => "stop", "summary" => "Never enable the judge", "status" => "canceled"},
+        %{"id" => "done", "summary" => "Historical delivery", "status" => "fulfilled"}
+      ]
+    })
+    full = state(c)
+    assert Interpretation.context(c.user.id, c.channel, c.coordinator.id) =~ "Historical findings omitted"
+    compact = Interpretation.routine_context(full)
+    refute Map.has_key?(compact, :evidence)
+    assert compact.retrieval =~ c.mission
+    assert compact.objective == full.objective
+    assert compact.revision == full.revision
+    assert compact.understanding["commitments"] |> hd() |> Map.fetch!("summary") == "Never enable the judge"
+    assert state(c) == full
+    assert Interpretation.routine_context(full, true).evidence == full.evidence
+    SQL.exec("UPDATE chat_mission_tasks SET status='pending' WHERE id=?", [c.task])
+    refute Interpretation.context(c.user.id, c.channel, c.coordinator.id) =~ "Historical findings omitted"
+    SQL.exec("UPDATE chat_mission_tasks SET status='completed' WHERE id=?", [c.task])
+    assert Interpretation.context(c.user.id, c.channel, c.coordinator.id) =~ "Historical findings omitted"
+
+    # Cold start/missed wake retains the whole pending baseline, not a delta.
+    for active <- [
+      %{full | fingerprint: "missed-event"},
+      put_in(full.understanding["commitments"], [%{"status" => "open", "accepted" => true, "summary" => "Deliver"}]),
+      put_in(full.understanding["questions"], [%{"question" => "Scope?"}]),
+      put_in(full.evidence["findings"], [%{"status" => "running", "summary" => "Dependency active"}]),
+      put_in(full.evidence["findings"], [%{"status" => "failed", "summary" => "Failure evidence"}])
+    ] do
+      assert Interpretation.routine_context(active).evidence == active.evidence
+      assert Interpretation.routine_context(active).objective == active.objective
+    end
+  end
+
   test "prompt evidence references are lossless and full retrieval remains unchanged", c do
     evidence =
       String.duplicate(

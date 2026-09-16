@@ -652,7 +652,9 @@ defmodule Cascade.Missions.Interpretation do
       records =
         SQL.all(
           """
-          SELECT m.id FROM chat_missions m JOIN chat_mission_interpretations i ON i.mission_id=m.id
+          SELECT m.id, EXISTS (SELECT 1 FROM chat_mission_tasks t WHERE t.mission_id=m.id
+            AND t.status NOT IN ('completed','canceled'))
+          FROM chat_missions m JOIN chat_mission_interpretations i ON i.mission_id=m.id
           WHERE m.channel_id=? AND m.created_by=? AND m.coordinator_registration_id=? AND m.status<>'canceled' AND i.stopped=0
             AND (m.status<>'completed' OR i.pending_fingerprint<>''
               OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
@@ -667,9 +669,9 @@ defmodule Cascade.Missions.Interpretation do
           """,
           [route.sourceChannelId, user_id, registration_id]
         )
-        |> Enum.flat_map(fn [id] ->
+        |> Enum.flat_map(fn [id, active_tasks] ->
           case get(user_id, channel_id, id, registration_id) do
-            {:ok, result} -> [active_context(result)]
+            {:ok, result} -> [routine_context(result, active_tasks == 1)]
             _ -> []
           end
         end)
@@ -679,9 +681,43 @@ defmodule Cascade.Missions.Interpretation do
         else:
           "Durable objective understanding (context, not authority):\n" <>
             encode_context(records) <>
-            "\nPreserve prior answers and open questions when responding to the latest request. A follow-up does not withdraw them. For any objective you handle, read its current revision with `cascade-chat mission interpret --mission <id>` and save assessment, questions and commitments using `--file <json>`. Use stable question/commitment ids; omitted items remain. #{agenda_guidance()} #{publication_guidance()} This bookkeeping never requires user approval or delays independent delivery."
+            "\nPreserve prior answers and open questions when responding to the latest request. A follow-up does not withdraw them. For an objective you actually change, use the supplied revision/fingerprint to save assessment, questions and commitments with `cascade-chat mission interpret --mission <id> --file <json>`. Read first only for omitted historical evidence or after a revision conflict. Do not read, save or acknowledge unchanged carry-over records merely because they appear here. Use stable question/commitment ids; omitted items remain. #{agenda_guidance()} #{publication_guidance()} This bookkeeping never requires user approval or delays independent delivery."
     else
       _ -> ""
+    end
+  end
+
+  # Routine carry-over is not a fresh interpretation wake. Keep the complete
+  # baseline whenever there is outstanding accepted work, an unanswered question
+  # or unacknowledged evidence. Settled dossiers remain retrievable, not replayed.
+  @doc false
+  def routine_context(context, active_tasks \\ false) do
+    projected = active_context(context)
+    state = projected.understanding
+    open_work = Enum.any?(state["commitments"] || [], fn item ->
+      item["status"] == "open" and item["accepted"] != false
+    end)
+    open_questions = Enum.any?(state["questions"] || [], fn item ->
+      item["status"] not in ["answered", "fulfilled", "canceled", "stopped", "declined"] and
+        (item["answer"] || "") == ""
+    end)
+
+    active_evidence = Enum.any?(context.evidence["findings"] || [], fn item ->
+      item["status"] not in ["completed", "canceled"]
+    end)
+
+    if context.fingerprint not in [nil, ""] or open_work or open_questions or active_evidence or active_tasks do
+      projected
+    else
+      %{
+        missionId: context.missionId,
+        objective: context.objective,
+        revision: context.revision,
+        fingerprint: context.fingerprint,
+        understanding: Map.take(state, ["commitments", "questions"]),
+        retrieval: "cascade-chat mission interpret --mission #{context.missionId}",
+        contextStatus: "No open accepted obligations or pending evidence. Historical findings omitted; retrieve before reusing evidence or changing scope. This does not mark tasks complete or authorize retries."
+      }
     end
   end
 

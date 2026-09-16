@@ -38,6 +38,18 @@ describe('normalizeChatRunBlocks', () => {
 });
 
 describe('buildHarnessActivity', () => {
+  it('does not count Codex cached input twice or turn/session totals as context', () => {
+    const line = (stats: object) => '# cascade-stats ' + JSON.stringify(stats);
+    const request = line({usageScope:'request', cachedInputIncluded:true, inputTokens:100, cacheReadTokens:80, contextWindow:1000});
+    expect(buildHarnessActivity(msg({harnessLog:request})).stats.contextUsed).toBe(100);
+    for (const scope of ['turn','session','unknown']) {
+      const aggregate=line({usageScope:scope,cachedInputIncluded:true,inputTokens:900,cacheReadTokens:700,totalTokens:1000});
+      const stats=buildHarnessActivity(msg({harnessLog:request+'\n'+aggregate})).stats;
+      expect(stats.contextUsed).toBeUndefined();
+      expect(stats.contextPct).toBeUndefined();
+      expect(stats.usageScope).toBe(scope);
+    }
+  });
   it.each([false, true])('retains tail usage after a truncated JSON head (structured: %s)', (structured) => {
     const message = msg({
       blocks: structured ? [

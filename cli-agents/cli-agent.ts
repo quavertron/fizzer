@@ -411,6 +411,28 @@ function statsFromUsageBlob(
   };
 }
 
+/** Codex cache counters are a subset of input. Never mix cumulative and request usage. */
+export function codexUsageStats(usage: Record<string, any> = {}, scope = 'unknown'): Record<string, unknown> {
+  const last = usage.last || usage.last_token_usage;
+  const total = usage.total || usage.total_token_usage;
+  const request = last || (total ? undefined : usage);
+  const stats = request ? statsFromUsageBlob(request) : {};
+  const input = numFromUnknown(request?.inputTokens ?? request?.input_tokens);
+  const cached = numFromUnknown(request?.cachedInputTokens ?? request?.cached_input_tokens);
+  return {
+    ...stats,
+    usageScope: last ? 'request' : (total ? 'session' : scope),
+    cachedInputIncluded: true,
+    uncachedInputTokens: input != null && cached != null && cached <= input ? input - cached : undefined,
+    // Only a last-request input count is context occupancy, never total_tokens.
+    contextUsed: last || scope === 'request' ? input : undefined,
+    contextWindow: numFromUnknown(usage.modelContextWindow ?? usage.model_context_window),
+    cumulativeInputTokens: numFromUnknown(total?.inputTokens ?? total?.input_tokens),
+    cumulativeOutputTokens: numFromUnknown(total?.outputTokens ?? total?.output_tokens),
+    cumulativeCachedInputTokens: numFromUnknown(total?.cachedInputTokens ?? total?.cached_input_tokens),
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════════════════
@@ -1226,7 +1248,7 @@ class CodexAppServerClient {
       : [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
     if (turn && params.threadId && turn.threadId !== params.threadId) return;
     if (!turn) {
-      if (turnId && ['item/started', 'item/completed', 'item/agentMessage/delta', 'turn/completed', 'error'].includes(message.method)) {
+      if (turnId && ['item/started', 'item/completed', 'item/agentMessage/delta', 'thread/tokenUsage/updated', 'turn/completed', 'error'].includes(message.method)) {
         const buffered = this.earlyNotifications.get(turnId) || [];
         buffered.push({ ...message, timingObservation: observation });
         this.earlyNotifications.set(turnId, buffered.slice(-100));
@@ -1243,7 +1265,7 @@ class CodexAppServerClient {
       this.emitAgentText(turn, params.itemId, (turn.agentText.get(params.itemId) || '') + params.delta);
     } else if (message.method === 'item/started') this.emitItem(turn, params.item, false);
     else if (message.method === 'item/completed') this.emitItem(turn, params.item, true);
-    else if (message.method === 'thread/tokenUsage/updated') emitCascadeStats(turn.emit, statsFromUsageBlob(params.tokenUsage || params.usage));
+    else if (message.method === 'thread/tokenUsage/updated') emitCascadeStats(turn.emit, { ...codexUsageStats(params.tokenUsage || params.usage), provider: 'codex', threadId: turn.threadId, turnId: turn.turnId });
     else if (message.method === 'turn/completed') {
       const status = params.turn?.status;
       turn.timing.complete(status || 'failed', observation);
@@ -1461,27 +1483,20 @@ async function runCodex(
     // Usage can appear on turn.completed or nested event_msg token_count payloads.
     if (ev.type === 'turn.completed' && ev.usage && typeof ev.usage === 'object') {
       turnCount += 1;
-      emitCascadeStats(emit, statsFromUsageBlob(ev.usage as Record<string, unknown>, {
+      emitCascadeStats(emit, { ...codexUsageStats(ev.usage, 'turn'),
         model,
         numTurns: turnCount,
-      }));
+      });
     } else if (ev.type === 'event_msg' && ev.payload && typeof ev.payload === 'object') {
       const payload = ev.payload as Record<string, unknown>;
       if (payload.type === 'token_count') {
         const info = (payload.info && typeof payload.info === 'object')
           ? payload.info as Record<string, unknown>
           : payload;
-        // Resumed Codex sessions report both cumulative and per-turn usage.
-        // Show the latter so Cascade is comparable to an equivalent CLI turn.
-        const usage = (info.last_token_usage && typeof info.last_token_usage === 'object')
-          ? info.last_token_usage as Record<string, unknown>
-          : (info.total_token_usage && typeof info.total_token_usage === 'object')
-            ? info.total_token_usage as Record<string, unknown>
-            : info;
-        emitCascadeStats(emit, statsFromUsageBlob(usage, { model, numTurns: turnCount || undefined }));
+        emitCascadeStats(emit, { ...codexUsageStats(info), model, numTurns: turnCount || undefined });
       }
     } else if (ev.usage && typeof ev.usage === 'object') {
-      emitCascadeStats(emit, statsFromUsageBlob(ev.usage as Record<string, unknown>, { model }));
+      emitCascadeStats(emit, { ...codexUsageStats(ev.usage), model });
     }
 
     switch (ev.type) {
