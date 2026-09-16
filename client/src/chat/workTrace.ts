@@ -512,6 +512,7 @@ export function workTraceSummary(trace: ChatMessage[]): string {
 /** Compact always-visible strip for collapsed mission cards. */
 export interface WorkTracePeek {
   live: boolean;
+  status?: ChatMessage['status'];
   summary: string;
   author: string;
   label: string;
@@ -531,15 +532,21 @@ export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
     || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
   const message = liveMessage || attention || trace[trace.length - 1];
   const live = Boolean(liveMessage);
-  // Keep the newest public update readable; detailed activity remains expandable.
-  const label = live
-    ? (message.status === 'running' ? workTraceOutput(message) || 'Working…' : 'Queued…')
+  // Use existing public work data, never reasoning or raw tool output.
+  const body = !isSteeringContinuationMessage(message) && !isLiveAgentPlaceholder(message.body)
+    ? workTracePreview(stripChatControlMarkers(message.body || '').split(/\n\s*\n/)[0], 320) : '';
+  const output = workTraceOutput({ ...message, status: 'running' });
+  const summary = truncateActivity(message.mission?.summary || '', 320)
+    || (live ? output || body : body || output);
+  const label = summary || (live
+    ? (message.status === 'running' ? 'Working…' : 'Queued…')
     : message.status === 'failed' ? 'Failed'
-      : message.status === 'canceled' ? 'Canceled' : 'Work details';
+      : message.status === 'canceled' ? 'Canceled' : workTraceSummary(trace));
   const decals = workTraceDecals(trace);
   const phase = workTracePhase(message);
   return {
     live,
+    status: message.status,
     summary: workTraceSummary(trace),
     author: workTraceAuthorKey(message),
     label,

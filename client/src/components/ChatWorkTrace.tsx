@@ -235,6 +235,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
           'chat-work-trace',
           !embedded && missionIdentity ? 'has-mission-accent' : '',
           `phase-${currentPhase}`,
+          `status-${peek?.live ? 'running' : peek?.status || 'completed'}`,
           streamOpen ? 'is-open' : '',
           live ? 'is-live' : '',
           embedded ? 'is-embedded' : '',
@@ -252,7 +253,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
             onClick={() => setOpen((value) => !value)}
             aria-expanded={streamOpen}
           >
-            {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
+            <span className="chat-mission-state" role="img" aria-label={peek?.status || 'completed'} />
             <span className="chat-work-trace-summary" title={label}>
               {label}
             </span>

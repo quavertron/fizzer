@@ -7769,6 +7769,7 @@ button.chat-avatar.is-clickable:focus-visible {
   background: transparent;
 }
 .chat-work-trace-toggle {
+  border: 0;
   width: 100%;
   min-height: 30px;
   display: flex;
@@ -7928,8 +7929,7 @@ button.chat-avatar.is-clickable:focus-visible {
   .session-manager-live-dot,
   .crp-term-cursor,
   .ai-spinner,
-  .thinking-spinner,
-  .chat-mission-peek.is-live .chat-mission-peek-dot {
+  .thinking-spinner {
     animation: none;
   }
   .chat-work-trace-chevron,
@@ -8098,7 +8098,8 @@ button.chat-avatar.is-clickable:focus-visible {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--text-primary);
   font-size: 0.8125rem;
 }
@@ -8145,64 +8146,6 @@ button.chat-avatar.is-clickable:focus-visible {
 .chat-mission-card.is-reviewing .chat-mission-state { background: var(--warning); }
 .chat-mission-card.is-completed .chat-mission-state { background: var(--success); }
 .chat-mission-card.is-canceled .chat-mission-state { background: var(--text-muted); }
-/*
- * Collapsed-only activity line. Same pad/gap as the toggle so author/label
- * sit under the title; gutter reserves the 8px status column (spinner only
- * when live — no second solid status ball).
- */
-.chat-mission-peek {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 22px;
-  margin: 0;
-  padding: 0 10px 8px;
-  border: 0;
-  background: transparent;
-  color: hsl(222, 11%, 68%);
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  line-height: 1.35;
-  text-align: left;
-  cursor: pointer;
-  user-select: none;
-}
-.chat-mission-peek:hover {
-  color: hsl(222, 13%, 82%);
-}
-.chat-mission-peek.is-live {
-  color: color-mix(in srgb, var(--text-secondary) 72%, var(--accent-hover));
-}
-.chat-mission-peek-gutter,
-.chat-mission-peek-spin {
-  flex: 0 0 8px;
-  width: 8px;
-  min-width: 8px;
-  height: 8px;
-}
-.chat-mission-peek-gutter {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.chat-mission-peek-author {
-  flex: 0 0 auto;
-  color: color-mix(in srgb, var(--text-secondary) 70%, var(--accent-hover));
-  font-weight: 650;
-}
-.chat-mission-peek-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--text-secondary) 88%, var(--text-primary));
-  font-family: var(--font-sans, inherit);
-  font-size: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
 .chat-mission-content {
   padding: 8px 10px 10px 12px;
 }
@@ -9709,9 +9652,6 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   padding-left: 8px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--mission-accent) 5%, transparent), transparent 65%);
 }
-.chat-mission-peek-copy { display: grid; gap: 3px; min-width: 0; }
-.chat-mission-peek-task { color: var(--text-secondary); font-weight: 600; font-size: 0.75rem; }
-.chat-mission-peek .chat-mission-peek-label,
 .chat-work-trace .chat-work-trace-summary {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -9730,6 +9670,13 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .chat-note-preview > header strong { flex: 1; overflow-wrap: anywhere; }
 .chat-note-preview > header button { color: var(--text-muted); font: inherit; cursor: pointer; background: none; border: 0; }
 .chat-note-preview-body { max-height: 360px; overflow: auto; overflow-wrap: anywhere; margin-top: 8px; }
-.chat-mission-peek { align-items: start; }
 .chat-work-trace:not(.is-open) { max-width: min(100%, 44rem); }
 .chat-work-trace:not(.is-open) .chat-work-trace-toggle { align-items: start; }
+
+/* Reuse the mission status dot for compact work summaries. */
+.chat-work-trace.status-completed .chat-mission-state { background: var(--success); }
+.chat-work-trace.status-failed .chat-mission-state { background: var(--danger); }
+.chat-work-trace.status-canceled .chat-mission-state { background: var(--text-muted); }
+.chat-work-trace.is-live .chat-mission-state,
+.chat-mission-card.is-live .chat-mission-state { background: var(--warning); }
+.chat-mission-card:not(.is-open) { border: 0; background: transparent; box-shadow: none; }

@@ -48,7 +48,7 @@ describe('workTrace', () => {
       onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
       runningMessageState: new Map(),
     }));
-    expect(markup).toContain('Work details');
+    expect(markup).not.toContain('Work details');
   });
 
   it('keeps completed process details behind the trace toggle', () => {
@@ -58,8 +58,8 @@ describe('workTrace', () => {
       onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
       runningMessageState: new Map(),
     }));
-    expect(markup).not.toContain('Child verified and joined.');
-    expect(markup).toContain('Work details');
+    expect(markup).toContain('Child verified and joined.');
+    expect(markup).not.toContain('Work details');
     expect(markup).not.toContain('>Activity<');
     expect(markup).not.toContain('1 update');
     expect(markup).not.toContain('internal-task-id');
@@ -425,7 +425,7 @@ it.each(['pending', 'running', 'blocked', 'failed', 'completed'] as const)('rend
         priority: 0, reasoningEffort: '', queueReason: '', attempt: 1, updatedAt: '' }],
     },
   }));
-  expect(markup.includes('thinking-spinner')).toBe(status === 'running');
+  expect(markup).toContain('chat-mission-state');
   if (status === 'pending') expect(markup).toContain('queued');
   if (status === 'blocked' || status === 'failed') {
     expect(markup).toContain('needs attention');
@@ -453,7 +453,7 @@ it('shows a readable current paragraph only from public text blocks', () => {
   expect(workTracePeek([running])?.label).toBe('Checking the public output');
   expect(workTracePeek([{ ...running, blocks: [{ type: 'text', text: 'x'.repeat(200) + 'newest output' }] }])?.label)
     .toBe('x'.repeat(200) + 'newest output');
-  expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
+  expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Checking the public output');
 });
 
 it('does not revive a blocked verification from a stale working trace', () => {
@@ -513,8 +513,8 @@ it('gives a mission and its bound worker one activity surface, preserving later 
   expect(segments[1]).toMatchObject({ kind: 'group', group: { messages: [unrelated] } });
   const card = renderToStaticMarkup(createElement(ChatMissionCard, { mission: mission.mission!, tracePeek: workTracePeek([worker]) }));
   expect(card).toContain(missionAccent(mission.mission!.id));
-  expect(card.match(/class="[^"]*thinking-spinner/g)).toHaveLength(1);
-  expect(card).toContain('Consolidate worker context');
+  expect(card).toContain('chat-mission-state');
+  expect(card).not.toContain('Work details');
   expect(card).toContain('Desktop packaging is still running');
   expect(card).not.toContain('chat-working-output');
   const answer = { ...worker, status: undefined, body: 'Delivered the helper changes.' };
@@ -589,4 +589,19 @@ it('resolves historic run and out-of-order reply links without associating nearb
   expect(identities.get(reply.id)?.id).toBe('mission');
   expect(identities.get(earlier.id)?.id).toBe('mission');
   expect(identities.has(unrelated.id)).toBe(false);
+});
+
+it.each(['running', undefined, 'failed', 'canceled'] as const)('uses public work text while preserving status %s', (status) => {
+  const message = msg({ id: 'summary', author: 'Astra', status, body: 'Checked the sidebar geometry.\n\nTask: internal-task-id', blocks: [
+    { type: 'thinking', text: 'Private reasoning' },
+    { type: 'text', text: 'Redacted output', redacted: true },
+  ] });
+  expect(workTracePeek([message])).toMatchObject({ label: 'Checked the sidebar geometry.', status });
+});
+
+it('prefers settled body over stale streamed output and explicit mission summary over both', () => {
+  const message = msg({ id: 'summary', author: 'Astra', body: 'Verified the final change.', blocks: [{ type: 'text', text: 'Still checking.' }] });
+  expect(workTracePeek([message])?.label).toBe('Verified the final change.');
+  const mission = { summary: 'Released the sidebar fix.' } as NonNullable<ChatMessage['mission']>;
+  expect(workTracePeek([{ ...message, mission }])?.label).toBe(mission.summary);
 });

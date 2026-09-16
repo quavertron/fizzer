@@ -9,6 +9,7 @@ import { ChatTaskReview } from './ChatTaskReview';
 import { SwipeToReply } from './SwipeToReply';
 import { ThinkingSpinner } from './ThinkingSpinner';
 import { missionAccent } from '../chat/missionIdentity';
+import { workTracePreview } from '../chat/workTrace';
 
 function missionTaskChangeChips(task: ChatMissionTask, fileCount?: number): Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> {
   const chips: Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> = [];
@@ -127,19 +128,13 @@ export function ChatMissionCard({
         : pendingTask ? 'queued'
           : mission.status === 'reviewing' ? 'awaiting review' : 'starting';
   const lead = mission.coordinatorMention || mission.coordinator;
-  const peekAuthor = tracePeek?.author
-    || (runningTask ? (runningTask.assigneeMention || runningTask.assignee) : '')
-    || '';
-  const peekLabel = (terminal ? mission.summary : '')
+  const peekLabel = workTracePreview(mission.summary.split(/\n\s*\n/)[0], 320)
     || (!terminal && attentionTask ? attentionTask.summary || attentionTask.title : '')
     || (!terminal && tracePeek?.live ? tracePeek.label : '')
-    || (runningTask ? runningTask.title : '')
-    || (pendingTask ? `Queued · ${pendingTask.title}` : '')
+    || (!terminal && runningTask ? runningTask.summary || runningTask.title : '')
+    || (!terminal && pendingTask ? `Queued · ${pendingTask.title}` : '')
     || (!terminal ? tracePeek?.label : '')
-    || (!terminal ? 'Waiting for an agent update' : '');
-  // Peek is collapsed-only activity exposure. When open, the stream/tasks are the UI.
-  // Settled missions without useful activity text skip the second rail entirely.
-  const showPeek = !open && Boolean(peekLabel) && (terminal || live || Boolean(tracePeek || runningTask || pendingTask || attentionTask));
+    || mission.title;
   async function toggleTimeline() {
     const next = !timelineOpen;
     setTimelineOpen(next);
@@ -205,11 +200,8 @@ export function ChatMissionCard({
           onClick={() => setOpen((value) => !value)}
           onContextMenu={openMissionContextMenu}
         >
-          {live
-            ? <ThinkingSpinner className="chat-mission-whirl" title="Mission working" />
-            : <span className="chat-mission-state" aria-hidden="true" />}
-          <span className="chat-mission-kicker">Mission</span>
-          <strong>{mission.title}</strong>
+          <span className="chat-mission-state" aria-hidden="true" />
+          <strong title={open ? mission.title : peekLabel}>{open ? mission.title : peekLabel}</strong>
           <span className="chat-mission-status">{statusLabel}</span>
           <ChevronRight size={13} className={`chat-mission-chevron${open ? ' open' : ''}`} aria-hidden="true" />
         </button>
@@ -228,24 +220,6 @@ export function ChatMissionCard({
           >
             {stopping ? <Loader2 className="is-spinning" size={11} /> : <Square size={10} fill="currentColor" />}
             {stopping ? 'Stopping' : 'Stop'}
-          </button>
-        )}
-        {showPeek && (
-          <button
-            type="button"
-            className={`chat-mission-peek${live ? ' is-live' : ''}`}
-            tabIndex={-1}
-            onClick={() => setOpen((value) => !value)}
-            onContextMenu={openMissionContextMenu}
-            aria-label={`Mission activity: ${peekAuthor ? `${peekAuthor} — ` : ''}${peekLabel}`}
-          >
-            {/* Empty gutter matches the status-dot column; header owns the spinner. */}
-            <span className="chat-mission-peek-gutter" aria-hidden="true" />
-            {peekAuthor && <span className="chat-mission-peek-author">{peekAuthor}</span>}
-            <span className="chat-mission-peek-copy">
-              {runningTask && tracePeek?.live && <span className="chat-mission-peek-task">{runningTask.title}</span>}
-              <span className="chat-mission-peek-label">{peekLabel}</span>
-            </span>
           </button>
         )}
       </div>
@@ -374,7 +348,7 @@ export function ChatMissionCard({
     <SwipeToReply
       className="chat-mission-swipe"
       onReply={() => onReply(replyMessage)}
-      allowSwipeFrom=".chat-mission-toggle, .chat-mission-peek"
+      allowSwipeFrom=".chat-mission-toggle"
     >
       {card}
     </SwipeToReply>
