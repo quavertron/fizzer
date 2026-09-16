@@ -11,6 +11,7 @@ async function fixture(t) {
   const v = randomUUID(), w = randomUUID(), m = randomUUID(), registrationId = randomUUID(), identityId = randomUUID(), channelId = randomUUID();
   const items = new Map([[w,{id:w,vaultId:v,title:'Fixture task',brief:'test',contract:'',verification:'',status:'open',createdBy:1,runIds:[]}]]);
   const missions = new Map(), runs = new Map(), notes = new Map(), calls=[];
+  const messages = new Map([['owner-source',{id:'owner-source',channelId,actorUserId:1,body:'Authorized original scope'}]]);
   const state = {owner:1,shared:false,lost:false,linkLost:false,wrong:false};
   const settings = {contract:'registration_settings_v1',registration:{id:registrationId,vaultAgentId:identityId,ownerUserId:1,hermesProfile:'along',localVaultId:v,localChannelId:channelId},settings:{model:'model-a',reasoningEffort:'',contextPrompt:'preserve',finalReplyOnly:false},protected:{yolo:false,ambientGroupChat:false},revision:'initial'};
   const server = http.createServer(async(req,res) => {
@@ -24,6 +25,14 @@ async function fixture(t) {
     if(p==='/api/me') return reply(200,{user:{id:state.owner}});
     if(p===`/api/vaults/${v}`) return reply(200,{vault:{id:v,created_by:1,visibility:'private'},role:'owner'});
     if(p===`/api/vaults/${v}/members`) return reply(200,{role:'owner',members:[{userId:1,role:'owner'},...(state.shared ? [{userId:2,role:'viewer'}]:[])]});
+    if(p.startsWith(`/api/vaults/${v}/channels/${channelId}/messages/`)) {
+      const id=p.split('/')[7];
+      if(get) return messages.has(id) ? reply(200,{message:messages.get(id)}) : reply(404,{});
+      assert.equal(p,`/api/vaults/${v}/channels/${channelId}/messages/owner-source/collaborate`);
+      assert.equal(body.target,registrationId);assert.equal(body.relationship,'builds_on');
+      const message={id:body.requestId,channelId,actorUserId:1,body:'@fixture '+body.instruction,replyTo:{messageId:id,relationship:body.relationship}};
+      messages.set(message.id,message);return changed({message,dispatch:{id:'fixture-dispatch',registrationId}});
+    }
     if(p===`/api/vaults/${v}/work-items`) {
       if(get) return reply(200,{items:[...items.values()]});
       assert.equal(body.sourceKind,'manual');assert.equal(body.tokenBudget,0);assert.equal(body.assigneeRegistrationId,null);
@@ -77,7 +86,7 @@ async function fixture(t) {
       if(!get){assert.equal(body.expectedRevision,note.revision);note.content=body.content;note.revision='2';missions.get(m).notes[0].revision='2';return changed({note});}return reply(200,{note});
     }
     if(p.endsWith('/execution-v1')) {
-      const parts=p.split('/');return reply(200,{contract:'registration_execution_select_only_v1',ownerUserId:1,vaultId:v,channelId:parts[5],registrationId:parts[7],agentId:'codex',yolo:state.yolo === true,model:state.executionModel || 'fixture-model'});
+      const parts=p.split('/');return reply(200,{contract:'registration_execution_select_only_v1',ownerUserId:1,vaultId:v,channelId:parts[5],registrationId:parts[7],vaultAgentId:identityId,agentId:'codex',yolo:state.yolo === true,model:state.executionModel || 'fixture-model'});
     }
     if(p===`/api/vaults/${v}/channels/${channelId}/agents/${registrationId}/settings-v1`) {
       assert.equal(u.searchParams.get('hermesProfile'),'along');
@@ -94,13 +103,40 @@ async function fixture(t) {
   const plan=(action,args,requestId=randomUUID())=>call({op:'appPlan',action,args,requestId});
   const apply=(p,op='appApply')=>call({op,action:p.action,args:p.args,requestId:p.requestId,planDigest:p.planDigest});
   const grant=(p,changes={})=>fs.writeFileSync(path.join(directory,'receipts','task-grant-'+p.planDigest+'.json'),JSON.stringify({contract:'along_task_grant_v1',origin,ownerId:1,ownerTurn:'fixture-only',planDigest:p.planDigest,expiresAt:Date.now()+60000,...changes}),{mode:0o600});
-  return {v,w,m,registrationId,identityId,channelId,items,runs,missions,notes,state,settings,calls,call,plan,apply,grant,directory,socketPath:service.socketPath,restart:async()=>{await service.close();service=await startExternalAgentAccess(options);}};
+  return {v,w,m,registrationId,identityId,channelId,messages,items,runs,missions,notes,state,settings,calls,call,plan,apply,grant,directory,socketPath:service.socketPath,restart:async()=>{await service.close();service=await startExternalAgentAccess(options);}};
 }
 const taskArgs=f=>({vaultId:f.v,title:'Synthetic only',brief:'brief',contract:'acceptance',verification:'offline check'});
 const startArgs=f=>({vaultId:f.v,workItemId:f.w,agent:'codex',model:'test-model',prompt:'synthetic prompt',cwd:'',sandbox:'read-only'});
 const settingArgs=f=>({vaultId:f.v,channelId:f.channelId,registrationId:f.registrationId,vaultAgentId:f.identityId,hermesProfile:'along'});
 const missionArgs=f=>({vaultId:f.v,missionId:f.m,title:'Synthetic mission',coordinatorIdentityId:f.identityId,briefContent:'Synthetic brief',channelId:f.channelId,rootMessageId:'existing-root',coordinatorRegistrationId:f.registrationId});
 const count=f=>f.calls.filter(c=>c.method!=='GET').length;
+const collaborationArgs=f=>({vaultId:f.v,channelId:f.channelId,sourceMessageId:'owner-source',registrationId:f.registrationId,vaultAgentId:f.identityId,instruction:'Continue only the authorized source with your own workers.'});
+test('owner collaboration preserves yolo guard and CSRF, exact grant and stable no-replay reconciliation',async t=>{
+  const f=await fixture(t);f.state.yolo=true;
+  assert.equal((await f.plan('createMission',missionArgs(f))).error,'specific_approval_required');
+  const p=await f.plan('collaborateOwnerSource',collaborationArgs(f));assert.equal(p.before.executionSettings.yolo,true);assert.equal(p.requiresGrant,true);
+  assert.equal((await f.apply(p)).error,'specific_approval_required');assert.equal(count(f),0);
+  f.grant(p);const result=await f.apply(p);assert.equal(result.state,'verified',JSON.stringify(result));assert.equal(result.result.dispatch.registrationId,f.registrationId);
+  await f.restart();assert.equal((await f.apply(p,'appReconcile')).state,'verified');assert.equal((await f.apply(p)).state,'verified');assert.equal(count(f),1);
+  assert.deepEqual(f.calls.filter(c=>c.method!=='GET').map(c=>c.body),[{requestId:p.requestId,target:f.registrationId,relationship:'builds_on',instruction:p.args.instruction}]);
+  assert.equal((await f.plan('collaborateOwnerSource',{...p.args,instruction:'Changed'},p.requestId)).error,'idempotency_conflict');
+  const lost=await f.plan('collaborateOwnerSource',collaborationArgs(f));f.grant(lost);f.state.lost=true;assert.equal((await f.apply(lost)).error,'upstream_500');
+  f.state.lost=false;await f.restart();const n=count(f),r=await f.apply(lost,'appReconcile');assert.equal(r.state,'verified');assert.equal(r.result.dispatch,null);assert.equal(count(f),n);
+});
+test('owner collaboration rejects source/target changes, agent sources, unsafe grants and privilege edits',async t=>{
+  const f=await fixture(t),a=collaborationArgs(f),source=f.messages.get(a.sourceMessageId);
+  for(const patch of [{actorUserId:2},{agentId:'codex'},{registrationId:f.registrationId}]){
+    Object.assign(source,patch);assert.equal((await f.plan('collaborateOwnerSource',a)).error,'owner_scope_mismatch');
+    Object.assign(source,{actorUserId:1});delete source.agentId;delete source.registrationId;
+  }
+  assert.equal((await f.plan('collaborateOwnerSource',{...a,vaultAgentId:randomUUID()})).error,'owner_scope_mismatch');
+  for(const patch of [{yolo:false},{relationship:'question'},{instruction:'🎵'.repeat(2100)}])assert.equal((await f.plan('collaborateOwnerSource',{...a,...patch})).error,'invalid_request');
+  let p=await f.plan('collaborateOwnerSource',a);f.grant(p,{expiresAt:1});assert.equal((await f.apply(p)).error,'specific_approval_required');
+  f.grant(p,{ownerId:2});assert.equal((await f.apply(p)).error,'specific_approval_required');
+  f.grant(p);source.body='Edited';assert.equal((await f.apply(p)).error,'stale_plan');
+  p=await f.plan('collaborateOwnerSource',a);f.grant(p);f.state.yolo=true;assert.equal((await f.apply(p)).error,'stale_plan');
+  f.state.shared=true;assert.equal((await f.plan('collaborateOwnerSource',a)).error,'specific_approval_required');assert.equal(count(f),0);
+});
 const repositoryArgs=f=>{
   const repository=path.join(f.directory,'repo');fs.mkdirSync(repository);fs.mkdirSync(path.join(repository,'.git'));
   Object.assign(f.items.get(f.w),{sourceKind:'mission',sourceId:randomUUID(),workspaceMode:'isolated',repository:'',worktreePath:'',baseCommit:'',channelId:f.channelId,assigneeRegistrationId:f.registrationId,updatedAt:'revision-1'});

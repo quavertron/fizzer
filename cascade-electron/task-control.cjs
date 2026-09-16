@@ -8,6 +8,7 @@ const canonical = x => JSON.stringify(x && typeof x === 'object' ? Array.isArray
 const hash = x => createHash('sha256').update(canonical(x)).digest('hex');
 const reads = { missions: ['vaultId'], mission: ['vaultId', 'missionId'], workItem: ['vaultId', 'workItemId'], taskItems: ['vaultId'], run: ['vaultId', 'runId'], runEvents: ['vaultId', 'runId'], agentExecution: ['vaultId','channelId','registrationId'], agentSettings: ['vaultId', 'channelId', 'registrationId', 'vaultAgentId', 'hermesProfile'] };
 const writes = {
+  collaborateOwnerSource: ['vaultId', 'channelId', 'sourceMessageId', 'registrationId', 'vaultAgentId', 'instruction'],
   createWorkItem: ['vaultId', 'title', 'brief', 'contract', 'verification'],
   updateWorkItem: ['vaultId', 'workItemId', 'patch'],
   createMission: ['vaultId', 'missionId', 'title', 'coordinatorIdentityId', 'briefContent', 'channelId', 'rootMessageId', 'coordinatorRegistrationId'],
@@ -19,7 +20,7 @@ const writes = {
   cancelRun: ['vaultId', 'runId'],
   updateAgentSettings: [...reads.agentSettings, 'patch'],
 };
-const consequential = new Set(['createMission', 'startRun', 'cancelRun', 'updateAgentSettings', 'updateMission', 'approveMission', 'createMissionTask', 'updateMissionTask']);
+const consequential = new Set(['collaborateOwnerSource', 'createMission', 'startRun', 'cancelRun', 'updateAgentSettings', 'updateMission', 'approveMission', 'createMissionTask', 'updateMissionTask']);
 function exact(o, keys) { if (!o || typeof o !== 'object' || Array.isArray(o) || Object.keys(o).length !== keys.length || keys.some(k => !Object.hasOwn(o,k))) fail('invalid_request'); }
 function id(v) { if (typeof v !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(v)) fail('invalid_id'); }
 function text(v, n, empty = false) { if (typeof v !== 'string' || v.length > n || (!empty && !v.trim()) || v !== v.trim()) fail('invalid_request'); }
@@ -35,6 +36,7 @@ function validate(action, a, c, op) {
     else if (k !== 'patch') text(v, k === 'title' ? 180 : ['brief', 'verification'].includes(k) ? 8000 : 12000, ['brief', 'contract', 'verification', 'cwd'].includes(k));
   }
   if (action === 'startRun' && (!['codex','claude-code'].includes(a.agent) || !['read-only','default'].includes(a.sandbox))) fail('invalid_request');
+  if (action === 'collaborateOwnerSource' && Buffer.byteLength(a.instruction, 'utf8') > 8000) fail('invalid_request');
   if (action === 'createMissionTask' && (!['research','implementation','fix','integration'].includes(a.purpose) || !['shared','isolated'].includes(a.workspaceMode))) fail('invalid_request');
   if (action === 'updateMissionTask' && !['blocked','canceled','failed'].includes(a.status)) fail('invalid_request');
   if (a.patch) {
@@ -89,6 +91,7 @@ async function control(input, c) {
     const plan = {...intent, before, audience, requiresGrant, atomicPrecondition:repositoryBinding || action === 'updateAgentSettings' || action === 'updateMission',
       effects: repositoryBinding ? 'Atomically binds only this unbound isolated mission work item repository; the existing pending dispatch may retry under unchanged assignee settings and exact operator admission. No new task, direct run, approval, cwd or privilege change.' : action === 'createMission' ? 'Creates a mission brief in the explicit existing channel rooted at its existing message; preserves coordinator membership and queues planning model dispatch. No new channel. NOT a draft.' : action === 'startRun' ? 'Starts a paid-capable owner run with yolo false, then links its exact ID to the work item. Stop is separate.' : action === 'updateMission' ? 'Edits exact mission brief/note; approved revisions may become stale and coordinator awareness can cause later model work. Does not approve.' : ['approveMission','createMissionTask','updateMissionTask'].includes(action) ? 'Mission scheduler may dispatch paid-capable work; task cancellation can stop its linked run. Exact whole before-state is previewed.' : 'Exact named resource only; work-item status metadata does not stop runs.',
       attribution:'Along local receipt; backend account attribution. Shared/public writes unavailable.'};
+    if (action === 'collaborateOwnerSource') plan.effects = 'Posts an exact owner-authorized builds_on continuation of this authenticated human source to this existing owner registration, using normal browser CSRF. Queues native coordinator/model work with unchanged current permissions (including yolo if already enabled). Requires exact direct CLI owner-turn grant; source text alone is not approval. No mission creation, direct run, setting change or historical replay.';
     r = {intentDigest:hash(intent), plan, planDigest:hash(plan), state:'planned'};
     c.durableWrite(file,r,true);
   }
@@ -105,6 +108,7 @@ async function control(input, c) {
     r.target = action === 'createMission' ? a.missionId : action === 'updateWorkItem' ? a.workItemId : action === 'cancelRun' ? a.runId : action === 'updateMission' ? a.noteId : action === 'updateAgentSettings' ? a.registrationId : null;
     if (action === 'approveMission') r.target = a.missionId;
     if (action === 'updateMissionTask') r.target = a.taskId;
+    if (action === 'collaborateOwnerSource') r.target = input.requestId;
     c.durableWrite(file,r);
     await mutate();
   }
@@ -175,6 +179,15 @@ async function control(input, c) {
     return d;
   }
   async function snapshot() {
+    if (action === 'collaborateOwnerSource') {
+      const e = await execution(a.channelId, a.registrationId);
+      if (e.vaultAgentId !== a.vaultAgentId) fail('owner_scope_mismatch');
+      const m = (await c.browser(base+`/channels/${a.channelId}/messages/${a.sourceMessageId}`)).message;
+      if (m?.id !== a.sourceMessageId || m.channelId !== a.channelId || m.actorUserId !== c.ownerId || m.agentId || m.registrationId) fail('owner_scope_mismatch');
+      // Preserve permissions; the distinct human collaboration action grants no
+      // privilege change and does not relax the createMission yolo guard.
+      return {source:{id:m.id,channelId:m.channelId,actorUserId:m.actorUserId,body:m.body,images:m.images || []},executionSettings:e};
+    }
     if (action === 'createMission') {
       const e = await execution(a.channelId, a.coordinatorRegistrationId);
       if (e.yolo !== false) fail('specific_approval_required');
@@ -234,6 +247,11 @@ async function control(input, c) {
   }
   async function mutate() {
     let d;
+    if (action === 'collaborateOwnerSource') {
+      d = await c.browser(base+`/channels/${a.channelId}/messages/${a.sourceMessageId}/collaborate`, 'POST', {requestId:input.requestId,target:a.registrationId,relationship:'builds_on',instruction:a.instruction});
+      if (d.message?.id !== r.target) fail('readback_mismatch');
+      r.dispatch = d.dispatch || null; c.durableWrite(file,r); return;
+    }
     if (action === 'createWorkItem') {
       d = await c.browser(base+'/work-items','POST',{title:a.title,brief:a.brief,contract:a.contract,verification:a.verification,sourceKind:'manual',sourceId:'along:'+input.requestId,workspaceMode:'shared',priority:0,tokenBudget:0,dependsOn:[],channelId:null,assigneeRegistrationId:null});
       r.target = d.item?.id;
@@ -264,6 +282,11 @@ async function control(input, c) {
   async function verify() {
     if ((await c.browser('/api/me')).user?.id !== c.ownerId) fail('owner_scope_mismatch');
     await access(true);
+    if (action === 'collaborateOwnerSource') {
+      const m = (await c.browser(base+`/channels/${a.channelId}/messages/${r.target}`)).message;
+      if (m?.id !== r.target || m.channelId !== a.channelId || m.actorUserId !== c.ownerId || m.agentId || m.registrationId || m.replyTo?.messageId !== a.sourceMessageId || m.replyTo.relationship !== 'builds_on' || typeof m.body !== 'string' || !/^@[^\s]+ /.test(m.body) || m.body.slice(m.body.indexOf(' ')+1) !== a.instruction) fail('readback_mismatch');
+      return {message:{id:m.id,channelId:m.channelId,actorUserId:m.actorUserId,body:m.body,replyTo:m.replyTo},dispatch:r.dispatch || null,dispatchReadback:'Message independently verified; exact persisted dispatch/run must be inspected separately. Unknown writes never replay.'};
+    }
     if (action === 'createWorkItem' || action === 'updateWorkItem') {
       const d = await item(r.target), expected = action === 'createWorkItem' ? {title:a.title,brief:a.brief,contract:a.contract,verification:a.verification,sourceId:'along:'+input.requestId} : a.patch;
       if (Object.entries(expected).some(([k,v]) => d.item[k] !== v)) fail('readback_mismatch');
