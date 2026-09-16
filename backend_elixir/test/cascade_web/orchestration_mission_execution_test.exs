@@ -122,6 +122,58 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     }
   end
 
+  test "resumed Codex dispatch retains a bounded cold baseline before any replacement inference", ctx do
+    SQL.exec("UPDATE chat_agent_members SET context_prompt=? WHERE id=?", ["COLD_BASELINE_SOURCE_CONSTRAINT", ctx.registration.id])
+    SQL.exec("UPDATE vault_agents SET context_prompt=? WHERE id=(SELECT vault_agent_id FROM chat_agent_members WHERE id=?)", ["COLD_BASELINE_SOURCE_CONSTRAINT", ctx.registration.id])
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id,
+      %{body: "@#{ctx.registration.mention} Continue the exact accepted objective"})
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    {:ok, previous} = Store.start(ctx.owner_vault.id, nil, "Earlier accepted request", "codex",
+      owner_user_id: ctx.owner.id, conversation_id: dispatch.conversationId, session_id: "missing-provider-session")
+    :ok = Store.finish(previous.id, "completed", "Earlier turn")
+    assert {:ok, current} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert current.prompt =~ "COLD_BASELINE_SOURCE_CONSTRAINT"
+    assert current.prompt =~ "Continue the exact accepted objective"
+    assert current.prompt =~ "<fizzer-app-context>"
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    assert packet =~ "missing-provider-session"
+    assert packet =~ "COLD_BASELINE_SOURCE_CONSTRAINT"
+  end
+
+  test "actual delegated owner turn saves observed evidence without another scheduler delegation", ctx do
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id,
+      %{body: "Review the existing result; preserve unresolved delivery"})
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    {:ok, current} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    assert packet =~ "run:delegate"
+    {:ok, mission} = Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id,
+      %{rootMessageId: message.id, coordinatorRegistrationId: ctx.registration.id, title: "Recorded evidence acknowledgment"}, control_plane: true)
+    {:ok, task} = Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+      %{title: "Existing result", coordinatorRegistrationId: ctx.registration.id, purpose: "research"})
+    {:ok, _} = Cascade.Missions.Store.update_task(ctx.owner.id, ctx.owner_channel.id, task.task.id,
+      %{status: "blocked", summary: "Existing result; delivery remains unresolved", finding: true})
+    {:ok, observed} = Cascade.Missions.Interpretation.get(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, ctx.registration.id)
+    fields = case System.get_env("FIZZER_RECORDED_INTERPRETATION_INPUT") do
+      nil -> %{"assessment" => "Existing result; delivery remains unresolved", "noMaterialChange" => true}
+      path -> path |> File.read!() |> Jason.decode!() |> Map.take(["assessment", "evidenceReferences", "noMaterialChange"])
+    end
+    assert {:ok, _} = Cascade.Missions.Interpretation.record(ctx.owner, ctx.owner_channel.id, mission.mission.id, ctx.registration.id,
+      Map.merge(fields, %{"revision" => observed.revision, "fingerprint" => observed.fingerprint}), current.id, Cascade.Chat.Events.Noop)
+    :ok = Store.finish(current.id, "completed", "Explicit evidence disposition saved")
+    result = Cascade.Missions.Scheduler.schedule(mission.mission.id)
+    for wake <- result.wakeDispatches do
+      assert {:ok, _} = CascadeWeb.OrchestrationController.execute_dispatch(wake.dispatch.id)
+      assert {:ok, wake_packet} = Session.poll(ctx.sid, 1_000)
+      assert wake_packet =~ "run:delegate"
+    end
+    [delegations] = SQL.one("SELECT COUNT(*) FROM runs WHERE owner_user_id=?", [ctx.owner.id])
+    IO.puts("explicit-save-trace delegated model requests=#{delegations}")
+    assert result.wakeDispatches == []
+    assert delegations == 1
+    assert Cascade.Missions.Scheduler.schedule(mission.mission.id).wakeDispatches == []
+  end
+
   for limit <- [2, "unlimited"] do
   test "scoped recovery (#{limit}) blocks old disconnected dispatch and queued transport on reconnect without canceling retained work", ctx do
     alias Cascade.Missions.ExecutionAdmission

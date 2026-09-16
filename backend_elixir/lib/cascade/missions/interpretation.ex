@@ -706,14 +706,15 @@ defmodule Cascade.Missions.Interpretation do
       item["status"] not in ["completed", "canceled"]
     end)
 
-    if context.fingerprint not in [nil, ""] or open_work or open_questions or active_evidence or active_tasks do
+    if Map.get(context, :pendingEvidence, context.fingerprint not in [nil, ""]) or open_work or open_questions or active_evidence or active_tasks do
       projected
     else
       %{
         missionId: context.missionId,
         objective: context.objective,
         revision: context.revision,
-        fingerprint: context.fingerprint,
+        # Omitted history is not evidence the caller can acknowledge.
+        fingerprint: "",
         understanding: Map.take(state, ["commitments", "questions"]),
         retrieval: "cascade-chat mission interpret --mission #{context.missionId}",
         contextStatus: "No open accepted obligations or pending evidence. Historical findings omitted; retrieve before reusing evidence or changing scope. This does not mark tasks complete or authorize retries."
@@ -783,19 +784,17 @@ defmodule Cascade.Missions.Interpretation do
     with {:ok, update} <- authorized(user_id, channel_id, mission_id, registration_id) do
       initialize(update.mission.id)
       record = row(update.mission.id)
+      evidence = if record.pending == "", do: snapshot(update.mission.id, record.state), else: record.context
 
       {:ok,
        %{
          missionId: update.mission.id,
          objective: update.mission.objective,
          revision: record.revision,
-         fingerprint: record.pending,
+         pendingEvidence: record.pending != "",
+         fingerprint: if(record.pending == "", do: fingerprint(evidence), else: record.pending),
          understanding: record.state,
-         evidence:
-           if(record.pending == "",
-             do: snapshot(update.mission.id, record.state),
-             else: record.context
-           )
+         evidence: evidence
        }}
     end
   end
@@ -871,6 +870,19 @@ defmodule Cascade.Missions.Interpretation do
     revision = input["revision"]
     key = "interpretation:#{id}:#{revision}"
     previous = SQL.one("SELECT summary FROM chat_mission_events WHERE source_key=?", [key])
+
+    # An ordinary coordinator may read/save evidence before maintenance claims a
+    # wake. Bind that explicit save to the exact presented snapshot, not an empty
+    # pending cursor; otherwise the next scheduler tick buys another model turn
+    # just to acknowledge the same evidence. Legacy empty cursors remain writes,
+    # not acknowledgments. A raced finding/note/owner change still conflicts.
+    record =
+      if record.pending == "" and input["fingerprint"] not in [nil, ""] do
+        evidence = snapshot(id, record.state)
+        %{record | pending: fingerprint(evidence), context: Jason.decode!(Jason.encode!(evidence))}
+      else
+        record
+      end
 
     cond do
       previous != nil ->

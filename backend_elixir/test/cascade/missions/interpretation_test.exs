@@ -313,7 +313,7 @@ defmodule Cascade.Missions.InterpretationTest do
 
     # Cold start/missed wake retains the whole pending baseline, not a delta.
     for active <- [
-      %{full | fingerprint: "missed-event"},
+      %{full | fingerprint: "missed-event", pendingEvidence: true},
       put_in(full.understanding["commitments"], [%{"status" => "open", "accepted" => true, "summary" => "Deliver"}]),
       put_in(full.understanding["questions"], [%{"question" => "Scope?"}]),
       put_in(full.evidence["findings"], [%{"status" => "running", "summary" => "Dependency active"}]),
@@ -664,7 +664,46 @@ defmodule Cascade.Missions.InterpretationTest do
     assert state(c).understanding["assessment"] =~ "authorized retry"
     assert state(c).understanding["evidenceReferences"] == ["check:passed", "retry:running"]
     assert [%{"id" => "delivery", "status" => "open"}] = state(c).understanding["questions"]
-    assert state(c).fingerprint == ""
+    refute state(c).pendingEvidence
+    assert state(c).fingerprint != ""
+  end
+
+  test "ordinary read/save consumes its exact evidence without a bookkeeping dispatch", c do
+    {:ok, message} = Messages.create(c.user, c.vault, c.channel, %{body: "Report the recorded checks"})
+    {:ok, dispatch} = Dispatches.create(c.user.id, c.channel, message, c.coordinator.id)
+    ordinary = run(c, dispatch)
+    finding(c, "Local checks passed; worker is retrying delivery")
+    before = SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE registration_id=?", [c.coordinator.id]) |> hd()
+    for _ <- 1..3 do
+      assert {{:ok, _}, _} = record(c, ordinary, %{"noMaterialChange" => true,
+        "assessment" => "Checks passed; authorized retry continues without owner action"})
+      assert Scheduler.schedule(c.mission).wakeDispatches == []
+    end
+    :ok = Runs.finish(ordinary.id, "completed", "Recorded checks")
+    # A fresh scheduler invocation uses only persisted state, not a turn-local flag.
+    assert Scheduler.schedule(c.mission).wakeDispatches == []
+    assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE registration_id=?", [c.coordinator.id]) == [before]
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='interpretation_recorded'", [c.mission]) == [3]
+    finding(c, "Production verification failed: different evidence")
+    assert [%{dispatch: next}] = Scheduler.schedule(c.mission).wakeDispatches
+    assert next.id != dispatch.id
+    assert Interpretation.dispatch_prompt(next.id) =~ "Production verification failed"
+  end
+
+  test "read/save is not an acknowledgment of raced or omitted evidence", c do
+    {:ok, message} = Messages.create(c.user, c.vault, c.channel, %{body: "Review recorded checks"})
+    {:ok, dispatch} = Dispatches.create(c.user.id, c.channel, message, c.coordinator.id)
+    ordinary = run(c, dispatch)
+    finding(c, "Observed check A")
+    observed = state(c)
+    finding(c, "New check B")
+    assert {:error, _} = Interpretation.record(c.user, c.channel, c.mission, c.coordinator.id,
+      %{"revision" => observed.revision, "fingerprint" => observed.fingerprint, "noMaterialChange" => true}, ordinary.id, Cascade.Chat.Events.Noop)
+    # Legacy empty-cursor writes preserve awareness; they do not silently consume it.
+    assert {:ok, _} = Interpretation.record(c.user, c.channel, c.mission, c.coordinator.id,
+      %{"revision" => observed.revision, "fingerprint" => "", "noMaterialChange" => true}, ordinary.id, Cascade.Chat.Events.Noop)
+    :ok = Runs.finish(ordinary.id, "completed", "Saved without consuming evidence")
+    assert [_] = Scheduler.schedule(c.mission).wakeDispatches
   end
 
   test "publication survives a lost fanout acknowledgment, retries once, preserves answers and links corrections",

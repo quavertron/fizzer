@@ -111,12 +111,18 @@ defmodule Cascade.Missions.Execution do
             conversation_id: dispatch.conversationId
           })
 
+        # Codex can replace a missing/busy provider thread after delegation. Its
+        # request must therefore be independently usable, even when lookup found
+        # a prior session. Keep the bounded cold baseline; provider guidance is
+        # retained as thread instructions rather than appended turn history.
+        context_resume = if execution.agent == "codex", do: nil, else: resume
+
         built =
           SQL.transaction(
             fn ->
               with {:ok, current, current_execution} <- refresh_execution(dispatch.id),
                    true <- current_execution == execution do
-                Cascade.Chat.DispatchPrompt.build(current, current_execution, resume)
+                Cascade.Chat.DispatchPrompt.build(current, current_execution, context_resume)
               else
                 false -> {:retry, "Agent settings changed during prompt preparation."}
                 error -> error
@@ -132,7 +138,7 @@ defmodule Cascade.Missions.Execution do
               dispatch.registration.id,
               "agent-dispatch-#{dispatch.id}",
               dispatch.messageId,
-              resume
+              context_resume
             )
 
           prompt =
@@ -141,7 +147,7 @@ defmodule Cascade.Missions.Execution do
               execution.runner_user_id,
               built.prompt,
               execution.agent,
-              resume
+              context_resume
             )
             |> PromptContext.append_context(context)
             |> PromptContext.append_mission_context(dispatch, execution.runner_user_id)

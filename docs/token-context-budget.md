@@ -43,10 +43,42 @@ uncached input, output, model calls and account allowance. A large packet saving
 is not evidence of equal end-to-end or quota savings. Preserve recorded tool
 outputs and request counts rather than assuming the model would do less work.
 
-This change does not implement guidance-by-session delivery, bound all historical
-declines, remove acknowledgment recovery turns or repair replacement-session
-cold-start construction. Those paths need delivery/compaction/recovery evidence;
-dropping them merely to improve a token score risks losing constraints or work.
+## Session guidance and explicit evidence disposition
+
+Persistent Codex places the single account-guidance block in the provider's
+`developerInstructions` thread field, instead of appending it to every user turn.
+The current document is supplied on each open/resume and every replacement, with
+current model/configuration. Codex owns durable session metadata; Fizzer adds no
+in-memory delivery cache, new ledger or database. Imported sessions are exempt so
+their original instructions are not overwritten; ambiguous multiple guidance
+blocks and nonpersistent/other-provider paths retain their existing full text.
+The guidance explicitly remains subordinate to current user and authorization
+constraints. Account updates replace that field, not historical storage.
+
+Codex dispatches carry the bounded cold baseline even when a prior session was
+found. This deliberately retains some repeated context rather than letting a
+missing/busy-thread fallback infer from a continuation-only prompt. It is a safety
+tradeoff, not a claim that all stable instructions are now deduplicated.
+
+Full interpretation reads now return an exact evidence fingerprint even before
+maintenance claims a batch, plus explicit `pendingEvidence`. A live coordinator's
+explicit read/save acknowledges that exact snapshot transactionally; the next
+scheduler tick does not buy a second model turn for already-disposed evidence.
+Raced evidence conflicts. Compact dossiers have no acknowledgment fingerprint,
+and legacy empty cursors remain writes rather than acknowledgments. New agenda
+items, changed findings/notes, Stop and missing-disposition recovery still retain
+their existing lifecycle semantics. Provider success alone never acknowledges work.
+
+Offline verification includes actual installed Codex 0.153.3 against a loopback
+inert Responses endpoint (no external inference): identical recorded guidance on
+two turns appeared once then twice in baseline serialized requests, once then
+once using native thread instructions. Four actual serialized request texts were
+counted with tiktoken0.14.0/o200k_base: baseline 23,932 versus candidate22,307 text
+tokens. This controlled guidance-only replay excludes real job/tool execution,
+cache effects and generated output; it is not an80% workload result. Scheduler
+and real Socket.IO dispatch tests separately cover explicit save, unchanged
+maintenance, raced evidence and cold baseline. Full real-workload savings remain
+unmeasured; historical declines are still not globally bounded.
 
 Checks: backend interpretation and next-step tests; CLI usage and inert Codex
 app-server protocol tests (also run with `FIZZER_TEST_CLI_MODULE` pointing to the

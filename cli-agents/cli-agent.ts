@@ -1031,7 +1031,15 @@ class CodexAppServerClient {
   }): Promise<CliAgentResult> {
     await this.ensureStarted();
     const sandbox = options.sandbox || (options.yolo ? 'danger-full-access' : 'workspace-write');
+    // Keep account guidance in the provider's durable thread instructions,
+    // rather than appending another copy to each user turn. Reapply on resume
+    // (including after runner restart/compaction) and every replacement thread;
+    // Codex stores this as one replaceable session field, not a history message.
+    const guidance = options.prompt.match(/Fizzer app context \(account-wide behavioral guidance; revision [^\n]+\):\n[\s\S]*?<\/fizzer-app-context>\n?/g) || [];
+    const turnPrompt = guidance.length === 1 && !options.env?.CASCADE_IMPORTED_CODEX_SESSION
+      ? options.prompt.replace(guidance[0], '') : options.prompt;
     const common: JsonObject = {
+      ...(guidance.length === 1 && !options.env?.CASCADE_IMPORTED_CODEX_SESSION ? { developerInstructions: guidance[0] } : {}),
       cwd: options.cwd,
       model: options.model || null,
       serviceTier: options.priorityServiceTier ? 'priority' : null,
@@ -1048,7 +1056,7 @@ class CodexAppServerClient {
     const turnParams = {
       threadId,
       input: [
-        { type: 'text', text: options.prompt, text_elements: [] },
+        { type: 'text', text: turnPrompt, text_elements: [] },
         ...options.imagePaths.map((imagePath) => ({ type: 'localImage', path: imagePath })),
       ],
       cwd: options.cwd,

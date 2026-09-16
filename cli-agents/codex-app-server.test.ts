@@ -8,6 +8,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-codex-app-server-
 const fakeBin = path.join(scratch, 'codex');
 const launchLog = path.join(scratch, 'launches');
 const protocolLog = path.join(scratch, 'protocol');
+const requestLog = path.join(scratch, 'requests.jsonl');
 
 fs.writeFileSync(fakeBin, `#!/usr/bin/env node
 const fs = require('fs');
@@ -20,6 +21,7 @@ const retryTurns = new Map();
 function send(value) { process.stdout.write(JSON.stringify(value) + '\\n'); }
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(requestLog)}, JSON.stringify(message) + '\\n');
   fs.appendFileSync(${JSON.stringify(protocolLog)}, message.method + ':' + (message.params?.threadId || '') + '\\n');
   if (message.method === 'initialize') return send({ id: message.id, result: {} });
   if (message.method === 'thread/start') return send({ id: message.id, result: { thread: { id: 'thread-' + (++thread) } } });
@@ -214,6 +216,44 @@ test('imported sessions resume their original thread and never interrupt another
   assert.match(protocol, /turn\/start:thread-imported/);
   assert.doesNotMatch(protocol, /turn\/interrupt|thread\/start/);
   shutdownPersistentCliAgents();
+});
+
+test('account guidance is replaceable thread metadata, never repeated turn text; restart and replacement retain it', async (t) => {
+  t.after(() => shutdownPersistentCliAgents());
+  const start = fs.existsSync(requestLog) ? fs.readFileSync(requestLog, 'utf8').length : 0;
+  const guidance = (revision: string) => `Fizzer app context (account-wide behavioral guidance; revision ${revision}):\nCurrent owner instructions take precedence.\n<fizzer-app-context>\nRetain source constraints and Stop.\n</fizzer-app-context>\n`;
+  let session: string | undefined;
+  for (const [resume, revision, model] of [[undefined, 'one', 'model-a'], ['previous', 'one', 'model-a'], ['previous', 'two', 'model-b'], ['thread-locked', 'two', 'model-b'], ['thread-raced', 'two', 'model-b']] as const) {
+    const result = await runCliAgent({agent: 'codex', context: '', cwd: scratch, emit() {}, model,
+      resumeSessionId: resume === 'previous' ? session : resume,
+      userPrompt: `Current objective and bounded cold baseline.\n${guidance(revision)}`});
+    session = result.sessionId;
+    // No runner-local cache is required after process replacement.
+    shutdownPersistentCliAgents();
+  }
+  const requests = fs.readFileSync(requestLog, 'utf8').slice(start).trim().split('\n').map(line => JSON.parse(line));
+  const opens = requests.filter(r => ['thread/start', 'thread/resume'].includes(r.method));
+  assert.ok(opens.some(r => r.method === 'thread/resume'));
+  assert.ok(opens.filter(r => r.method === 'thread/start').length >= 3);
+  for (const r of opens) {
+    assert.match(r.params.developerInstructions, /Retain source constraints and Stop/);
+    assert.match(r.params.developerInstructions, r.params.model === 'model-a' ? /revision one/ : /revision two/);
+  }
+  for (const r of requests.filter(r => r.method === 'turn/start')) {
+    assert.equal(r.params.input[0].text, 'Current objective and bounded cold baseline.\n');
+    assert.doesNotMatch(r.params.input[0].text, /fizzer-app-context/);
+  }
+});
+
+test('imported provider instructions are never overwritten by account guidance extraction', async (t) => {
+  t.after(() => shutdownPersistentCliAgents());
+  const start = fs.readFileSync(requestLog, 'utf8').length;
+  const prompt = 'Fizzer app context (account-wide behavioral guidance; revision one):\n<fizzer-app-context>\nKeep import constraints\n</fizzer-app-context>\n';
+  await runCliAgent({agent: 'codex', context: '', cwd: scratch, emit() {}, userPrompt: prompt,
+    resumeSessionId: 'thread-imported', env: {CASCADE_IMPORTED_CODEX_SESSION: 'thread-imported'}});
+  const requests = fs.readFileSync(requestLog, 'utf8').slice(start).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(requests.find(r => r.method === 'thread/resume').params.developerInstructions, undefined);
+  assert.equal(requests.find(r => r.method === 'turn/start').params.input[0].text, prompt);
 });
 
 test('Codex acknowledgements and completion alone do not invent a first response', async () => {
