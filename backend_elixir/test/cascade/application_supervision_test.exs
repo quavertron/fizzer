@@ -4,9 +4,70 @@ defmodule Cascade.ApplicationSupervisionTest do
   alias Cascade.DB.WriteCoordinator
   alias Cascade.Realtime.OrderedPublisher
 
-  test "schema-only boots do not schedule or recover mission work" do
+  test "runtime dispatch startup follows the server flag" do
+    previous = System.get_env("CASCADE_SERVER")
+
+    try do
+      for {value, enabled} <- [{nil, true}, {"true", true}, {"false", false}] do
+        if value,
+          do: System.put_env("CASCADE_SERVER", value),
+          else: System.delete_env("CASCADE_SERVER")
+
+        config = Config.Reader.read!(Path.expand("../../config/runtime.exs", __DIR__), env: :prod)
+        assert config[:cascade_elixir][:server] == enabled
+        assert config[:cascade_elixir][:dispatch_worker_enabled] == enabled
+      end
+    after
+      if previous,
+        do: System.put_env("CASCADE_SERVER", previous),
+        else: System.delete_env("CASCADE_SERVER")
+    end
+  end
+
+  test "offline boot starts the database without dispatch work while tests enable the worker" do
     refute Application.fetch_env!(:cascade_elixir, :server)
-    refute Process.whereis(Cascade.Missions.DispatchReannouncer)
+    assert Application.fetch_env!(:cascade_elixir, :dispatch_worker_enabled)
+    assert is_pid(Process.whereis(Cascade.Missions.DispatchReannouncer))
+
+    try do
+      :ok = Application.stop(:cascade_elixir)
+      Application.put_env(:cascade_elixir, :dispatch_worker_enabled, false)
+      assert {:ok, _} = Application.ensure_all_started(:cascade_elixir)
+      assert is_pid(Process.whereis(Cascade.DB.Repo))
+      assert %{rows: [[1]]} = Ecto.Adapters.SQL.query!(Cascade.DB.Repo, "SELECT 1", [])
+      refute Process.whereis(Cascade.Missions.DispatchReannouncer)
+
+      refute Enum.any?(Supervisor.which_children(Cascade.Supervisor), fn {id, _, _, _} ->
+               id == Cascade.Missions.DispatchReannouncer
+             end)
+
+      assert :ok = Cascade.Missions.DispatchReannouncer.wake()
+      refute Process.whereis(Cascade.Missions.DispatchReannouncer)
+    after
+      :ok = Application.stop(:cascade_elixir)
+      Application.put_env(:cascade_elixir, :dispatch_worker_enabled, true)
+      {:ok, _} = Application.ensure_all_started(:cascade_elixir)
+    end
+
+    assert is_pid(Process.whereis(Cascade.Missions.DispatchReannouncer))
+  end
+
+  test "server boot starts only one dispatch worker" do
+    port = Application.fetch_env!(:cascade_elixir, :port)
+    try do
+      :ok = Application.stop(:cascade_elixir)
+      Application.put_env(:cascade_elixir, :server, true)
+      Application.put_env(:cascade_elixir, :port, 0)
+      assert {:ok, _} = Application.ensure_all_started(:cascade_elixir)
+      assert Enum.count(Supervisor.which_children(Cascade.Supervisor), fn {id, _, _, _} ->
+        id == Cascade.Missions.DispatchReannouncer
+      end) == 1
+    after
+      :ok = Application.stop(:cascade_elixir)
+      Application.put_env(:cascade_elixir, :server, false)
+      Application.put_env(:cascade_elixir, :port, port)
+      {:ok, _} = Application.ensure_all_started(:cascade_elixir)
+    end
   end
 
   test "an ordered publisher restart replaces dependent run and realtime workers" do

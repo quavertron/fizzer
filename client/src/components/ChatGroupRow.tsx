@@ -87,6 +87,7 @@ export function shouldRenderRunPanel(
   isLatestRunningMessage: boolean,
 ): boolean {
   if (selected) return true;
+  if ((message.status === 'queued' || message.status === 'sending') && message.id.startsWith('agent-dispatch-')) return true;
   if (message.status === 'failed' || message.status === 'canceled') return true;
   return message.status === 'running' && isLatestRunningMessage;
 }
@@ -249,7 +250,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               )}
               {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId === tail.id && runningSiblingCount <= 1 && <span className="chat-message-status">working</span>}
               {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId !== tail.id && <span className="chat-message-status is-steered">continued below</span>}
-              {avatarKind === 'agent' && tail.status === 'sending' && <span className="chat-message-status">queued</span>}
+              {avatarKind === 'agent' && (tail.status === 'sending' || tail.status === 'queued') && <span className="chat-message-status">queued</span>}
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
               {avatarKind === 'agent' && tail.status === 'canceled' && isSteeringContinuationMessage(tail) && (
                 <span className="chat-message-status is-steered">continued</span>

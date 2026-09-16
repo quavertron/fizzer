@@ -16,6 +16,36 @@
 
 import { useCallback, useSyncExternalStore } from 'react';
 import type { ChatMessage } from './types';
+import { api, ApiError } from '../api';
+import { isLiveAgentStatus, type ChatMessageSnapshotBaseline } from './runBlocks';
+
+/** Keep live rows outside the recent window until their individual lookup settles. */
+export async function fetchChatMessageSnapshot(
+  vaultId: string,
+  channelId: string,
+  baseline: ChatMessageSnapshotBaseline,
+  signal?: AbortSignal,
+): Promise<ChatMessage[]> {
+  const path = `/api/vaults/${vaultId}/channels/${channelId}/messages`;
+  const { messages = [] } = await api<{ messages: ChatMessage[] }>(`${path}?detail=list&limit=120`, { signal });
+  signal?.throwIfAborted();
+  const ids = new Set(messages.map((message) => message.id));
+  const missing = [...baseline.ids.values()].filter((message) => (
+    message.seq != null && !ids.has(message.id)
+    && isLiveAgentStatus(message.status)
+    && !(message.runId != null && message.runId < 0)
+  ));
+  const confirmed = await Promise.all(missing.map(async (message) => {
+    try {
+      return (await api<{ message: ChatMessage }>(`${path}/${encodeURIComponent(message.id)}`, { signal })).message;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      return message;
+    }
+  }));
+  signal?.throwIfAborted();
+  return [...confirmed.filter((message): message is ChatMessage => message != null), ...messages];
+}
 
 const EMPTY: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[];
 
@@ -24,13 +54,12 @@ type Listener = () => void;
 export type ChannelAgentActivity = 'running' | 'finished';
 
 function isRunningAgent(message: ChatMessage): boolean {
-  return Boolean(message.agentId) && (message.status === 'sending' || message.status === 'running');
+  return Boolean(message.agentId) && isLiveAgentStatus(message.status);
 }
 
 function isFinishedAgent(message: ChatMessage): boolean {
   return Boolean(message.agentId)
-    && message.status !== 'sending'
-    && message.status !== 'running'
+    && !isLiveAgentStatus(message.status)
     && message.status !== 'failed'
     && message.status !== 'canceled'
     && message.body.trim().length > 0
@@ -69,15 +98,16 @@ class ChatMessageStore {
     this.emit(channelId);
   }
 
-  /**
-   * Apply an updater to every loaded channel — used when the owning channel is
-   * unknown (e.g. canceling a run by id). Returning the same array reference from
-   * the updater leaves that channel untouched, so only channels that actually
-   * changed re-render.
-   */
-  updateAll(updater: (prev: ChatMessage[], channelId: string) => ChatMessage[]): void {
-    for (const channelId of Array.from(this.channels.keys())) {
-      this.update(channelId, (prev) => updater(prev, channelId));
+  /** Legacy local runs have no vault projection or owning-channel lookup. */
+  cancelLocalRun(runId: number): void {
+    if (runId >= 0) return;
+    for (const [channelId, messages] of this.channels) {
+      if (!messages.some((message) => message.runId === runId)) continue;
+      this.update(channelId, (messages) => messages.map((message) => (
+        message.runId === runId && isLiveAgentStatus(message.status)
+          ? { ...message, status: 'canceled', body: message.body === 'Thinking...' ? 'Run canceled by user.' : message.body }
+          : message
+      )));
     }
   }
 

@@ -18,9 +18,8 @@ defmodule Cascade.Application do
         CascadeWeb.RateLimiter
       ] ++
         qmd_children() ++
-        [
-          {Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.RunnerLifecycle}
-        ] ++ http_children()
+        [{Cascade.Realtime.Supervisor, runner_callbacks: Cascade.Runs.RunnerLifecycle}] ++
+        dispatch_children() ++ http_children()
 
     # Every child after the repository and write coordinator depends on their
     # current instances. Restart the downstream edge before replacing either
@@ -35,6 +34,12 @@ defmodule Cascade.Application do
       else: []
   end
 
+  defp dispatch_children do
+    if Application.fetch_env!(:cascade_elixir, :dispatch_worker_enabled),
+      do: [Cascade.Missions.DispatchReannouncer],
+      else: []
+  end
+
   defp http_children do
     if Application.fetch_env!(:cascade_elixir, :server) do
       acceptors = Application.fetch_env!(:cascade_elixir, :http_acceptors)
@@ -43,7 +48,6 @@ defmodule Cascade.Application do
       connections_per_acceptor = div(max_connections + acceptors - 1, acceptors)
 
       [
-        Cascade.Missions.DispatchReannouncer,
         {Bandit,
          plug: CascadeWeb.Router,
          scheme: :http,

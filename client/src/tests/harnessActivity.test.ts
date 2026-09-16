@@ -8,7 +8,7 @@ import {
   liveActivityHeadline,
   summarizeActivity,
 } from '../chat/harnessActivity';
-import { appendChatRunBlocks, normalizeChatRunBlocks } from '../chat/runBlocks';
+import { normalizeChatRunBlocks } from '../chat/runBlocks';
 import type { ChatMessage } from '../chat/types';
 
 function msg(partial: Partial<ChatMessage>): ChatMessage {
@@ -34,16 +34,7 @@ describe('normalizeChatRunBlocks', () => {
     expect(blocks[2]).toMatchObject({ type: 'tool_result', toolUseId: 't1', content: 'ok' });
   });
 
-  it('merges tool_use by id', () => {
-    let blocks = normalizeChatRunBlocks([
-      { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
-    ]);
-    blocks = appendChatRunBlocks(blocks, normalizeChatRunBlocks([
-      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'pwd' } },
-    ]));
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].input).toEqual({ command: 'pwd' });
-  });
+
 });
 
 describe('buildHarnessActivity', () => {

@@ -62,7 +62,7 @@ for (const tracked of [false, true]) {
     fs.writeFileSync(path.join(upstream, '.gitignore'), 'build-output\n');
     fs.writeFileSync(path.join(upstream, 'local.txt'), 'original\n');
     fs.writeFileSync(path.join(upstream, 'package.json'), JSON.stringify({ scripts: {
-      build: `node -e "require('fs').writeFileSync('build-output', require('fs').readFileSync('release.txt'))"`,
+      build: `node -e "require('fs').writeFileSync('build-output', require('fs').readFileSync('local.txt'))"`,
     } }));
     git(upstream, 'add', '.');
     git(upstream, 'commit', '-m', 'initial');
@@ -93,7 +93,7 @@ for (const tracked of [false, true]) {
     );
     await update();
     assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(upstream, 'rev-parse', 'HEAD'));
-    assert.equal(fs.readFileSync(path.join(checkout, 'build-output'), 'utf8'), 'new release\n');
+    assert.equal(fs.readFileSync(path.join(checkout, 'build-output'), 'utf8'), 'unsaved work\n');
     assert.equal(fs.readFileSync(path.join(checkout, 'local.txt'), 'utf8'), 'unsaved work\n');
     assert.equal(fs.readFileSync(path.join(checkout, 'untracked.txt'), 'utf8'), 'untracked work\n');
     assert.equal(git(checkout, 'stash', 'list'), '');
@@ -101,7 +101,7 @@ for (const tracked of [false, true]) {
 }
 
 for (const buildFails of [false, true]) {
-  test(`source restoration conflicts retain a named backup and both errors (build fails: ${buildFails})`, async (t) => {
+  test(`source overlap is rejected before checkout mutation or build (build fails: ${buildFails})`, async (t) => {
     const { execFileSync, spawn } = require('node:child_process');
     const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'fizzer-update-conflict-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -131,21 +131,15 @@ for (const buildFails of [false, true]) {
         + '\nupdateDesktopInPlace',
       { spawn, process, getProjectRoot: () => checkout },
     );
-    await assert.rejects(update(), (error) => {
-      const backup = git(checkout, 'rev-parse', 'stash@{0}');
-      assert.ok(error.message.includes(backup), error.message);
-      assert.match(error.message, /overlap.txt/);
-      assert.match(error.message, /resolve.*before.*retry/i);
-      if (buildFails) assert.match(error.message, /BUILD_SENTINEL/);
-      assert.equal(git(checkout, 'show', `${backup}:overlap.txt`), 'valuable local work');
-      assert.equal(git(checkout, 'show', `${backup}^3:untracked.txt`), 'untracked work');
-      return true;
-    });
-    assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(upstream, 'rev-parse', 'HEAD'));
-    assert.equal(fs.readFileSync(path.join(checkout, 'untracked.txt'), 'utf8'), 'untracked work\n');
     const before = git(checkout, 'status', '--porcelain');
-    await assert.rejects(update(), /resolve.*before.*retry/i);
+    const head = git(checkout, 'rev-parse', 'HEAD');
+    const index = fs.readFileSync(path.join(checkout, '.git/index'));
+    await assert.rejects(update(), /Update conflicts with local work[\s\S]*overlap.txt/);
+    assert.equal(git(checkout, 'rev-parse', 'HEAD'), head);
     assert.equal(git(checkout, 'status', '--porcelain'), before);
-    assert.equal(git(checkout, 'stash', 'list').split('\n').length, 1);
+    assert.deepEqual(fs.readFileSync(path.join(checkout, '.git/index')), index);
+    assert.equal(fs.readFileSync(path.join(checkout, 'overlap.txt'), 'utf8'), 'valuable local work\n');
+    assert.equal(fs.readFileSync(path.join(checkout, 'untracked.txt'), 'utf8'), 'untracked work\n');
+    assert.equal(git(checkout, 'stash', 'list'), '');
   });
 }

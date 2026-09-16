@@ -1,3 +1,4 @@
+import { hasVisibleChatMessageContent, isEmptyChatMessage, isLiveAgentPlaceholder, isLiveAgentStatus } from './runBlocks';
 /**
  * Collapse multi-agent / mission channel chatter into a work-trace partition.
  *
@@ -6,9 +7,9 @@
  * TUI-style lines; the last settled non-worker answer stays a full bubble.
  */
 
-import { canGroupChatMessages } from './shared';
+import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
-import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
+import { humanizeActivityLine, previewStructuredDetail, recentActivityLines } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
 
 export interface ChatMessageGroup {
@@ -186,11 +187,13 @@ export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body
   if (message.status === 'running') {
     const live = message.harnessLog
       ? workTraceHarnessPreview(message.harnessLog, 90)
-      : workTracePreview(message.body || '', 90);
-    if (live && !/^Thinking(?:\.{3}|…)$/i.test(live)) return live;
-    return 'working…';
+      : '';
+    const body = workTracePreview(message.body || '', 90);
+    const current = live || body;
+    if (current && !/^Thinking(?:\.{3}|…)$/i.test(current)) return current;
+    return 'Working · no progress update yet';
   }
-  if (message.status === 'sending') return 'queued…';
+  if ((message.status === 'sending' || message.status === 'queued')) return 'queued…';
   if (message.status === 'failed') return 'failed';
   if (isSteeringContinuationMessage(message)) return 'steered';
   if (message.status === 'canceled') return 'canceled';
@@ -239,20 +242,20 @@ const WORK_TRACE_DECALS: Record<WorkTracePhase, WorkTraceDecal> = {
 export function workTracePhase(
   message: Pick<ChatMessage, 'id' | 'author' | 'body' | 'status' | 'missionTaskId' | 'harnessLog'>,
 ): WorkTracePhase {
-  const text = stripTerminalNoise(
-    `${recentActivityText(message.body)}\n${recentActivityText(message.harnessLog)}`,
-  ).toLowerCase();
+  const text = (workTraceHarnessPreview(message.harnessLog || '')
+    || workTracePreview(message.body || '')).toLowerCase();
   // Steering cancel is intentional flow, not a hard block.
   if (isSteeringContinuationMessage(message)) return 'steering';
   if (message.status === 'failed') return 'blocked';
-  if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
   if (message.status === 'canceled') return 'blocked';
+  if (!isLiveAgentStatus(message.status) && !isSystemCascadeMessage(message)) return 'complete';
+  if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
+  if (isLiveAgentStatus(message.status) && /\b(wait|waiting|blocked on|dependency|agent busy)/.test(text)) return 'waiting';
   if (isSystemCascadeMessage(message) || /\b(review|reconcil|ready for review)/.test(text)) return 'reviewing';
-  if (message.status === 'running' || message.status === 'sending') {
+  if (isLiveAgentStatus(message.status)) {
     if (/\b(deploy|ship|release|production|prod\b)/.test(text)) return 'deploying';
     if (/\b(test|verify|verification|lint|runtime|regression|check)/.test(text)) return 'testing';
-    if (/\b(wait|waiting|blocked on|dependency|agent busy)/.test(text)) return 'waiting';
-    if (message.status === 'sending' || message.missionTaskId) return 'routing';
+    if ((message.status === 'sending' || message.status === 'queued')) return 'routing';
     return 'working';
   }
   if (message.missionTaskId) return 'complete';
@@ -281,7 +284,8 @@ export function partitionWorkRun(
   if (messages.length === 0) return { trace: [], full: [] };
 
   // Lone ordinary reply → normal chat bubble (no work chrome).
-  if (messages.length === 1 && !isForcedWorkTraceLine(messages[0])) {
+  if (messages.length === 1 && !isForcedWorkTraceLine(messages[0])
+    && (isLiveAgentStatus(messages[0].status) || shouldRenderFullInWorkRun(messages[0], true))) {
     return { trace: [], full: messages };
   }
 
@@ -307,11 +311,12 @@ function shouldRenderFullInWorkRun(
 ): boolean {
   if (message.mission || message.changeRequest || message.clarification) return true;
   if (message.hasImages || message.images?.length || message.attachments?.length) return true;
+  if (!isLiveAgentStatus(message.status) && isLiveAgentPlaceholder(stripChatControlMarkers(message.body || ''))
+    && !hasVisibleChatMessageContent({ ...message, body: '' })) return false;
   // Final user-facing answer of a multi-message run.
   if (
     isLast
-    && message.status !== 'running'
-    && message.status !== 'sending'
+    && !isLiveAgentStatus(message.status)
     && !isForcedWorkTraceLine(message)
   ) return true;
   return false;
@@ -345,6 +350,9 @@ export function segmentTranscript(
     agentAuthors?: ReadonlySet<string>;
   },
 ): TranscriptSegment[] {
+  messages = messages.filter((message, index) => !isEmptyChatMessage(message)
+    || (isWorkTraceCarrier(message) && messages[index + 1]
+      && isSystemCascadeMessage(messages[index + 1]) && !isEmptyChatMessage(messages[index + 1])));
   const agentAuthors = options?.agentAuthors;
   const segments: TranscriptSegment[] = [];
   let index = 0;
@@ -450,7 +458,7 @@ export function workTraceSummary(trace: ChatMessage[]): string {
   }
   const more = new Set(trace.map((m) => workTraceAuthorKey(m).toLowerCase())).size - authors.length;
   const who = more > 0 ? `${authors.join(' · ')} +${more}` : authors.join(' · ');
-  const live = trace.some((m) => m.status === 'running' || m.status === 'sending');
+  const live = trace.some((m) => isLiveAgentStatus(m.status));
   const n = trace.length;
   return live
     ? `${n} step${n === 1 ? '' : 's'} · ${who} · live`
@@ -474,18 +482,14 @@ export interface WorkTracePeek {
 export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
   if (trace.length === 0) return null;
   const liveMessage = [...trace].reverse().find((message) => (
-    message.status === 'running' || message.status === 'sending'
+    isLiveAgentStatus(message.status)
   ));
   const message = liveMessage || trace[trace.length - 1];
   const live = Boolean(liveMessage);
   // Prefer harness tail (live tools/thinking), then body — both humanized.
-  const harnessLine = workTraceHarnessPreview(message.harnessLog || '', 90);
-  const bodyLine = workTracePreview(message.body || '', 90);
-  const label = live
-    ? (harnessLine || (bodyLine && !/^Thinking(?:\.{3}|…)$/i.test(bodyLine) ? bodyLine : '') || 'working…')
-    : (workTraceStatusLabel(message) || bodyLine || 'settled');
+  const label = workTraceStatusLabel(message);
   const decals = workTraceDecals(trace);
-  const phase = decals[decals.length - 1]?.phase || workTracePhase(message);
+  const phase = workTracePhase(message);
   return {
     live,
     summary: workTraceSummary(trace),

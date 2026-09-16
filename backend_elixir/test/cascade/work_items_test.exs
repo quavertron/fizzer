@@ -1,10 +1,77 @@
 defmodule Cascade.WorkItemsTest do
   use ExUnit.Case, async: false
 
+  alias Cascade.Accounts.SQL
   alias Cascade.WorkItems
 
   setup do
     Cascade.TestHelpers.owner_vault("work-items")
+  end
+
+  test "list batches relations and matches get hydration without changing order", context do
+    assert {:ok, first} =
+             WorkItems.create(context.user_id, context.vault_id, %{title: "First", priority: 10})
+
+    assert {:ok, second} =
+             WorkItems.create(context.user_id, context.vault_id, %{
+               title: "Second",
+               dependsOn: [first.id]
+             })
+
+    assert {:ok, third} =
+             WorkItems.create(context.user_id, context.vault_id, %{
+               title: "Third",
+               priority: -10,
+               dependsOn: [second.id, first.id]
+             })
+
+    for {id, run_id, date} <- [
+          {second.id, 11, "2026-01-02"},
+          {third.id, 33, "2026-01-01"},
+          {second.id, 22, "2026-01-01"}
+        ] do
+      SQL.exec("INSERT INTO work_item_runs (work_item_id,run_id,linked_at) VALUES (?,?,?)", [
+        id,
+        run_id,
+        date
+      ])
+    end
+
+    expected =
+      Enum.map([first, second, third], fn item ->
+        assert {:ok, hydrated} = WorkItems.get(context.user_id, item.id)
+        hydrated
+      end)
+
+    key = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        key,
+        [:cascade, :db, :repo, :query],
+        fn _event, _measurements, metadata, {owner, key} ->
+          if self() == owner and
+               Regex.match?(~r/\bFROM work_item_(dependencies|runs)\b/, metadata.query),
+             do: Process.put(key, Process.get(key, 0) + 1)
+        end,
+        {self(), key}
+      )
+
+    try do
+      assert {:ok, ^expected} = WorkItems.list(context.user_id, context.vault_id)
+      assert Process.get(key, 0) == 2
+      assert Enum.map(expected, & &1.runIds) == [[], [22, 11], [33]]
+
+      assert Enum.map(expected, &Enum.sort(&1.dependsOn)) ==
+               [[], [first.id], Enum.sort([first.id, second.id])]
+
+      Process.put(key, 0)
+      assert {:ok, []} = WorkItems.list(context.user_id, context.vault_id, status: "done")
+      assert Process.get(key) == 0
+    after
+      :telemetry.detach(key)
+      Process.delete(key)
+    end
   end
 
   test "dependencies, immutable workspace binding, leases, and token stops are durable",

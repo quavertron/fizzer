@@ -558,8 +558,10 @@ async function loadCliAgentModule() {
     cliAgentModuleMtimeMs = mtimeMs;
     const href = pathToFileURL(modPath).href + `?t=${mtimeMs || Date.now()}`;
     cliAgentModulePromise = (async () => {
-      const previous = await previousModule;
-      previous.shutdownPersistentCliAgents?.();
+      // A build can fail to import while this checkout is being edited. Its
+      // rejected promise must not prevent loading the next corrected build.
+      const previous = await previousModule.catch(() => null);
+      previous?.shutdownPersistentCliAgents?.();
       return import(href);
     })();
   }

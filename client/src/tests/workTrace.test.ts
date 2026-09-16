@@ -25,6 +25,25 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
+  it('uses meaningful progress instead of the Codex startup path', () => {
+    const running = msg({ id: 'live', author: 'Astra', status: 'running',
+      body: 'Checking dispatch handoffs.',
+      harnessLog: '# codex app-server · /home/jt/.cascade/worktrees/private' });
+    expect(workTraceStatusLabel(running)).toBe('Checking dispatch handoffs.');
+    expect(workTracePeek([running])?.label).toBe('Checking dispatch handoffs.');
+    expect(workTraceStatusLabel({ ...running, body: 'Thinking…' })).toBe('Working · no progress update yet');
+  });
+
+  it('keeps the current phase tied to the live step, with terminal status authoritative', () => {
+    const running = msg({ id: 'live', author: 'Astra', status: 'running',
+      missionTaskId: 'child', body: 'Waiting for child results',
+      harnessLog: '# thinking\nWaiting for child results' });
+    const done = msg({ id: 'done', author: 'Astra', body: 'Deploy and review completed.' });
+    expect(workTracePeek([running, done])?.phase).toBe('waiting');
+    expect(workTracePhase(done)).toBe('complete');
+    expect(workTracePhase({ ...running, body: 'Investigating', harnessLog: '' })).toBe('working');
+  });
+
   it('recognizes the durable steering sentinel without exposing it as prose', () => {
     expect(isSteeringContinuationMessage(msg({
       id: 'steered', author: 'Sol', body: 'Steered into the continuation below.', status: 'canceled',

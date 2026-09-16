@@ -172,20 +172,6 @@ defmodule Cascade.Chat.Channel do
                   agent.agent_id=u.username COLLATE NOCASE
                 )
               )
-          UNION
-          SELECT legacy.author FROM (
-            SELECT DISTINCT author FROM chat_messages
-            WHERE channel_id=? AND COALESCE(agent_id,'')=''
-              AND author NOT IN ('','Cascade') LIMIT 200
-          ) legacy
-          WHERE NOT EXISTS (
-            SELECT 1 FROM chat_agent_members agent
-            WHERE agent.channel_id=? AND (
-              agent.display_name=legacy.author COLLATE NOCASE OR
-              agent.mention=legacy.author COLLATE NOCASE OR
-              agent.agent_id=legacy.author COLLATE NOCASE
-            )
-          )
         )
         SELECT u.id,n.username,u.username,
           COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username
@@ -197,8 +183,6 @@ defmodule Cascade.Chat.Channel do
         [
           source_vault_id,
           source_vault_id,
-          source_channel_id,
-          source_channel_id,
           source_channel_id,
           source_channel_id
         ]

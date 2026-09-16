@@ -3,6 +3,7 @@ defmodule Cascade.Missions.Dispatches do
 
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Messages, RoomContext, Schema}
+  alias Cascade.Realtime.{Events, OrderedPublisher}
   alias Cascade.Runs.RunnerLifecycle
 
   @ambient_hops 15
@@ -13,7 +14,11 @@ defmodule Cascade.Missions.Dispatches do
     else
       with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
            {:ok, members} <- Agents.list_members(channel_id, user_id) do
-        targets = resolve_targets(user_id, channel_id, message, members)
+        targets =
+          if clear_targets(field(message, :body, ""), members),
+            do: [],
+            else: resolve_targets(user_id, channel_id, message, members)
+
         remove_stale_coordinator_wakes(route.sourceChannelId, message, targets)
 
         Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
@@ -30,17 +35,36 @@ defmodule Cascade.Missions.Dispatches do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
          {:ok, members} <- Agents.list_members(channel_id, user_id),
          registration when not is_nil(registration) <-
-           Enum.find(members, &(&1.id == registration_id)) do
+           Enum.find(members, &(&1.id == registration_id)),
+         true <- allowed?(user_id, registration, message) do
       effort = opts |> Keyword.get(:reasoning_effort, "") |> clean(20) |> String.downcase()
 
-      SQL.exec(
-        """
-        INSERT OR IGNORE INTO chat_agent_dispatches
-          (id,message_id,channel_id,registration_id,reasoning_effort)
-        VALUES (?,?,?,?,?)
-        """,
-        [Ecto.UUID.generate(), message.id, route.sourceChannelId, registration.id, effort]
-      )
+      SQL.transaction(fn ->
+        conversation_id = admission_conversation(registration.id, message)
+
+        SQL.exec(
+          """
+          INSERT OR IGNORE INTO chat_agent_dispatches
+            (id,message_id,channel_id,registration_id,reasoning_effort,
+             requester_user_id,requester_channel_id,conversation_id,target_owner_user_id,target_identity_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
+          """,
+          [
+            Ecto.UUID.generate(),
+            message.id,
+            route.sourceChannelId,
+            registration.id,
+            effort,
+            user_id,
+            channel_id,
+            conversation_id,
+            registration.ownerUserId,
+            registration.vaultAgentId
+          ]
+        )
+      end)
+
+      Cascade.Missions.DispatchReannouncer.wake()
 
       case SQL.one(
              "SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?",
@@ -50,6 +74,7 @@ defmodule Cascade.Missions.Dispatches do
         row -> hydrate(user_id, channel_id, row)
       end
     else
+      false -> {:error, "Agent not accepting this request"}
       nil -> {:error, "Agent not found"}
       {:error, _} = error -> error
     end
@@ -64,8 +89,8 @@ defmodule Cascade.Missions.Dispatches do
           """
           SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at
           FROM chat_agent_dispatches
-          WHERE channel_id=? AND run_id IS NULL
-          ORDER BY created_at ASC,id ASC
+          WHERE channel_id=? AND run_id IS NULL AND failed_at IS NULL
+          ORDER BY (SELECT rowid FROM chat_messages WHERE id=message_id),rowid
           """,
           [route.sourceChannelId]
         )
@@ -100,8 +125,197 @@ defmodule Cascade.Missions.Dispatches do
     end
   end
 
+  @doc "Returns durable pending work in message sequence, then admission order."
+  def pending do
+    SQL.all("""
+    SELECT d.id,d.registration_id,m.mission_task_id
+    FROM chat_agent_dispatches d JOIN chat_messages m ON m.id=d.message_id
+    LEFT JOIN runs r ON r.chat_dispatch_id=d.id
+    LEFT JOIN delegated_runs lease ON lease.run_id=r.id
+    WHERE d.failed_at IS NULL AND
+      ((d.run_id IS NULL AND (r.id IS NULL OR r.status<>'queued' OR lease.run_id IS NOT NULL)) OR
+       (r.status='queued' AND lease.run_id IS NULL AND r.started_at < datetime('now','-30 seconds')))
+    ORDER BY m.rowid,d.rowid
+    """)
+    |> Enum.map(fn [id, registration_id, task_id] ->
+      %{
+        id: id,
+        group:
+          if(task_id in [nil, ""],
+            do: {:registration, registration_id},
+            else: {:mission, task_id}
+          )
+      }
+    end)
+  end
+
+  def for_execution(dispatch_id) do
+    with [nil, nil] <-
+           SQL.one("SELECT failed_at,run_id FROM chat_agent_dispatches WHERE id=?", [dispatch_id]),
+         {:ok, user_id, channel_id} <- requester(dispatch_id),
+         {:ok, dispatch} <- get(user_id, channel_id, dispatch_id),
+         true <- allowed?(user_id, dispatch.registration, dispatch.message),
+         true <- target_unchanged?(dispatch),
+         true <- present?(dispatch.conversationId),
+         true <- mission_pending?(dispatch) do
+      {:ok, dispatch}
+    else
+      _ -> {:error, "Dispatch requester no longer has access to this agent or channel."}
+    end
+  end
+
+  defp target_unchanged?(dispatch) do
+    owner = dispatch.registration.ownerUserId
+    identity = dispatch.registration.vaultAgentId
+
+    SQL.transaction(fn ->
+      SQL.exec(
+        "UPDATE chat_agent_dispatches SET target_owner_user_id=?,target_identity_id=? WHERE id=? AND target_owner_user_id IS NULL AND target_identity_id IS NULL",
+        [owner, identity, dispatch.id]
+      )
+
+      SQL.one(
+        "SELECT target_owner_user_id,target_identity_id FROM chat_agent_dispatches WHERE id=?",
+        [dispatch.id]
+      ) == [owner, identity]
+    end)
+  end
+
+  defp mission_pending?(dispatch) do
+    case field(dispatch.message, :missionTaskId) do
+      task_id when is_binary(task_id) and task_id != "" ->
+        SQL.one(
+          "SELECT 1 FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id WHERE t.id=? AND t.dispatch_id=? AND t.status='pending' AND m.status NOT IN ('completed','canceled')",
+          [task_id, dispatch.id]
+        ) == [1]
+
+      _ ->
+        true
+    end
+  end
+
+  def allowed?(user_id, registration, message) do
+    if present?(field(message, :registrationId)) or present?(field(message, :agentId)),
+      do: registration.ownerUserId == user_id or registration.taggableByAgents,
+      else: registration.ownerUserId == user_id or registration.pingableByOthers
+  end
+
+  def human?(dispatch) do
+    not present?(field(dispatch.message, :registrationId)) and
+      not present?(field(dispatch.message, :agentId)) and
+      not present?(field(dispatch.message, :missionTaskId)) and
+      not String.starts_with?(dispatch.messageId, "sys-")
+  end
+
+  def fail(dispatch_id, error) do
+    OrderedPublisher.mutate(fn ->
+      SQL.exec(
+        "UPDATE chat_agent_dispatches SET error=?,failed_at=datetime('now') WHERE id=? AND run_id IS NULL",
+        [error, dispatch_id]
+      )
+
+      message_id = "agent-dispatch-#{dispatch_id}"
+
+      case SQL.one(
+             "SELECT m.vault_id,m.channel_id,m.actor_user_id FROM chat_messages m JOIN chat_agent_dispatches d ON d.id=? AND d.channel_id=m.channel_id AND d.registration_id=m.registration_id WHERE m.id=? AND m.run_id IS NULL",
+             [dispatch_id, message_id]
+           ) do
+        [vault_id, channel_id, owner_id] ->
+          SQL.exec(
+            "UPDATE chat_messages SET status='failed',body=? WHERE id=? AND run_id IS NULL",
+            [error, message_id]
+          )
+
+          with {:ok, route} <- Cascade.Missions.Store.owner_route(owner_id, vault_id, channel_id),
+               {:ok, message} <- Messages.get(route.localChannelId, owner_id, message_id) do
+            Events.emit(%{
+              event: "vault:chatMessageUpdated",
+              vaultId: vault_id,
+              channelId: channel_id,
+              message: message
+            })
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+  end
+
+  def retry(dispatch_id, error) do
+    SQL.exec("UPDATE chat_agent_dispatches SET error=? WHERE id=? AND run_id IS NULL", [
+      error,
+      dispatch_id
+    ])
+  end
+
+  defp requester(dispatch_id) do
+    case SQL.one(
+           "SELECT requester_user_id,requester_channel_id,message_id,channel_id,registration_id FROM chat_agent_dispatches WHERE id=?",
+           [dispatch_id]
+         ) do
+      [user_id, channel_id, _, _, _] when is_integer(user_id) and is_binary(channel_id) ->
+        {:ok, user_id, channel_id}
+
+      [nil, nil, message_id, source_id, registration_id] ->
+        # Only authenticated message provenance can repair a legacy admission.
+        with [user_id] when is_integer(user_id) <-
+               SQL.one("SELECT actor_user_id FROM chat_messages WHERE id=?", [message_id]),
+             channel_id when not is_nil(channel_id) <- legacy_channel(user_id, source_id),
+             {:ok, message} <- Messages.get(channel_id, user_id, message_id) do
+          SQL.transaction(fn ->
+            conversation_id = admission_conversation(registration_id, message)
+
+            SQL.exec(
+              "UPDATE chat_agent_dispatches SET requester_user_id=?,requester_channel_id=?,conversation_id=COALESCE(conversation_id,?) WHERE id=? AND requester_user_id IS NULL",
+              [user_id, channel_id, conversation_id, dispatch_id]
+            )
+          end)
+
+          {:ok, user_id, channel_id}
+        else
+          _ -> {:error, :unknown_requester}
+        end
+
+      _ ->
+        {:error, :unknown_requester}
+    end
+  end
+
+  defp legacy_channel(user_id, source_id) do
+    [
+      source_id
+      | SQL.all(
+          "SELECT local_channel_id FROM chat_channel_links WHERE source_channel_id=? ORDER BY rowid",
+          [source_id]
+        )
+        |> List.flatten()
+    ]
+    |> Enum.find(&match?({:ok, _}, Channel.assert_channel(&1, user_id)))
+  end
+
+  defp admission_conversation(registration_id, message) do
+    case field(message, :missionTaskId) do
+      task_id when is_binary(task_id) and task_id != "" ->
+        "mission:#{task_id}"
+
+      _ ->
+        SQL.exec(
+          "UPDATE chat_agent_members SET conversation_id=? WHERE id=? AND (conversation_id IS NULL OR trim(conversation_id)='')",
+          [Ecto.UUID.generate(), registration_id]
+        )
+
+        case SQL.one("SELECT conversation_id FROM chat_agent_members WHERE id=?", [
+               registration_id
+             ]) do
+          [id] -> id
+          _ -> nil
+        end
+    end
+  end
+
   def attach_run(dispatch_id, run_id) when is_integer(run_id) and run_id > 0 do
-    SQL.exec("UPDATE chat_agent_dispatches SET run_id=COALESCE(run_id,?) WHERE id=?", [
+    SQL.exec("UPDATE chat_agent_dispatches SET run_id=COALESCE(run_id,?),error=NULL WHERE id=?", [
       run_id,
       dispatch_id
     ])
@@ -275,23 +489,32 @@ defmodule Cascade.Missions.Dispatches do
 
   defp reply_to_all_available?(_registration), do: true
 
-  defp compact_command?(text, registrations) do
-    stripped =
-      Enum.reduce(registrations, to_string(text), fn registration, acc ->
-        mention = Schema.normalize_mention(registration.mention, registration.agentId)
+  def clear_targets(text, registrations) do
+    if Regex.match?(~r/^\s*\/(clear|reset)\s*$/iu, strip_mentions(text, registrations)) do
+      case Enum.filter(registrations, &mentions?(to_string(text), &1)) do
+        [] -> registrations
+        targets -> targets
+      end
+    end
+  end
 
-        if mention == "" do
-          acc
-        else
-          Regex.replace(
-            Regex.compile!("@\\s*" <> Regex.escape(mention) <> "(?=$|[\\s.,:;!?\\])}])", "i"),
-            acc,
-            " "
-          )
-        end
-      end)
+  defp compact_command?(text, registrations),
+    do: Regex.match?(~r/^\s*\/compact\s*$/iu, strip_mentions(text, registrations))
 
-    Regex.match?(~r/^\s*\/compact\s*$/iu, stripped)
+  defp strip_mentions(text, registrations) do
+    Enum.reduce(registrations, to_string(text), fn registration, acc ->
+      mention = Schema.normalize_mention(registration.mention, registration.agentId)
+
+      if mention == "" do
+        acc
+      else
+        Regex.replace(
+          Regex.compile!("@\\s*" <> Regex.escape(mention) <> "(?=$|[\\s.,:;!?\\])}])", "i"),
+          acc,
+          " "
+        )
+      end
+    end)
   end
 
   defp compact_targets(user_id, channel_id, registrations, explicit_ids, from_agent) do
@@ -393,6 +616,12 @@ defmodule Cascade.Missions.Dispatches do
          registration when not is_nil(registration) <-
            Enum.find(members, &(&1.id == registration_id)),
          {:ok, message} <- Messages.get(local_channel_id, user_id, message_id) do
+      [requester_user_id, requester_channel_id, conversation_id, error] =
+        SQL.one(
+          "SELECT requester_user_id,requester_channel_id,conversation_id,error FROM chat_agent_dispatches WHERE id=?",
+          [id]
+        )
+
       {:ok,
        %{
          id: id,
@@ -402,7 +631,11 @@ defmodule Cascade.Missions.Dispatches do
          message: message,
          runId: run_id,
          reasoningEffort: reasoning_effort || "",
-         createdAt: created_at
+         createdAt: created_at,
+         requesterUserId: requester_user_id,
+         requesterChannelId: requester_channel_id,
+         conversationId: conversation_id,
+         error: error
        }}
     else
       _ -> {:error, "Chat dispatch not found"}

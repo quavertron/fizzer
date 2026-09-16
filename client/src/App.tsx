@@ -66,7 +66,7 @@ import {
   applyLocalUserProfile,
   mergeChatPresence,
 } from './chat/shared';
-import { useChatDispatch, type ChatAgentDispatch } from './chat/dispatch';
+import { useChatDispatch } from './chat/dispatch';
 import { NewsTicker } from './components/NewsTicker';
 import { ModalShell } from './components/ModalShell';
 import { PaneGrid, type TabDragPayload } from './components/PaneGrid';
@@ -76,7 +76,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
 import { api, ApiError, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
-import { connectRunsSocket, connectVaultSocket } from './socket';
+import { connectVaultSocket } from './socket';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
   agentsAfterLoadFailure,
@@ -104,7 +104,7 @@ import {
   type ChatState,
   type PersistedSession,
 } from './chat/session';
-import { chatMessageStore, useAgentActivity } from './chat/messageStore';
+import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './chat/messageStore';
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
 
@@ -118,7 +118,7 @@ import { FizzerMark } from './components/FizzerMark';
  * `noteContents` so any number of note panes can be edited independently.
  *
  * Pure chat helpers live under `./chat/*` (session, agents, mentions, run blocks).
- * Send, dispatch, and run streaming live in `useChatDispatch`.
+ * Chat mutations live in `useChatDispatch`; the server schedules agent runs.
  *
  * @component
  */
@@ -253,41 +253,17 @@ export default function App() {
   const chatStateRef = useRef(chatState); chatStateRef.current = chatState;
   const vaultSocketRef = useRef<ReturnType<typeof connectVaultSocket> | null>(null);
   const joinedChatChannelsRef = useRef<Set<string>>(new Set());
-  const runSocketsRef = useRef<Map<number, ReturnType<typeof connectRunsSocket>>>(new Map());
-  const streamingChatMessageIdsRef = useRef<Set<string>>(new Set());
   const acceptedInviteTokenRef = useRef<string | null>(null);
-  // Agent messages whose persistence is owned by the server (the run is linked to
-  // them server-side). We skip our own PATCH for these to avoid duplicate writes.
-  const serverOwnedChatMessageIdsRef = useRef<Set<string>>(new Set());
-  // Per agent session (keyed by registration id + conversationId), the id of the
-  // last chat message already folded into the agent's resumed CLI session. The
-  // next turn feeds only messages after this watermark instead of the whole
-  // history — the resumed session already holds everything up to it. A `/clear`
-  // rotates the conversationId, so the new key has no watermark and the agent
-  // gets a fresh full-context priming.
-  const agentContextWatermarkRef = useRef<Map<string, string>>(new Map());
-  // A CLI session cannot safely handle two top-level prompts concurrently.
-  // Keep follow-up pings visible immediately, but do not dispatch the next run
-  // until the preceding run in this exact member conversation has settled and
-  // persisted its session id. This is real steering/continuation, rather than
-  // two cold processes that merely look connected in the transcript.
-  const agentSessionTailRef = useRef<Map<string, Promise<void>>>(new Map());
-  // The actual run currently extending each backing session. A follow-up ping
-  // interrupts this turn, then resumes its early-persisted CLI session from the
-  // new message. Extra pings remain queued in order and interrupt the next turn.
-  const activeAgentSessionRunRef = useRef<Map<string, number>>(new Map());
-  const interruptedAgentSessionRunRef = useRef<Map<string, number>>(new Map());
-  const pendingAgentSteerRef = useRef<Set<string>>(new Set());
-  const pendingChatPatchRef = useRef<Map<string, ChatMessage>>(new Map());
-  const chatPatchTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  // One renderer can observe its own message POST over Socket.IO before the
-  // response arrives. Keep durable dispatch recovery single-flight locally;
-  // the server's unique dispatch key is the cross-renderer backstop.
-  const startingChatDispatchesRef = useRef<Set<string>>(new Set());
   // Debounce socket-driven soft vault reloads (note create/change/delete bursts).
   const socketVaultReloadTimerRef = useRef<number | null>(null);
   const communityRefreshTimerRef = useRef<number | null>(null);
   const vaultListingsRef = useRef({ ...persistedSessionRef.current.vaultListingsByVault });
+  const chatSnapshotControllerRef = useRef(new AbortController());
+  useEffect(() => {
+    const controller = new AbortController();
+    chatSnapshotControllerRef.current = controller;
+    return () => controller.abort();
+  }, []);
 
   const clearWorkspacePanels = useCallback(() => {
     const listing = workspaceStore.activeVaultId ? vaultListingsRef.current[workspaceStore.activeVaultId] : undefined;
@@ -810,9 +786,10 @@ export default function App() {
   const loadChatMessages = useCallback(async (
     vaultId: string,
     noteList: NoteSummary[],
-    opts?: { silent?: boolean; channelIds?: string[] },
+    opts?: { silent?: boolean; channelIds?: string[]; signal?: AbortSignal },
   ) => {
     const epoch = workspaceStore.epoch;
+    const signal = opts?.signal ?? chatSnapshotControllerRef.current.signal;
     const channelIds = resolveChatChannelIds(noteList, opts?.channelIds);
     if (channelIds.length === 0) return;
     setChannelVaultIds((previous) => {
@@ -840,7 +817,8 @@ export default function App() {
       // Apply each channel as it lands so the focused tab can leave
       // "Loading messages…" without waiting on other open chat tabs.
       await Promise.all(ids.map(async (channelId) => {
-        const inflightKey = `${vaultId}:${channelId}`;
+        const hadChannel = chatMessageStore.hasChannel(channelId);
+        const inflightKey = `${epoch}:${vaultId}:${channelId}`;
         let fetchOne = loadChatMessagesInflight.get(inflightKey);
         if (!fetchOne) {
           fetchOne = (async (): Promise<{
@@ -850,22 +828,20 @@ export default function App() {
           }> => {
             const baseline = captureChatMessageSnapshotBaseline(chatMessageStore.getChannel(channelId));
             try {
-              // Slim list payload (no harness logs) — mobile cold load stays small.
-              const data = await api<{ messages: ChatMessage[] }>(
-                `/api/vaults/${vaultId}/channels/${channelId}/messages?detail=list&limit=120`,
-              );
-              let messages = data.messages ?? [];
+              let messages = await fetchChatMessageSnapshot(vaultId, channelId, baseline, signal);
               const local = legacyMessages[channelId] ?? [];
               if (messages.length === 0 && local.length > 0) {
                 for (const message of local) {
+                  if (signal.aborted || workspaceStore.epoch !== epoch) return { channelId, messages, baseline };
                   try {
                     await api(`/api/vaults/${vaultId}/channels/${channelId}/messages`, {
-                      method: 'POST', body: JSON.stringify(message),
+                      method: 'POST', body: JSON.stringify(message), signal,
                     });
                   } catch { /* Best-effort legacy migration. */ }
                 }
                 const refreshed = await api<{ messages: ChatMessage[] }>(
                   `/api/vaults/${vaultId}/channels/${channelId}/messages?detail=list&limit=120`,
+                  { signal },
                 );
                 messages = refreshed.messages ?? [];
               }
@@ -884,7 +860,8 @@ export default function App() {
         }
 
         const { messages, baseline } = await fetchOne;
-        if (workspaceStore.epoch !== epoch) return;
+        if (workspaceStore.epoch !== epoch || signal.aborted || chatSnapshotControllerRef.current.signal.aborted
+          || (hadChannel && !chatMessageStore.hasChannel(channelId))) return;
         chatMessageStore.update(channelId, (existing) => {
           if (existing === messages) return existing;
           // Reconnect reconciliation intentionally fetches the slim transcript,
@@ -1080,7 +1057,7 @@ export default function App() {
     );
     // Messages already fetching for this channel (e.g. vault load) — don't
     // start a second agents/presence pass; vault load covers those too.
-    if (!messagesCached && loadChatMessagesInflight.has(`${vaultId}:${channelId}`)) {
+    if (!messagesCached && loadChatMessagesInflight.has(`${workspaceStore.epoch}:${vaultId}:${channelId}`)) {
       return;
     }
     if (messagesCached && agentsCached) return;
@@ -1148,9 +1125,6 @@ export default function App() {
       const vaultSocket = vaultSocketRef.current;
       if (vaultSocket && vaultId && !vaultSocket.connected) {
         vaultSocket.connect();
-      }
-      for (const [, socket] of runSocketsRef.current) {
-        if (!socket.connected) socket.connect();
       }
     };
 
@@ -1489,8 +1463,6 @@ export default function App() {
   }, [user, loadVaults, switchVaultWorkspace]);
 
   const {
-    dispatchChatAgentIntents,
-    recoverPendingChatAgentDispatches,
     handleHydrateChatMessage,
     handleDeleteChatMessage,
     handleForwardChatMessage,
@@ -1503,18 +1475,6 @@ export default function App() {
     setChatState,
     setNotice,
     user,
-    handleRegisterChatAgent,
-    runSocketsRef,
-    streamingChatMessageIdsRef,
-    serverOwnedChatMessageIdsRef,
-    agentContextWatermarkRef,
-    agentSessionTailRef,
-    activeAgentSessionRunRef,
-    interruptedAgentSessionRunRef,
-    pendingAgentSteerRef,
-    pendingChatPatchRef,
-    chatPatchTimerRef,
-    startingChatDispatchesRef,
   });
 
   const closeTab = useCallback((tabId: string) => workspaceStore.closeTabs([tabId]), [workspaceStore]);
@@ -1795,7 +1755,8 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   useEffect(() => {
-    if (!activeVaultId) return;
+    if (!activeVaultId || !user) return;
+    const controller = new AbortController();
     const socket = connectVaultSocket();
     vaultSocketRef.current = socket;
     const joinActiveVault = () => {
@@ -1815,11 +1776,10 @@ export default function App() {
           loadChatMessages(activeVaultId, notesRef.current, {
             silent: true,
             channelIds,
+            signal: controller.signal,
           }),
           loadChatAgentMembers(activeVaultId, notesRef.current, { channelIds }),
-        ]).then(() => Promise.all(
-          channelIds.map((channelId) => recoverPendingChatAgentDispatches(channelId)),
-        ));
+        ]);
       }
     };
     socket.on('connect', handleConnect);
@@ -1848,55 +1808,15 @@ export default function App() {
     const handleNoteDeleted = (data: { noteId: string; vaultId: string }) => {
       if (data.vaultId !== activeVaultId) return;
       scheduleSoftVaultReload();
+      chatMessageStore.remove(data.noteId);
       closeTabRef.current(data.noteId);
     };
-    const handleChatMessageCreated = (data: { vaultId: string; channelId: string; message: ChatMessage; dispatches?: ChatAgentDispatch[] }) => {
-      if (data.vaultId !== activeVaultId) return;
-      chatMessageStore.update(data.channelId, (existing) => (
-        existing.some((message) => message.id === data.message.id)
-          ? existing
-          : [...existing, data.message]
-      ));
-
-      const dispatches = data.dispatches ?? [];
-      if (dispatches.length > 0) {
-        const cached = chatStateRef.current.registeredAgentsByChannel[data.channelId] ?? [];
-        const registrations = cached.length > 0 ? cached : dispatches.map((dispatch) => dispatch.registration);
-        void dispatchChatAgentIntents(
-          data.channelId,
-          data.message,
-          registrations,
-          dispatches,
-          chatMessageStore.getChannel(data.channelId),
-        );
-      }
-    };
-    const handleChatMessageUpdated = (data: { vaultId: string; channelId: string; message: ChatMessage; dispatches?: ChatAgentDispatch[] }) => {
+    const handleChatMessageUpdated = (data: { vaultId: string; channelId: string; message: ChatMessage }) => {
       if (data.vaultId !== activeVaultId) return;
       chatMessageStore.update(data.channelId, (existing) => applyRemoteChatMessage(existing, data.message));
-      const dispatches = data.dispatches ?? [];
-      if (dispatches.length > 0) {
-        const cached = chatStateRef.current.registeredAgentsByChannel[data.channelId] ?? [];
-        const registrations = cached.length > 0 ? cached : dispatches.map((dispatch) => dispatch.registration);
-        void dispatchChatAgentIntents(
-          data.channelId,
-          data.message,
-          registrations,
-          dispatches,
-          chatMessageStore.getChannel(data.channelId),
-        );
-      }
     };
     const handleChatMessageDeleted = (data: { vaultId: string; channelId: string; messageId: string }) => {
       if (data.vaultId !== activeVaultId) return;
-      // A mission can remove a queued synthetic wake while its last streamed
-      // renderer patch is still throttled. Cancel that local write so deletion
-      // remains authoritative and the client never emits a predictable 404.
-      pendingChatPatchRef.current.delete(data.messageId);
-      const pendingTimer = chatPatchTimerRef.current.get(data.messageId);
-      if (pendingTimer) window.clearTimeout(pendingTimer);
-      chatPatchTimerRef.current.delete(data.messageId);
-      streamingChatMessageIdsRef.current.delete(data.messageId);
       if (!chatMessageStore.hasChannel(data.channelId)) return;
       chatMessageStore.update(data.channelId, (existing) => {
         const next = existing.filter((message) => message.id !== data.messageId);
@@ -1999,7 +1919,7 @@ export default function App() {
     socket.on('vault:noteChanged', handleNoteChanged);
     socket.on('vault:noteCreated', handleNoteCreated);
     socket.on('vault:noteDeleted', handleNoteDeleted);
-    socket.on('vault:chatMessageCreated', handleChatMessageCreated);
+    socket.on('vault:chatMessageCreated', handleChatMessageUpdated);
     socket.on('vault:chatMessageUpdated', handleChatMessageUpdated);
     socket.on('vault:chatMessageDeleted', handleChatMessageDeleted);
     socket.on('vault:chatAgentMemberUpserted', handleChatAgentMemberUpserted);
@@ -2009,6 +1929,7 @@ export default function App() {
     socket.on('vault:chatPresence', handleChatPresence);
     socket.on('vault:userProfileUpdated', handleUserProfileUpdated);
     return () => {
+      controller.abort();
       if (socketVaultReloadTimerRef.current != null) {
         window.clearTimeout(socketVaultReloadTimerRef.current);
         socketVaultReloadTimerRef.current = null;
@@ -2025,7 +1946,7 @@ export default function App() {
       socket.off('vault:noteChanged', handleNoteChanged);
       socket.off('vault:noteCreated', handleNoteCreated);
       socket.off('vault:noteDeleted', handleNoteDeleted);
-      socket.off('vault:chatMessageCreated', handleChatMessageCreated);
+      socket.off('vault:chatMessageCreated', handleChatMessageUpdated);
       socket.off('vault:chatMessageUpdated', handleChatMessageUpdated);
       socket.off('vault:chatMessageDeleted', handleChatMessageDeleted);
       socket.off('vault:chatAgentMemberUpserted', handleChatAgentMemberUpserted);
@@ -2036,32 +1957,39 @@ export default function App() {
       socket.off('vault:userProfileUpdated', handleUserProfileUpdated);
       socket.disconnect();
     };
-  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadChatAgentMembers, loadChatMessages, openChatTabIds, openNote, syncChatPresenceRooms, dispatchChatAgentIntents, recoverPendingChatAgentDispatches, scheduleCommunityRefresh]);
+  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadChatAgentMembers, loadChatMessages, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
 
   useEffect(() => {
     const socket = vaultSocketRef.current;
     if (!socket?.connected || !activeVaultId) return;
     syncChatPresenceRooms(socket);
-    for (const channelId of visibleChatChannelIds) {
-      void recoverPendingChatAgentDispatches(channelId);
-    }
-  }, [activeVaultId, syncChatPresenceRooms, visibleChatChannelIds, recoverPendingChatAgentDispatches]);
+  }, [activeVaultId, syncChatPresenceRooms]);
 
-  // The dispatch outbox is durable, but a desktop/provider launch can fail
-  // after the create event has been delivered (or while this renderer is
-  // otherwise perfectly connected). Reconcile visible channels periodically
-  // so long-running mission work retries from that durable intent instead of
-  // waiting for a renderer reload, tab switch, or socket reconnect.
+  // Vault events are not replayed; this also runs if the socket never connects.
   useEffect(() => {
-    if (!activeVaultId || visibleChatChannelIds.length === 0) return;
-    const retryPending = () => {
-      for (const channelId of visibleChatChannelIds) {
-        void recoverPendingChatAgentDispatches(channelId);
+    if (!activeVaultId || !user) return;
+    const controller = new AbortController();
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const activity = chatMessageStore.getAgentActivity();
+        const channelIds = [...new Set([
+          ...openChatTabIds(),
+          ...notesRef.current.filter((note) => activity[note.id] === 'running').map((note) => note.id),
+        ])];
+        await loadChatMessages(activeVaultId, notesRef.current, { silent: true, channelIds, signal: controller.signal });
+      } finally {
+        refreshing = false;
       }
     };
-    const timer = window.setInterval(retryPending, 10_000);
-    return () => window.clearInterval(timer);
-  }, [activeVaultId, visibleChatChannelIds, recoverPendingChatAgentDispatches]);
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [activeVaultId, user?.id, authEpoch, loadChatMessages, openChatTabIds]);
 
   // ═══════════════════════════════════════════════════════════════
   // NOTE / FOLDER OPERATIONS
@@ -2379,8 +2307,6 @@ export default function App() {
   }
 
   const handleLogout = () => {
-    runSocketsRef.current.forEach((socket) => socket.disconnect());
-    runSocketsRef.current.clear();
     stopDesktopRunnerHost();
     void api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('docs_token');

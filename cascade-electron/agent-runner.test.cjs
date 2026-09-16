@@ -241,6 +241,39 @@ process.stdout.write('bridged answer\\n');
   assert.equal(JSON.parse(recoveredEvents.at(-1).payload_json).status, 'completed');
 });
 
+test('runner recovers from failed initial and replacement builds without restarting', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-runner-rebuild-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'cascade-electron'));
+  fs.mkdirSync(path.join(dir, 'dist', 'cli-agents'), { recursive: true });
+  fs.symlinkSync(path.join(__dirname, 'node_modules'), path.join(dir, 'node_modules'));
+  const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
+  fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  const modPath = path.join(dir, 'dist', 'cli-agents', 'cli-agent.js');
+  let revision = 0;
+  const rebuild = (source) => {
+    fs.writeFileSync(modPath, source);
+    const time = new Date(1_700_000_000_000 + ++revision * 1000);
+    fs.utimesSync(modPath, time, time);
+  };
+  const runner = require(runnerPath);
+  rebuild('throw new Error("incomplete initial build");');
+  await assert.rejects(runner.reapOrphanedLocalAgentRuns(), /incomplete initial build/);
+  rebuild('export function shutdownPersistentCliAgents() {}');
+  await runner.reapOrphanedLocalAgentRuns();
+  rebuild('throw new Error("incomplete replacement build");');
+  await assert.rejects(runner.reapOrphanedLocalAgentRuns(), /incomplete replacement build/);
+  rebuild('export async function runCliAgent() { return { summary: "recovered", sessionId: "recovered-session" }; }');
+  const events = [];
+  const result = await runner.startLocalAgentRun({
+    runId: 92005, agent: 'codex', prompt: 'resume work', cwd: dir,
+    contextMode: 'self-contained',
+  }, (event) => events.push(event));
+  assert.equal(result.sessionId, 'recovered-session');
+  assert.equal(JSON.parse(events.at(-1).payload_json).status, 'completed');
+});
+
 test('non-Claude setup failure cleans helper context, SVG attachments, and heartbeat', async (t) => {
   const runId = 92004;
   const directories = [];

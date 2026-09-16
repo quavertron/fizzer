@@ -319,6 +319,56 @@ defmodule Cascade.ContentDomainTest do
     assert Jason.decode!(missing.resp_body) == %{"error" => "Vault not found"}
   end
 
+  test "resource callbacks preserve agent restrictions, hidden resources and mutation errors" do
+    vault = Store.create_vault(1, %{name: "Permissions"})
+
+    note =
+      Store.create_note(vault.id, 1, %{
+        title: "Private",
+        content: "public\n:::private\nsecret\n:::"
+      })
+
+    folder = Store.create_folder(vault.id, %{name: "Folder"})
+    owner = Token.sign_user(%{id: 1, username: "alice", auth_version: 0})
+    outsider = Token.sign_user(%{id: 2, username: "bob", auth_version: 0})
+    agent = Token.sign_agent(%{id: 1, username: "alice", auth_version: 0})
+
+    for {method, path, body, token, status, error} <- [
+          {:get, "/api/notes/#{note.id}", nil, nil, 401, "Invalid or expired token"},
+          {:get, "/api/notes/#{note.id}", nil, outsider, 404, "Note not found"},
+          {:patch, "/api/folders/#{folder.id}", %{name: "No"}, outsider, 404, "Folder not found"},
+          {:get, "/api/notes/#{note.id}/assets/missing", nil, outsider, 404, "Not found"},
+          {:get, "/api/notes/missing/versions", nil, agent, 403,
+           "This operation requires user access"},
+          {:delete, "/api/folders/#{folder.id}", nil, agent, 403,
+           "This operation requires user access"},
+          {:post, "/api/vaults/#{vault.id}/folders", %{name: "../bad"}, owner, 400,
+           "Invalid folder or file name"}
+        ] do
+      response = request(method, path, body, token)
+      assert response.status == status, "#{method} #{path}: #{response.resp_body}"
+      assert Jason.decode!(response.resp_body) == %{"error" => error}
+    end
+
+    response = request(:get, "/api/notes/#{note.id}", nil, agent)
+    assert response.status == 200
+    refute Jason.decode!(response.resp_body)["note"]["content"] =~ "secret"
+
+    Query.execute(
+      "INSERT INTO vault_members (vault_id, user_id, role, invited_by) VALUES (?, 2, 'viewer', 1)",
+      [vault.id]
+    )
+
+    for {path, body, error} <- [
+          {"/api/notes/#{note.id}/tags", %{name: "tag"}, "Viewer role cannot edit tags"},
+          {"/api/vaults/#{vault.id}/folders", %{name: "No"}, "Viewer role cannot edit this vault"}
+        ] do
+      response = request(:post, path, body, outsider)
+      assert response.status == 403
+      assert Jason.decode!(response.resp_body) == %{"error" => error}
+    end
+  end
+
   test "mounted diff route only accepts versions belonging to the authorized note" do
     vault = Store.create_vault(1, %{name: "Readable"})
     other_vault = Store.create_vault(2, %{name: "Private"})

@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   applyRemoteChatMessage,
   captureChatMessageSnapshotBaseline,
-  honestAgentChatBody,
-  isNoReplyAgentChatBody,
   mergeRemoteChatMessage,
   reconcileChatMessageSnapshot,
   sortChatMessages,
@@ -37,76 +35,6 @@ describe('sortChatMessages', () => {
   });
 });
 
-describe('honestAgentChatBody', () => {
-  it('uses the latest runner summary instead of accumulated progress text', () => {
-    expect(honestAgentChatBody(
-      'I will inspect the files.\n\nThe fix is complete.',
-      'The fix is complete.',
-      'completed',
-    )).toBe('The fix is complete.');
-  });
-
-  it('preserves a nuanced multiline final summary exactly', () => {
-    const finalSummary = [
-      'The behavior is fixed, with two caveats:',
-      '',
-      '- Existing traces remain available on demand.',
-      '- Failed runs still open their diagnostics automatically.',
-      '',
-      'No run data is deleted.',
-    ].join('\n');
-
-    expect(honestAgentChatBody(
-      'First I inspected the renderer. Then I updated it.',
-      finalSummary,
-      'completed',
-    )).toBe(finalSummary);
-  });
-
-  it('falls back to streamed text for generic summaries', () => {
-    expect(honestAgentChatBody('Useful final answer.', 'Done.', 'completed'))
-      .toBe('Useful final answer.');
-  });
-
-  it('never surfaces placeholder success text as chat body', () => {
-    expect(honestAgentChatBody('', 'Completed note operations successfully.', 'completed'))
-      .toBe('');
-    expect(honestAgentChatBody('', 'Done.', 'completed')).toBe('');
-    expect(honestAgentChatBody(
-      'Completed note operations successfully.',
-      'Completed note operations successfully.',
-      'completed',
-    )).toBe('');
-    expect(honestAgentChatBody(
-      'Completed note operations successfully.',
-      'Steered into the continuation below.',
-      'canceled',
-    )).toBe('Steered into the continuation below.');
-  });
-
-  it('still suppresses a run body after an explicit chat send', () => {
-    expect(honestAgentChatBody('duplicate', 'duplicate', 'completed', {
-      suppressChatBody: true,
-    })).toBe('');
-  });
-
-  it('suppresses automatic cancellation instead of blaming the user', () => {
-    expect(honestAgentChatBody(
-      'Redundant review started.',
-      'Mission review wake closed automatically.',
-      'canceled',
-      { suppressChatBody: true },
-    )).toBe('');
-  });
-  it('recognizes only explicit no-reply sentinels', () => {
-    expect(isNoReplyAgentChatBody('[no-reply]')).toBe(true);
-    expect(isNoReplyAgentChatBody('<no-reply/>')).toBe(true);
-    expect(isNoReplyAgentChatBody('NO_REPLY')).toBe(true);
-    expect(isNoReplyAgentChatBody('No reply is needed because I agree.')).toBe(false);
-  });
-
-});
-
 describe('mergeRemoteChatMessage media hydration', () => {
   it('keeps hydrated images when a reconnect returns a slim transcript row', () => {
     const image = 'data:image/png;base64,cGVyc2lzdGVk';
@@ -131,7 +59,7 @@ describe('mergeRemoteChatMessage media hydration', () => {
   });
 });
 
-describe('mergeRemoteChatMessage local-first live rows', () => {
+describe('mergeRemoteChatMessage authoritative projections', () => {
   it('inserts an authoritative message when its optimistic row is missing', () => {
     const remote = chatMessage('saved-after-race', {
       author: 'alice',
@@ -142,7 +70,7 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
     expect(applyRemoteChatMessage([], remote)).toEqual([remote]);
   });
 
-  it('keeps a live local answer when the fold is still Thinking...', () => {
+  it('replaces optimistic content with the authoritative projection', () => {
     const local = chatMessage('m3', {
       body: 'The tests pass.',
       status: 'running',
@@ -159,13 +87,13 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
 
     const merged = mergeRemoteChatMessage(local, remote);
 
-    expect(merged.body).toBe('The tests pass.');
+    expect(merged.body).toBe(remote.body);
     expect(merged.status).toBe('running');
     expect(merged.seq).toBe(44);
     expect(merged.runId).toBe(9);
   });
 
-  it('does not rewind a longer live body to a shorter fold snapshot', () => {
+  it('accepts shorter authoritative content instead of scoring text length', () => {
     const local = chatMessage('m4', {
       body: 'I checked both files and the leak is in the socket handler.',
       status: 'running',
@@ -178,7 +106,7 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
       seq: 8,
     });
 
-    expect(mergeRemoteChatMessage(local, remote).body).toBe(local.body);
+    expect(mergeRemoteChatMessage(local, remote).body).toBe(remote.body);
     expect(mergeRemoteChatMessage(local, remote).seq).toBe(8);
   });
 
@@ -203,7 +131,7 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
     expect(merged.seq).toBe(12);
   });
 
-  it('does not drop a live answer when a settled empty shell arrives', () => {
+  it('removes a live answer when the server suppresses its settled shell', () => {
     const local = chatMessage('m6', {
       body: 'Here is the patch.',
       status: 'running',
@@ -217,9 +145,7 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
       seq: 20,
     });
     const next = applyRemoteChatMessage([local], remote);
-    expect(next).toHaveLength(1);
-    expect(next[0].body).toBe('Here is the patch.');
-    expect(next[0].seq).toBe(20);
+    expect(next).toEqual([]);
   });
 
   it('does not delete a human prompt when an empty agent shell reuses its id', () => {
@@ -275,6 +201,61 @@ describe('mergeRemoteChatMessage local-first live rows', () => {
 });
 
 describe('reconcileChatMessageSnapshot request races', () => {
+  it.each(['running', 'sending'] as const)('removes missing durable %s rows, but preserves concurrent changes', (status) => {
+    const old = chatMessage('old', { seq: 3, agentId: 'codex', body: 'Thinking...', status });
+    const baseline = captureChatMessageSnapshotBaseline([old]);
+    expect(reconcileChatMessageSnapshot([old], [], baseline)).toEqual([]);
+    const changed = { ...old, body: 'New projection' };
+    expect(reconcileChatMessageSnapshot([changed], [], baseline)).toEqual([changed]);
+  });
+
+  it('does not resurrect a suppressed row from an in-flight snapshot', () => {
+    const live = chatMessage('suppressed', { seq: 4, agentId: 'codex', body: 'Thinking...', status: 'running' });
+    const baseline = captureChatMessageSnapshotBaseline([live]);
+    expect(reconcileChatMessageSnapshot([], [live], baseline)).toEqual([]);
+    expect(reconcileChatMessageSnapshot([live], [{ ...live, body: '', status: undefined }], baseline)).toEqual([]);
+  });
+
+  it.each(['full trace', undefined])('retains matching full blocks with harness %s but accepts full replacements', (harnessLog) => {
+    const local = chatMessage('hydrated', { agentId: 'codex', body: 'Final', seq: 4,
+      harnessLog, blocks: [{ type: 'text', text: 'x'.repeat(3_000) }] });
+    const slim = { ...local, harnessLog: undefined, hasHarness: Boolean(harnessLog), blocks: [{ type: 'text' as const, text: `${'x'.repeat(1_999)}…` }] };
+    const next = reconcileChatMessageSnapshot([local], [slim], captureChatMessageSnapshotBaseline([local]))[0];
+    expect(next.blocks).toBe(local.blocks);
+    expect(next.harnessLog).toBe(local.harnessLog);
+    const full = { ...slim, harnessLog: '', blocks: [] };
+    expect(applyRemoteChatMessage([next], full)[0]).toMatchObject({ harnessLog: '', blocks: [] });
+  });
+
+  it.each(['body', 'status', 'tool', 'input', 'live'] as const)('invalidates partial harness for a slim %s update', (change) => {
+    const local = chatMessage('partial', { body: 'Thinking...', status: 'running', agentId: 'codex',
+      harnessLog: 'partial trace', blocks: [{ type: 'tool_use', id: 't1', name: 'Read', input: { path: 'old' } }] });
+    const remote = { ...local, harnessLog: undefined, hasHarness: true,
+      ...(change === 'body' ? { body: 'More progress' } : {}),
+      ...(change === 'status' ? { status: undefined, body: 'Final' } : {}),
+      ...(change === 'tool' ? { blocks: [...local.blocks!, { type: 'tool_use' as const, id: 't2', name: 'Write' }] } : {}),
+      ...(change === 'input' ? { blocks: [{ ...local.blocks![0], input: { path: 'new' } }] } : {}),
+    };
+    const next = mergeRemoteChatMessage(local, remote, true);
+    expect(next.harnessLog).toBeUndefined();
+    expect(next.blocks).toEqual(remote.blocks);
+    expect(next.hasHarness).toBe(true);
+  });
+
+  it('keeps a projection received after the list request started, even when shorter', () => {
+    const before = chatMessage('reply', { agentId: 'codex', body: 'Long preliminary answer', status: 'running', seq: 3 });
+    const baseline = captureChatMessageSnapshotBaseline([before]);
+    const final = { ...before, body: 'Done precisely.', status: undefined };
+    expect(reconcileChatMessageSnapshot([final], [before], baseline)).toEqual([final]);
+  });
+
+  it('accepts a shorter settled answer from a reconnect snapshot', () => {
+    const before = chatMessage('reply', { agentId: 'codex', body: 'Long preliminary answer', status: 'running', seq: 3 });
+    const baseline = captureChatMessageSnapshotBaseline([before]);
+    const final = { ...before, body: 'Done precisely.', status: undefined };
+    expect(reconcileChatMessageSnapshot([before], [final], baseline)).toEqual([final]);
+  });
+
   it('keeps a human prompt inserted while an older list request was in flight', () => {
     const old = chatMessage('old', { seq: 1, body: 'Earlier.' });
     const baseline = captureChatMessageSnapshotBaseline([old]);

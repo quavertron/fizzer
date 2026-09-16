@@ -167,6 +167,36 @@ test('mission worktrees start from current HEAD, not a stale local master', asyn
   assert.equal(head, current);
 });
 
+test('child workspaces use the requested worktree tip on creation and empty resume', async () => {
+  const repo = makeRepo('parent-tip');
+  const parent = await wt.createWorkspace({ dir: repo, slug: 'parent-tip' });
+  const g = (...args) => execFileSync('git', args, { cwd: parent.path, stdio: 'pipe' }).toString().trim();
+  fs.writeFileSync(path.join(parent.path, 'README.md'), '# parent change\n');
+  g('commit', '-am', 'parent change');
+  const options = { dir: parent.path, branch: 'cascade/parent-tip-child', workItemId: 'parent-tip-child' };
+  const child = await wt.prepareWorkspace(options);
+  assert.equal(child.ok, true, child.error);
+  assert.equal(child.baseCommit, g('rev-parse', 'HEAD'));
+
+  fs.writeFileSync(path.join(parent.path, 'README.md'), '# newer parent change\n');
+  g('commit', '-am', 'newer parent change');
+  const resumed = await wt.prepareWorkspace(options);
+  assert.equal(resumed.ok, true, resumed.error);
+  assert.equal(resumed.rebased, true);
+  assert.equal(resumed.baseCommit, g('rev-parse', 'HEAD'));
+  assert.equal(fs.readFileSync(path.join(child.path, 'README.md'), 'utf8'), '# newer parent change\n');
+  assert.equal(fs.readFileSync(path.join(repo, 'README.md'), 'utf8'), '# repo\n');
+
+  fs.writeFileSync(path.join(child.path, 'worker.txt'), 'uncommitted worker progress\n');
+  fs.writeFileSync(path.join(parent.path, 'README.md'), '# final parent change\n');
+  g('commit', '-am', 'final parent change');
+  const busy = await wt.prepareWorkspace(options);
+  assert.equal(busy.ok, true, busy.error);
+  assert.equal(busy.rebased, false);
+  assert.equal(busy.baseCommit, resumed.baseCommit);
+  assert.equal(fs.readFileSync(path.join(child.path, 'worker.txt'), 'utf8'), 'uncommitted worker progress\n');
+});
+
 test('unused prepared worktrees move onto current HEAD instead of staying misbased', async () => {
   const repo = makeRepo('rebase-empty');
   const branch = 'cascade/mission-a/task-1';

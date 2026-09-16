@@ -34,7 +34,7 @@ export interface ChatMessage {
    * so the client orders them exactly as the server does. Absent until the
    * message is persisted — optimistic messages sort last within a tie. */
   seq?: number;
-  status?: 'sending' | 'running' | 'failed' | 'canceled';
+  status?: 'queued' | 'sending' | 'running' | 'failed' | 'canceled';
   agentId?: string;
   registrationId?: string;
   runId?: number;

@@ -1,8 +1,6 @@
 defmodule CascadeWeb.OrchestrationController do
   @moduledoc false
 
-  require Logger
-
   alias Cascade.Accounts.{SQL, VaultMembers}
   alias Cascade.Auth.Session
   alias Cascade.Chat.{Agents, Channel, Messages, RoomContext}
@@ -16,81 +14,206 @@ defmodule CascadeWeb.OrchestrationController do
   alias Cascade.WorkItems
   alias CascadeWeb.JSON
 
-  def claim_mission_dispatch(user_id, channel_id, dispatch_id) do
-    with [username] <- SQL.one("SELECT username FROM users WHERE id=?", [user_id]),
-         user <- %{id: user_id, username: username},
-         {:ok, dispatch} <- Dispatches.get(user_id, channel_id, dispatch_id),
-         task_id <- dispatch_message_value(dispatch, :missionTaskId, ""),
-         true <- task_id != "" or String.starts_with?(dispatch.messageId, "sys-mission-"),
-         registration_id <- dispatch_registration_id(dispatch, ""),
+  def prepare_dispatch(dispatch_id) do
+    with nil <- Store.find_by_chat_dispatch(dispatch_id),
+         {:ok, dispatch} <- Dispatches.for_execution(dispatch_id),
          {:ok, execution} <-
-           resolve_chat_execution(user, nil, channel_id, registration_id, dispatch, %{}),
-         true <- RunnerLifecycle.online?(execution.runner_user_id),
-         {:ok, execution} <- prepare_work_item(execution),
-         nil <-
-           if(task_id == "",
-             do: Store.find_open_for_chat_registration(registration_id, dispatch_id)
-           ),
-         conversation_id <-
-           if(task_id == "",
-             do: "mission-review:#{dispatch.messageId}",
-             else: "mission:#{task_id}"
-           ),
-         resume <-
-           Store.find_conversation_session(%{
-             vault_id: execution.vault.id,
-             note_id: nil,
-             agent: execution.agent,
-             conversation_id: conversation_id
-           }),
-         prompt <- mission_dispatch_prompt(dispatch),
-         {context, inline_svgs} <-
-           chat_context(
-             execution,
-             registration_id,
-             "agent-dispatch-#{dispatch_id}",
-             dispatch.messageId,
-             resume
-           ),
-         effective_prompt <-
-           PromptContext.enrich_prompt(
-             execution.vault.id,
-             execution.runner_user_id,
-             prompt,
-             execution.agent,
-             resume
-           )
-           |> PromptContext.append_context(context),
-         :ok <- release_sticky_registration(registration_id, dispatch_id),
-         {:ok, run} <-
-           start_chat_run(execution, nil, effective_prompt, conversation_id, resume, dispatch_id) do
-      attach_dispatch(dispatch_id, run.id)
-      message_id = "agent-dispatch-#{dispatch_id}"
-      ensure_agent_message(execution, message_id, task_id, run, nil)
+           resolve_chat_execution(dispatch) do
+      ensure_agent_message(
+        execution,
+        "agent-dispatch-#{dispatch.id}",
+        dispatch_message_value(dispatch, :missionTaskId, ""),
+        %{id: nil, status: "queued"},
+        nil
+      )
+    else
+      _ -> :ok
+    end
+  end
 
-      payload =
-        chat_delegate_payload(
-          execution,
-          run,
-          effective_prompt,
-          resume,
-          %{},
-          message_id,
-          dispatch.messageId,
-          inline_svgs
+  @doc "Executes one admitted turn; called only by the serialized dispatch scheduler."
+  def execute_dispatch(dispatch_id) do
+    case Store.find_by_chat_dispatch(dispatch_id) do
+      nil ->
+        execute_pending_dispatch(dispatch_id)
+
+      run ->
+        attach_dispatch(dispatch_id, run.id)
+
+        SQL.exec(
+          "UPDATE chat_messages SET run_id=? WHERE id=? AND run_id IS NULL AND registration_id=(SELECT registration_id FROM chat_agent_dispatches WHERE id=?)",
+          [run.id, "agent-dispatch-#{dispatch_id}", dispatch_id]
         )
 
-      if RunnerLifecycle.delegate(execution.runner_user_id, payload),
-        do: {:ok, run},
-        else: {:error, "Desktop agent runner disconnected"}
-    else
-      {:reused, run} -> {:ok, run}
-      reason -> {:retry, reason}
+        if run.status == "queued" and is_nil(Store.delegated_owner(run.id)) and
+             SQL.one(
+               "SELECT 1 FROM runs WHERE id=? AND started_at < datetime('now','-30 seconds')",
+               [run.id]
+             ) == [1] do
+          error = "Server interrupted run startup before desktop delegation."
+          Store.finish(run.id, "failed", error)
+          Store.publish(run.id, "status", %{status: "failed", summary: error})
+        end
+
+        if Store.terminal?(Store.get(run.id).status), do: Cascade.Runs.ChatProjection.sync(run.id)
+        {:ok, Store.get(run.id)}
     end
-  rescue
-    error ->
-      Logger.warning("mission dispatch claim failed: #{Exception.message(error)}")
-      {:retry, {:exception, error.__struct__}}
+  end
+
+  defp execute_pending_dispatch(dispatch_id) do
+    with {:ok, dispatch} <- Dispatches.for_execution(dispatch_id),
+         :kept <-
+           discard_terminal_mission_wake(
+             dispatch.requesterUserId,
+             dispatch.requesterChannelId,
+             dispatch
+           ),
+         {:ok, execution} <- resolve_chat_execution(dispatch) do
+      with true <- RunnerLifecycle.online?(execution.runner_user_id),
+           :ok <- release_sticky_registration(dispatch),
+           {:ok, _refreshed, execution} <- refresh_execution(dispatch_id),
+           {:ok, prepared} <- prepare_work_item(execution),
+           {:ok, dispatch, execution} <- refresh_execution(dispatch_id),
+           :ok <- workspace_unchanged(prepared, execution) do
+        resume =
+          Store.find_conversation_session(%{
+            vault_id: execution.vault.id,
+            note_id: nil,
+            agent: execution.agent,
+            conversation_id: dispatch.conversationId
+          })
+
+        built = Cascade.Chat.DispatchPrompt.build(dispatch, execution, resume)
+
+        {context, inline_svgs} =
+          chat_context(
+            execution,
+            dispatch.registration.id,
+            "agent-dispatch-#{dispatch.id}",
+            dispatch.messageId,
+            resume
+          )
+
+        prompt =
+          PromptContext.enrich_prompt(
+            execution.vault.id,
+            execution.runner_user_id,
+            built.prompt,
+            execution.agent,
+            resume
+          )
+          |> PromptContext.append_context(context)
+
+        start_dispatch(dispatch, execution, %{built | prompt: prompt}, resume, inline_svgs)
+      else
+        false ->
+          {:retry, "Waiting for the agent owner's desktop runner."}
+
+        {:error, _id, :busy} ->
+          {:busy, "Agent session is busy; this turn remains queued."}
+
+        {:error, _id, reason} when is_atom(reason) ->
+          {:retry, "Agent session is #{reason}; this turn remains queued."}
+
+        {:error, 409, reason} ->
+          {:retry, reason}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :discarded -> :discarded
+      {:error, _status, message} -> {:error, message}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp refresh_execution(dispatch_id) do
+    with {:ok, dispatch} <- Dispatches.for_execution(dispatch_id),
+         {:ok, execution} <-
+           resolve_chat_execution(dispatch) do
+      {:ok, dispatch, execution}
+    else
+      {:error, _status, reason} -> {:error, reason}
+      error -> error
+    end
+  end
+
+  defp workspace_unchanged(prepared, execution) do
+    if prepared.cwd == execution.cwd and prepared.work_item_id == execution.work_item_id,
+      do: :ok,
+      else:
+        {:error, 409, "Workspace settings changed during preparation; this turn remains queued."}
+  end
+
+  defp start_dispatch(dispatch, execution, built, resume, inline_svgs) do
+    result =
+      OrderedPublisher.mutate(fn ->
+        SQL.transaction(fn ->
+          with {:ok, _current, current_execution} <- refresh_execution(dispatch.id),
+               true <- current_execution == execution,
+               {:ok, run} <-
+                 start_chat_run(
+                   execution,
+                   nil,
+                   built.prompt,
+                   dispatch.conversationId,
+                   resume,
+                   dispatch.id
+                 ) do
+            attach_dispatch(dispatch.id, run.id)
+
+            ensure_agent_message(
+              execution,
+              "agent-dispatch-#{dispatch.id}",
+              dispatch_message_value(dispatch, :missionTaskId, ""),
+              run,
+              built.reply_to
+            )
+
+            {:ok, run}
+          else
+            false -> {:retry, "Agent settings changed during startup; this turn remains queued."}
+            error -> error
+          end
+        end)
+      end)
+
+    case result do
+      {:reused, run} ->
+        attach_dispatch(dispatch.id, run.id)
+        {:ok, run}
+
+      {:ok, run} ->
+        message_id = "agent-dispatch-#{dispatch.id}"
+
+        payload =
+          chat_delegate_payload(
+            execution,
+            run,
+            built.prompt,
+            resume,
+            %{"images" => built.images},
+            message_id,
+            dispatch.messageId,
+            inline_svgs
+          )
+
+        if RunnerLifecycle.delegate(execution.runner_user_id, payload) do
+          {:ok, run}
+        else
+          error = "Desktop agent runner disconnected before the run could start."
+          Store.finish(run.id, "failed", error)
+          Store.publish(run.id, "status", %{status: "failed", summary: error})
+          {:error, error}
+        end
+
+      {:retry, _} = retry ->
+        retry
+
+      {:error, message} ->
+        {:error, message}
+    end
   end
 
   def list_runs(conn, vault_id) do
@@ -319,11 +442,11 @@ defmodule CascadeWeb.OrchestrationController do
     prompt = params["prompt"] |> to_string() |> String.trim()
 
     cond do
+      params["chatDispatchId"] || is_map(params["chat"]) ->
+        create_chat_run(conn, user, params)
+
       prompt == "" ->
         JSON.send(conn, 400, %{error: "Prompt is required"})
-
-      params["chatDispatchId"] || is_map(params["chat"]) ->
-        create_chat_run(conn, user, vault, params, prompt)
 
       not RunnerLifecycle.wait_online(user.id) ->
         JSON.send(conn, 503, %{
@@ -384,150 +507,37 @@ defmodule CascadeWeb.OrchestrationController do
     end
   end
 
-  defp create_chat_run(conn, user, request_vault, params, prompt) do
+  defp create_chat_run(conn, user, params) do
     chat = if is_map(params["chat"]), do: params["chat"], else: %{}
     channel_id = clean_string(chat["channelId"])
-    message_id = clean_string(chat["messageId"])
-    triggering_message_id = clean_string(chat["triggeringMessageId"])
-    registration_id = clean_string(params["registrationId"])
     dispatch_id = clean_string(params["chatDispatchId"])
 
-    with {:ok, dispatch} <- resolve_dispatch(user.id, channel_id, dispatch_id),
-         :new <- maybe_reuse_dispatch(conn, dispatch),
-         {:ok, execution} <-
-           resolve_chat_execution(
-             user,
-             request_vault,
-             channel_id,
-             registration_id,
-             dispatch,
-             params
-           ),
-         true <- RunnerLifecycle.wait_online(execution.runner_user_id),
-         {:ok, execution} <- prepare_work_item(execution) do
-      registration_id = execution.registration_id
-      triggering_message_id = dispatch_value(dispatch, :messageId, triggering_message_id)
-      mission_task_id = dispatch_message_value(dispatch, :missionTaskId, "")
-      note_id = blank_nil(params["note_id"])
-      conversation_id = blank_nil(params["conversation_id"])
-
-      resume_session_id =
-        if conversation_id do
-          Store.find_conversation_session(%{
-            vault_id: execution.vault.id,
-            note_id: note_id,
-            agent: execution.agent,
-            conversation_id: conversation_id
-          })
+    result =
+      if dispatch_id == "" do
+        with {:ok, message} <-
+               Messages.get(channel_id, user.id, clean_string(chat["triggeringMessageId"])),
+             [actor] <-
+               SQL.one("SELECT actor_user_id FROM chat_messages WHERE id=?", [message.id]),
+             true <- actor == user.id do
+          Dispatches.create(user.id, channel_id, message, clean_string(params["registrationId"]))
+        else
+          _ -> {:error, "An admitted chat message is required."}
         end
-
-      {chat_context, context_inline_svgs} =
-        chat_context(
-          execution,
-          registration_id,
-          message_id,
-          triggering_message_id,
-          resume_session_id
-        )
-
-      effective_prompt =
-        PromptContext.enrich_prompt(
-          execution.vault.id,
-          execution.runner_user_id,
-          prompt,
-          execution.agent,
-          resume_session_id
-        )
-        |> PromptContext.append_context(chat_context)
-
-      case release_sticky_registration(execution.registration_id, dispatch_id) do
-        :ok ->
-          case start_chat_run(
-                 execution,
-                 note_id,
-                 effective_prompt,
-                 conversation_id,
-                 resume_session_id,
-                 dispatch_id
-               ) do
-            {:reused, run} ->
-              attach_dispatch(dispatch_id, run.id)
-              JSON.send(conn, 200, %{run: run, reused: true})
-
-            {:ok, run} ->
-              attach_dispatch(dispatch_id, run.id)
-
-              ensure_agent_message(
-                execution,
-                message_id,
-                mission_task_id,
-                run,
-                chat["replyTo"]
-              )
-
-              delegate_chat_run(
-                conn,
-                execution,
-                run,
-                effective_prompt,
-                resume_session_id,
-                params,
-                message_id,
-                triggering_message_id,
-                context_inline_svgs
-              )
-
-            {:error, message} ->
-              JSON.send(conn, 500, %{error: message})
-          end
-
-        {:error, active_run_id, reason} ->
-          error =
-            if reason == :reconnecting,
-              do: "Agent session is reconnecting; this turn remains queued.",
-              else: "Agent session is still stopping; this turn remains queued."
-
-          JSON.send(conn, 409, %{
-            error: error,
-            activeRunId: active_run_id
-          })
+      else
+        Dispatches.get(user.id, channel_id, dispatch_id)
       end
-    else
-      {:reused, run} ->
-        JSON.send(conn, 200, %{run: run, reused: true})
 
-      false ->
-        owner = dispatch_owner(dispatch_id)
-
-        message =
-          if owner && owner != user.id,
-            do:
-              "This agent's owner is offline — their desktop runner isn't connected, so the agent can't run right now.",
-            else:
-              "No desktop agent runner is connected. Open Fizzer on your computer (signed in to the same account) to run agents from chat."
-
-        JSON.send(conn, 503, %{error: message})
-
-      {:error, status, message} ->
-        JSON.send(conn, status, %{error: message})
-    end
-  end
-
-  defp resolve_dispatch(_user_id, "", dispatch_id) when dispatch_id != "",
-    do: {:error, 400, "Chat channel is required for dispatch"}
-
-  defp resolve_dispatch(_user_id, _channel_id, ""), do: {:ok, nil}
-
-  defp resolve_dispatch(user_id, channel_id, dispatch_id) do
-    case Dispatches.get(user_id, channel_id, dispatch_id) do
+    case result do
       {:ok, dispatch} ->
-        case discard_terminal_mission_wake(user_id, channel_id, dispatch) do
-          :kept -> {:ok, dispatch}
-          :discarded -> {:error, 404, "Chat dispatch not found"}
+        Cascade.Missions.DispatchReannouncer.wake()
+
+        case Store.find_by_chat_dispatch(dispatch.id) do
+          nil -> JSON.send(conn, 202, %{queued: true, dispatchId: dispatch.id})
+          run -> JSON.send(conn, 200, %{run: run, reused: true})
         end
 
-      _ ->
-        {:error, 404, "Chat dispatch not found"}
+      {:error, message} ->
+        JSON.send(conn, 404, %{error: message})
     end
   end
 
@@ -556,116 +566,71 @@ defmodule CascadeWeb.OrchestrationController do
     end
   end
 
-  defp maybe_reuse_dispatch(_conn, nil), do: :new
+  defp resolve_chat_execution(dispatch) do
+    user_id = dispatch.requesterUserId
+    registration = dispatch.registration
 
-  defp maybe_reuse_dispatch(_conn, dispatch) do
-    case field(dispatch, :runId)
-         |> parse_positive_integer()
-         |> then(&if(&1, do: Store.get(&1))) do
-      nil -> :new
-      run -> {:reused, run}
-    end
-  end
+    with {:ok, projection} <-
+           Agents.resolve_owner_projection(user_id, dispatch.requesterChannelId, registration.id),
+         true <- Dispatches.allowed?(user_id, registration, dispatch.message),
+         vault when not is_nil(vault) <-
+           ContentStore.get_vault(projection.ownerVaultId, projection.ownerId) do
+      requester_is_owner = user_id == projection.ownerId
 
-  defp resolve_chat_execution(user, request_vault, channel_id, registration_id, dispatch, params) do
-    registration_id = dispatch_registration_id(dispatch, registration_id)
+      agent =
+        if Store.valid_agent?(registration.agentId),
+          do: registration.agentId,
+          else: "claude-code"
 
-    if channel_id != "" and registration_id != "" do
-      with {:ok, projection} <-
-             Agents.resolve_owner_projection(user.id, channel_id, registration_id),
-           {:ok, members} <- Agents.list_members(channel_id, user.id),
-           registration when not is_nil(registration) <-
-             dispatch_registration(dispatch) || Enum.find(members, &(&1.id == registration_id)),
-           :ok <- ping_allowed(user.id, projection.ownerId, registration),
-           vault when not is_nil(vault) <-
-             ContentStore.get_vault(projection.ownerVaultId, projection.ownerId) do
-        requester_is_owner = user.id == projection.ownerId
+      work_item_id = dispatch_work_item_id(dispatch)
 
-        agent =
-          if Store.valid_agent?(registration.agentId),
-            do: registration.agentId,
-            else: "claude-code"
+      cwd =
+        registration.cwd
+        |> PromptContext.normalize_cwd()
+        |> authoritative_channel_cwd(projection, projection.ownerId)
+        |> authoritative_work_item_cwd(projection.ownerId, work_item_id)
 
-        work_item_id = dispatch_work_item_id(dispatch)
+      effort =
+        if agent in ["codex", "claude-code"],
+          do:
+            nonblank(
+              dispatch_value(dispatch, :reasoningEffort, ""),
+              registration.reasoningEffort
+            ),
+          else: ""
 
-        cwd =
-          registration.cwd
-          |> PromptContext.normalize_cwd()
-          |> authoritative_channel_cwd(projection, projection.ownerId)
-          |> authoritative_work_item_cwd(projection.ownerId, work_item_id)
-
-        effort =
-          if agent in ["codex", "claude-code"],
-            do:
-              nonblank(
-                dispatch_value(dispatch, :reasoningEffort, ""),
-                registration.reasoningEffort
-              ),
-            else: ""
-
-        memory_key =
-          if agent == "akron-grok",
-            do: "akron",
-            else:
-              nonblank(
-                registration.mention,
-                registration.vaultAgentId || registration.agentId || agent
-              )
-
-        {:ok,
-         %{
-           vault: vault,
-           runner_user_id: projection.ownerId,
-           requester_is_owner: requester_is_owner,
-           target_channel_id: projection.ownerChannelId,
-           registration_id: registration.id,
-           registration: registration,
-           agent: agent,
-           model: PromptContext.normalize_model(registration.model),
-           reasoning_effort: blank_nil(effort),
-           priority_service_tier: agent == "codex" and registration.priorityServiceTier,
-           cwd: cwd,
-           yolo: requester_is_owner and registration.yolo,
-           hermes_profile: registration.hermesProfile,
-           hermes_safe_mode: registration.hermesSafeMode,
-           chat_author: nonblank(registration.displayName, registration.agentId),
-           memory_key: memory_key,
-           work_item_id: work_item_id
-         }}
-      else
-        {:error, status, message} -> {:error, status, message}
-        _ -> {:error, 404, "Agent not found"}
-      end
-    else
-      agent = if Store.valid_agent?(params["agent"]), do: params["agent"], else: "claude-code"
+      memory_key =
+        if agent == "akron-grok",
+          do: "akron",
+          else:
+            nonblank(
+              registration.mention,
+              registration.vaultAgentId || registration.agentId || agent
+            )
 
       {:ok,
        %{
-         vault: request_vault,
-         runner_user_id: user.id,
-         requester_is_owner: true,
-         target_channel_id: channel_id,
-         registration_id: registration_id,
-         registration: nil,
+         vault: vault,
+         runner_user_id: projection.ownerId,
+         target_channel_id: projection.ownerChannelId,
+         registration_id: registration.id,
+         registration: registration,
          agent: agent,
-         model: PromptContext.normalize_model(params["model"]),
-         reasoning_effort: nil,
-         priority_service_tier: false,
-         cwd: PromptContext.normalize_cwd(params["cwd"]),
-         yolo: params["yolo"] == true,
-         hermes_profile: clean_string(params["hermesProfile"]),
-         hermes_safe_mode: params["hermesSafeMode"] == true,
-         chat_author: clean_string(chat_value(params, "author")),
-         memory_key: PromptContext.agent_memory_key(agent),
-         work_item_id: nil
+         model: PromptContext.normalize_model(registration.model),
+         reasoning_effort: blank_nil(effort),
+         priority_service_tier: agent == "codex" and registration.priorityServiceTier,
+         cwd: cwd,
+         yolo: requester_is_owner and registration.yolo,
+         hermes_profile: registration.hermesProfile,
+         hermes_safe_mode: registration.hermesSafeMode,
+         chat_author: nonblank(registration.displayName, registration.agentId),
+         memory_key: memory_key,
+         work_item_id: work_item_id
        }}
+    else
+      {:error, status, message} -> {:error, status, message}
+      _ -> {:error, 404, "Agent not found"}
     end
-  end
-
-  defp ping_allowed(requester, owner, registration) do
-    if requester == owner or registration.pingableByOthers,
-      do: :ok,
-      else: {:error, 403, "This agent isn't accepting pings from other users."}
   end
 
   defp authoritative_channel_cwd(cwd, projection, owner_id) do
@@ -744,7 +709,10 @@ defmodule CascadeWeb.OrchestrationController do
     else
       room =
         with {:ok, messages} <-
-               Messages.list(execution.target_channel_id, execution.runner_user_id, limit: 64),
+               Messages.list(execution.target_channel_id, execution.runner_user_id,
+                 limit: 64,
+                 through_message_id: triggering_message_id
+               ),
              {:ok, registrations} <-
                Agents.list_members(execution.target_channel_id, execution.runner_user_id),
              {:ok, missions} <-
@@ -795,36 +763,41 @@ defmodule CascadeWeb.OrchestrationController do
     end
   end
 
-  defp release_sticky_registration(registration_id, dispatch_id)
-       when registration_id in [nil, ""] or dispatch_id in [nil, ""],
-       do: :ok
+  defp release_sticky_registration(dispatch) do
+    if dispatch_message_value(dispatch, :missionTaskId, "") != "" do
+      :ok
+    else
+      case Store.find_open_for_chat_registration(dispatch.registration.id, dispatch.id) do
+        nil ->
+          :ok
 
-  defp release_sticky_registration(registration_id, dispatch_id) do
-    case Store.find_open_for_chat_registration(registration_id, dispatch_id) do
-      nil ->
-        :ok
+        occupied ->
+          owner_id = Store.delegated_owner(occupied.id)
 
-      occupied ->
-        owner_id = Store.delegated_owner(occupied.id)
+          cond do
+            is_nil(owner_id) ->
+              Store.finish(occupied.id, "failed", "Run startup interrupted before delegation.")
 
-        cond do
-          is_nil(owner_id) ->
-            if Store.cancel(occupied.id,
-                 force: true,
-                 summary: "Run abandoned after desktop disconnect or restart."
-               ),
-               do: :ok,
-               else: {:error, occupied.id, :stopping}
+              Store.publish(occupied.id, "status", %{
+                status: "failed",
+                summary: "Run startup interrupted before delegation."
+              })
 
-          not RunnerLifecycle.online?(owner_id) ->
-            {:error, occupied.id, :reconnecting}
+              :ok
 
-          Store.cancel(occupied.id, steering: true) ->
-            :ok
+            not Dispatches.human?(dispatch) ->
+              {:error, occupied.id, :busy}
 
-          true ->
-            {:error, occupied.id, :stopping}
-        end
+            not RunnerLifecycle.online?(owner_id) ->
+              {:error, occupied.id, :reconnecting}
+
+            Store.cancel(occupied.id, steering: true) ->
+              :ok
+
+            true ->
+              {:error, occupied.id, :stopping}
+          end
+      end
     end
   end
 
@@ -862,7 +835,11 @@ defmodule CascadeWeb.OrchestrationController do
           message: message
         }
 
-        if existed, do: Events.emit(intent), else: OrderedPublisher.chat(Events, intent)
+        case existed do
+          :unchanged -> :ok
+          true -> Events.emit(intent)
+          false -> OrderedPublisher.chat(Events, intent)
+        end
       else
         _ -> :ok
       end
@@ -875,13 +852,21 @@ defmodule CascadeWeb.OrchestrationController do
 
   defp upsert_agent_message(owner, execution, message_id, mission_task_id, run, reply_to) do
     case Messages.get(execution.target_channel_id, execution.runner_user_id, message_id) do
+      {:ok, %{status: "queued"}} when is_nil(run.id) ->
+        {:ok, %{}, :unchanged}
+
       {:ok, _existing} ->
         case Messages.update(
                owner,
                execution.vault.id,
                execution.target_channel_id,
                message_id,
-               %{runId: run.id, status: "running"},
+               %{
+                 runId: run.id,
+                 status: if(run.id, do: "running", else: "queued"),
+                 replyTo: reply_to,
+                 body: if(run.id, do: "Thinking...", else: "Queued...")
+               },
                access: :agent
              ) do
           {:ok, message} -> {:ok, message, true}
@@ -900,8 +885,8 @@ defmodule CascadeWeb.OrchestrationController do
                  registrationId: blank_nil(execution.registration_id),
                  missionTaskId: blank_nil(mission_task_id),
                  runId: run.id,
-                 body: "Thinking...",
-                 status: "running",
+                 body: if(run.id, do: "Thinking...", else: "Queued..."),
+                 status: if(run.id, do: "running", else: "queued"),
                  replyTo: reply_to
                },
                access: :agent
@@ -909,41 +894,6 @@ defmodule CascadeWeb.OrchestrationController do
           {:ok, message} -> {:ok, message, false}
           {:error, _} = error -> error
         end
-    end
-  end
-
-  defp delegate_chat_run(
-         conn,
-         execution,
-         run,
-         prompt,
-         resume,
-         params,
-         message_id,
-         triggering_message_id,
-         context_inline_svgs
-       ) do
-    payload =
-      chat_delegate_payload(
-        execution,
-        run,
-        prompt,
-        resume,
-        params,
-        message_id,
-        triggering_message_id,
-        context_inline_svgs
-      )
-
-    if RunnerLifecycle.delegate(execution.runner_user_id, payload) do
-      JSON.send(conn, 200, %{run: run, reused: false})
-    else
-      error =
-        "Desktop agent runner disconnected before the run could start. Open Fizzer on your computer and try again."
-
-      Store.finish(run.id, "failed", error)
-      Store.publish(run.id, "status", %{status: "failed", summary: error})
-      JSON.send(conn, 503, %{error: error})
     end
   end
 
@@ -984,25 +934,6 @@ defmodule CascadeWeb.OrchestrationController do
     )
   end
 
-  defp mission_dispatch_prompt(dispatch) do
-    mention = dispatch.registration.mention |> to_string() |> Regex.escape()
-
-    dispatch.message.body
-    |> to_string()
-    |> String.replace(~r/^\s*@\s*#{mention}(?=$|[\s.,:;!?\])}])/iu, "")
-    |> String.trim()
-  end
-
-  defp dispatch_registration(nil), do: nil
-  defp dispatch_registration(dispatch), do: field(dispatch, :registration)
-
-  defp dispatch_registration_id(nil, fallback), do: fallback
-
-  defp dispatch_registration_id(dispatch, _fallback),
-    do: clean_string(field(field(dispatch, :registration, %{}), :id))
-
-  defp dispatch_work_item_id(nil), do: nil
-
   defp dispatch_work_item_id(dispatch) do
     case dispatch_message_value(dispatch, :missionTaskId, "") do
       "" ->
@@ -1016,19 +947,6 @@ defmodule CascadeWeb.OrchestrationController do
     end
   end
 
-  defp dispatch_owner(""), do: nil
-
-  defp dispatch_owner(dispatch_id) do
-    case SQL.one(
-           "SELECT va.owner_user_id FROM chat_agent_dispatches d JOIN chat_agent_members m ON m.id=d.registration_id JOIN vault_agents va ON va.id=m.vault_agent_id WHERE d.id=?",
-           [dispatch_id]
-         ) do
-      [owner_id] -> owner_id
-      _ -> nil
-    end
-  end
-
-  defp chat_value(params, key), do: field(params["chat"] || %{}, String.to_atom(key))
   defp dispatch_value(nil, _key, fallback), do: fallback
   defp dispatch_value(dispatch, key, fallback), do: field(dispatch, key, fallback)
 
@@ -1128,16 +1046,6 @@ defmodule CascadeWeb.OrchestrationController do
 
   defp parse_id(value) when is_integer(value) and value > 0, do: value
   defp parse_id(_), do: nil
-  defp parse_positive_integer(value) when is_integer(value) and value > 0, do: value
-
-  defp parse_positive_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {number, ""} when number > 0 -> number
-      _ -> nil
-    end
-  end
-
-  defp parse_positive_integer(_), do: nil
   defp body(%Plug.Conn{body_params: %Plug.Conn.Unfetched{}}), do: %{}
   defp body(conn) when is_map(conn.body_params), do: conn.body_params
   defp body(_), do: %{}

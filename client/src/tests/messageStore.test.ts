@@ -1,10 +1,56 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chatMessageStore } from '../chat/messageStore';
+import { chatMessageStore, fetchChatMessageSnapshot } from '../chat/messageStore';
+import { api, ApiError } from '../api';
+import { captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
+
+vi.mock('../api', async (original) => ({ ...await original<typeof import('../api')>(), api: vi.fn() }));
 import type { ChatMessage } from '../chat/types';
 
 function message(id: string, channelId: string): ChatMessage {
   return { id, channelId, author: 'asdfasdf', body: id, createdAt: id };
 }
+
+describe('channel snapshot recovery', () => {
+  const live: ChatMessage = { ...message('older-run', 'recovery'), seq: 1, agentId: 'codex', status: 'running' };
+  const baseline = captureChatMessageSnapshotBaseline([live]);
+
+  it.each([0, 120])('confirms omitted live rows even with %s recent rows and retries transient failures', async (count) => {
+    const recent = Array.from({ length: count }, (_, i) => ({ ...message(`recent-${i}`, 'recovery'), seq: i + 2 }));
+    vi.mocked(api).mockResolvedValueOnce({ messages: recent }).mockRejectedValueOnce(new ApiError('Unavailable', 503));
+    expect(await fetchChatMessageSnapshot('vault', 'recovery', baseline)).toEqual([live, ...recent]);
+    vi.mocked(api).mockResolvedValueOnce({ messages: recent }).mockRejectedValueOnce(new ApiError('Suppressed', 404));
+    const recovered = await fetchChatMessageSnapshot('vault', 'recovery', baseline);
+    expect(reconcileChatMessageSnapshot([live], recovered, baseline)).toEqual(recent);
+  });
+
+  it('hydrates older terminal rows without overwriting concurrent updates or resurrecting deletions', async () => {
+    const final = { ...live, status: undefined, body: 'Short final.' };
+    vi.mocked(api).mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce({ message: final });
+    const recovered = await fetchChatMessageSnapshot('vault', 'recovery', baseline);
+    expect(reconcileChatMessageSnapshot([live], recovered, baseline)).toEqual([final]);
+    expect(reconcileChatMessageSnapshot([], recovered, baseline)).toEqual([]);
+    const newer = { ...final, body: 'Newer projection' };
+    expect(reconcileChatMessageSnapshot([newer], recovered, baseline)).toEqual([newer]);
+  });
+
+  it('discovers server-owned queued rows without an optimistic agent shell', async () => {
+    const queued = { ...live, status: 'queued' as const, body: 'Queued...' };
+    vi.mocked(api).mockResolvedValueOnce({ messages: [queued] });
+    const empty = captureChatMessageSnapshotBaseline([]);
+    const recovered = await fetchChatMessageSnapshot('vault', 'recovery', empty);
+    expect(reconcileChatMessageSnapshot([], recovered, empty)).toEqual([queued]);
+  });
+
+  it('rejects late responses after cleanup even if the transport ignores abort', async () => {
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    vi.mocked(api).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const recovery = fetchChatMessageSnapshot('vault', 'recovery', baseline, controller.signal);
+    controller.abort();
+    resolve({ messages: [live] });
+    await expect(recovery).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
 
 describe('chatMessageStore', () => {
   it('distinguishes an unloaded channel from a loaded-empty one', () => {
@@ -40,26 +86,6 @@ describe('chatMessageStore', () => {
 
     offA();
     offB();
-  });
-
-  it('updateAll only emits for channels whose list actually changed', () => {
-    chatMessageStore.set('run-owner', [message('r1', 'run-owner')]);
-    chatMessageStore.set('bystander', [message('x1', 'bystander')]);
-    const onOwner = vi.fn();
-    const onBystander = vi.fn();
-    const offOwner = chatMessageStore.subscribe('run-owner', onOwner);
-    const offBystander = chatMessageStore.subscribe('bystander', onBystander);
-
-    chatMessageStore.updateAll((messages) => {
-      let changed = false;
-      const next = messages.map((m) => (m.id === 'r1' ? (changed = true, { ...m, body: 'canceled' }) : m));
-      return changed ? next : messages;
-    });
-
-    expect(onOwner).toHaveBeenCalledTimes(1);
-    expect(onBystander).not.toHaveBeenCalled();
-    offOwner();
-    offBystander();
   });
 
   it('forgets a channel on remove', () => {

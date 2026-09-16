@@ -16,10 +16,20 @@ defmodule Cascade.Chat.Messages do
       limit = opts |> Keyword.get(:limit, 120) |> number(120) |> trunc() |> max(1) |> min(500)
       columns = if detail == :full, do: @full_columns, else: @list_columns
 
+      {cutoff, params} =
+        case Keyword.get(opts, :through_message_id) do
+          nil ->
+            {"", [route.sourceChannelId, limit]}
+
+          id ->
+            {" AND rowid <= (SELECT rowid FROM chat_messages WHERE id=? AND channel_id=?)",
+             [route.sourceChannelId, id, route.sourceChannelId, limit]}
+        end
+
       messages =
         SQL.all(
-          "SELECT #{columns} FROM chat_messages WHERE channel_id=? ORDER BY rowid DESC LIMIT ?",
-          [route.sourceChannelId, limit]
+          "SELECT #{columns} FROM chat_messages WHERE channel_id=?#{cutoff} ORDER BY rowid DESC LIMIT ?",
+          params
         )
         |> Enum.reverse()
         |> Enum.map(&row_to_message(&1, detail, route.localChannelId))
@@ -44,15 +54,14 @@ defmodule Cascade.Chat.Messages do
          :ok <- relationship_allowed(input) do
       message = normalized_message(input, route.sourceChannelId, attribution, user.id)
 
-      result =
-        SQL.transaction(fn ->
+      SQL.transaction(fn ->
+        with :ok <- authorize_repost(user, route, message, access) do
           insert_message(route, message)
           refresh_note_grants(user.id, vault_id, route.sourceChannelId, message)
           index_backlinks(route, message)
-          fetch!(route, message.id)
-        end)
-
-      {:ok, result}
+          {:ok, fetch!(route, message.id)}
+        end
+      end)
     end
   rescue
     error in Exqlite.Error -> {:error, sqlite_message(error)}
@@ -61,41 +70,41 @@ defmodule Cascade.Chat.Messages do
   def update(user, vault_id, channel_id, message_id, patch, opts \\ []) do
     access = Keyword.get(opts, :access, :user)
 
-    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
-         {:ok, existing} <- fetch(route, message_id),
-         :ok <- authorize_edit(user, existing, patch, access) do
-      next = merge_patch(existing, patch, access)
-
-      result =
-        SQL.transaction(fn ->
+    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
+      SQL.transaction(fn ->
+        with {:ok, existing} <- fetch(route, message_id),
+             :ok <- authorize_edit(user, existing, patch, access) do
+          next = merge_patch(existing, patch, access)
           updated = persist!(route, next)
           refresh_note_grants(user.id, vault_id, route.sourceChannelId, next)
           Evolution.tombstone_chat_message_backlinks(message_id)
           index_backlinks(route, next)
-          updated
-        end)
-
-      {:ok, result}
+          {:ok, updated}
+        end
+      end)
     end
   end
 
-  def delete(user, vault_id, channel_id, message_id) do
-    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
-         {:ok, message} <- fetch(route, message_id),
-         :ok <- authorize_delete(user, route, message) do
-      deleted =
-        SQL.transaction(fn ->
-          changes =
-            SQL.changes("DELETE FROM chat_messages WHERE id=? AND channel_id=?", [
-              message_id,
-              route.sourceChannelId
-            ])
+  def delete(user, vault_id, channel_id, message_id, opts \\ []) do
+    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
+      SQL.transaction(fn ->
+        with {:ok, message} <- fetch(route, message_id),
+             :ok <- authorize_delete(user, route, message),
+             :ok <-
+               if(Keyword.get(opts, :queued_only, false) and message[:status] != "queued",
+                 do: {:error, "Run already started; use Stop run."},
+                 else: :ok
+               ),
+             :ok <- cancel_pending_reply(message) do
+          SQL.exec("DELETE FROM chat_messages WHERE id=? AND channel_id=?", [
+            message_id,
+            route.sourceChannelId
+          ])
 
-          if changes > 0, do: Evolution.tombstone_chat_message_backlinks(message_id)
-          changes > 0
-        end)
-
-      if deleted, do: {:ok, route}, else: {:error, "Message not found"}
+          Evolution.tombstone_chat_message_backlinks(message_id)
+          {:ok, route}
+        end
+      end)
     end
   end
 
@@ -557,17 +566,81 @@ defmodule Cascade.Chat.Messages do
   defp attribution(user, _route, _input, _access),
     do: {:ok, %{author: user.username, agent_id: nil, registration_id: nil}}
 
-  defp authorize_edit(_user, existing, patch, :agent) do
+  defp authorize_repost(user, route, message, access) do
+    case SQL.one(
+           "SELECT channel_id,author,actor_user_id,agent_id,registration_id FROM chat_messages WHERE id=?",
+           [message.id]
+         ) do
+      nil ->
+        :ok
+
+      [channel_id, author, actor_user_id, agent_id, registration_id] ->
+        existing = %{
+          id: message.id,
+          author: author,
+          actorUserId: actor_user_id,
+          agentId: agent_id,
+          registrationId: registration_id
+        }
+
+        cond do
+          channel_id != route.sourceChannelId ->
+            {:error, "Message ID belongs to another channel"}
+
+          not owned_message?(user, existing) ->
+            {:error, "You can only edit your own messages"}
+
+          access == :agent and is_nil(existing[:agentId]) and is_nil(existing[:registrationId]) ->
+            {:error, "Agents cannot edit human messages"}
+
+          Enum.any?([:author, :agentId, :registrationId], &(message[&1] != existing[&1])) ->
+            {:error, "Cannot reassign message identity"}
+
+          true ->
+            :ok
+        end
+    end
+  end
+
+  defp owned_message?(user, message) do
+    cond do
+      not is_nil(message[:actorUserId]) ->
+        message.actorUserId == user.id
+
+      not is_nil(message[:registrationId]) ->
+        SQL.one(
+          """
+          SELECT va.owner_user_id FROM chat_agent_members m
+          JOIN vault_agents va ON va.id=m.vault_agent_id
+          JOIN chat_messages cm ON cm.channel_id=m.channel_id AND cm.registration_id=m.id
+          WHERE cm.id=? AND (cm.agent_id IS NULL OR cm.agent_id=m.agent_id)
+          """,
+          [message.id]
+        ) == [user.id]
+
+      is_nil(message[:agentId]) ->
+        message.author == user.username
+
+      true ->
+        false
+    end
+  end
+
+  defp authorize_edit(user, existing, patch, :agent) do
     cond do
       is_nil(existing[:agentId]) and is_nil(existing[:registrationId]) ->
         {:error, "Agents cannot edit human messages"}
 
-      map_value(patch, "author") not in [nil, existing.author] ->
-        {:error, "Agents cannot reassign message authors"}
+      not owned_message?(user, existing) ->
+        {:error, "You can only edit your own messages"}
 
-      existing[:registrationId] &&
-          map_value(patch, "registrationId") not in [nil, existing.registrationId] ->
-        {:error, "Agents cannot reassign registration ownership"}
+      Enum.any?([:author, :agentId, :registrationId, :actorUserId], fn key ->
+        case fetch_value(patch, Atom.to_string(key)) do
+          {:ok, value} -> value != existing[key]
+          :error -> false
+        end
+      end) ->
+        {:error, "Agents cannot reassign message identity"}
 
       true ->
         :ok
@@ -576,10 +649,21 @@ defmodule Cascade.Chat.Messages do
 
   defp authorize_edit(user, existing, _patch, _access),
     do:
-      if(existing.author == user.username,
+      if(existing.author == user.username and owned_message?(user, existing),
         do: :ok,
         else: {:error, "You can only edit your own messages"}
       )
+
+  defp cancel_pending_reply(%{id: "agent-dispatch-" <> id, status: "queued"}) do
+    if SQL.changes(
+         "UPDATE chat_agent_dispatches SET failed_at=datetime('now'),error='Canceled before startup.' WHERE id=? AND run_id IS NULL AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)",
+         [id]
+       ) > 0,
+       do: :ok,
+       else: {:error, "Run already started; use Stop run."}
+  end
+
+  defp cancel_pending_reply(_message), do: :ok
 
   defp authorize_delete(user, route, message) do
     host =
@@ -588,7 +672,19 @@ defmodule Cascade.Chat.Messages do
         _ -> nil
       end
 
-    if host == user.id or message.author == user.username,
+    pending_requester =
+      case message.id do
+        "agent-dispatch-" <> id when message.status == "queued" ->
+          SQL.one(
+            "SELECT requester_user_id FROM chat_agent_dispatches WHERE id=? AND run_id IS NULL",
+            [id]
+          ) == [user.id]
+
+        _ ->
+          false
+      end
+
+    if host == user.id or owned_message?(user, message) or pending_requester,
       do: :ok,
       else: {:error, "You can only delete your own messages"}
   end
@@ -758,6 +854,7 @@ defmodule Cascade.Chat.Messages do
       body: row.body,
       createdAt: row.created_at,
       activityAt: row.activity_at,
+      actorUserId: row.actor_user_id,
       status: row.status,
       agentId: row.agent_id,
       registrationId: row.registration_id,

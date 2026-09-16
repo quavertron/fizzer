@@ -129,6 +129,11 @@ defmodule Cascade.Runs.Store do
       OrderedPublisher.mutate(fn ->
         run =
           SQL.transaction(fn ->
+            if dispatch &&
+                 SQL.one("SELECT failed_at FROM chat_agent_dispatches WHERE id=?", [dispatch]) !=
+                   [nil],
+               do: raise("Chat dispatch is no longer pending")
+
             SQL.exec(
               """
               INSERT INTO runs
@@ -278,6 +283,7 @@ defmodule Cascade.Runs.Store do
         )
 
         clear_delegated(run_id)
+        Cascade.Missions.DispatchReannouncer.wake()
         :ok
     end
   end
@@ -307,8 +313,9 @@ defmodule Cascade.Runs.Store do
         true -> Cascade.Runs.RunnerLifecycle.cancel(owner_id, run_id)
       end
 
-    if owner_id && not stopped? && Cascade.Runs.RunnerLifecycle.online?(owner_id) &&
-         not steering? && not force? do
+    if (steering? and not is_nil(owner_id) and not stopped?) or
+         (owner_id && not stopped? && Cascade.Runs.RunnerLifecycle.online?(owner_id) &&
+            not force?) do
       false
     else
       summary =

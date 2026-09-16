@@ -19,7 +19,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api, type SearchResult } from '../api';
 import { Search, Loader2 } from 'lucide-react';
-import { moveListSelection, useListSelection } from '../ui/listNavigation';
+import { SearchListOverlay } from './SearchListOverlay';
 
 interface SearchOverlayProps {
   open: boolean;
@@ -38,9 +38,6 @@ export function SearchOverlay({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [highlightIndex, setHighlightIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Reset on open
@@ -48,8 +45,6 @@ export function SearchOverlay({
     if (open) {
       setQuery('');
       setResults([]);
-      setHighlightIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
 
@@ -83,8 +78,6 @@ export function SearchOverlay({
     doSearch(query);
   }, [query, doSearch]);
 
-  useListSelection(listRef, highlightIndex, results.length, setHighlightIndex);
-
   const selectResult = useCallback((result: SearchResult) => {
     if (result.type === 'chat' && result.channelId) {
       onSelectNote(result.channelId, result.id);
@@ -94,104 +87,45 @@ export function SearchOverlay({
     onClose();
   }, [onSelectNote, onClose]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault();
-          setHighlightIndex((i) => moveListSelection(i, 1, results.length));
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          setHighlightIndex((i) => moveListSelection(i, -1, results.length));
-          break;
-        case 'Enter':
-          e.preventDefault();
-          if (results[highlightIndex]) {
-            selectResult(results[highlightIndex]);
-          }
-          break;
-        case 'Escape':
-          e.preventDefault();
-          onClose();
-          break;
-      }
-    },
-    [results, highlightIndex, selectResult, onClose],
-  );
-
-  if (!open) return null;
-
   return (
-    <div
-      className="overlay-backdrop"
-      id="search-backdrop"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <section className="search-overlay" id="search-overlay" role="dialog" aria-modal="true" aria-label="Search workspace">
-        <div className="search-input-wrap">
-          <span className="search-icon"><Search size={16} /></span>
-          <input
-            ref={inputRef}
-            id="search-input"
-            className="search-input"
-            autoFocus
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setHighlightIndex(0);
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder="Search notes and chats..."
+    <SearchListOverlay
+      open={open}
+      prefix="search"
+      label="Search workspace"
+      placeholder="Search notes and chats..."
+      query={query}
+      onQueryChange={setQuery}
+      onClose={onClose}
+      items={results}
+      onSelect={selectResult}
+      status={loading && <span className="text-tertiary text-xs" style={{ display: 'flex', alignItems: 'center' }}><Loader2 size={14} /></span>}
+      footer="Notes + chats"
+      renderItem={(result) => (
+        <>
+          <span className="result-title">{result.title || 'Untitled'}</span>
+          {result.type === 'chat' && <span className="text-xs text-tertiary">Chat</span>}
+          <span
+            className="result-snippet"
+            dangerouslySetInnerHTML={{ __html: highlightSnippet(result.snippet, query) }}
           />
-          {loading && <span className="text-tertiary text-xs" style={{ display: 'flex', alignItems: 'center' }}><Loader2 size={14} /></span>}
+        </>
+      )}
+    >
+      {results.length === 0 && query.trim() && !loading && (
+        <div className="search-empty">
+          <span className="search-empty-icon"><Search size={32} /></span>
+          <span>No results found for &quot;{query}&quot;</span>
         </div>
+      )}
 
-        <div className="search-results" ref={listRef}>
-          {results.map((result, index) => (
-            <button
-              key={result.id}
-              id={`search-result-${result.id}`}
-              className={`search-result-item ${index === highlightIndex ? 'highlighted' : ''}`}
-              onClick={() => selectResult(result)}
-              onMouseEnter={() => setHighlightIndex(index)}
-            >
-              <span className="result-title">{result.title || 'Untitled'}</span>
-              {result.type === 'chat' && <span className="text-xs text-tertiary">Chat</span>}
-              <span
-                className="result-snippet"
-                dangerouslySetInnerHTML={{
-                  __html: highlightSnippet(result.snippet, query),
-                }}
-              />
-            </button>
-          ))}
-
-          {results.length === 0 && query.trim() && !loading && (
-            <div className="search-empty">
-              <span className="search-empty-icon"><Search size={32} /></span>
-              <span>No results found for &quot;{query}&quot;</span>
-            </div>
-          )}
-
-          {!query.trim() && (
-            <div className="search-empty">
-              <span className="search-empty-icon"><Search size={32} /></span>
-              <span>Search across notes and chats</span>
-              <span className="text-xs text-tertiary">
-                QMD ranked search
-              </span>
-            </div>
-          )}
+      {!query.trim() && (
+        <div className="search-empty">
+          <span className="search-empty-icon"><Search size={32} /></span>
+          <span>Search across notes and chats</span>
+          <span className="text-xs text-tertiary">QMD ranked search</span>
         </div>
-        <footer className="search-footer">
-          <span><kbd>↑↓</kbd> navigate <kbd>↵</kbd> open <kbd>esc</kbd> close</span>
-          <span>Notes + chats</span>
-        </footer>
-      </section>
-    </div>
+      )}
+    </SearchListOverlay>
   );
 }
 

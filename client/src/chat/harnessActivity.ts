@@ -157,7 +157,7 @@ export function humanizeActivityLine(line: string): string {
   if (!trimmed || isHarnessPromptDump(trimmed)) return '';
   // Skip our own meta comments unless they already read as status.
   if (trimmed.startsWith('# ')) {
-    if (/^#\s*(thinking|cwd |exit |claude-code|cascade-stats|result|system)/i.test(trimmed)) return '';
+    if (/^#\s*(thinking|cwd |exit |codex app-server|claude-code|cascade-stats|result|system)/i.test(trimmed)) return '';
     return trimmed.replace(/^#\s*/, '');
   }
   if (trimmed.startsWith('$ ')) return `Bash ${previewText(trimmed.slice(2), 80)}`.trim();

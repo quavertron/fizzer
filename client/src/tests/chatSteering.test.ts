@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   ChatView,
   ReasoningEffortSelect,
-  dataUrlsToRunImages,
   getRunningMessageState,
   getSteeringPromptLabels,
   isPendingAgentRunShell,
@@ -18,6 +17,8 @@ import { applyLocalUserProfile } from '../chat/shared';
 import type { ChatAgentRegistration, ChatMessage } from '../chat/types';
 import { chatMessageStore } from '../chat/messageStore';
 import { ChatWorkTrace } from '../components/ChatWorkTrace';
+import { ChatMissionCard } from '../components/ChatMissionCard';
+import { CascadeRunPanel } from '../components/CascadeRunPanel';
 
 const agent: ChatAgentRegistration = {
   id: 'reg-sol',
@@ -65,10 +66,10 @@ describe('chat sticky bottom intent', () => {
     expect(shouldSnapToRecentOnSend(viewport(601))).toBe(false);
   });
 
-  it('recognizes the delayed runner shell that completes a send snap', () => {
+  it.each(['running', 'queued', 'sending'] as const)('recognizes a %s shell that completes a send snap', (status) => {
     expect(isPendingAgentRunShell(message('agent', {
       agentId: 'codex',
-      status: 'running',
+      status,
       body: 'Thinking...',
     }))).toBe(true);
     expect(isPendingAgentRunShell(message('human', {
@@ -135,7 +136,59 @@ describe('agent steering presentation', () => {
     expect(markup).not.toContain('crp-term-stream');
   });
 
-  it.each([false, true])('shows current activity with the transcript collapsed (embedded: %s)', (embedded) => {
+  it('shows delegated task names and waiting state in a collapsed active mission', () => {
+    const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+      mission: {
+        id: 'mission', rootMessageId: 'root', title: 'Fix progress', objective: '',
+        status: 'active', coordinator: 'Astra', coordinatorMention: 'astra', summary: '',
+        createdAt: '', updatedAt: '', tasks: [{
+          id: 'validation', title: 'Validate the implementation', assignee: 'Astra',
+          assigneeMention: 'astra', assigneeModel: '', status: 'pending', summary: '',
+          dependsOn: ['implementation'], waitingFor: ['implementation'], priority: 0,
+          reasoningEffort: '', anonymous: true, queueReason: 'dependency', attempt: 0, updatedAt: '',
+        }],
+      },
+      traceContent: createElement('span', null, 'Checking current progress'),
+    }));
+    expect(markup).toContain('Validate the implementation');
+    expect(markup).toContain('pending');
+    expect(markup).toContain('waiting for dependencies');
+    expect(markup).toContain('subagent');
+    expect(markup).toContain('Checking current progress');
+    expect(markup).not.toContain('chat-mission-card is-active is-live is-open');
+  });
+
+  it('labels completed activity and folds its diagnostic history', () => {
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace: [message('done', { author: 'Astra', body: 'Validation passed.' })],
+      selectedMessageId: null, onCancelRun: () => {}, onContextMenu: () => {},
+      onReply: () => {}, runningMessageState: new Map(),
+    }));
+    expect(markup).toContain('Completed activity');
+    expect(markup).not.toContain('chat-work-trace-body');
+  });
+
+  it('exposes coordinator progress, both delegated runs and failure without expanding history', () => {
+    const trace = [
+      message('update', { author: 'Astra', body: 'The implementation is ready; validation is running.' }),
+      message('worker', { author: 'Astra', missionTaskId: 'implementation', status: 'running', body: 'Checking the patch.', harnessLog: '# codex app-server · /private/parent' }),
+      message('child', { author: 'Astra', missionTaskId: 'validation', status: 'running', body: 'Running regression tests.', harnessLog: '# codex app-server · /private/child' }),
+      message('failed', { author: 'Astra', missionTaskId: 'other', status: 'failed', body: 'Validation failed.' }),
+    ];
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace, selectedMessageId: null, onCancelRun: () => {}, onContextMenu: () => {},
+      onReply: () => {}, runningMessageState: new Map(),
+    }));
+    for (const item of trace) expect(markup).toContain(`data-message-id="${item.id}"`);
+    expect(markup).toContain('Delegated · Astra');
+    expect(markup).toContain('Checking the patch.');
+    expect(markup).toContain('Running regression tests.');
+    expect(markup).not.toContain('/private/');
+    expect(markup).not.toContain('4 updates');
+    expect(markup).not.toContain('chat-work-line-body');
+  });
+
+  it.each([false, true])('shows current activity without opening the live transcript (embedded: %s)', (embedded) => {
     const live = message('3', {
       author: 'Sol', agentId: 'codex', registrationId: agent.id,
       status: 'running', body: 'Applying the steering advice now.',
@@ -151,10 +204,10 @@ describe('agent steering presentation', () => {
     }));
     expect(markup).toContain('is-live');
     expect(markup.includes('is-embedded')).toBe(embedded);
-    expect(markup.includes('is-open')).toBe(false);
-    expect(markup).toContain(live.body);
-    expect(markup).not.toContain('chat-work-lines');
     expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('chat-work-trace-body');
+    expect(markup).toContain(live.body);
+    expect(markup).not.toContain('chat-work-decals');
   });
 });
 
@@ -188,6 +241,16 @@ describe('reasoning effort settings', () => {
 });
 
 describe('chat run panel lifecycle', () => {
+  it('exposes Stop on server-owned queued shells without harness chrome', () => {
+    const queued = message('agent-dispatch-pending', { agentId: 'codex', status: 'queued', body: 'Queued...' });
+    expect(shouldRenderRunPanel(queued, false, false)).toBe(true);
+    const markup = renderToStaticMarkup(createElement(CascadeRunPanel, {
+      message: queued, vaultId: 'vault', onHydrateMessage: () => {}, onCancelRun: () => {},
+    }));
+    expect(markup).toContain('aria-label="Stop run"');
+    expect(markup).not.toContain('Harness');
+  });
+
   it('hides a successful completed harness without discarding its trace', () => {
     const completed = message('1', {
       author: 'Sol',
@@ -240,20 +303,6 @@ describe('chat run panel lifecycle', () => {
     expect(markup).toContain('A complete final answer with nuance.');
     expect(markup).not.toContain('cascade-run-panel');
     expect(markup).not.toContain('Harness');
-  });
-});
-
-describe('dataUrlsToRunImages', () => {
-  it('decodes stored data URLs into run image parts', () => {
-    expect(dataUrlsToRunImages(['data:image/png;base64,AAAA', 'data:image/jpeg;base64,BBBB'])).toEqual([
-      { media_type: 'image/png', data: 'AAAA' },
-      { media_type: 'image/jpeg', data: 'BBBB' },
-    ]);
-  });
-
-  it('skips non-image and non-data sources', () => {
-    expect(dataUrlsToRunImages(['https://example.com/a.png', 'data:text/plain;base64,AAAA'])).toEqual([]);
-    expect(dataUrlsToRunImages(undefined)).toEqual([]);
   });
 });
 

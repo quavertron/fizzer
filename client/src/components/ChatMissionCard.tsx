@@ -57,7 +57,7 @@ export function ChatMissionCard({
   mission: ChatMission;
   vaultId?: string;
   channelId?: string;
-  /** Full work stream, rendered only while the mission is expanded. */
+  /** Current work stays visible; settled history expands on request. */
   traceContent?: ReactNode;
   /** Always-visible activity strip (collapsed + expanded). */
   tracePeek?: {
@@ -242,6 +242,27 @@ export function ChatMissionCard({
           </button>
         )}
       </div>
+      {!open && (live || needsAttention) && (
+        <div className="chat-mission-content">
+          {mission.tasks.length > 0 && <div className="chat-mission-tasks">
+            {mission.tasks.map((task) => (
+              <div className={`chat-mission-task is-${task.status}`} key={task.id}>
+                <span aria-hidden="true">↳</span>
+                <div>
+                  <strong>{task.title}</strong>
+                  <span>@{task.assigneeMention || task.assignee} · {task.status}
+                    {task.anonymous ? ' · subagent' : ''}
+                    {task.queueReason === 'dependency' ? ' · waiting for dependencies' : ''}
+                    {task.queueReason === 'dependency-attention' ? ' · waiting on review' : ''}
+                    {task.queueReason === 'agent-busy' ? ' · agent busy' : ''}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>}
+          {traceContent && <div className="chat-mission-trace">{traceContent}</div>}
+        </div>
+      )}
       {open && (
         <div className="chat-mission-content" onContextMenu={openMissionContextMenu}>
           <div className="chat-mission-stream">

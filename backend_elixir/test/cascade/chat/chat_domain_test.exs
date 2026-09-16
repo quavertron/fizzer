@@ -133,6 +133,21 @@ defmodule Cascade.ChatDomainTest do
     :ok
   end
 
+  test "past authors are not participants after their vault membership is removed" do
+    {vault, channel} = chat_vault(1, "Roster", "Room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+
+    {:ok, message} =
+      Messages.create(%{id: 2, username: "bob"}, vault.id, channel.id, %{
+        body: "Keep this history"
+      })
+
+    assert {:ok, ["alice", "bob"]} = Channel.participants(channel.id, 1)
+    assert :ok = VaultMembers.remove(vault.id, 1, 2)
+    assert {:ok, ["alice"]} = Channel.participants(channel.id, 1)
+    assert ["Keep this history"] = SQL.one("SELECT body FROM chat_messages WHERE id=?", [message.id])
+  end
+
   test "agent run uploads only its own avatar without note asset privileges" do
     {vault, channel} = chat_vault(1, "Self avatar", "Room")
     {:ok, identity} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "astra"})
@@ -512,6 +527,7 @@ defmodule Cascade.ChatDomainTest do
              })
 
     assert first.author == "alice"
+    assert first.actorUserId == alice.id
 
     assert {:ok, identity} =
              Agents.upsert_identity(1, source.id, %{
@@ -549,12 +565,109 @@ defmodule Cascade.ChatDomainTest do
              })
 
     assert third.channelId == local_channel.id
+    assert third.actorUserId == bob.id
+    Store.create_note(local.id, bob.id, %{title: "Private plan", content: "private"})
+
+    for id <- [first.id, second.id] do
+      assert {:error, _} =
+               Messages.create(bob, local.id, local_channel.id, %{
+                 id: id,
+                 body: "![[Private plan]]",
+                 actorUserId: alice.id
+               })
+    end
+
+    for {user, patch} <- [
+          {bob, %{body: "![[Private plan]]"}},
+          {alice, %{author: "bob"}},
+          {alice, %{agentId: "other"}},
+          {alice, %{registrationId: nil}},
+          {alice, %{actorUserId: bob.id}}
+        ] do
+      {vault, channel} =
+        if user == bob, do: {local, local_channel}, else: {source, source_channel}
+
+      assert {:error, _} =
+               Messages.update(user, vault.id, channel.id, second.id, patch, access: :agent)
+    end
+
+    for {user, input} <- [
+          {bob, %{id: second.id, author: "Sol", agentId: "codex"}},
+          {alice, %{id: second.id, author: "Other", agentId: "codex"}},
+          {alice, %{id: first.id, author: "alice"}}
+        ] do
+      {vault, channel} =
+        if user == bob, do: {local, local_channel}, else: {source, source_channel}
+
+      assert {:error, _} =
+               Messages.create(user, vault.id, channel.id, input, access: :agent)
+    end
+
+    other_channel =
+      Store.create_note(source.id, 1, %{title: "Other", content: "cascade://chat-channel"})
+
+    assert {:error, _} =
+             Messages.create(alice, source.id, other_channel.id, %{
+               id: first.id,
+               body: "collision"
+             })
+
+    assert {:ok, ^first} = Messages.get(source_channel.id, 1, first.id)
+    assert {:ok, ^second} = Messages.get(source_channel.id, 1, second.id)
+    assert [] = SQL.all("SELECT message_id FROM chat_note_grants")
+
+    assert [] =
+             SQL.all(
+               "SELECT message_id FROM chat_note_backlinks WHERE target_title='Private plan'"
+             )
+
+    assert {:ok, retried} = Messages.create(bob, local.id, local_channel.id, third)
+    assert retried == third
+
+    assert {:ok, retried} =
+             Messages.create(alice, source.id, source_channel.id, second, access: :agent)
+
+    assert retried == second
+
+    # Legacy ownership is recoverable only from a human author or a matching registration.
+    SQL.exec("UPDATE chat_messages SET actor_user_id=NULL WHERE id IN ('m-human','m-agent')")
+
+    assert {:error, _} =
+             Messages.update(bob, local.id, local_channel.id, second.id, %{body: "stolen"},
+               access: :agent
+             )
+
+    assert {:ok, projected} =
+             Messages.update(alice, source.id, source_channel.id, second.id, %{body: "projected"},
+               access: :agent
+             )
+
+    assert projected.seq == second.seq
+    assert {:ok, retried} = Messages.create(alice, source.id, source_channel.id, first)
+    assert retried == first
+
+    assert {:ok, retried} =
+             Messages.create(alice, source.id, source_channel.id, second, access: :agent)
+
+    assert retried == second
 
     assert {:ok, messages} = Messages.list(local_channel.id, 2)
     assert Enum.map(messages, & &1.id) == ~w(m-human m-agent m-bob)
     assert Enum.map(messages, & &1.author) == ["alice", "Sol", "bob"]
     assert Enum.all?(messages, &(&1.channelId == local_channel.id))
     assert Enum.sort(Enum.map(messages, & &1.seq)) == Enum.map(messages, & &1.seq)
+
+    assert {:ok, system} =
+             Messages.create(
+               alice,
+               source.id,
+               source_channel.id,
+               %{id: "sys-mission", body: "Ready"},
+               access: :system
+             )
+
+    assert {:ok, ^system} =
+             Messages.create(alice, source.id, source_channel.id, system, access: :system)
   end
 
   test "owned agent profiles can be reused across vaults and profile deletion is explicit" do
@@ -784,6 +897,55 @@ defmodule Cascade.ChatDomainTest do
     assert agent.content =~ "Private block hidden"
   end
 
+  test "deleting an offline reply cancels its durable dispatch before run insertion" do
+    {vault, channel} = chat_vault(1, "Queued cancellation", "Room")
+    user = %{id: 1, username: "alice"}
+
+    {:ok, registration} =
+      Agents.upsert_member(1, vault.id, channel.id, %{agentId: "codex", mention: "sol"})
+
+    {:ok, trigger} = Messages.create(user, vault.id, channel.id, %{body: "@sol work"})
+    {:ok, dispatch} = Dispatches.create(1, channel.id, trigger, registration.id)
+
+    {:ok, shell} =
+      Messages.create(
+        user,
+        vault.id,
+        channel.id,
+        %{
+          id: "agent-dispatch-#{dispatch.id}",
+          registrationId: registration.id,
+          body: "Queued...",
+          status: "queued"
+        },
+        access: :agent
+      )
+
+    assert {:ok, _} = Messages.delete(user, vault.id, channel.id, shell.id)
+    assert {:error, _} = Dispatches.for_execution(dispatch.id)
+
+    assert {:error, _} =
+             RunStore.start(vault.id, nil, "must not start", "codex",
+               chat_dispatch_id: dispatch.id
+             )
+
+    assert RunStore.find_by_chat_dispatch(dispatch.id) == nil
+
+    {:ok, running} =
+      Messages.create(
+        user,
+        vault.id,
+        channel.id,
+        %{author: "Sol", body: "Working", status: "running", agentId: "codex"},
+        access: :agent
+      )
+
+    assert {:error, "Run already started; use Stop run."} =
+             Messages.delete(user, vault.id, channel.id, running.id, queued_only: true)
+
+    assert {:ok, _} = Messages.get(channel.id, user.id, running.id)
+  end
+
   test "message list follows commit order when client timestamps disagree" do
     {vault, channel} = chat_vault(1, "Ordered messages", "Room")
     user = %{id: 1, username: "alice"}
@@ -805,6 +967,9 @@ defmodule Cascade.ChatDomainTest do
     assert first.seq < second.seq
     assert {:ok, messages} = Messages.list(channel.id, 1)
     assert Enum.map(messages, & &1.id) == ~w(clock-ahead clock-behind)
+    assert {:ok, [snapshot]} = Messages.list(channel.id, 1, through_message_id: first.id)
+    assert snapshot.id == first.id
+    assert {:ok, []} = Messages.list(channel.id, 1, through_message_id: "missing")
   end
 
   test "message writes authorize and fetch once instead of re-resolving the channel" do
@@ -876,6 +1041,76 @@ defmodule Cascade.ChatDomainTest do
 
     assert %{"messages" => [%{"id" => "http-message", "author" => "alice"}]} =
              Jason.decode!(response.resp_body)
+  end
+
+  test "agent run uploads only its own avatar without note asset privileges" do
+    {vault, channel} = chat_vault(1, "Self avatar", "Room")
+    {:ok, identity} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "astra"})
+    {:ok, member} = Agents.add_to_channel(1, vault.id, channel.id, identity.id)
+    {:ok, other} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "other"})
+    {:ok, other_member} = Agents.add_to_channel(1, vault.id, channel.id, other.id)
+
+    {:ok, message} =
+      Messages.create(%{id: 1, username: "alice"}, vault.id, channel.id, %{
+        body: "Choose an avatar"
+      })
+
+    {:ok, dispatch} = Dispatches.create(1, channel.id, message, member.id)
+
+    {:ok, run} =
+      RunStore.start(vault.id, nil, "Choose an avatar", "codex",
+        owner_user_id: 1,
+        chat_dispatch_id: dispatch.id
+      )
+
+    token = Token.sign_agent(%{id: 1, username: "alice", auth_version: 0})
+    bytes = <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A>>
+    image = "data:image/png;base64," <> Base.encode64(bytes)
+
+    request = fn registration, avatar, run_id ->
+      conn(
+        :put,
+        "/api/vaults/#{vault.id}/channels/#{channel.id}/agents/#{registration}/avatar",
+        Jason.encode!(%{avatarUrl: avatar})
+      )
+      |> put_req_header("authorization", "Bearer " <> token)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-cascade-run-id", to_string(run_id))
+      |> CascadeWeb.ChatRouter.call(CascadeWeb.ChatRouter.init([]))
+    end
+
+    response = request.(member.id, image, run.id)
+    assert response.status == 200
+    url = Jason.decode!(response.resp_body)["registration"]["avatarUrl"]
+    served = conn(:get, url) |> CascadeWeb.ContentRouter.call(CascadeWeb.ContentRouter.init([]))
+    assert served.status == 200
+    assert served.resp_body == bytes
+    assert request.(other_member.id, image, run.id).status == 403
+    assert request.(member.id, image, "").status == 403
+
+    for invalid <- [
+          "data:image/png;base64,aGVsbG8=",
+          "data:image/svg+xml;base64,aGVsbG8=",
+          "data:image/png;base64,???",
+          "data:image/png;base64," <> String.duplicate("A", 2_796_208)
+        ] do
+      assert request.(member.id, invalid, run.id).status == 400
+    end
+
+    assert SQL.one("SELECT avatar_url FROM vault_agents WHERE id=?", [other.id]) == [""]
+
+    upload =
+      conn(
+        :post,
+        "/api/notes/#{channel.id}/assets",
+        Jason.encode!(%{media_type: "image/png", data: Base.encode64(bytes)})
+      )
+      |> put_req_header("authorization", "Bearer " <> token)
+      |> put_req_header("content-type", "application/json")
+      |> CascadeWeb.ContentRouter.call(CascadeWeb.ContentRouter.init([]))
+
+    assert upload.status == 403
+    assert request.(member.id, "", run.id).status == 200
   end
 
   test "agent avatars copy private note assets into a durable public image" do
@@ -1342,7 +1577,8 @@ defmodule Cascade.ChatDomainTest do
       end)
 
     assert final_message.body == List.last(replies)
-    assert {:ok, transcript} = Messages.list(channel.id, user.id, limit: 10)
+    assert {:ok, transcript} = Messages.list(channel.id, user.id, limit: 30)
+    transcript = Enum.reject(transcript, &String.starts_with?(&1.id, "agent-dispatch-"))
     assert Enum.map(transcript, & &1.body) == ["Begin the experiment." | replies]
   end
 

@@ -39,9 +39,11 @@ if config_env() != :test do
 
   repo_root = System.get_env("CASCADE_REPO_ROOT") || Path.expand("../..", __DIR__)
   data_dir = System.get_env("CASCADE_DATA_DIR") || repo_root
+  server = parse_bool.(System.get_env("CASCADE_SERVER"), true)
 
   config :cascade_elixir,
-    server: parse_bool.(System.get_env("CASCADE_SERVER"), true),
+    server: server,
+    dispatch_worker_enabled: server,
     bind_ip: parse_ip.(System.get_env("CASCADE_BIND_IP") || "127.0.0.1"),
     port: parse_integer.("API_PORT", 3000, 1..65_535),
     http_acceptors:

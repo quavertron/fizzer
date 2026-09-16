@@ -122,7 +122,8 @@ defmodule Cascade.Runs.RunnerLifecycle do
   # DomainAdapter owns registration because its reclaimed IDs are part of the
   # runner:registered response. Hub owns transport replacement and invokes this
   # callback only after that domain action has already committed.
-  def registered(_owner_id, _sid, _metadata, _previous), do: :ok
+  def registered(_owner_id, _sid, _metadata, _previous),
+    do: Cascade.Missions.DispatchReannouncer.wake()
 
   @impl true
   def disconnected(owner_id, sid, _metadata, reason) do

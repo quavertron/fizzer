@@ -39,6 +39,18 @@ defmodule Cascade.Missions.Schema do
       "TEXT NOT NULL DEFAULT ''"
     )
 
+    for {name, definition} <- [
+          {"requester_user_id", "INTEGER REFERENCES users(id)"},
+          {"requester_channel_id", "TEXT"},
+          {"target_owner_user_id", "INTEGER REFERENCES users(id)"},
+          {"target_identity_id", "TEXT"},
+          {"conversation_id", "TEXT"},
+          {"error", "TEXT"},
+          {"failed_at", "TEXT"}
+        ] do
+      SQL.ensure_column("chat_agent_dispatches", name, definition)
+    end
+
     SQL.exec("""
     CREATE INDEX IF NOT EXISTS chat_agent_dispatches_pending_idx
     ON chat_agent_dispatches(channel_id, run_id, created_at)

@@ -31,7 +31,7 @@ import { ReportDialog } from './ReportDialog';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { segmentTranscript, workTracePeek, type ChatMessageGroup } from '../chat/workTrace';
 import { useChannelMessages } from '../chat/messageStore';
-import { sortChatMessages } from '../chat/runBlocks';
+import { isLiveAgentStatus, sortChatMessages } from '../chat/runBlocks';
 import {
   CHAT_NOTE_MARKER,
 } from '../chat/shared';
@@ -41,8 +41,6 @@ export {
   canMergeChatMessages,
   CHAT_NOTE_MARKER,
   createChatAgentRegistrationId,
-  dataUrlsToRunImages,
-  mediaToRunImages,
   mergeChatPresence,
 } from '../chat/shared';
 export type {
@@ -149,7 +147,7 @@ export function shouldSnapToRecentOnSend(element: HTMLElement, threshold = 600) 
 export function isPendingAgentRunShell(message: ChatMessage | undefined) {
   if (!message) return false;
   const belongsToAgent = Boolean(message.agentId || message.registrationId || message.runId != null);
-  return belongsToAgent && (message.status === 'sending' || message.status === 'running');
+  return belongsToAgent && isLiveAgentStatus(message.status);
 }
 
 export function shouldDetachStickyForWheel(deltaY: number) {
@@ -294,7 +292,7 @@ export const ChatView = memo(function ChatView({
     // Persisted rows follow server commit order. Optimistic rows still use their
     // timestamps so a persisted agent shell cannot jump above its local prompt.
     const visible = messages.filter((message) => {
-      if (message.status === 'running' || message.status === 'sending') return true;
+      if (isLiveAgentStatus(message.status)) return true;
       if (message.status === 'failed' || message.status === 'canceled') return true;
       if (message.body?.trim()) return true;
       if (message.images?.length || message.attachments?.length) return true;

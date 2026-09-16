@@ -60,6 +60,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getHermesProfileCommand } from './hermes-profile-command.js';
 
 export const activeCliProcesses = new Map<number, ChildProcess>();
 const activePersistentCancels = new Map<number, () => void>();
@@ -615,7 +616,8 @@ export interface CliAgentResult {
  * @returns Summary text and optional session id for conversation continuity
  */
 export async function runCliAgent(opts: CliAgentOpts): Promise<CliAgentResult> {
-  assertCliAgentAvailable(opts.agent);
+  // Hermes availability depends on its profile's local executable route.
+  if (opts.agent !== 'hermes') assertCliAgentAvailable(opts.agent);
 
   // The CLIs are full agents in their own right; we only prepend a short
   // context line (which note is open), then pass the user's prompt verbatim.
@@ -2444,6 +2446,9 @@ async function runHermes(prompt: string, cwd: string, emit: AgentEmit, resumeId?
     throw new Error('Hermes profile must use letters, numbers, dots, underscores, or dashes.');
   }
   const profileArgs = profileName ? ['-p', profileName] : [];
+  const profileCommand = getHermesProfileCommand(profileName);
+  if (!profileCommand) assertCliAgentAvailable('hermes');
+  const command = profileCommand ?? getCliAgentBin('hermes');
   const postureArgs = [...(yolo ? ['--yolo'] : []), ...(safeMode ? ['--safe-mode'] : [])];
   const args = resumeId
     ? [...profileArgs, 'chat', '-Q', '--resume', resumeId, '-q', prompt, ...modelArgs, ...postureArgs]
@@ -2502,7 +2507,7 @@ async function runHermes(prompt: string, cwd: string, emit: AgentEmit, resumeId?
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       summaryText = await driveHermesProcess(
-        getCliAgentBin('hermes'),
+        command,
         args,
         cwd,
         onStdoutLine,

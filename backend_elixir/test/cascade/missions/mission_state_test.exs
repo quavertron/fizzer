@@ -9,6 +9,12 @@ defmodule Cascade.Missions.MissionStateTest do
   alias Cascade.Runs.Store, as: RunStore
 
   setup do
+    :ok = Supervisor.terminate_child(Cascade.Supervisor, Cascade.Missions.DispatchReannouncer)
+
+    on_exit(fn ->
+      Supervisor.restart_child(Cascade.Supervisor, Cascade.Missions.DispatchReannouncer)
+    end)
+
     suffix = System.unique_integer([:positive])
     user_id = suffix + 500_000
     username = "mission_owner_#{suffix}"
@@ -127,6 +133,7 @@ defmodule Cascade.Missions.MissionStateTest do
     assert Enum.at(settled.update.mission.tasks, 1).queueReason == "dependency-attention"
     assert settled.wake.coordinatorRegistrationId == ctx.coordinator.id
     assert {:ok, ready} = Store.claim_wake(created.mission.id)
+    assert ready.generation == settled.wake.generation
     assert {:ok, _wake} = Scheduler.enqueue_wake(ready)
     assert {:ok, nil} == Store.claim_wake(created.mission.id)
 
@@ -453,8 +460,7 @@ defmodule Cascade.Missions.MissionStateTest do
 
     before = SQL.one("SELECT COUNT(*) FROM chat_messages WHERE channel_id=?", [ctx.channel.id])
 
-    assert {:noreply, 60_000} =
-             Cascade.Missions.DispatchReannouncer.handle_info(:reannounce, 60_000)
+    Cascade.Missions.DispatchReannouncer.recover_missions()
 
     assert SQL.one("SELECT wake_sent FROM chat_missions WHERE id=?", [created.mission.id]) == [0]
 
@@ -1140,6 +1146,12 @@ defmodule Cascade.Missions.MissionStateTest do
 
   test "schema creates every table and index with one-statement execution and upgrades legacy rows",
        ctx do
+    :ok = Supervisor.terminate_child(Cascade.Supervisor, Cascade.Missions.DispatchReannouncer)
+
+    on_exit(fn ->
+      Supervisor.restart_child(Cascade.Supervisor, Cascade.Missions.DispatchReannouncer)
+    end)
+
     for table <-
           ~w(chat_mission_recovery_evidence chat_mission_events chat_mission_tasks chat_missions chat_agent_dispatches) do
       SQL.exec("DROP TABLE IF EXISTS #{table}")
@@ -1185,7 +1197,11 @@ defmodule Cascade.Missions.MissionStateTest do
     assert :ok == MissionSchema.ensure!()
 
     assert Enum.sort(SQL.columns("chat_mission_tasks")) |> Enum.member?("depends_on_json")
-    assert "reasoning_effort" in SQL.columns("chat_agent_dispatches")
+
+    for column <-
+          ~w(reasoning_effort requester_user_id requester_channel_id target_owner_user_id target_identity_id conversation_id error failed_at) do
+      assert column in SQL.columns("chat_agent_dispatches")
+    end
 
     for object <-
           ~w(chat_agent_dispatches_pending_idx chat_missions_channel_idx chat_mission_tasks_mission_idx chat_mission_tasks_dispatch_idx chat_mission_tasks_run_idx chat_mission_events_mission_idx) do

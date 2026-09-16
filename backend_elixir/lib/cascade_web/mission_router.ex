@@ -3,7 +3,6 @@ defmodule CascadeWeb.MissionRouter do
 
   use CascadeWeb.DomainDispatch
   import Plug.Conn
-  require Logger
 
   alias Cascade.Chat.Events
   alias Cascade.Missions.{Dispatches, Scheduler, Store}
@@ -241,21 +240,7 @@ defmodule CascadeWeb.MissionRouter do
   defp safe_schedule(mission_id, conn) do
     scheduled = Scheduler.schedule(mission_id, events: callback(conn, :events))
 
-    Enum.each(scheduled.dispatches, fn item ->
-      update = item.update
-
-      case CascadeWeb.OrchestrationController.claim_mission_dispatch(
-             update.createdBy,
-             update.channelId,
-             item.dispatch.id
-           ) do
-        {:ok, _run} ->
-          :ok
-
-        {:retry, reason} ->
-          Logger.warning("mission dispatch queued for retry: #{inspect(reason)}")
-      end
-    end)
+    Cascade.Missions.DispatchReannouncer.wake()
 
     {:ok, scheduled}
   rescue

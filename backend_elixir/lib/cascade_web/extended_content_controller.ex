@@ -2,10 +2,10 @@ defmodule CascadeWeb.ExtendedContentController do
   @moduledoc false
 
   import Plug.Conn
+  import CascadeWeb.ContentHTTP
 
-  alias Cascade.Auth.Session
   alias Cascade.Chat.Invites
-  alias Cascade.Content.{Privacy, Store}
+  alias Cascade.Content.Privacy
   alias Cascade.{Evolution, Publishing, Scratchpad}
   alias Cascade.Search.QMD
   alias CascadeWeb.JSON
@@ -22,64 +22,52 @@ defmodule CascadeWeb.ExtendedContentController do
   end
 
   def list_journal(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Could not list journal", fn ->
-        conn = fetch_query_params(conn)
+    authenticated(conn, [error: "Could not list journal"], fn conn, auth ->
+      conn = fetch_query_params(conn)
 
-        entries =
-          Scratchpad.list_journal_entries(auth.user.id, vault_id,
-            agent_key: conn.query_params["agent"],
-            unconsolidated_only: conn.query_params["unconsolidated"] in ["1", "true"],
-            since_id: conn.query_params["since"],
-            limit: conn.query_params["limit"]
-          )
+      entries =
+        Scratchpad.list_journal_entries(auth.user.id, vault_id,
+          agent_key: conn.query_params["agent"],
+          unconsolidated_only: conn.query_params["unconsolidated"] in ["1", "true"],
+          since_id: conn.query_params["since"],
+          limit: conn.query_params["limit"]
+        )
 
-        JSON.send(conn, 200, %{entries: entries})
-      end)
+      JSON.send(conn, 200, %{entries: entries})
     end)
   end
 
   def consolidate(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Could not mark consolidated", fn ->
-        marked =
-          Scratchpad.mark_journal_consolidated(auth.user.id, vault_id,
-            through_id: body_value(conn, "throughId"),
-            agent_key: body_value(conn, "agentKey")
-          )
+    authenticated(conn, [error: "Could not mark consolidated"], fn conn, auth ->
+      marked =
+        Scratchpad.mark_journal_consolidated(auth.user.id, vault_id,
+          through_id: body_value(conn, "throughId"),
+          agent_key: body_value(conn, "agentKey")
+        )
 
-        JSON.send(conn, 200, %{ok: true, marked: marked})
-      end)
+      JSON.send(conn, 200, %{ok: true, marked: marked})
     end)
   end
 
   def scratchpad_status(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      case Store.get_vault(vault_id, auth.user.id) do
-        nil ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
-
-        vault ->
-          conn = fetch_query_params(conn)
-          JSON.send(conn, 200, %{status: Scratchpad.status(vault.id, conn.query_params["agent"])})
-      end
+    content(conn, {:vault, vault_id}, fn conn, _auth, vault ->
+      conn = fetch_query_params(conn)
+      JSON.send(conn, 200, %{status: Scratchpad.status(vault.id, conn.query_params["agent"])})
     end)
   end
 
   def list_threads(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Could not list open threads", fn ->
-        conn = fetch_query_params(conn)
+    authenticated(conn, [error: "Could not list open threads"], fn conn, auth ->
+      conn = fetch_query_params(conn)
 
-        threads =
-          Scratchpad.list_open_threads(auth.user.id, vault_id,
-            agent_key: conn.query_params["agent"],
-            include_closed: conn.query_params["closed"] in ["1", "true"],
-            limit: conn.query_params["limit"]
-          )
+      threads =
+        Scratchpad.list_open_threads(auth.user.id, vault_id,
+          agent_key: conn.query_params["agent"],
+          include_closed: conn.query_params["closed"] in ["1", "true"],
+          limit: conn.query_params["limit"]
+        )
 
-        JSON.send(conn, 200, %{threads: threads})
-      end)
+      JSON.send(conn, 200, %{threads: threads})
     end)
   end
 
@@ -120,14 +108,12 @@ defmodule CascadeWeb.ExtendedContentController do
   end
 
   def list_skills(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Could not list skills", fn ->
-        conn = fetch_query_params(conn)
+    authenticated(conn, [error: "Could not list skills"], fn conn, auth ->
+      conn = fetch_query_params(conn)
 
-        JSON.send(conn, 200, %{
-          skills: Scratchpad.list_skill_notes(auth.user.id, vault_id, conn.query_params["agent"])
-        })
-      end)
+      JSON.send(conn, 200, %{
+        skills: Scratchpad.list_skill_notes(auth.user.id, vault_id, conn.query_params["agent"])
+      })
     end)
   end
 
@@ -142,184 +128,150 @@ defmodule CascadeWeb.ExtendedContentController do
   end
 
   def promote(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Could not promote note", fn ->
-        result =
-          Scratchpad.promote_note(auth.user.id, vault_id, %{
-            note_ref: body_value(conn, "noteRef", ""),
-            agent_key: body_value(conn, "agentKey")
-          })
-
-        JSON.send(conn, 200, %{
-          note: %{id: result.note.id, title: result.note.title},
-          kind: result.kind
+    authenticated(conn, [error: "Could not promote note"], fn conn, auth ->
+      result =
+        Scratchpad.promote_note(auth.user.id, vault_id, %{
+          note_ref: body_value(conn, "noteRef", ""),
+          agent_key: body_value(conn, "agentKey")
         })
-      end)
+
+      JSON.send(conn, 200, %{
+        note: %{id: result.note.id, title: result.note.title},
+        kind: result.kind
+      })
     end)
   end
 
   def recall(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      case Store.get_vault(vault_id, auth.user.id) do
-        nil ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
+    content(conn, {:vault, vault_id}, fn conn, auth, vault ->
+      conn = fetch_query_params(conn)
+      query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
 
-        vault ->
-          conn = fetch_query_params(conn)
-          query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
+      if query == "" do
+        JSON.send(conn, 200, %{hits: []})
+      else
+        safely(conn, "Recall failed", fn ->
+          ranked_ids =
+            QMD.search(vault.id, query, scope: "notes", limit: 40)
+            |> Enum.filter(&(&1.type == "note"))
+            |> Enum.map(& &1.id)
 
-          if query == "" do
-            JSON.send(conn, 200, %{hits: []})
-          else
-            safely(conn, "Recall failed", fn ->
-              ranked_ids =
-                QMD.search(vault.id, query, scope: "notes", limit: 40)
-                |> Enum.filter(&(&1.type == "note"))
-                |> Enum.map(& &1.id)
+          hits =
+            Scratchpad.recall(auth.user.id, vault.id, %{
+              query: query,
+              agent_key: conn.query_params["agent"],
+              limit: conn.query_params["limit"],
+              ranked_ids: ranked_ids
+            })
 
-              hits =
-                Scratchpad.recall(auth.user.id, vault.id, %{
-                  query: query,
-                  agent_key: conn.query_params["agent"],
-                  limit: conn.query_params["limit"],
-                  ranked_ids: ranked_ids
-                })
-
-              JSON.send(conn, 200, %{hits: hits})
-            end)
-          end
+          JSON.send(conn, 200, %{hits: hits})
+        end)
       end
     end)
   end
 
   def backfill_backlinks(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      case Store.get_vault(vault_id, auth.user.id) do
-        nil ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
+    content(conn, {:vault, vault_id}, [error: "Backfill failed"], fn conn, _auth, vault ->
+      result =
+        Evolution.backfill_chat_note_backlinks(vault.id,
+          after_rowid: body_value(conn, "afterRowid", 0),
+          limit: body_value(conn, "limit", 500)
+        )
 
-        vault ->
-          safely(conn, "Backfill failed", fn ->
-            result =
-              Evolution.backfill_chat_note_backlinks(vault.id,
-                after_rowid: body_value(conn, "afterRowid", 0),
-                limit: body_value(conn, "limit", 500)
-              )
-
-            JSON.send(conn, 200, result)
-          end)
-      end
+      JSON.send(conn, 200, result)
     end)
   end
 
   def distill(conn, vault_id, channel_id) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, "Distill failed", fn ->
-        note_ref =
-          body_value(conn, "note") || body_value(conn, "noteId") || body_value(conn, "noteRef")
+    authenticated(conn, [error: "Distill failed"], fn conn, auth ->
+      note_ref =
+        body_value(conn, "note") || body_value(conn, "noteId") || body_value(conn, "noteRef")
 
-        result =
-          Evolution.distill_chat_to_note(auth.user.id, vault_id, channel_id, %{
-            mode: body_value(conn, "mode", "create"),
-            from_message_id: body_value(conn, "fromMessageId"),
-            to_message_id: body_value(conn, "toMessageId"),
-            last_n: body_value(conn, "lastN"),
-            note_ref: note_ref,
-            title: body_value(conn, "title"),
-            confirm: body_value(conn, "confirm") == true,
-            by: auth.user.username
-          })
+      result =
+        Evolution.distill_chat_to_note(auth.user.id, vault_id, channel_id, %{
+          mode: body_value(conn, "mode", "create"),
+          from_message_id: body_value(conn, "fromMessageId"),
+          to_message_id: body_value(conn, "toMessageId"),
+          last_n: body_value(conn, "lastN"),
+          note_ref: note_ref,
+          title: body_value(conn, "title"),
+          confirm: body_value(conn, "confirm") == true,
+          by: auth.user.username
+        })
 
-        response = if agent?(auth), do: Privacy.sanitize_json(result), else: result
-        JSON.send(conn, if(result.status == "needs_confirm", do: 202, else: 200), response)
-      end)
+      response = if agent?(auth), do: Privacy.sanitize_json(result), else: result
+      JSON.send(conn, if(result.status == "needs_confirm", do: 202, else: 200), response)
     end)
   end
 
   def get_agent_memory(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      case Store.get_vault(vault_id, auth.user.id) do
-        nil ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
+    content(conn, {:vault, vault_id}, [error: "Agent memory failed"], fn conn, auth, vault ->
+      conn = fetch_query_params(conn)
+      Evolution.ensure_agent_memory_folders(vault.id, auth.user.id)
 
-        vault ->
-          safely(conn, "Agent memory failed", fn ->
-            conn = fetch_query_params(conn)
-            Evolution.ensure_agent_memory_folders(vault.id, auth.user.id)
+      injection =
+        Evolution.build_agent_memory_injection(vault.id,
+          channel_topic: conn.query_params["topic"],
+          agent_key: conn.query_params["agent"]
+        )
 
-            injection =
-              Evolution.build_agent_memory_injection(vault.id,
-                channel_topic: conn.query_params["topic"],
-                agent_key: conn.query_params["agent"]
-              )
-
-            JSON.send(conn, 200, %{
-              enabled: Evolution.agent_memory_enabled?(vault.id),
-              injection: injection
-            })
-          end)
-      end
+      JSON.send(conn, 200, %{
+        enabled: Evolution.agent_memory_enabled?(vault.id),
+        injection: injection
+      })
     end)
   end
 
   def update_agent_memory(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      cond do
-        Store.get_writable_vault(vault_id, auth.user.id) ->
-          safely(conn, "Agent memory update failed", fn ->
-            if is_boolean(body_value(conn, "enabled")),
-              do: Evolution.set_agent_memory_enabled(vault_id, body_value(conn, "enabled"))
+    content(
+      conn,
+      {:vault, vault_id},
+      [
+        write: true,
+        viewer: "Viewer role cannot edit agent memory",
+        error: "Agent memory update failed"
+      ],
+      fn conn, auth, _vault ->
+        if is_boolean(body_value(conn, "enabled")),
+          do: Evolution.set_agent_memory_enabled(vault_id, body_value(conn, "enabled"))
 
-            memory = body_value(conn, "remember") || body_value(conn, "body")
+        memory = body_value(conn, "remember") || body_value(conn, "body")
 
-            if memory do
-              note =
-                Evolution.create_agent_memory_note(auth.user.id, vault_id, %{
-                  title: body_value(conn, "title"),
-                  body: memory,
-                  agent_key: body_value(conn, "agent") || body_value(conn, "agentKey"),
-                  listed: body_value(conn, "listed") == true
-                })
+        if memory do
+          note =
+            Evolution.create_agent_memory_note(auth.user.id, vault_id, %{
+              title: body_value(conn, "title"),
+              body: memory,
+              agent_key: body_value(conn, "agent") || body_value(conn, "agentKey"),
+              listed: body_value(conn, "listed") == true
+            })
 
-              JSON.send(conn, 201, %{
-                enabled: Evolution.agent_memory_enabled?(vault_id),
-                note: Privacy.redact_note(note, agent?(auth))
-              })
-            else
-              Evolution.ensure_agent_memory_folders(vault_id, auth.user.id)
-              JSON.send(conn, 200, %{enabled: Evolution.agent_memory_enabled?(vault_id)})
-            end
-          end)
-
-        Store.get_vault(vault_id, auth.user.id) ->
-          JSON.send(conn, 403, %{error: "Viewer role cannot edit agent memory"})
-
-        true ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
+          JSON.send(conn, 201, %{
+            enabled: Evolution.agent_memory_enabled?(vault_id),
+            note: Privacy.redact_note(note, agent?(auth))
+          })
+        else
+          Evolution.ensure_agent_memory_folders(vault_id, auth.user.id)
+          JSON.send(conn, 200, %{enabled: Evolution.agent_memory_enabled?(vault_id)})
+        end
       end
-    end)
+    )
   end
 
   def get_publish(conn, note_id) do
-    authenticated(conn, fn conn, auth ->
-      note = Store.get_note(note_id)
+    content(conn, {:note, note_id}, fn conn, _auth, _note ->
+      case Publishing.get_info(note_id) do
+        nil ->
+          JSON.send(conn, 200, %{published: false})
 
-      if note && Store.get_vault(note.vault_id, auth.user.id) do
-        case Publishing.get_info(note_id) do
-          nil ->
-            JSON.send(conn, 200, %{published: false})
-
-          info ->
-            JSON.send(conn, 200, %{
-              published: true,
-              slug: info.slug,
-              url: "#{Publishing.public_base_url(conn)}/p/#{info.slug}",
-              published_at: info.published_at,
-              updated_at: info.updated_at
-            })
-        end
-      else
-        JSON.send(conn, 404, %{error: "Note not found"})
+        info ->
+          JSON.send(conn, 200, %{
+            published: true,
+            slug: info.slug,
+            url: "#{Publishing.public_base_url(conn)}/p/#{info.slug}",
+            published_at: info.published_at,
+            updated_at: info.updated_at
+          })
       end
     end)
   end
@@ -481,65 +433,35 @@ defmodule CascadeWeb.ExtendedContentController do
   end
 
   def search(conn, vault_id) do
-    authenticated(conn, fn conn, auth ->
-      case Store.get_vault(vault_id, auth.user.id) do
-        nil ->
-          JSON.send(conn, 404, %{error: "Vault not found"})
+    content(conn, {:vault, vault_id}, fn conn, auth, vault ->
+      conn = fetch_query_params(conn)
+      query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
 
-        vault ->
-          conn = fetch_query_params(conn)
-          query = conn.query_params |> Map.get("q", "") |> to_string() |> String.trim()
+      if query == "" do
+        JSON.send(conn, 200, %{results: []})
+      else
+        safely(conn, "Search failed", fn ->
+          scope =
+            if conn.query_params["scope"] in ["notes", "chat", "all"],
+              do: conn.query_params["scope"],
+              else: "notes"
 
-          if query == "" do
-            JSON.send(conn, 200, %{results: []})
-          else
-            safely(conn, "Search failed", fn ->
-              scope =
-                if conn.query_params["scope"] in ["notes", "chat", "all"],
-                  do: conn.query_params["scope"],
-                  else: "notes"
+          results =
+            QMD.search(vault.id, query,
+              scope: scope,
+              limit: conn.query_params["limit"] || 40,
+              redact_private: agent?(auth)
+            )
 
-              results =
-                QMD.search(vault.id, query,
-                  scope: scope,
-                  limit: conn.query_params["limit"] || 40,
-                  redact_private: agent?(auth)
-                )
-
-              JSON.send(conn, 200, %{results: results})
-            end)
-          end
+          JSON.send(conn, 200, %{results: results})
+        end)
       end
     end)
   end
 
   defp scratchpad_action(conn, error_message, status, key, fun) do
-    authenticated(conn, fn conn, auth ->
-      safely(conn, error_message, fn ->
-        JSON.send(conn, status, %{key => fun.(auth.user.id)})
-      end)
+    authenticated(conn, [error: error_message], fn conn, auth ->
+      JSON.send(conn, status, %{key => fun.(auth.user.id)})
     end)
   end
-
-  defp authenticated(conn, callback) do
-    case Session.authenticate(conn) do
-      {:ok, authentication} -> callback.(conn, authentication)
-      _ -> JSON.send(conn, 401, %{error: "Invalid or expired token"})
-    end
-  end
-
-  defp safely(conn, fallback, callback, statuses \\ %{}) do
-    callback.()
-  rescue
-    error ->
-      message = if is_exception(error), do: Exception.message(error), else: fallback
-
-      JSON.send(conn, Map.get(statuses, message, 400), %{
-        error: if(message == "", do: fallback, else: message)
-      })
-  end
-
-  defp body(conn), do: if(is_map(conn.body_params), do: conn.body_params, else: %{})
-  defp body_value(conn, key, default \\ nil), do: Map.get(body(conn), key, default)
-  defp agent?(auth), do: auth.access == "agent"
 end

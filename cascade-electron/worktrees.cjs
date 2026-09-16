@@ -152,8 +152,8 @@ async function defaultBaseBranch(root) {
 }
 
 /** Live checkout tip — not a possibly stale local master/main ref. */
-async function currentStartCommit(primaryRoot) {
-  return git(['rev-parse', 'HEAD'], primaryRoot);
+async function currentStartCommit(root) {
+  return git(['rev-parse', 'HEAD'], root);
 }
 
 /**
@@ -380,7 +380,7 @@ async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch,
   if (fs.existsSync(target)) return { ok: false, error: `Workspace directory already exists: ${target}` };
 
   const base = baseBranch || await defaultBaseBranch(repo.primaryRoot);
-  const start = await currentStartCommit(repo.primaryRoot);
+  const start = await currentStartCommit(repo.root);
   if (!start.ok || !start.stdout) return { ok: false, error: 'Could not resolve current HEAD' };
 
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -390,6 +390,7 @@ async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch,
   rememberWorkspace({
     path: target,
     repoRoot: repo.primaryRoot,
+    sourceRoot: repo.root,
     repo: repo.name,
     branch,
     baseBranch: base,
@@ -469,7 +470,7 @@ async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId
   const name = normalizeSlug(expectedBranch.slice('cascade/'.length));
   if (!name) return { ok: false, error: 'Managed task branch has no usable workspace name' };
   return createWorkspace({
-    dir: repo.primaryRoot,
+    dir: repo.root,
     slug: name,
     branch: expectedBranch,
     baseBranch,
@@ -478,15 +479,18 @@ async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId
   });
 }
 
-/** Empty worker clones follow the live checkout; clones with work stay put. */
+/** Empty worker clones follow the requested source checkout; clones with work stay put. */
 async function rebaseUnusedWorkspace(entry, status) {
   const unused = !status.dirty && (status.commits || []).length === 0
     && (!status.head || status.head === entry.baseCommit);
   if (!unused) return { ok: true, rebased: false, baseCommit: entry.baseCommit };
 
-  const repo = await resolveRepo(entry.path);
-  if (!repo.isRepo) return { ok: false, error: repo.error || 'Owned workspace is not a git repository' };
-  const start = await currentStartCommit(repo.primaryRoot);
+  const repo = await resolveRepo(entry.sourceRoot || entry.repoRoot);
+  if (!repo.isRepo) return { ok: false, error: repo.error || 'Source workspace is not a git repository' };
+  if (path.resolve(repo.primaryRoot) !== path.resolve(entry.repoRoot)) {
+    return { ok: false, error: 'Source workspace belongs to another repository' };
+  }
+  const start = await currentStartCommit(repo.root);
   if (!start.ok || !start.stdout) return { ok: false, error: 'Could not resolve current HEAD' };
   if (start.stdout === entry.baseCommit) return { ok: true, rebased: false, baseCommit: entry.baseCommit };
 

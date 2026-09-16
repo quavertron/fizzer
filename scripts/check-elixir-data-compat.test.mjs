@@ -237,6 +237,90 @@ test('state-based recovery migration preserves failed history and rejects invent
   }
 });
 
+function dispatchAdmissionFixture() {
+  const files = chatBackfillFixture();
+  normalizeChatMessages(files.before, 'mission_task_id');
+  const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/missions/schema.ex', import.meta.url), 'utf8');
+  const ddl = schema.match(/CREATE TABLE IF NOT EXISTS chat_agent_dispatches \([\s\S]*?\n    \)/u)?.[0];
+  const columns = schema.match(/for \{name, definition\} <- \[([\s\S]*?)\] do\s+SQL.ensure_column\("chat_agent_dispatches"/u)?.[1];
+  assert.ok(ddl && columns, 'current dispatch schema and admission additions must be present');
+  const additions = [...columns.matchAll(/\{"([^"]+)", "([^"]+)"\}/gu)]
+    .map(([, name, definition]) => `ALTER TABLE chat_agent_dispatches ADD COLUMN ${name} ${definition};`)
+    .join('\n');
+  const db = new Database(files.before);
+  db.exec(ddl);
+  db.exec(`
+    CREATE INDEX chat_agent_dispatches_pending_idx ON chat_agent_dispatches(channel_id, run_id, created_at);
+    INSERT INTO chat_agent_dispatches(rowid,id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at)
+    VALUES (41,'dispatch-z','message-1','note-1','agent-1',900,'high','2026-08-11 00:00:00'),
+           (97,'dispatch-a','message-1','note-1','agent-2',NULL,'','2026-08-12 00:00:00');
+  `);
+  db.close();
+  fs.copyFileSync(files.before, files.after);
+  return { ...files, additions };
+}
+
+test('dispatch admission migration preserves rows and materialized schemas but requires maintenance', async (t) => {
+  for (const materialized of [false, true]) {
+    await t.test(materialized ? 'materialized old schema' : 'historical rows and rowids', () => {
+      const files = dispatchAdmissionFixture();
+      try {
+        if (materialized) {
+          materializeSchemaFingerprint(readSchemaFingerprint(files.before), files.before);
+          fs.copyFileSync(files.before, files.after);
+        }
+        const db = new Database(files.after);
+        db.exec(files.additions);
+        db.close();
+        const result = runComparison(files);
+        assert.equal(result.ok, true, result.failures.join('\n'));
+        assert.equal(runComparison({ ...files, requireIdentical: true }).ok, false);
+        assert.deepEqual(runComparison({ ...files, schemaOnly: true }).failures, ['database schema changed']);
+        assert.equal(runComparison({ ...files, before: files.after }).ok, true);
+      } finally {
+        fs.rmSync(files.directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('dispatch admission migration rejects schema, default, backfill, and historical data drift', async (t) => {
+  const changes = {
+    'wrong type': (sql) => sql.replace('requester_channel_id TEXT', 'requester_channel_id INTEGER'),
+    'wrong default': (sql) => sql.replace('conversation_id TEXT', "conversation_id TEXT DEFAULT ''"),
+    'wrong nullability': (sql) => sql.replace('error TEXT', "error TEXT NOT NULL DEFAULT ''"),
+    'missing foreign key': (sql) => sql.replace('INTEGER REFERENCES users(id)', 'INTEGER'),
+    'wrong foreign key action': (sql) => sql.replace('REFERENCES users(id)', 'REFERENCES users(id) ON DELETE CASCADE'),
+    'missing column': (sql) => sql.replace(/ALTER TABLE chat_agent_dispatches ADD COLUMN failed_at TEXT;/u, ''),
+    'extra column': (sql) => `${sql} ALTER TABLE chat_agent_dispatches ADD COLUMN unreviewed TEXT;`,
+    'historical value': (sql) => `${sql} UPDATE chat_agent_dispatches SET reasoning_effort='low';`,
+    'historical rowid': (sql) => `${sql} UPDATE chat_agent_dispatches SET rowid=rowid+100;`,
+    'removed row': (sql) => `${sql} DELETE FROM chat_agent_dispatches WHERE id='dispatch-a';`,
+    ...Object.fromEntries([
+      ['requester_user_id', '1'], ['requester_channel_id', "'note-1'"],
+      ['target_owner_user_id', '1'], ['target_identity_id', "'agent-1'"],
+      ['conversation_id', "''"], ['error', "''"], ['failed_at', "'2026-08-11'"],
+    ].map(([column, value]) => [`${column} backfill`, (sql) => (
+      `${sql} UPDATE chat_agent_dispatches SET ${column}=${value} WHERE id='dispatch-a';`
+    )])),
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    await t.test(name, () => {
+      const files = dispatchAdmissionFixture();
+      try {
+        const db = new Database(files.after);
+        db.exec(change(files.additions));
+        db.close();
+        const result = runComparison(files);
+        assert.ok(result.failures.some((failure) => failure.startsWith('table changed: chat_agent_dispatches')));
+      } finally {
+        fs.rmSync(files.directory, { recursive: true, force: true });
+      }
+    });
+
+  }
+});
+
 test('rolling eligibility requires exact data and corpus identity', () => {
   const files = fixture();
   try {

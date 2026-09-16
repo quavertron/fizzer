@@ -5,6 +5,7 @@ Enum.each([test_db, test_db <> "-shm", test_db <> "-wal"], &File.rm/1)
 
 config :cascade_elixir,
   server: false,
+  dispatch_worker_enabled: true,
   network_mode: false,
   qmd_worker_enabled: false,
   client_dist_dir: Path.join(System.tmp_dir!(), "cascade_elixir_no_static")

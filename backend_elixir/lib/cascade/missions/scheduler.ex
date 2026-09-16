@@ -72,35 +72,6 @@ defmodule Cascade.Missions.Scheduler do
     result
   end
 
-  def reannounce_pending(opts \\ []) do
-    events = Keyword.get(opts, :events) || Cascade.Chat.Events.Noop
-
-    pending_dispatches()
-    |> Enum.reduce(0, fn [dispatch_id, user_id, vault_id, channel_id], count ->
-      local_channel_id =
-        case Store.owner_route(user_id, vault_id, channel_id) do
-          {:ok, route} -> route.localChannelId
-          _ -> channel_id
-        end
-
-      case Dispatches.get(user_id, local_channel_id, dispatch_id) do
-        {:ok, dispatch} ->
-          Events.emit(events, %{
-            event: "vault:chatMessageUpdated",
-            vaultId: vault_id,
-            channelId: channel_id,
-            message: dispatch.message,
-            dispatches: [dispatch]
-          })
-
-          count + 1
-
-        _ ->
-          count
-      end
-    end)
-  end
-
   def pending_dispatches do
     SQL.all("""
     SELECT d.id,m.created_by,m.vault_id,m.channel_id

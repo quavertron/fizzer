@@ -161,13 +161,23 @@ async function updateDesktopInPlace() {
   if (unmerged.trim()) {
     throw new Error(`Resolve existing checkout conflicts before retrying Update. Saved work remains in git stash list.\n${unmerged.trim()}`);
   }
-  const pullArgs = ['pull', '--rebase'];
+  let upstream;
   try {
-    await runUpdateCommand(gitBin, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], root);
+    upstream = (await runUpdateCommand(gitBin, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], root)).trim();
   } catch {
-    // Local launcher branches may have no tracking configuration. Follow the
-    // release branch in that case, while respecting explicitly tracked branches.
-    pullArgs.push('origin', 'master');
+    upstream = 'origin/master';
+  }
+  await runUpdateCommand(gitBin, ['fetch', ...(upstream === 'origin/master' ? ['origin'] : [])], root);
+  const target = (await runUpdateCommand(gitBin, ['rev-parse', upstream], root)).trim();
+  // A stash snapshot writes Git objects without removing work or changing the
+  // index. Check the incoming merge before touching the shared checkout.
+  const snapshot = (await runUpdateCommand(gitBin, ['stash', 'create'], root)).trim();
+  if (snapshot) {
+    try {
+      await runUpdateCommand(gitBin, ['merge-tree', '--write-tree', '--merge-base=HEAD', target, snapshot], root);
+    } catch (error) {
+      throw new Error(`Update conflicts with local work. Checkout was left unchanged; reconcile these changes before retrying Update.\n${error.message}`);
+    }
   }
 
   // The desktop shell loads its UI from its selected instance, but its local
@@ -186,9 +196,7 @@ async function updateDesktopInPlace() {
     : null;
   let updateError;
   try {
-    await runUpdateCommand(gitBin, pullArgs, root);
-    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    await runUpdateCommand(npmBin, ['run', 'build'], root);
+    await runUpdateCommand(gitBin, ['rebase', target], root);
   } catch (error) {
     // A conflicted rebase must not remain half-open when we restore the user's
     // uncommitted work below.
@@ -210,6 +218,8 @@ async function updateDesktopInPlace() {
     if (latest === backup) await runUpdateCommand(gitBin, ['stash', 'drop', 'stash@{0}'], root);
   }
   if (updateError) throw updateError;
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  await runUpdateCommand(npmBin, ['run', 'build'], root);
 }
 
 /** Reload every renderer without terminating the Electron main process. */
@@ -712,6 +722,23 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
+
+  // Explicitly provisioned owner-private API; never widen the TCP helper proxy.
+  if (!app.isPackaged && process.platform !== 'win32' && process.env.FIZZER_EXTERNAL_AGENT_ACCESS === '1') {
+    const { startExternalAgentAccess } = require('./external-agent-access.cjs');
+    void startExternalAgentAccess({
+      enabled: true,
+      directory: process.env.FIZZER_EXTERNAL_AGENT_DIRECTORY,
+      origin: INSTANCE_ORIGIN,
+      vaultId: process.env.FIZZER_EXTERNAL_AGENT_VAULT,
+      ownerId: Number(process.env.FIZZER_EXTERNAL_AGENT_OWNER),
+      agentId: 'hermes', author: 'Along (AI agent)',
+      browserFetch: (url, init) => session.defaultSession.fetch(url, init),
+      agentFetch: (url, init) => session.defaultSession.fetch(url, init),
+    }).then(service => {
+      app.once('will-quit', () => { void service.close(); });
+    }).catch(() => console.error('[external-agent-access] startup refused'));
+  }
 
   // Housekeeping after first paint. Reaping imports the CLI agent module and
   // prune walks every registered worktree — neither should hold the window.

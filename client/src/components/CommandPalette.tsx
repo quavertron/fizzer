@@ -14,10 +14,10 @@
  * @component
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import type { NoteSummary } from '../api';
-import { Search, Sparkles, FileText } from 'lucide-react';
-import { moveListSelection, useListSelection } from '../ui/listNavigation';
+import { Sparkles, FileText } from 'lucide-react';
+import { SearchListOverlay } from './SearchListOverlay';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -35,18 +35,7 @@ export function CommandPalette({
   onCreateNote,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
-  const [highlightIndex, setHighlightIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  // Reset on open
-  useEffect(() => {
-    if (open) {
-      setQuery('');
-      setHighlightIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  }, [open]);
+  useEffect(() => { if (open) setQuery(''); }, [open]);
 
   // Fuzzy filter
   const filtered = query.trim()
@@ -58,124 +47,55 @@ export function CommandPalette({
       })
     : notes;
 
-  useListSelection(listRef, highlightIndex, filtered.length, setHighlightIndex);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault();
-          setHighlightIndex((i) => moveListSelection(i, 1, filtered.length));
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          setHighlightIndex((i) => moveListSelection(i, -1, filtered.length));
-          break;
-        case 'Enter':
-          e.preventDefault();
-          if (filtered[highlightIndex]) {
-            onSelectNote(filtered[highlightIndex].id);
-            onClose();
-          } else if (query.trim()) {
-            onCreateNote();
-            onClose();
-          }
-          break;
-        case 'Escape':
-          e.preventDefault();
-          onClose();
-          break;
-      }
-    },
-    [filtered, highlightIndex, onSelectNote, onClose, onCreateNote, query],
-  );
-
-  if (!open) return null;
+  const createNote = () => { onCreateNote(); onClose(); };
 
   return (
-    <div
-      className="overlay-backdrop"
-      id="command-palette-backdrop"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <section className="command-palette" id="command-palette" role="dialog" aria-modal="true" aria-label="Open anything">
-        <div className="command-palette-input-wrap">
-          <span className="search-icon"><Search size={16} /></span>
-          <input
-            ref={inputRef}
-            id="command-palette-input"
-            className="command-palette-input"
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setHighlightIndex(0);
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder="Search notes or type to create..."
-          />
-        </div>
-
-        <div className="command-palette-results" ref={listRef}>
-          {filtered.length === 0 && query.trim() && (
-            <button
-              className="command-palette-item highlighted"
-              onClick={() => {
-                onCreateNote();
-                onClose();
-              }}
-            >
-              <span className="item-icon"><Sparkles size={16} /></span>
-              <span className="item-info">
-                <span className="item-title">Create &quot;{query}&quot;</span>
-                <span className="item-path">New note</span>
-              </span>
-            </button>
-          )}
-
-          {filtered.length === 0 && !query.trim() && (
-            <div className="palette-empty">
-              Start typing to search your notes...
-            </div>
-          )}
-
-          {filtered.map((note, index) => (
-            <button
-              key={note.id}
-              id={`palette-item-${note.id}`}
-              className={`command-palette-item ${index === highlightIndex ? 'highlighted' : ''}`}
-              onClick={() => {
-                onSelectNote(note.id);
-                onClose();
-              }}
-              onMouseEnter={() => setHighlightIndex(index)}
-            >
-              <span className="item-icon"><FileText size={16} /></span>
-              <span className="item-info">
-                <span className="item-title">{note.title || 'Untitled'}</span>
-                <span className="item-path">
-                  {note.content_preview?.slice(0, 60) || 'Empty note'}
-                </span>
-              </span>
-              {note.tags.length > 0 && (
-                <span className="item-tags">
-                  {note.tags.slice(0, 2).map((tag) => (
-                    <span key={tag} className="badge">{tag}</span>
-                  ))}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div className="command-palette-footer">
-          <span>
-            <kbd>↑↓</kbd> navigate &nbsp; <kbd>↵</kbd> select &nbsp; <kbd>esc</kbd> close
+    <SearchListOverlay
+      open={open}
+      prefix="command-palette"
+      label="Open anything"
+      placeholder="Search notes or type to create..."
+      query={query}
+      onQueryChange={setQuery}
+      onClose={onClose}
+      items={filtered}
+      onSelect={(note) => { onSelectNote(note.id); onClose(); }}
+      onEmptySelect={createNote}
+      footer={`${filtered.length} notes`}
+      renderItem={(note) => (
+        <>
+          <span className="item-icon"><FileText size={16} /></span>
+          <span className="item-info">
+            <span className="item-title">{note.title || 'Untitled'}</span>
+            <span className="item-path">
+              {note.content_preview?.slice(0, 60) || 'Empty note'}
+            </span>
           </span>
-          <span>{filtered.length} notes</span>
+          {note.tags.length > 0 && (
+            <span className="item-tags">
+              {note.tags.slice(0, 2).map((tag) => (
+                <span key={tag} className="badge">{tag}</span>
+              ))}
+            </span>
+          )}
+        </>
+      )}
+    >
+      {filtered.length === 0 && query.trim() && (
+        <button className="command-palette-item highlighted" onClick={createNote}>
+          <span className="item-icon"><Sparkles size={16} /></span>
+          <span className="item-info">
+            <span className="item-title">Create &quot;{query}&quot;</span>
+            <span className="item-path">New note</span>
+          </span>
+        </button>
+      )}
+
+      {filtered.length === 0 && !query.trim() && (
+        <div className="palette-empty">
+          Start typing to search your notes...
         </div>
-      </section>
-    </div>
+      )}
+    </SearchListOverlay>
   );
 }

@@ -1,6 +1,5 @@
 import type {
   ChatChannelPresence,
-  ChatMediaAttachment,
   ChatMessage,
 } from './types';
 
@@ -78,22 +77,7 @@ export function canMergeChatMessages(a: ChatMessage, b: ChatMessage) {
   return true;
 }
 
-function isImageMediaType(mediaType: string) {
-  return mediaType.startsWith('image/');
-}
-
-export function mediaToRunImages(media: ChatMediaAttachment[]) {
-  return media
-    .filter((item) => isImageMediaType(item.media_type))
-    .map(({ media_type, data }) => ({ media_type, data }));
-}
-
-/** Convert persisted data URLs back into provider image payloads for replies. */
-export function dataUrlsToRunImages(sources: string[] | undefined) {
-  const images: Array<{ media_type: string; data: string }> = [];
-  for (const src of sources ?? []) {
-    const match = /^data:([^;,]+);base64,(.+)$/s.exec(src.trim());
-    if (match && isImageMediaType(match[1])) images.push({ media_type: match[1], data: match[2] });
-  }
-  return images;
+/** Remove hidden coordinator control markers from visible content checks. */
+export function stripChatControlMarkers(body: string): string {
+  return body.replace(/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?(?:-->|$)/g, '').trim();
 }

@@ -480,6 +480,42 @@ defmodule Cascade.ExtendedContentDomainTest do
 
     assert status.status == 200
     assert Jason.decode!(status.resp_body)["status"]["unconsolidated"] == 1
+
+    note =
+      Store.create_note(vault.id, context.user_id, %{title: "Nebula", content: "nebula public"})
+
+    search_path = "/api/vaults/#{vault.id}/search?q=nebula"
+
+    for router <- [CascadeWeb.ExtendedContentRouter, CascadeWeb.Router] do
+      response = json_conn(:get, search_path, nil, context.token) |> router.call(router.init([]))
+      assert response.status == 200
+      assert Enum.any?(Jason.decode!(response.resp_body)["results"], &(&1["id"] == note.id))
+    end
+
+    Query.execute("UPDATE vault_members SET role = 'viewer' WHERE vault_id = ? AND user_id = ?", [
+      vault.id,
+      context.user_id
+    ])
+
+    denied =
+      request(:put, "/api/vaults/#{vault.id}/agent-memory", %{enabled: false}, context.token)
+
+    assert denied.status == 403
+    assert Jason.decode!(denied.resp_body) == %{"error" => "Viewer role cannot edit agent memory"}
+
+    Query.execute("DELETE FROM vault_members WHERE vault_id = ? AND user_id = ?", [
+      vault.id,
+      context.user_id
+    ])
+
+    for {path, error} <- [
+          {search_path, "Vault not found"},
+          {"/api/notes/#{note.id}/publish", "Note not found"}
+        ] do
+      missing = request(:get, path, nil, context.token)
+      assert missing.status == 404
+      assert Jason.decode!(missing.resp_body) == %{"error" => error}
+    end
   end
 
   defp request(method, path, body, token) do

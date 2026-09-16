@@ -48,7 +48,12 @@ defmodule Cascade.Runs.PromptContext do
   def agent_memory_key("akron-grok"), do: "akron"
   def agent_memory_key(agent), do: to_string(agent)
 
-  def enrich_prompt(vault_id, user_id, prompt, agent, resume_session_id, mode \\ :default) do
+  def enrich_prompt(vault_id, user_id, prompt, agent, resume_session_id, mode \\ :default)
+
+  def enrich_prompt(_vault_id, _user_id, "/compact", "claude-code", _resume, _mode),
+    do: "/compact"
+
+  def enrich_prompt(vault_id, user_id, prompt, agent, resume_session_id, mode) do
     if normalize_context_mode(mode) == :self_contained do
       Privacy.redact_blocks(prompt)
     else
@@ -120,6 +125,8 @@ defmodule Cascade.Runs.PromptContext do
     )
     |> maybe_put(:sandbox, normalize_sandbox(field(runtime, :sandbox, params["sandbox"])))
   end
+
+  def append_context("/compact", _chunks), do: "/compact"
 
   def append_context(prompt, chunks) do
     context = chunks |> List.wrap() |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join("\n\n")

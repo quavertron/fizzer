@@ -459,25 +459,32 @@ function StructuredTranscript({
 }
 
 function StopRunButton({
-  runId,
-  onCancelRun,
+  onStop,
 }: {
-  runId: number;
-  onCancelRun: (runId: number) => void;
+  onStop: () => unknown;
 }) {
   const [stopping, setStopping] = useState(false);
+  const [error, setError] = useState('');
   return (
     <button
       type="button"
       className={`crp-stop${stopping ? ' is-stopping' : ''}`}
       disabled={stopping}
-      onClick={(event) => {
+      onClick={async (event) => {
         event.stopPropagation();
         if (stopping) return;
         setStopping(true);
-        onCancelRun(runId);
+        setError('');
+        try {
+          if (await onStop() === false) setError('Could not stop. Try again.');
+        } catch (error) {
+          setError(error instanceof Error ? error.message : 'Could not stop. Try again.');
+        } finally {
+          setStopping(false);
+        }
       }}
-      title="Stop run"
+      title={error || 'Stop run'}
+      aria-label="Stop run"
     >
       <Square size={11} fill="currentColor" />
       {stopping ? 'Stopping' : 'Stop'}
@@ -503,6 +510,9 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
   onHydrateMessage?: (message: ChatMessage) => void;
 }) {
   const isRunning = message.status === 'running';
+  const isQueued = message.status === 'queued' || message.status === 'sending';
+  const canStopQueued = isQueued && message.id.startsWith('agent-dispatch-')
+    && (message.runId != null || Boolean(vaultId && onHydrateMessage));
   const canExpand = hasRunActivity(message);
   // Live work appears as a lightweight activity bubble until the operator
   // asks for the complete thinking/tool trace. Selection still force-opens it.
@@ -613,6 +623,15 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
     onContentGrowRef.current?.();
   }, [scrollEpoch, open, activity, isRunning, live, summary]);
 
+  if (canStopQueued) return (
+    <div className="cascade-run-panel" onPointerDown={(event) => event.stopPropagation()}>
+      <StopRunButton key={message.id} onStop={async () => {
+        if (message.runId != null) return onCancelRun(message.runId);
+        await api(`/api/vaults/${vaultId}/channels/${message.channelId}/messages/${encodeURIComponent(message.id)}?queuedOnly=true`, { method: 'DELETE' });
+        onHydrateRef.current?.({ ...message, status: 'canceled', body: '' });
+      }} />
+    </div>
+  );
   if (!isRunning && !canExpand) return null;
 
   const hasStructured = hasStructuredActivity;
@@ -668,7 +687,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
           {canExpand && <ChevronRight size={13} className="crp-chevron" />}
         </button>
         {isRunning && message.runId != null && (
-          <StopRunButton runId={message.runId} onCancelRun={onCancelRun} />
+          <StopRunButton key={message.runId} onStop={() => onCancelRun(message.runId!)} />
         )}
       </div>
 

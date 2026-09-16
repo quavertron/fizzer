@@ -265,6 +265,17 @@ defmodule Cascade.AccountsDomainTest do
     assert [%{items: [%{kind: "mention", sourceId: source_id}]}] = updates.groups
     assert source_id == source_channel.id
 
+    # Joining the source vault changes the canonical inbox target, but the
+    # already-open linked tab must retain a count so the client marks it read.
+    assert {:ok, _} = VaultMembers.add(source.id, 1, 2, "editor")
+    updates = CommunityActivity.list(%{id: 2, username: "bob"})
+    assert updates.counts.total == 1
+    assert updates.counts.byTarget[source_channel.id] == 1
+    assert updates.counts.byTarget[local_channel.id] == 1
+    assert map_size(updates.counts.byTarget) == 2
+    assert Enum.sum(Map.values(updates.counts.byVault)) == 1
+    assert [%{items: [_]}] = updates.groups
+
     assert CommunityActivity.mark_read(2, local_channel.id, "2100-01-01T00:00:00Z")
     assert CommunityActivity.list(%{id: 2, username: "bob"}).counts.total == 0
   end

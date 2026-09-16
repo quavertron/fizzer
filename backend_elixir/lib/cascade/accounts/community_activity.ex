@@ -158,7 +158,10 @@ defmodule Cascade.Accounts.CommunityActivity do
   end
 
   defp channel_updates(user) do
-    Enum.reduce(accessible_routes(user.id), {[], empty_counts()}, fn route, {items, counts} ->
+    routes = accessible_routes(user.id, false)
+    targets = Enum.group_by(routes, & &1.source_channel_id, & &1.local_channel_id)
+
+    Enum.reduce(canonicalize(routes), {[], empty_counts()}, fn route, {items, counts} ->
       watermark = read_at(user.id, "channel", route.source_channel_id, route.subscribed_at)
 
       unread =
@@ -186,7 +189,14 @@ defmodule Cascade.Accounts.CommunityActivity do
       if unread_count == 0 do
         {items, counts}
       else
-        counts = increment_channel_counts(counts, route, unread_count)
+        # Every linked tab must be able to acknowledge the shared unread state.
+        # Inbox items and totals still count each source only once.
+        counts =
+          Enum.reduce(
+            Map.fetch!(targets, route.source_channel_id),
+            increment_channel_counts(counts, route, unread_count),
+            fn target_id, acc -> put_target(acc, target_id, unread_count) end
+          )
 
         new_items =
           unread |> Enum.take(@max_limit) |> Enum.map(&map_message(&1, route, user.username))

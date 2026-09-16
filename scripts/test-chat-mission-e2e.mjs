@@ -380,21 +380,10 @@ async function main() {
       });
       const dispatch = postedControl.dispatches?.find((item) => item.registration?.id === sol.id);
       if (!dispatch) throw new Error(`control-plane message ${sequence} did not dispatch Sol`);
-      const { run } = await must(`${API_BASE}/api/vaults/${vault.id}/runs`, {
-        method: 'POST', headers: owner.auth,
-        body: JSON.stringify({
-          prompt: dispatch.message.body,
-          conversation_id: sol.conversationId,
-          registrationId: sol.id,
-          chatDispatchId: dispatch.id,
-          chat: {
-            channelId: channel.id,
-            messageId: `agent-control-plane-${sequence}-${stamp}`,
-            triggeringMessageId: messageId,
-          },
-        }),
-      });
-      return run;
+      const run = await waitUntil(`server-started coordinator turn ${sequence}`, () => (
+        runner.delegated.find((run) => run.chatMessageId === `agent-dispatch-${dispatch.id}`)
+      ));
+      return { id: run.runId };
     };
 
     const firstCoordinatorRun = await startCoordinatorTurn('one');
@@ -450,34 +439,18 @@ async function main() {
         reviewing.tasks?.[0]?.verification?.startsWith('Produced by run ')
         && reviewing.tasks?.[0]?.baseCommit === '0123456789abcdef0123456789abcdef01234567'
       ));
-      const pendingReview = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agent-dispatches/pending`, { headers: owner.auth });
-      const reviewDispatch = pendingReview.dispatches?.find((dispatch) => (
-        dispatch.registration?.id === sol.id
-        && String(dispatch.message?.id || '').startsWith(`sys-mission-${parallelMission.id}-`)
+      const reviewRun = await waitUntil(`server-started review for ${parallelMission.title}`, () => (
+        runner.delegated.find((run) => run.chatRegistrationId === sol.id
+          && String(run.chatTriggeringMessageId || '').startsWith(`sys-mission-${parallelMission.id}-`))
       ));
-      check(`parallel mission ${parallelMission.title} wakes its coordinator`, Boolean(reviewDispatch));
-      if (!reviewDispatch) throw new Error(`missing coordinator wake for ${parallelMission.title}`);
-      const reviewRun = await must(`${API_BASE}/api/vaults/${vault.id}/runs`, {
-        method: 'POST', headers: owner.auth,
-        body: JSON.stringify({
-          prompt: reviewDispatch.message.body,
-          conversation_id: sol.conversationId,
-          registrationId: sol.id,
-          chatDispatchId: reviewDispatch.id,
-          chat: {
-            channelId: channel.id,
-            messageId: `agent-review-${parallelMission.id}`,
-            triggeringMessageId: reviewDispatch.message.id,
-          },
-        }),
-      });
+      check(`parallel mission ${parallelMission.title} wakes its coordinator`, true);
       runner.socket.emit('runner:runEvent', {
-        runId: reviewRun.run.id,
+        runId: reviewRun.runId,
         type: 'status',
         payload: { status: 'completed', summary: `Reviewed ${parallelMission.title}` },
       });
       await waitUntil(`coordinator review turn for ${parallelMission.title}`, async () => {
-        const result = await must(`${API_BASE}/api/runs/${reviewRun.run.id}`, { headers: owner.auth });
+        const result = await must(`${API_BASE}/api/runs/${reviewRun.runId}`, { headers: owner.auth });
         return result.run?.status === 'completed';
       });
       const finishedParallel = await must(`${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/missions/${parallelMission.id}/finish`, {

@@ -1,3 +1,4 @@
+import { isLiveAgentStatus } from '../chat/runBlocks';
 /**
  * Compact TUI-style stream for multi-agent channel chatter.
  * Intermediates fold to mono lines; expand a line for full body + harness.
@@ -41,7 +42,7 @@ function statusMark(message: ChatMessage): { mark: string; className: string; li
   if (message.status === 'failed') return { mark: '✗', className: 'err' };
   if (isSteeringContinuationMessage(message)) return { mark: '↪', className: 'steer' };
   if (message.status === 'canceled') return { mark: '✗', className: 'err' };
-  if (message.status === 'running' || message.status === 'sending') return { mark: '…', className: 'run', live: true };
+  if (isLiveAgentStatus(message.status)) return { mark: '…', className: 'run', live: true };
   if (message.missionTaskId) return { mark: '›', className: 'task' };
   if (String(message.id || '').startsWith('sys-mission-') || message.author === 'Cascade') {
     return { mark: '#', className: 'sys' };
@@ -86,7 +87,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
   const preview = workTraceStatusLabel(message);
   const isLatestRunning = message.status !== 'running' || latestRunningMessageId === message.id;
   const showHarness = shouldRenderRunPanel(message, open || selected, isLatestRunning)
-    && (message.status === 'running' || hasRunActivity(message) || open || selected);
+    && (isLiveAgentStatus(message.status) || hasRunActivity(message) || open || selected);
 
   return (
     <SwipeToReply
@@ -114,12 +115,12 @@ const WorkTraceLine = memo(function WorkTraceLine({
           {lineLive
             ? <ThinkingSpinner className={`chat-work-mark ${className}`} title={preview} />
             : <span className={`chat-work-mark ${className}`} aria-hidden="true">{mark}</span>}
-          <span className="chat-work-author">{author}</span>
+          <span className="chat-work-author">{message.missionTaskId ? `Delegated · ${author}` : author}</span>
           <span className="chat-work-preview">{preview}</span>
           <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
           <ChevronRight size={12} className={`chat-work-chevron${open ? ' open' : ''}`} />
         </button>
-        {open && (
+        {(open || message.status === 'queued' || message.status === 'sending') && (
           <div className="chat-work-line-body">
             <ChatQuoteRefs message={message} />
             {message.body
@@ -167,8 +168,8 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   embedded?: boolean;
   forceOpen?: boolean;
 }) {
-  const live = trace.some((m) => m.status === 'running' || m.status === 'sending');
-  // Keep the current activity visible; expand the transcript on request.
+  const live = trace.some((m) => isLiveAgentStatus(m.status));
+  // Current work and failures remain visible; only settled history folds.
   const [open, setOpen] = useState(forceOpen);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -177,6 +178,11 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   const peek = useMemo(() => workTracePeek(trace), [trace]);
   const currentPhase = peek?.phase || 'working';
   const streamOpen = forceOpen || open;
+  const latestUpdate = live ? [...trace].reverse().find((message) =>
+    !message.missionTaskId && !message.status && message.body.trim()) : undefined;
+  const visibleTrace = streamOpen ? trace : trace.filter((message) =>
+    message === latestUpdate || isLiveAgentStatus(message.status) || message.status === 'failed'
+      || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
 
   useEffect(() => {
     if (forceOpen) setOpen(true);
@@ -240,13 +246,13 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
           >
             {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
             <span className="chat-work-trace-summary" title={summary}>
-              {live ? peek?.label || 'Working…' : currentPhase === 'blocked' ? 'Stopped · inspect activity' : 'Activity'}
+              {live ? peek?.label || 'Working…' : currentPhase === 'blocked' ? 'Needs attention' : 'Completed activity'}
             </span>
-            <span className="chat-work-trace-count">{trace.length} update{trace.length === 1 ? '' : 's'}</span>
+            <span className="chat-work-trace-count">{streamOpen ? 'Hide history' : 'Show history'}</span>
             <ChevronRight size={13} className={`chat-work-trace-chevron${streamOpen ? ' open' : ''}`} />
           </button>
         )}
-        {streamOpen && (
+        {visibleTrace.length > 0 && (
           <div
             ref={bodyRef}
             className="chat-work-trace-body"
@@ -257,7 +263,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
               pinBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
             }}
           >
-            {trace.map((message) => {
+            {visibleTrace.map((message) => {
               const runKey = message.registrationId || message.agentId || '';
               const runState = runKey ? runningMessageState.get(runKey) : undefined;
               return (

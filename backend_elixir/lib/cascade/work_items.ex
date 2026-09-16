@@ -27,7 +27,7 @@ defmodule Cascade.WorkItems do
           "SELECT #{@select} FROM work_items #{where} ORDER BY priority DESC,updated_at DESC,rowid DESC",
           params
         )
-        |> Enum.map(&hydrate/1)
+        |> hydrate()
 
       {:ok, items}
     end
@@ -40,7 +40,7 @@ defmodule Cascade.WorkItems do
 
       row ->
         with :ok <- access(Enum.at(row, 1), user_id, write?) do
-          {:ok, hydrate(row)}
+          {:ok, hd(hydrate([row]))}
         end
     end
   end
@@ -539,7 +539,26 @@ defmodule Cascade.WorkItems do
     %{ready: blockers == [], blockers: blockers}
   end
 
-  defp hydrate(row) do
+  defp hydrate([]), do: []
+
+  defp hydrate(rows) do
+    ids = Jason.encode!(Enum.map(rows, &hd/1))
+
+    dependencies = related_ids("work_item_dependencies", "depends_on_id", ids, "")
+    runs = related_ids("work_item_runs", "run_id", ids, "ORDER BY linked_at ASC")
+
+    Enum.map(rows, &hydrate(&1, dependencies, runs))
+  end
+
+  defp related_ids(table, column, ids, order) do
+    SQL.all(
+      "SELECT work_item_id,#{column} FROM #{table} WHERE work_item_id IN (SELECT value FROM json_each(?)) #{order}",
+      [ids]
+    )
+    |> Enum.group_by(&hd/1, &List.last/1)
+  end
+
+  defp hydrate(row, dependencies, runs) do
     [
       id,
       vault_id,
@@ -612,8 +631,8 @@ defmodule Cascade.WorkItems do
       tokenBudget: max(0, integer(token_budget)),
       tokensUsed: max(0, integer(tokens_used)),
       stopReason: enum(stop_reason, @stop_reasons, ""),
-      dependsOn: dependency_ids(id),
-      runIds: run_ids(id),
+      dependsOn: Map.get(dependencies, id, []),
+      runIds: Map.get(runs, id, []),
       createdBy: created_by,
       createdAt: created_at,
       updatedAt: updated_at
@@ -676,18 +695,6 @@ defmodule Cascade.WorkItems do
   end
 
   defp row(id), do: SQL.one("SELECT #{@select} FROM work_items WHERE id=?", [id])
-
-  defp dependency_ids(id),
-    do:
-      SQL.all("SELECT depends_on_id FROM work_item_dependencies WHERE work_item_id=?", [id])
-      |> Enum.map(&hd/1)
-
-  defp run_ids(id),
-    do:
-      SQL.all("SELECT run_id FROM work_item_runs WHERE work_item_id=? ORDER BY linked_at ASC", [
-        id
-      ])
-      |> Enum.map(&hd/1)
 
   defp replace_dependencies(id, dependencies) do
     SQL.exec("DELETE FROM work_item_dependencies WHERE work_item_id=?", [id])
