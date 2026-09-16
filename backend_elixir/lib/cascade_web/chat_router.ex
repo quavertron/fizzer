@@ -482,7 +482,11 @@ defmodule CascadeWeb.ChatRouter do
                  message_id,
                  conn.body_params,
                  access: access(conn),
-                 dispatch: callback(conn, :dispatch)
+                 dispatch:
+                   callback(conn, :dispatch) ||
+                     fn %{message: message, targetRegistrationId: target} ->
+                       Dispatches.create(user.id, channel_id, message, target)
+                     end
                )
              end,
              fn result ->

@@ -1330,6 +1330,35 @@ defmodule Cascade.ChatDomainTest do
     assert {"POST", "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id/collaborate"} in catalog
   end
 
+  test "collaboration production default persists one exact native dispatch without injected callback" do
+    {vault, channel} = chat_vault(1, "Collaboration", "Room")
+    user = %{id: 1, username: "alice"}
+    {:ok, identity} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "astra", yolo: true})
+    {:ok, member} = Agents.add_to_channel(1, vault.id, channel.id, identity.id)
+    {:ok, source} = Messages.create(user, vault.id, channel.id, %{body: "Original scope"})
+    token = Token.sign_user(%{id: 1, username: "alice", auth_version: 0})
+    request = fn payload ->
+      conn(:post, "/api/vaults/#{vault.id}/channels/#{channel.id}/messages/#{source.id}/collaborate", Jason.encode!(payload))
+      |> put_req_header("authorization", "Bearer " <> token)
+      |> put_req_header("content-type", "application/json")
+      |> CascadeWeb.ChatRouter.call(CascadeWeb.ChatRouter.init([]))
+    end
+    payload = %{requestId: "stable-owner-continuation", target: member.id, relationship: "builds_on", instruction: "Continue exact source"}
+    response = request.(payload)
+    assert response.status == 201, response.resp_body
+    result = Jason.decode!(response.resp_body)
+    assert result["message"]["id"] == payload.requestId
+    assert result["message"]["replyTo"]["messageId"] == source.id
+    assert result["dispatch"]["registration"]["id"] == member.id
+    assert [1] == SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?", [payload.requestId, member.id])
+    assert request.(payload).status == 201
+    assert [1] == SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [payload.requestId])
+    assert request.(%{payload | instruction: "Different scope"}).status == 400
+    assert request.(%{payload | requestId: "unknown-target", target: Ecto.UUID.generate()}).status != 201
+    assert [0] == SQL.one("SELECT COUNT(*) FROM chat_messages WHERE id='unknown-target'")
+    assert [0] == SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [result["dispatch"]["id"]])
+  end
+
   test "isolated router authenticates and serves projected message history" do
     {vault, channel} = chat_vault(1, "HTTP", "Room")
     user = %{id: 1, username: "alice"}
