@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyRemoteChatMessage,
+  isEmptyChatMessage,
   captureChatMessageSnapshotBaseline,
   mergeRemoteChatMessage,
   reconcileChatMessageSnapshot,
@@ -18,6 +19,32 @@ function chatMessage(id: string, overrides: Partial<ChatMessage> = {}): ChatMess
     ...overrides,
   };
 }
+
+describe('empty history content', () => {
+  it.each([
+    { hasImages: true }, { images: ['data:image/png;base64,eA=='] },
+    { attachments: [{ name: 'evidence.txt', url: '/evidence.txt', mimeType: 'text/plain' }] },
+    { mission: { id: 'mission' } }, { clarification: { questions: [] } }, { changeRequest: { files: [] } },
+    { status: 'queued' }, { status: 'sending' }, { status: 'running' }, { status: 'failed' },
+    { hasHarness: true }, { harnessLog: 'Verified revision' },
+    { blocks: [{ type: 'text', text: 'Useful content' }] },
+    { blocks: [{ type: 'tool_use', name: 'Read' }] },
+  ])('retains useful content and active state: %j', (content) => {
+    const row = chatMessage('retained', content as Partial<ChatMessage>);
+    expect(isEmptyChatMessage(row)).toBe(false);
+    expect(applyRemoteChatMessage([], row)).toEqual([row]);
+  });
+
+  it('drops whitespace, marker-only bodies and settled placeholders', () => {
+    for (const body of ['', ' \n', '<!-- fizzer-next-none:handled -->', 'Thinking...', 'Queued...']) {
+      const row = chatMessage('empty', { agentId: 'codex', body });
+      expect(isEmptyChatMessage(row)).toBe(true);
+      expect(applyRemoteChatMessage([], row)).toEqual([]);
+    }
+    expect(isEmptyChatMessage(chatMessage('empty'))).toBe(true);
+    expect(isEmptyChatMessage(chatMessage('human', { body: 'Thinking...' }))).toBe(false);
+  });
+});
 
 describe('sortChatMessages', () => {
   it('uses server sequence when client timestamps disagree', () => {

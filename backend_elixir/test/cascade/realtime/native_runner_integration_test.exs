@@ -17,6 +17,7 @@ end
 defmodule Cascade.Realtime.NativeRunnerIntegrationTest do
   use ExUnit.Case, async: false
 
+  alias Cascade.Accounts.SQL
   alias Cascade.Auth.Token
   alias Cascade.Realtime.{Hub, Session}
   alias Cascade.Runs.{RunnerLifecycle, Store}
@@ -24,6 +25,9 @@ defmodule Cascade.Realtime.NativeRunnerIntegrationTest do
   @runner Path.expand("../../support/native_runner_flow.mjs", __DIR__)
 
   setup_all do
+    if is_nil(Process.whereis(Cascade.Missions.DispatchReannouncer)),
+      do: start_supervised!({Cascade.Missions.DispatchReannouncer, interval: 20})
+
     port = available_port()
 
     start_supervised!(
@@ -64,6 +68,52 @@ defmodule Cascade.Realtime.NativeRunnerIntegrationTest do
     assert %{status: "completed", session_id: session_id} = eventually_terminal(completed.id)
     assert session_id == "native-session-#{completed.id}"
     assert Enum.map(Store.events(completed.id), & &1.seq) == Enum.to_list(1..4)
+
+    assert {:ok, dropped} = Store.start(context.vault_id, nil, "lost delivery", "codex")
+
+    payload = %{
+      runId: dropped.id,
+      prompt: "lost delivery",
+      probeMode: "drop-first",
+      cwd: "/scratch",
+      resumeSessionId: "same-session",
+      images: [%{data: "test"}],
+      reasoningEffort: "low"
+    }
+
+    assert RunnerLifecycle.delegate(context.user_id, payload)
+    assert %{"dropped" => dropped_id} = receive_json(node, 5_000)
+    assert dropped_id == dropped.id
+    assert Store.get(dropped.id).status == "queued"
+    assert length(Store.events(dropped.id)) == 1
+    assert is_list(Store.pending_delivery(dropped.id, context.user_id))
+
+    SQL.exec(
+      "UPDATE delegated_runs SET delivery_sent_at=datetime('now','-20 seconds') WHERE run_id=?",
+      [dropped.id]
+    )
+
+    Cascade.Missions.DispatchReannouncer.wake()
+    assert %{status: "completed", id: ^dropped_id} = eventually_terminal(dropped.id)
+    assert is_nil(Store.pending_delivery(dropped.id, context.user_id))
+    refute RunnerLifecycle.delegate(context.user_id, payload)
+
+    assert {:ok, silent} = Store.start(context.vault_id, nil, "unconfirmed delivery", "codex")
+
+    assert RunnerLifecycle.delegate(context.user_id, %{
+             runId: silent.id,
+             prompt: "unconfirmed delivery",
+             probeMode: "cancel"
+           })
+
+    SQL.exec(
+      "UPDATE delegated_runs SET delivery_attempts=5,delivery_sent_at=datetime('now','-20 seconds') WHERE run_id=?",
+      [silent.id]
+    )
+
+    Cascade.Missions.DispatchReannouncer.wake()
+    assert %{status: "failed", summary: summary} = eventually_terminal(silent.id)
+    assert summary =~ "five attempts"
 
     assert {:ok, canceled} = Store.start(context.vault_id, nil, "cancel", "codex")
 

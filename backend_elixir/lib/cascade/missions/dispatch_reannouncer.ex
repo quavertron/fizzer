@@ -1,17 +1,12 @@
 defmodule Cascade.Missions.DispatchReannouncer do
-  @moduledoc "Starts durable chat dispatches independently of browsers, one job per session."
-
+  @moduledoc "Starts durable dispatches in bounded jobs, serialized per agent session."
   use GenServer
   require Logger
 
-  alias Cascade.Missions.Dispatches
-  alias CascadeWeb.OrchestrationController
+  alias Cascade.Missions.{Dispatches, Execution, Scheduler, Steering}
+  alias Cascade.Runs.RunnerLifecycle
 
-  @default_interval 1_000
-
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   def wake do
     if pid = Process.whereis(__MODULE__), do: send(pid, :wake)
@@ -25,10 +20,13 @@ defmodule Cascade.Missions.DispatchReannouncer do
 
     {:ok,
      %{
-       interval: Keyword.get(opts, :interval, @default_interval),
+       interval: Keyword.get(opts, :interval, 1_000),
+       max_jobs: Keyword.get(opts, :max_jobs, 32),
        jobs: %{},
+       cursor: 0,
        scheduled: false,
-       recover_missions_at: 0
+       recover_at: nil,
+       maintenance: %{}
      }}
   end
 
@@ -47,28 +45,50 @@ defmodule Cascade.Missions.DispatchReannouncer do
   end
 
   def handle_info(:dispatch, state) do
-    pending = Dispatches.pending() |> Enum.group_by(& &1.group, & &1.id)
-
     now = System.monotonic_time(:millisecond)
-    recover = state.recover_missions_at == 0 or now >= state.recover_missions_at
-    pending = if recover, do: Map.put(pending, :missions, []), else: pending
+    recover = is_nil(state.recover_at) or now >= state.recover_at
 
-    jobs =
-      Enum.reduce(pending, state.jobs, fn {group, ids}, jobs ->
-        if Map.has_key?(jobs, group) do
-          jobs
-        else
-          {pid, ref} =
-            :erlang.spawn_opt(
-              fn ->
-                if group == :missions,
-                  do: recover_missions(),
-                  else: drain(ids)
-              end,
-              [:link, :monitor]
-            )
+    if recover, do: Cascade.Chat.Continuations.reconcile()
 
-          Map.put(jobs, group, {pid, ref})
+    maintenance =
+      if recover,
+        do:
+          Map.merge(
+            state.maintenance,
+            Map.merge(mission_jobs(), Cascade.WikiMaintenance.jobs())
+            |> Map.merge(Cascade.Missions.Notifications.jobs())
+          ),
+        else: state.maintenance
+
+    # Offline outbox rows stay untouched, including during maintenance cutover.
+    # Runner registration wakes the queue after the owner can actually execute.
+    pending =
+      Dispatches.pending()
+      |> Enum.filter(&RunnerLifecycle.online?(&1.owner))
+      |> Enum.group_by(&{:dispatch, &1.group}, & &1.id)
+
+    deliveries =
+      Cascade.Runs.Store.pending_deliveries()
+      |> Enum.filter(fn {_id, owner} -> RunnerLifecycle.online?(owner) end)
+      |> Map.new(fn {id, owner} -> {{:delivery, id}, owner} end)
+
+    entries = pending |> Map.merge(maintenance) |> Map.merge(deliveries) |> Enum.sort()
+    offset = if entries == [], do: 0, else: rem(state.cursor, length(entries))
+    {before, after_offset} = Enum.split(entries, offset)
+
+    {jobs, maintenance} =
+      Enum.reduce(after_offset ++ before, {state.jobs, maintenance}, fn {key, args},
+                                                                        {jobs, maintenance} ->
+        cond do
+          Map.has_key?(jobs, key) ->
+            {jobs, Map.delete(maintenance, key)}
+
+          map_size(jobs) >= state.max_jobs ->
+            {jobs, maintenance}
+
+          true ->
+            {pid, ref} = :erlang.spawn_opt(fn -> perform(key, args) end, [:link, :monitor])
+            {Map.put(jobs, key, {pid, ref}), Map.delete(maintenance, key)}
         end
       end)
 
@@ -76,8 +96,10 @@ defmodule Cascade.Missions.DispatchReannouncer do
      %{
        state
        | jobs: jobs,
+         maintenance: maintenance,
+         cursor: offset + 1,
          scheduled: false,
-         recover_missions_at: if(recover, do: now + 10_000, else: state.recover_missions_at)
+         recover_at: if(recover, do: now + 10_000, else: state.recover_at)
      }}
   end
 
@@ -85,7 +107,7 @@ defmodule Cascade.Missions.DispatchReannouncer do
     if reason != :normal,
       do: Logger.warning("Chat dispatch startup interrupted: #{inspect(reason)}")
 
-    jobs = Map.reject(state.jobs, fn {_group, {_pid, monitor}} -> monitor == ref end)
+    jobs = Map.reject(state.jobs, fn {_key, {_pid, monitor}} -> monitor == ref end)
     {:noreply, %{state | jobs: jobs}}
   end
 
@@ -93,24 +115,34 @@ defmodule Cascade.Missions.DispatchReannouncer do
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state.jobs, fn {_group, {pid, _ref}} -> Process.exit(pid, :kill) end)
+    Enum.each(state.jobs, fn {_key, {pid, _ref}} -> Process.exit(pid, :kill) end)
   end
 
-  def recover_missions do
-    Cascade.Accounts.SQL.all(
-      "SELECT id,created_by FROM chat_missions WHERE status NOT IN ('completed','canceled')"
-    )
-    |> Enum.each(fn [mission_id, owner_id] ->
-      if Cascade.Runs.RunnerLifecycle.online?(owner_id),
-        do: Cascade.Missions.Scheduler.schedule(mission_id, events: Cascade.Realtime.Events)
-    end)
+  defp mission_jobs do
+    Scheduler.maintenance_missions()
+    |> Map.new(fn [id, owner] -> {{:mission, id}, owner} end)
   end
 
-  defp drain(ids) do
-    Enum.each(ids, &OrchestrationController.prepare_dispatch/1)
+  # Independent of coordinator/runner availability and scheduler startup errors.
+  defp perform({:notification, id}, _owner), do: Cascade.Missions.Notifications.reconcile(id)
+
+  defp perform({:wiki, id}, owner) do
+    if RunnerLifecycle.online?(owner), do: Cascade.WikiMaintenance.tick(id)
+  end
+
+  defp perform({:delivery, id}, owner), do: RunnerLifecycle.replay_delivery(id, owner)
+
+  defp perform({:mission, id}, owner) do
+    Scheduler.replay_cancellations(&RunnerLifecycle.cancel(&1, &2, 2_000), id)
+    Steering.replay(id)
+    if RunnerLifecycle.online?(owner), do: Scheduler.schedule(id, events: Cascade.Realtime.Events)
+  end
+
+  defp perform({:dispatch, _session}, ids) do
+    Enum.each(ids, &Execution.prepare_dispatch/1)
 
     Enum.reduce_while(ids, :ok, fn id, _ ->
-      case OrchestrationController.execute_dispatch(id) do
+      case Execution.execute_dispatch(id) do
         {:busy, reason} ->
           Dispatches.retry(id, reason)
           {:cont, :ok}

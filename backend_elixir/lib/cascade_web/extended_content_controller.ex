@@ -10,6 +10,24 @@ defmodule CascadeWeb.ExtendedContentController do
   alias Cascade.Search.QMD
   alias CascadeWeb.JSON
 
+  def wiki_maintenance(conn, vault_id) do
+    authenticated(conn, fn conn, auth ->
+      case Cascade.WikiMaintenance.status(auth.user.id, vault_id) do
+        nil -> JSON.send(conn, 403, %{error: "Vault owner required"})
+        status -> JSON.send(conn, 200, status)
+      end
+    end)
+  end
+
+  def configure_wiki_maintenance(conn, vault_id) do
+    authenticated(conn, fn conn, auth ->
+      case Cascade.WikiMaintenance.configure(auth.user.id, vault_id, conn.body_params) do
+        {:ok, status} -> JSON.send(conn, 200, status)
+        {:error, error} -> JSON.send(conn, 403, %{error: error})
+      end
+    end)
+  end
+
   def append_journal(conn, vault_id) do
     scratchpad_action(conn, "Could not append journal entry", 201, :entry, fn user_id ->
       Scratchpad.append_journal_entry(user_id, vault_id, %{

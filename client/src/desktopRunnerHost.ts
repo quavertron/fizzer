@@ -9,6 +9,7 @@
 
 import { io, type Socket } from 'socket.io-client';
 import { androidRunnerAPI } from './androidLocalCodex';
+import { getActiveVaultOrigin } from './api';
 
 type RunnerElectronAPI = {
   setRunnerToken?: (opts: { token: string; apiUrl?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -23,6 +24,7 @@ type RunnerElectronAPI = {
     cursor?: number;
   }>;
   onAgentEvent?: (callback: (payload: AgentEventPayload) => void) => () => void;
+  acknowledgeAgentEvent?: (receipt: { instanceId: string; seq: number }) => Promise<boolean>;
   getRunnerPlanUsage?: () => Promise<{ usage?: Record<string, unknown> }>;
 };
 
@@ -31,6 +33,7 @@ type AgentEventPayload = {
   type?: string;
   payload_json?: string;
   bridgeSeq?: number;
+  receiptRequired?: boolean;
 };
 
 type DelegatedRunPayload = {
@@ -71,6 +74,7 @@ export const DESKTOP_RUNNER_SOCKET_OPTIONS = {
 let socket: Socket | null = null;
 let currentToken = '';
 let apiBase = '';
+let currentSocketAuthToken = '';
 let agentEventUnsub: (() => void) | null = null;
 let planUsageTimer: number | null = null;
 let runHeartbeatTimer: number | null = null;
@@ -112,6 +116,21 @@ export class LatestRunnerSetup {
 }
 
 const runnerCredentialSetup = new LatestRunnerSetup();
+const terminalReceiptsInFlight = new Set<number>();
+
+/** Keep main's terminal result until the server confirms durable settlement. */
+export function deliverTerminalWithReceipt(
+  activeSocket: Pick<Socket, 'timeout'>,
+  event: { runId: number; type: string; payload: unknown },
+  received: () => void,
+  settled: () => void,
+): void {
+  activeSocket.timeout(10_000).emit('runner:runEvent', { ...event, receipt: true },
+    (error: Error | null, response?: { success?: boolean }) => {
+      settled();
+      if (!error && response?.success === true) received();
+    });
+}
 
 /**
  * Main may report "not found" in the few milliseconds between child-registry
@@ -161,12 +180,19 @@ function processAgentEvent(event: AgentEventPayload): void {
   // connected server socket to receive it.
   if (!socket?.connected) return;
   const seq = Number(event?.bridgeSeq);
-  if (Number.isFinite(seq) && seq <= bridgeCursor) return;
+  const acknowledge = runnerElectronAPI()?.acknowledgeAgentEvent;
+  const receiptRequired = event.receiptRequired === true && Boolean(acknowledge);
+  if (Number.isFinite(seq) && seq <= bridgeCursor && !receiptRequired) return;
   const runId = Number(event?.runId);
   if (!Number.isFinite(runId) || !event?.type || typeof event.payload_json !== 'string') return;
   try {
     const payload = JSON.parse(event.payload_json);
-    emitRunEvent(runId, event.type, payload);
+    if (receiptRequired && terminalReceiptsInFlight.has(seq)) return;
+    const instanceId = bridgeInstanceId;
+    emitRunEvent(runId, event.type, payload, receiptRequired ? () => {
+      void acknowledge?.({ instanceId, seq }).catch(() => { /* Main retains the receipt for replay. */ });
+      recentTerminalEvents.delete(runId);
+    } : undefined, receiptRequired ? seq : undefined);
     if (Number.isFinite(seq)) {
       bridgeCursor = Math.max(bridgeCursor, seq);
       saveBridgeCursor();
@@ -217,7 +243,7 @@ function pruneRecentTerminals(): void {
   }
 }
 
-function emitRunEvent(runId: number, type: string, payload: unknown): void {
+function emitRunEvent(runId: number, type: string, payload: unknown, received?: () => void, receiptSeq?: number): void {
   if (type === 'status' && payload && typeof payload === 'object') {
     const status = (payload as { status?: string }).status;
     if (status === 'completed' || status === 'failed' || status === 'canceled') {
@@ -228,7 +254,13 @@ function emitRunEvent(runId: number, type: string, payload: unknown): void {
       if (activeSocket) window.setTimeout(() => void publishPlanUsage(activeSocket, true), 1_000);
     }
   }
-  socket?.emit('runner:runEvent', { runId, type, payload });
+  if (received && socket && receiptSeq !== undefined) {
+    terminalReceiptsInFlight.add(receiptSeq);
+    deliverTerminalWithReceipt(socket, { runId, type, payload }, received,
+      () => terminalReceiptsInFlight.delete(receiptSeq));
+  } else {
+    socket?.emit('runner:runEvent', { runId, type, payload });
+  }
 }
 
 async function publishPlanUsage(activeSocket: Socket, force = false): Promise<void> {
@@ -341,6 +373,7 @@ function detachSocket(): void {
 function disconnectDesktopRunnerSocket(): void {
   currentToken = '';
   apiBase = '';
+  currentSocketAuthToken = '';
   lastPlanUsageAt = 0;
   lastPlanUsage = null;
   detachSocket();
@@ -415,7 +448,7 @@ function wireSocketHandlers(activeSocket: Socket): void {
   });
 }
 
-function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
+function connectDesktopRunnerSocket(token: string, nextApiBase: string, socketAuthToken = ''): void {
   const authToken = String(token || '').trim();
   if (!authToken) {
     disconnectDesktopRunnerSocket();
@@ -428,7 +461,7 @@ function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
   ensureAgentEventBridge();
 
   // Idempotent: same credentials + existing socket → keep it.
-  if (socket && currentToken === authToken && apiBase === nextBase) {
+  if (socket && currentToken === authToken && apiBase === nextBase && currentSocketAuthToken === socketAuthToken) {
     if (socket.connected) void registerWithServer(socket);
     else socket.connect();
     return;
@@ -436,10 +469,12 @@ function connectDesktopRunnerSocket(token: string, nextApiBase: string): void {
 
   apiBase = nextBase;
   currentToken = authToken;
+  currentSocketAuthToken = socketAuthToken;
   detachSocket();
 
   socket = io(`${apiBase}/runners`, {
     withCredentials: true,
+    ...(socketAuthToken ? { auth: { token: socketAuthToken } } : {}),
     // Keep the runner on its own polling manager. Sharing the renderer's
     // manager lets a trace-room reconnect take the runner down with it, and
     // some residential middleboxes accept a WebSocket upgrade only to reap it
@@ -471,19 +506,24 @@ export function startDesktopRunnerHost(): void {
   // passed across IPC to Electron main.
   const token = 'cookie-session';
 
-  const resolvedBase = resolveApiBase();
+  const activeOrigin = getActiveVaultOrigin();
+  const resolvedBase = activeOrigin.origin || resolveApiBase();
+  const socketAuthToken = activeOrigin.token || '';
 
   // Soft focus/online ensures must be a true no-op for an already configured
   // login: retain the helper credential and the live runner socket.
-  if (socket && currentToken === token && apiBase === resolvedBase) {
-    connectDesktopRunnerSocket(token, resolvedBase);
+  if (socket && currentToken === token && apiBase === resolvedBase && currentSocketAuthToken === socketAuthToken) {
+    connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
   } else if (api.setRunnerToken) {
-    const setupKey = `${resolvedBase}\n${token}`;
+    const setupKey = `${resolvedBase}\n${token}\n${socketAuthToken}`;
     void runnerCredentialSetup.ensure(setupKey, async (isCurrent) => {
       const response = await fetch(`${resolvedBase}/api/auth/agent-token`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'X-Cascade-Browser': '1' },
+        headers: {
+          'X-Cascade-Browser': '1',
+          ...(socketAuthToken ? { Authorization: `Bearer ${socketAuthToken}` } : {}),
+        },
       });
       const body = await response.json().catch(() => ({})) as { token?: string; error?: string };
       if (!response.ok || !body.token) {
@@ -500,13 +540,13 @@ export function startDesktopRunnerHost(): void {
       if (!result?.success) {
         throw new Error(result?.error || 'Could not configure restricted agent credential');
       }
-      connectDesktopRunnerSocket(token, resolvedBase);
+      connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
     }).catch((error) => {
       console.error('Desktop runner credential setup failed:', error);
     });
   } else {
     // Legacy desktop bridge: socket still lives here so TLS uses Chromium.
-    connectDesktopRunnerSocket(token, resolvedBase);
+    connectDesktopRunnerSocket(token, resolvedBase, socketAuthToken);
   }
 
 }

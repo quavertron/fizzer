@@ -148,3 +148,107 @@ test('folders can be created and notes moved into them by name', async (t) => {
   assert.deepEqual(requests[0].body, { name: 'docs' });
   assert.deepEqual(requests[3].body, { folder_id: 'folder-docs' });
 });
+
+test('vault deletion binds full ID, exact name, owner source and run, then verifies absence', async (t) => {
+  let deleted = false;
+  const writes = [];
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/api/vaults') {
+      res.end(JSON.stringify({ vaults: deleted ? [] : [{ id: 'target-id', name: 'QA' }] }));
+    } else if (req.method === 'DELETE' && req.url === '/api/vaults/target-id') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      writes.push({ body: JSON.parse(body), run: req.headers['x-cascade-run-id'] });
+      deleted = true;
+      res.end(JSON.stringify({ success: true }));
+    } else {
+      res.statusCode = 404;
+      res.end('{}');
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: '/nonexistent', CASCADE_RUN_ID: '42', CASCADE_NOTE_VAULT: 'current' };
+  const args = [cli, 'vault', 'delete', 'target-id', '--confirm-name', 'QA', '--authority-message', 'owner-msg', '--url', `http://127.0.0.1:${server.address().port}`, '--token', 'agent', '--json'];
+  await assert.rejects(execFileAsync(process.execPath, args.map((v) => v === 'QA' ? 'wrong' : v), { env }), /exact name do not match/);
+  await assert.rejects(execFileAsync(process.execPath, args, { env: { ...env, CASCADE_NOTE_VAULT: 'target-id' } }), /current vault/);
+  const { stdout } = await execFileAsync(process.execPath, args, { env });
+  assert.equal(JSON.parse(stdout).verifiedAbsent, true);
+  assert.deepEqual(writes, [{ body: { expectedName: 'QA', authorityMessageId: 'owner-msg' }, run: '42' }]);
+});
+
+test('cascade-note read/show/view/cat aliases get and resolves typos like nab for Navigation & Search', async (t) => {
+  const noteId = '86bd621e-f26a-4334-8762-08526d86df07';
+  const note = {
+    id: noteId,
+    vault_id: 'vault-1',
+    title: 'Navigation & Search',
+    content: 'Navigation content here',
+  };
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    const { pathname, searchParams } = new URL(req.url, 'http://localhost');
+    if (req.method === 'GET' && pathname === '/api/vaults/vault-1/notes') {
+      const exact = searchParams.get('title');
+      const partial = searchParams.get('title_contains');
+      if (exact && note.title.toLowerCase() === exact.toLowerCase()) {
+        return res.end(JSON.stringify({ notes: [note] }));
+      }
+      if (partial && note.title.toLowerCase().includes(partial.toLowerCase())) {
+        return res.end(JSON.stringify({ notes: [note] }));
+      }
+      if (exact || partial) {
+        return res.end(JSON.stringify({ notes: [] }));
+      }
+      return res.end(JSON.stringify({ notes: [note] }));
+    }
+    if (req.method === 'GET' && pathname === `/api/notes/${noteId}`) {
+      return res.end(JSON.stringify({ note }));
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const targetArgs = [
+    '--url', `http://127.0.0.1:${server.address().port}`,
+    '--token', 'test-token',
+    '--vault', 'vault-1',
+  ];
+
+  const readExact = await execFileAsync(process.execPath, [cli, 'read', 'Navigation & Search', ...targetArgs]);
+  assert.equal(readExact.stdout.trim(), 'Navigation content here');
+
+  const readFuzzy = await execFileAsync(process.execPath, [cli, 'read', 'nab', ...targetArgs]);
+  assert.equal(readFuzzy.stdout.trim(), 'Navigation content here');
+
+  const show = await execFileAsync(process.execPath, [cli, 'show', noteId, ...targetArgs]);
+  assert.equal(show.stdout.trim(), 'Navigation content here');
+
+  const cat = await execFileAsync(process.execPath, [cli, 'cat', 'Navigation', ...targetArgs]);
+  assert.equal(cat.stdout.trim(), 'Navigation content here');
+});
+
+test('wiki setup is vault-scoped and disabling needs no surviving registration', async (t) => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let text = '';
+    for await (const chunk of req) text += chunk;
+    requests.push({ method: req.method, url: req.url, body: text ? JSON.parse(text) : null });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ enabled: false }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const common = ['--url', `http://127.0.0.1:${server.address().port}`, '--token', 'test', '--vault', 'vault-1'];
+  await execFileAsync(process.execPath, [cli, 'wiki', 'enable', '--channel', 'channel-1', '--registration', 'agent-1', ...common]);
+  await execFileAsync(process.execPath, [cli, 'wiki', 'status', ...common]);
+  await execFileAsync(process.execPath, [cli, 'wiki', 'disable', ...common]);
+  assert.deepEqual(requests, [
+    { method: 'PUT', url: '/api/vaults/vault-1/wiki-maintenance', body: { enabled: true, channelId: 'channel-1', registrationId: 'agent-1' } },
+    { method: 'GET', url: '/api/vaults/vault-1/wiki-maintenance', body: null },
+    { method: 'PUT', url: '/api/vaults/vault-1/wiki-maintenance', body: { enabled: false } },
+  ]);
+});

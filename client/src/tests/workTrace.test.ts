@@ -1,3 +1,8 @@
+import { missionAccent, missionMessageIdentities } from '../chat/missionIdentity';
+import { ChatMissionCard } from '../components/ChatMissionCard';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ChatWorkTrace } from '../components/ChatWorkTrace';
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../chat/types';
 import {
@@ -25,23 +30,40 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
-  it('uses meaningful progress instead of the Codex startup path', () => {
-    const running = msg({ id: 'live', author: 'Astra', status: 'running',
-      body: 'Checking dispatch handoffs.',
-      harnessLog: '# codex app-server · /home/jt/.cascade/worktrees/private' });
-    expect(workTraceStatusLabel(running)).toBe('Checking dispatch handoffs.');
-    expect(workTracePeek([running])?.label).toBe('Checking dispatch handoffs.');
-    expect(workTraceStatusLabel({ ...running, body: 'Thinking…' })).toBe('Working · no progress update yet');
+  it('omits empty history but gives useful trace-only rows a visible details control', () => {
+    const rows = [
+      msg({ id: 'human-empty', author: 'owner', body: ' \n' }),
+      msg({ id: 'agent-empty', author: 'Astra', agentId: 'codex', body: '' }),
+      msg({ id: 'marker', author: 'Astra', agentId: 'codex', body: '<!-- fizzer-next-none:done -->' }),
+      msg({ id: 'trace', author: 'Astra', agentId: 'codex', body: '', hasHarness: true }),
+    ];
+    const segments = segmentTranscript(rows);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].kind).toBe('work');
+    if (segments[0].kind !== 'work') throw new Error('Expected visible work details');
+    expect(segments[0].trace.map((message) => message.id)).toEqual(['trace']);
+    expect(segments[0].updateGroups).toEqual([]);
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace: segments[0].trace, selectedMessageId: null,
+      onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
+      runningMessageState: new Map(),
+    }));
+    expect(markup).toContain('Work details');
   });
 
-  it('keeps the current phase tied to the live step, with terminal status authoritative', () => {
-    const running = msg({ id: 'live', author: 'Astra', status: 'running',
-      missionTaskId: 'child', body: 'Waiting for child results',
-      harnessLog: '# thinking\nWaiting for child results' });
-    const done = msg({ id: 'done', author: 'Astra', body: 'Deploy and review completed.' });
-    expect(workTracePeek([running, done])?.phase).toBe('waiting');
-    expect(workTracePhase(done)).toBe('complete');
-    expect(workTracePhase({ ...running, body: 'Investigating', harnessLog: '' })).toBe('working');
+  it('keeps completed process details behind the trace toggle', () => {
+    const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+      trace: [msg({ id: 'done', author: 'Sol', missionTaskId: 'task', body: 'Child verified and joined.\n\nTask: internal-task-id' })],
+      selectedMessageId: null,
+      onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {},
+      runningMessageState: new Map(),
+    }));
+    expect(markup).not.toContain('Child verified and joined.');
+    expect(markup).toContain('Work details');
+    expect(markup).not.toContain('>Activity<');
+    expect(markup).not.toContain('1 update');
+    expect(markup).not.toContain('internal-task-id');
+    expect(markup).toContain('aria-expanded="false"');
   });
 
   it('recognizes the durable steering sentinel without exposing it as prose', () => {
@@ -51,6 +73,17 @@ describe('workTrace', () => {
     expect(isSteeringContinuationMessage(msg({
       id: 'cancel', author: 'Sol', body: 'Run canceled by user.', status: 'canceled',
     }))).toBe(false);
+  });
+
+  it('preserves substantive canceled replies and attachments on interrupted runs', () => {
+    const reply = msg({ id: 'answer', author: 'Sol', agentId: 'codex', status: 'canceled',
+      body: 'Found the cause before cancellation: the listing flag was enabled.' });
+    const artifact = msg({ id: 'artifact', author: 'Sol', agentId: 'codex', status: 'canceled',
+      body: 'Steered into the continuation below.', attachments: [{ name: 'evidence.txt', url: '/evidence.txt', media_type: 'text/plain' }] });
+    expect(segmentTranscript([reply, artifact])).toEqual([
+      { kind: 'group', group: { messages: [reply] } },
+      { kind: 'group', group: { messages: [artifact] } },
+    ]);
   });
 
   it('labels steering cancels as steer, not blocked', () => {
@@ -155,6 +188,20 @@ describe('workTrace', () => {
     if (segments[1].kind === 'work') expect(segments[1].updateGroups).toEqual([{ messages: [final] }]);
   });
 
+  it('keeps an answered question and its progress in place when another run appears', () => {
+    const question = msg({ id: 'question', author: 'jt', body: 'Why did that take ten minutes?' });
+    const answer = msg({ id: 'answer', author: 'Astra', agentId: 'codex', runId: 3419,
+      body: 'Most of the wait was deployment.', harnessLog: 'Checked the finished job.' });
+    const later = msg({ id: 'later', author: 'Astra', agentId: 'codex', runId: 3420,
+      body: 'Thinking...', status: 'running' });
+    const before = segmentTranscript([question, answer]);
+    const during = segmentTranscript([question, answer, later]);
+    expect(during.slice(0, 2)).toEqual(before);
+    expect(during[2]).toMatchObject({ kind: 'group', group: { messages: [later] } });
+    expect(segmentTranscript([question, answer, { ...later, status: undefined, body: 'Delivered.' }])
+      .slice(0, 2)).toEqual(before);
+  });
+
   it('nests a system wake in its persisted empty agent carrier', () => {
     const carrier = msg({
       id: 'agent-trace-mission-1-wake', author: 'Terra', body: '', agentId: 'codex', registrationId: 'terra-reg',
@@ -163,6 +210,7 @@ describe('workTrace', () => {
     const segments = segmentTranscript([carrier, wake]);
     expect(segments).toHaveLength(1);
     expect(segments[0]).toMatchObject({ kind: 'work', carrier, trace: [wake] });
+    expect(segmentTranscript([carrier])).toEqual([]);
   });
 
   it('keeps different agents and artifacts in chronological rows', () => {
@@ -341,11 +389,204 @@ describe('workTrace', () => {
     expect(peek).toMatchObject({
       live: true,
       author: 'Terra',
-      label: 'Bash rg "mission" client/src',
+      label: 'Working…',
       phase: 'working',
     });
     expect(peek?.summary).toContain('live');
     expect(peek?.decals.at(-1)?.label).toBe('work');
   });
 
+});
+
+
+it.each(['completed', 'canceled'] as const)('stops mission activity on %s even with a stale live trace', (status) => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'settled', rootMessageId: 'root', title: 'Fix it', objective: 'Fix it',
+      status, coordinator: 'sol', coordinatorMention: 'sol', tasks: [],
+      summary: 'Useful outcome', createdAt: '', updatedAt: '',
+    },
+    tracePeek: { live: true, author: 'Sol', label: 'Working…', summary: '', decals: [], phase: 'working' },
+  }));
+  expect(markup).not.toContain('thinking-spinner');
+  expect(markup).not.toContain('Working…');
+  expect(markup).toContain('Useful outcome');
+});
+
+
+it.each(['pending', 'running', 'blocked', 'failed', 'completed'] as const)('renders delegated %s state accurately', (status) => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'm', rootMessageId: 'root', title: 'Fix it', objective: 'Fix it',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'task', title: 'Verify it', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status, summary: 'Choose which account to use', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 1, updatedAt: '' }],
+    },
+  }));
+  expect(markup.includes('thinking-spinner')).toBe(status === 'running');
+  if (status === 'pending') expect(markup).toContain('queued');
+  if (status === 'blocked' || status === 'failed') {
+    expect(markup).toContain('needs attention');
+    expect(markup).toContain('Choose which account to use');
+  }
+});
+
+
+it('keeps running work ahead of queued work and exposes settled failures', () => {
+  const base = { channelId: 'room', author: 'Astra', body: '', createdAt: '', agentId: 'codex' };
+  const running = { ...base, id: 'running', status: 'running' as const, missionTaskId: 'task' };
+  const queued = { ...base, id: 'queued', status: 'queued' as const };
+  expect(workTracePeek([running, queued])).toMatchObject({ label: 'Working…', phase: 'working' });
+  expect(workTracePeek([queued])).toMatchObject({ label: 'Queued…', phase: 'routing' });
+  expect(workTracePeek([{ ...base, id: 'failed', status: 'failed' }, { ...base, id: 'done' }]))
+    .toMatchObject({ label: 'Failed', live: false, phase: 'blocked' });
+});
+
+it('shows a readable current paragraph only from public text blocks', () => {
+  const running = msg({ id: 'stream', author: 'Sol', status: 'running', body: 'Thinking...', blocks: [
+    { type: 'thinking', text: 'Private reasoning' },
+    { type: 'text', text: 'Checking the public output' },
+    { type: 'text', text: 'Redacted output', redacted: true },
+  ] });
+  expect(workTracePeek([running])?.label).toBe('Checking the public output');
+  expect(workTracePeek([{ ...running, blocks: [{ type: 'text', text: 'x'.repeat(200) + 'newest output' }] }])?.label)
+    .toBe('x'.repeat(200) + 'newest output');
+  expect(workTracePeek([{ ...running, status: undefined }])?.label).toBe('Work details');
+});
+
+it('does not revive a blocked verification from a stale working trace', () => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'c43e70cb', rootMessageId: 'root', title: 'Verify restored working animation', objective: '',
+      status: 'attention', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'e37c677b', title: 'Verify streaming decal', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status: 'blocked', summary: 'No streaming response was visible.', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '' }],
+    },
+    tracePeek: { live: true, author: 'Astra', label: 'Working…', summary: '', decals: [], phase: 'working' },
+  }));
+  expect(markup).toContain('needs attention');
+  expect(markup).toContain('No streaming response was visible.');
+  expect(markup).not.toContain('thinking-spinner');
+  expect(markup).not.toContain('Working…');
+  expect(markup).not.toContain('mission-status-completed');
+});
+
+it('shows the resumed task instead of the canceled prior attempt in the mission preview', () => {
+  const markup = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: {
+      id: 'resumed', rootMessageId: 'root', title: 'Resolve verification failure', objective: '',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      summary: '', createdAt: '', updatedAt: '',
+      tasks: [{ id: 'task', title: 'Repair and verify the UI', assignee: 'astra', assigneeMention: 'astra',
+        assigneeModel: '', status: 'running', summary: '', dependsOn: [], waitingFor: [],
+        priority: 0, reasoningEffort: '', queueReason: '', attempt: 1, updatedAt: '' }],
+    },
+    tracePeek: { live: false, author: 'Astra', label: 'Canceled', summary: '', decals: [], phase: 'canceled' },
+  }));
+  expect(markup).toContain('working');
+  expect(markup).toContain('Repair and verify the UI');
+  expect(markup).not.toContain('Canceled');
+});
+
+
+it('gives a mission and its bound worker one activity surface, preserving later answers and unrelated work', () => {
+  const mission = msg({ id: 'root', author: 'Astra', agentId: 'codex', registrationId: 'astra', body: '', mission: {
+    id: 'bf3a6199-8132-4e75-8e58-ec37c097e5a2', rootMessageId: 'root', title: 'Simplify worker guidance', objective: '',
+    coordinator: 'Astra', coordinatorMention: 'astra', status: 'active', summary: '', createdAt: '', updatedAt: '',
+    tasks: [{ id: 'worker-task', title: 'Consolidate worker context', assignee: 'Astra', assigneeMention: 'astra', assigneeModel: '', status: 'running', runId: 3477,
+      summary: '', dependsOn: [], waitingFor: [], priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '' }],
+  } });
+  const assignment = msg({ id: 'mission-task-worker-task', author: 'Astra', agentId: 'codex', body: 'Instructions', missionTaskId: 'worker-task' });
+  const worker = msg({ id: 'worker', author: 'Astra', agentId: 'codex', registrationId: 'astra', body: 'Packaging is still running.',
+    status: 'running', missionTaskId: 'worker-task', runId: 3477, blocks: [{ type: 'text', text: 'Desktop packaging is still running for the helper prompt changes; I’m watching it through completion.' }] });
+  const unrelated = msg({ id: 'other', author: 'Astra', agentId: 'codex', body: 'A separate answer', runId: 3480 });
+  const identities = missionMessageIdentities([mission, assignment, worker, unrelated]);
+  expect(identities.get(worker.id)).toMatchObject({ title: 'Simplify worker guidance', role: 'Worker' });
+  expect(identities.has(unrelated.id)).toBe(false);
+  const segments = segmentTranscript([mission, assignment, worker, unrelated]);
+  expect(segments).toHaveLength(2);
+  expect(segments[0]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [assignment, worker] });
+  expect(segments[1]).toMatchObject({ kind: 'group', group: { messages: [unrelated] } });
+  const card = renderToStaticMarkup(createElement(ChatMissionCard, { mission: mission.mission!, tracePeek: workTracePeek([worker]) }));
+  expect(card).toContain(missionAccent(mission.mission!.id));
+  expect(card.match(/class="[^"]*thinking-spinner/g)).toHaveLength(1);
+  expect(card).toContain('Consolidate worker context');
+  expect(card).toContain('Desktop packaging is still running');
+  expect(card).not.toContain('chat-working-output');
+  const answer = { ...worker, status: undefined, body: 'Delivered the helper changes.' };
+  const settled = segmentTranscript([mission, assignment, answer, unrelated]);
+  expect(settled.some((segment) => segment.kind === 'group' && segment.group.messages.includes(answer))).toBe(true);
+
+});
+
+it('keeps coordinator explanations linked to the same identity without borrowing nearby mission work', () => {
+  const id = 'bf3a6199-8132-4e75-8e58-ec37c097e5a2';
+  const root = msg({ id: 'root', author: 'Astra', body: '', mission: {
+    id, rootMessageId: 'root', title: 'Coordinator ownership', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [],
+  } });
+  const wake = msg({ id: `sys-mission-${id}-interpret-1`, author: 'Astra', agentId: 'codex', body: 'Interpret results' });
+  const response = msg({ id: 'reply', author: 'Astra', agentId: 'codex', body: 'Comparing the delivered result', status: 'running',
+    replyTo: { messageId: wake.id, author: 'Astra', mention: 'astra', preview: '' } });
+  const explanation = msg({ id: `mission-explanation-${id}-1`, author: 'Astra', agentId: 'codex', body: 'Delivered; here is what changed.' });
+  const identities = missionMessageIdentities([root, wake, response, explanation]);
+  expect(identities.get(response.id)).toMatchObject({ id, role: 'Coordinator' });
+  expect(identities.get(explanation.id)).toMatchObject({ id, role: 'Coordinator' });
+  expect(missionAccent(id)).toBe(missionAccent(id));
+});
+
+it('moves separated coordinator and worker details into their durable mission while retaining answers and media', () => {
+  const id = 'bf3a6199-8132-4e75-8e58-ec37c097e5a2';
+  const root = msg({ id: 'root', author: 'Cascade', body: '', mission: {
+    id, rootMessageId: 'root', title: 'Consolidate details', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [],
+  } });
+  const human = msg({ id: 'human', author: 'Owner', body: 'How is it going?' });
+  const carrier = msg({ id: `agent-trace-${id}-1`, author: 'Astra', agentId: 'codex', body: '' });
+  const wake = msg({ id: `sys-mission-${id}-1`, author: 'Cascade', body: 'Review worker results' });
+  const run = msg({ id: 'run', author: 'Astra', agentId: 'codex', body: '<!-- fizzer-next:source -->', runId: 12, hasHarness: true,
+    replyTo: { messageId: wake.id, author: 'Astra', mention: 'astra', preview: '' } });
+  const answer = { ...run, id: 'answer', body: 'Deployed the fix.' };
+  const media = { ...run, id: 'media', body: '', attachments: [{ name: 'proof.txt', media_type: 'text/plain', url: '/proof.txt' }] };
+  const unrelated = msg({ id: 'unrelated', author: 'Astra', agentId: 'codex', body: '', runId: 13, hasHarness: true });
+  const segments = segmentTranscript([human, root, carrier, wake, run, answer, media, unrelated]);
+  expect(segments[1]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [carrier, wake, run] });
+  const chat = segments.flatMap((segment) => segment.kind === 'group' ? segment.group.messages : segment.updateGroups.flatMap((group) => group.messages));
+  expect(chat).toEqual([human, answer, media]);
+  expect(segments.at(-1)).toMatchObject({ kind: 'work', trace: [unrelated] });
+  const trace = segments[1];
+  if (trace.kind !== 'work') throw new Error('Missing mission trace');
+  const markup = renderToStaticMarkup(createElement(ChatWorkTrace, {
+    trace: trace.trace, embedded: true, forceOpen: true, selectedMessageId: null,
+    onCancelRun: () => {}, onContextMenu: () => {}, onReply: () => {}, runningMessageState: new Map(),
+  }));
+  expect(markup).toContain('Agent work trace');
+  expect(markup).toContain('data-message-id="run"');
+  expect(markup).not.toContain('chat-work-trace-toggle');
+});
+
+it('retains details when the destination mission is outside loaded history', () => {
+  const worker = msg({ id: 'worker', author: 'Astra', agentId: 'codex', body: '', runId: 12, missionTaskId: 'task', hasHarness: true });
+  const identities = new Map([[worker.id, { id: 'unloaded', title: 'Older mission', role: 'Worker' as const }]]);
+  const segments = segmentTranscript([worker], { missionIdentities: identities });
+  expect(segments).toEqual([{ kind: 'work', id: worker.id, trace: [worker], fullGroups: [], updateGroups: [] }]);
+});
+
+it('resolves historic run and out-of-order reply links without associating nearby missions', () => {
+  const root = msg({ id: 'root', author: 'Astra', body: '', mission: {
+    id: 'mission', rootMessageId: 'root', title: 'Retry', objective: '', coordinator: 'Astra', coordinatorMention: 'astra', status: 'completed',
+    summary: '', createdAt: '', updatedAt: '', tasks: [{ id: 'task', title: 'Fix', runId: 22 } as never],
+  } });
+  const earlier = msg({ id: 'earlier', author: 'Astra', agentId: 'codex', runId: 21, body: '' });
+  const retry = { ...earlier, id: 'retry', missionTaskId: 'task' };
+  const reply = { ...earlier, id: 'reply', runId: 23, replyTo: { messageId: earlier.id, author: 'Astra', mention: 'astra', preview: '' } };
+  const unrelated = { ...earlier, id: 'unrelated', runId: 24 };
+  const identities = missionMessageIdentities([root, reply, earlier, retry, unrelated]);
+  expect(identities.get(reply.id)?.id).toBe('mission');
+  expect(identities.get(earlier.id)?.id).toBe('mission');
+  expect(identities.has(unrelated.id)).toBe(false);
 });

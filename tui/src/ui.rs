@@ -1,0 +1,2845 @@
+use ratatui::layout::{ Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::app::{
+    parse_hex_color, ActivePane, AgentSettingsField, App, ChatRenderCache, InlineSvgBlock, HEADER_HEIGHT,
+    UserSettingsField, VaultActionField, VaultActionState,
+};
+
+pub fn render(frame: &mut Frame, app: &mut App) {
+    crate::purrvect::begin_frame();
+    let size = frame.area();
+    let content_size = crate::panes::main_area(size);
+    let header_area = Rect::new(size.x, size.y, size.width, HEADER_HEIGHT.min(size.height));
+    if let Some(picker) = &app.codex_import {
+        crate::codex_sessions::render(frame, app, picker, content_size);
+        render_header(frame, app, header_area);
+        return;
+    }
+
+    if app.agent_settings_modal.is_some() {
+        frame.render_widget(Clear, content_size);
+        render_agent_settings_modal(frame, app);
+        render_header(frame, app, header_area);
+        return;
+    }
+
+    if app.user_settings_modal.is_some() {
+        frame.render_widget(Clear, content_size);
+        render_user_settings_modal(frame, app);
+        render_header(frame, app, header_area);
+        return;
+    }
+
+    if app.show_vaults {
+        frame.render_widget(Clear, content_size);
+        if app.vault_action.is_some() {
+            render_vault_action_modal(frame, app, content_size);
+        } else {
+            render_vaults_panel(frame, app, content_size);
+        }
+        render_buffer_picker(frame, app);
+        render_header(frame, app, header_area);
+        return;
+    }
+
+    render_header(frame, app, Rect::new(size.x, size.y, size.width, HEADER_HEIGHT.min(size.height)));
+    render_main_area(frame, app);
+    render_buffer_picker(frame, app);
+}
+
+fn render_buffer_picker(frame: &mut Frame, app: &App) {
+    let choices = crate::panes::buffer_choices(app);
+    let panes = app.panes.borrow();
+    let Some(picker) = &panes.picker else { return; };
+    let size = frame.area();
+    let height = (choices.len() as u16 + 3).min(14).min(size.height);
+    let area = Rect::new(size.x, size.bottom().saturating_sub(height), size.width, height);
+    frame.render_widget(Clear, area);
+    let items: Vec<_> = choices.iter().map(|(name, _, _)| ListItem::new(name.clone())).collect();
+    let mut state = ListState::default();
+    state.select((!choices.is_empty()).then_some(picker.selected.min(choices.len().saturating_sub(1))));
+    let block = Block::default().borders(Borders::ALL)
+        .title(if picker.command { format!("M-x {} ", picker.query) } else { format!("Switch to buffer{}: {} ", if picker.other { " in window" } else { "" }, picker.query) })
+        .border_style(Style::default().fg(Color::Cyan));
+    frame.render_stateful_widget(List::new(items).block(block)
+        .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan)), area, &mut state);
+}
+
+fn header_badge(label: String, foreground: Color, color: Color, previous: Color) -> Vec<Span<'static>> {
+    vec![
+        Span::styled("▌", Style::default().fg(previous).bg(color)),
+        Span::styled(label, Style::default().fg(foreground).bg(color).bold()),
+    ]
+}
+
+fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    if area.is_empty() { return; }
+    let background = crate::terminal_theme::background();
+    let mode_color = if app.backend_online { Color::Green } else { Color::Red };
+    let runner_color = if app.runner_online { Color::Cyan } else { Color::Yellow };
+    let mode_badge = if app.backend_online {
+        header_badge("LIVE".into(), Color::Black, mode_color, background)
+    } else {
+        header_badge("BACKEND DOWN".into(), Color::White, mode_color, background)
+    };
+
+    let runner_badge = if app.runner_online {
+        header_badge("RUNNER".into(), Color::Black, runner_color, mode_color)
+    } else {
+        header_badge("NO RUNNER".into(), Color::Black, runner_color, mode_color)
+    };
+
+    let loading_indicator = if app.is_loading {
+        Span::styled(" [Syncing...] ", Style::default().fg(Color::Yellow).bold())
+    } else {
+        Span::raw("")
+    };
+
+    let (vault_origin_icon, vault_color) = if app.client.is_local_instance() {
+        ("⌂", Color::Blue)
+    } else {
+        ("☁", Color::Magenta)
+    };
+    let vault_badge = header_badge(
+        format!("{} {}", vault_origin_icon, app.vault_name),
+        Color::Black, vault_color, runner_color,
+    );
+
+    let mut title_spans = vec![
+        Span::styled(" ◈ FIZZER ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ];
+    title_spans.extend(mode_badge);
+    title_spans.extend(runner_badge);
+    title_spans.extend(vault_badge);
+    title_spans.push(Span::styled("▌", Style::default().fg(vault_color).bg(background)));
+    title_spans.push(loading_indicator);
+    let title_line = Line::from(title_spans);
+
+    let title_width = title_line
+        .spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>().min(u16::MAX as usize) as u16;
+    let legend_width = (emacs_hint_line(app.panes.borrow().prefix).width() as u16).min(area.width / 2);
+    let remaining = area.width.saturating_sub(legend_width);
+    let title_width = title_width.min(remaining.saturating_sub(12.min(remaining / 3)));
+    let header_columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(title_width), Constraint::Min(0), Constraint::Length(legend_width)])
+        .split(area);
+    frame.render_widget(Paragraph::new(vec![title_line]), header_columns[0]);
+    render_emacs_legend(frame, app, header_columns[2]);
+
+    let width = header_columns[1].width as usize;
+    if width == 0 {
+        return;
+    }
+    let headlines = crate::news_headlines::HEADLINES;
+    let max_text_width = headlines
+        .iter()
+        .map(|headline| headline.chars().count() + 10)
+        .max()
+        .unwrap_or(10);
+    let cycle_width = width + max_text_width;
+    let cycle_ticks = cycle_width * 2;
+    let cycle_index = app.animation_tick as usize / cycle_ticks;
+    let mut random = app.ticker_seed
+        ^ (cycle_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    // SplitMix64 gives a cheap, deterministic per-cycle permutation without
+    // changing the current headline halfway through its traversal.
+    random = (random ^ (random >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    random = (random ^ (random >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    random ^= random >> 31;
+    let mut headline_index = (random as usize) % headlines.len();
+    if headlines.len() > 1 && cycle_index > 0 {
+        let previous_cycle = cycle_index - 1;
+        let mut previous_random = app.ticker_seed
+            ^ (previous_cycle as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        previous_random = (previous_random ^ (previous_random >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        previous_random = (previous_random ^ (previous_random >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        previous_random ^= previous_random >> 31;
+        if headline_index == (previous_random as usize) % headlines.len() {
+            headline_index = (headline_index + 1) % headlines.len();
+        }
+    }
+    let text: Vec<char> = format!("     {}     ", headlines[headline_index])
+        .chars()
+        .collect();
+    let progress = (app.animation_tick as usize / 2) % cycle_width;
+    let start = width as isize - progress as isize;
+    let mut visible = vec![' '; width];
+    for (idx, ch) in text.iter().enumerate() {
+        let column = start + idx as isize;
+        if column >= 0 && (column as usize) < width {
+            visible[column as usize] = *ch;
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(visible.into_iter().collect::<String>())
+            .style(Style::default().fg(Color::Cyan)),
+        header_columns[1],
+    );
+}
+
+const BORDER_COLOR: Color = Color::Rgb(64, 64, 64);
+const FOCUS_COLOR: Color = Color::Rgb(98, 215, 232);
+
+fn render_focus_wrap(frame: &mut Frame, area: Rect) {
+    let bounds = crate::panes::main_area(frame.area());
+    let accent = FOCUS_COLOR;
+    let background = crate::terminal_theme::background();
+    if area.width < 3 || area.height < 2 { return; }
+    for x in [area.x, area.right() - 1] {
+        for y in area.y..area.bottom() {
+            if bounds.contains(Position::new(x, y)) {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                let corner = y == area.y;
+                if corner {
+                    // Junction rails stay gray; focus only adds a accent underline.
+                    let symbol = if x == bounds.x || x + 1 == bounds.right() {
+                        " "
+                    } else {
+                        match cell.symbol() {
+                            "▋" => "🮈",
+                            "▍" => "▍",
+                            _ => " ",
+                        }
+                    };
+                    cell.reset();
+                    cell.set_symbol(symbol).set_style(Style::default()
+                        .fg(BORDER_COLOR).bg(background).underline_color(accent)
+                        .add_modifier(Modifier::UNDERLINED));
+                    continue;
+                }
+                if x == bounds.x {
+                    cell.set_fg(accent).set_bg(BORDER_COLOR);
+                } else if x + 1 == bounds.right() {
+                    cell.set_fg(BORDER_COLOR).set_bg(accent);
+                } else {
+                    cell.set_fg(accent);
+                }
+            }
+        }
+    }
+    // Block-7 leaves the lowest eighth clear for the gray underline.
+    // The bottom fill starts in the following row.
+    for (y, symbol) in [(area.y, "🭻"), (area.bottom(), "🮂")] {
+        if y < bounds.y || y >= bounds.bottom() { continue; }
+        let text_start = (area.x + 1..area.right() - 1)
+            .find(|&x| frame.buffer_mut()[(x, y)].symbol() != " ");
+        let text_end = (area.x + 1..area.right() - 1)
+            .rfind(|&x| frame.buffer_mut()[(x, y)].symbol() != " ");
+        for x in area.x + 1..area.right() - 1 {
+            if bounds.contains(Position::new(x, y)) {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                let within_text = text_start.zip(text_end)
+                    .is_some_and(|(start, end)| x >= start && x <= end);
+                if !within_text && cell.symbol() == " " {
+                    cell.set_symbol(symbol).set_fg(accent).set_bg(background);
+                }
+                if y == area.y { cell.set_fg(accent); }
+                cell.set_style(Style::default().underline_color(BORDER_COLOR)
+                    .add_modifier(Modifier::UNDERLINED));
+            }
+        }
+    }
+}
+
+pub(crate) fn buffer_borders(area: Rect, bounds: Rect) -> Borders {
+    if area.bottom() == bounds.bottom() {
+        Borders::TOP | Borders::LEFT | Borders::RIGHT
+    } else {
+        Borders::ALL
+    }
+}
+
+fn render_main_area(frame: &mut Frame, app: &mut App) {
+    crate::panes::prepare(app, frame.area());
+    crate::panes::activate_focused(app);
+    let focused = app.panes.borrow().focused_id();
+    let channel = app.active_channel_id.clone();
+    let rectangles = app.panes.borrow().window_rectangles().to_vec();
+    let render_rectangles: Vec<_> = rectangles.iter().map(|(id, area)| {
+        (*id, shared_border_area(*area, &rectangles, frame.area()))
+    }).collect();
+    // Duplicate windows share one terminal session; size it once per frame.
+    let awatch_area = render_rectangles.iter()
+        .filter(|(id, _)| app.panes.borrow().view(*id) == ActivePane::Awatch)
+        .min_by_key(|(id, _)| *id != focused).map(|(_, area)| *area);
+    if let Some(area) = awatch_area {
+        app.awatch.set_bounds(frame.area());
+        app.awatch.prepare(area);
+    }
+    for (id, area) in render_rectangles {
+        if area.width < 3 || area.height < 2 { continue; }
+        crate::panes::activate_window(app, id);
+        let view = app.active_pane;
+        if id != focused { app.active_pane = ActivePane::Vaults; }
+        match view {
+            ActivePane::ChatSelector => render_chat_selector(frame, app, area),
+            ActivePane::ChatMessages => render_messages_stream(frame, app, area),
+            ActivePane::ChatInput => render_input_composer(frame, app, area),
+            ActivePane::Agents => render_agents_panel(frame, app, area),
+            ActivePane::Users => render_users_panel(frame, app, area),
+            ActivePane::Notes => render_notes_panel(frame, app, area),
+            ActivePane::Awatch => app.awatch.render(frame, area, id == focused),
+            ActivePane::Vaults => {}
+        }
+    }
+    render_shared_borders(frame, &rectangles);
+    if let Some((_, area)) = rectangles.iter().find(|(id, _)| *id == focused) {
+        let mut focus_area = shared_border_area(*area, &rectangles, frame.area());
+        // Width includes shared side rails; height ends before the next buffer's title.
+        focus_area.height = area.height;
+        render_focus_wrap(frame, focus_area);
+    }
+    crate::panes::activate_window(app, focused);
+    app.load_channel_buffer(channel);
+}
+
+const EMACS_HINTS: &str = "C-x b buffer   C-x o window   M-x run command   C-x C-c quit";
+
+fn emacs_hint_line(prefix: bool) -> Line<'static> {
+    let background = crate::terminal_theme::background();
+    let mut previous = background;
+    let mut spans = Vec::new();
+    if prefix {
+        spans.push(Span::styled("C-x: ", Style::default().fg(Color::White)));
+    }
+    for (index, hint) in EMACS_HINTS.split("   ").enumerate() {
+        let (color, foreground) = if index % 2 == 0 {
+            (Color::Rgb(128, 128, 128), Color::Black)
+        } else {
+            (Color::Rgb(64, 64, 64), Color::White)
+        };
+        spans.extend(header_badge(hint.into(), foreground, color, previous).into_iter().map(|mut span| {
+            span.style = span.style.remove_modifier(Modifier::BOLD);
+            span
+        }));
+        previous = color;
+    }
+    spans.push(Span::styled("▌", Style::default().fg(previous).bg(background)));
+    Line::from(spans)
+}
+
+fn render_emacs_legend(frame: &mut Frame, app: &App, area: Rect) {
+    if area.is_empty() { return; }
+    frame.render_widget(
+        Paragraph::new(emacs_hint_line(app.panes.borrow().prefix))
+            .alignment(Alignment::Right),
+        area,
+    );
+}
+
+/// Hypertile gives adjacent panes disjoint rectangles. Rendering a full block
+/// in each rectangle therefore spends two cells on every shared edge. Extend
+/// the pane on the leading side into its neighbour's border cell so both
+/// blocks share one rendered column/row; logical rectangles remain unchanged
+/// for focus, mouse targeting, and resize calculations.
+fn shared_border_area(area: Rect, panes: &[(ratatui_hypertile::PaneId, Rect)], bounds: Rect) -> Rect {
+    let has_right = panes.iter().any(|(_, other)| {
+        area.right() == other.x && area.y < other.bottom() && other.y < area.bottom()
+    });
+    let has_bottom = panes.iter().any(|(_, other)| {
+        area.bottom() == other.y && area.x < other.right() && other.x < area.right()
+    });
+    Rect::new(
+        area.x,
+        area.y,
+        area.width.saturating_add(u16::from(has_right && area.right() < bounds.right())),
+        area.height.saturating_add(u16::from(has_bottom && area.bottom() < bounds.bottom())),
+    )
+}
+
+fn junction_cell(mask: u8, background: Color) -> (&'static str, Style) {
+    // Only turnstiles retain the rail opposite the incoming branch.
+    match mask {
+        13 => ("▋", Style::default().fg(background).bg(BORDER_COLOR)),
+        14 => ("▍", Style::default().fg(BORDER_COLOR).bg(background)),
+        _ => (" ", Style::default().bg(background)),
+    }
+}
+
+/// Join box-drawing strokes without painting over titles or their padding.
+fn render_shared_borders(frame: &mut Frame, panes: &[(ratatui_hypertile::PaneId, Rect)]) {
+    let bounds = frame.area();
+    let stroke_color = crate::terminal_theme::background();
+    let left = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.x).min().unwrap_or(bounds.x);
+    let right = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.right().min(bounds.right())).max().unwrap_or(bounds.right());
+    let top = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.y).min().unwrap_or(bounds.y);
+    let bottom = panes.iter().filter(|(_, rect)| !rect.is_empty()).map(|(_, rect)| rect.bottom().min(bounds.bottom())).max().unwrap_or(bounds.bottom());
+    let mut strokes = std::collections::HashMap::<(u16, u16), u8>::new();
+    for (_, logical) in panes {
+        let area = shared_border_area(*logical, panes, bounds);
+        if area.width < 3 || area.height < 2 { continue; }
+        for y in [area.y, area.bottom() - 1] {
+            if y + 1 == bounds.bottom() { continue; }
+            for x in area.x..area.right() {
+                *strokes.entry((x, y)).or_default() |=
+                    if x > area.x { 1 } else { 0 } | if x + 1 < area.right() { 2 } else { 0 };
+            }
+        }
+        for x in [area.x, area.right() - 1] {
+            for y in area.y..area.bottom() {
+                *strokes.entry((x, y)).or_default() |=
+                    if y > area.y { 4 } else { 0 } | if y + 1 < area.bottom() { 8 } else { 0 };
+            }
+        }
+    }
+    for ((x, y), mask) in strokes {
+        let cell = &mut frame.buffer_mut()[(x, y)];
+        if !matches!(cell.symbol(), "─" | "│" | "┌" | "┐" | "└" | "┘" | "├" | "┤" | "┬" | "┴" | "┼") {
+            if mask & 3 != 0 && mask & 12 == 0 {
+                cell.set_style(Style::default().underline_color(BORDER_COLOR)
+                    .add_modifier(Modifier::UNDERLINED));
+            }
+            continue;
+        }
+        let vertical = mask & 12 != 0;
+        let horizontal = mask & 3 != 0;
+        let mut style = Style::default().fg(BORDER_COLOR).bg(stroke_color);
+        if vertical && horizontal {
+            let world_edge = x == left || x.saturating_add(1) == right
+                || y == top || y.saturating_add(1) == bottom;
+            let (symbol, junction_style) = junction_cell(if world_edge { 0 } else { mask }, stroke_color);
+            cell.reset();
+            cell.set_symbol(symbol).set_style(junction_style);
+        } else if vertical {
+            if x == left {
+                // Outward five eighths are terminal background; gray faces inward.
+                cell.set_symbol("▋").set_style(Style::default().fg(stroke_color).bg(BORDER_COLOR));
+            } else if x.saturating_add(1) == right {
+                cell.set_symbol("▍").set_style(Style::default().fg(BORDER_COLOR).bg(stroke_color));
+            } else {
+                cell.set_symbol("┃").set_style(Style::default()
+                    .fg(stroke_color).bg(BORDER_COLOR).add_modifier(Modifier::BOLD));
+            }
+        } else if horizontal {
+            if y.saturating_add(1) < bottom {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            cell.set_symbol(" ").set_style(style);
+        }
+    }
+    // Underline each buffer's last logical row, including the row above a shared title.
+    for (_, logical) in panes {
+        let area = shared_border_area(*logical, panes, bounds).intersection(bounds);
+        if area.height == 0 || area.width < 3 || logical.height == 0 { continue; }
+        let y = logical.bottom().min(bounds.bottom()) - 1;
+        for x in area.x + 1..area.right() - 1 {
+            frame.buffer_mut()[(x, y)].set_style(
+                Style::default().underline_color(BORDER_COLOR).add_modifier(Modifier::UNDERLINED));
+        }
+    }
+}
+fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::Vaults;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let mut items: Vec<ListItem> = if app.vaults.is_empty() {
+        vec![ListItem::new(Span::styled("  No vaults", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.vaults.iter().enumerate().map(|(idx, vault)| {
+            let name = if vault.name.is_empty() { &vault.id } else { &vault.name };
+            let selected = idx == app.selected_vault_idx;
+            let active = app.vault_id.as_deref() == Some(vault.id.as_str());
+            let marker = if active { "● " } else { "◇ " };
+            let effective_origin = vault.origin.as_deref().or_else(|| {
+                if !app.client.is_local_instance() {
+                    Some(app.client.base_url.as_str())
+                } else {
+                    None
+                }
+            });
+            let (icon, suffix) = if let Some(origin) = effective_origin {
+                let host = origin
+                    .strip_prefix("https://")
+                    .or_else(|| origin.strip_prefix("http://"))
+                    .unwrap_or(origin)
+                    .split('/')
+                    .next()
+                    .unwrap_or(origin);
+                ("☁", format!(" ({})", host))
+            } else {
+                ("⌂", String::new())
+            };
+            let style = if selected && is_focused {
+                Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+            } else if selected {
+                Style::default().fg(Color::Cyan).bold()
+            } else if active {
+                Style::default().fg(Color::White).bold()
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(format!(
+                "{}{}{} {}{}",
+                if selected { "> " } else { "  " },
+                marker,
+                icon,
+                name,
+                suffix
+            ))
+            .style(style)
+        }).collect()
+    };
+    for (offset, (icon, label)) in
+        [("⌂", match (app.default_client.is_local_instance(), app.local_authenticated) {
+            (true, false) if app.server_session_expired => "Local server (sign in again)",
+            (false, false) if app.server_session_expired => "Remote server (sign in again)",
+            (true, true) => "Create local vault", (true, false) => "Connect local server",
+            (false, true) => "Create remote vault", (false, false) => "Connect remote server",
+        }), ("☁", "Connect remote server")]
+            .into_iter()
+            .enumerate()
+    {
+        let idx = app.vaults.len() + offset;
+        let selected = idx == app.selected_vault_idx;
+        let style = if selected && is_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+        } else if selected {
+            Style::default().fg(Color::Cyan).bold()
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        items.push(
+            ListItem::new(format!(
+                "{}{} {}",
+                if selected { "> " } else { "  " },
+                icon,
+                label
+            ))
+            .style(style),
+        );
+    }
+    let title = Span::styled(" Vaults ", Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold());
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(area);
+    let block = Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(border_color));
+    let mut state = ListState::default().with_selected(Some(app.selected_vault_idx));
+    frame.render_stateful_widget(List::new(items).block(block), chunks[0], &mut state);
+    frame.render_widget(Paragraph::new(app.status_message.as_str()).wrap(Wrap { trim: true }), chunks[1]);
+}
+
+fn render_vault_action_modal(frame: &mut Frame, app: &App, area: Rect) {
+    let width = area.width.min(76).max(40);
+    let height = match app.vault_action.as_ref() {
+        Some(VaultActionState::CreateLocal { .. }) => 8,
+        Some(VaultActionState::ConnectRemote { .. }) => 12,
+        None => return,
+    };
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height.min(area.height),
+    );
+    frame.render_widget(Clear, modal);
+    let title = match app.vault_action.as_ref() {
+        Some(VaultActionState::CreateLocal { .. }) => if app.default_client.is_local_instance() { " Create local vault " } else { " Create remote vault " },
+        Some(VaultActionState::ConnectRemote { origin, .. }) if origin == &app.default_client.base_url && app.default_client.is_local_instance() => " Connect local server ",
+        Some(VaultActionState::ConnectRemote { .. }) => " Connect remote server ",
+        None => " Vault ",
+    };
+    let mut lines = vec![Line::from(Span::styled(title, Style::default().fg(Color::Cyan).bold()))];
+    match app.vault_action.as_ref().unwrap() {
+        VaultActionState::CreateLocal { name } => {
+            lines.push(Line::from("Vault name:"));
+            lines.push(Line::from(Span::styled(format!("  {}_", name), Style::default().fg(Color::White))));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Enter Create    Esc Cancel", Style::default().fg(Color::DarkGray))));
+        }
+        VaultActionState::ConnectRemote { origin, username, password, field } => {
+            let row = |label: &str, value: &str, selected: bool| Line::from(vec![
+                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
+                Span::styled(if value.is_empty() { "_".to_string() } else { format!("{}{}", value, if selected { "_" } else { "" }) }, if selected { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+            ]);
+            lines.push(row("Origin / Link", origin, *field == VaultActionField::NameOrOrigin));
+            lines.push(row("Username", username, *field == VaultActionField::Username));
+            lines.push(row("Password", &"•".repeat(password.chars().count()), *field == VaultActionField::Password));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Tab/↑↓ next field    Enter Connect    Esc Cancel", Style::default().fg(Color::DarkGray))));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::Cyan)).padding(ratatui::widgets::Padding::new(2, 2, 1, 1))), modal);
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TermimationEntry {
+    #[allow(dead_code)]
+    name: String,
+    animation: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    classes: Vec<String>,
+    /// Optional per-pattern frame length; falls back to `DEFAULT_FRAME_MS`.
+    #[serde(default)]
+    frame_milliseconds: Option<u64>,
+}
+
+/// A parsed spinner: its frames plus how long each frame is shown.
+struct Termimation {
+    frames: Vec<char>,
+    frame_ms: u64,
+}
+
+/// Redraw cadence for the agents panel. Frame lengths are honored down to this
+/// granularity; keep it a divisor of `DEFAULT_FRAME_MS`.
+pub const ANIMATION_TICK_MS: u64 = 40;
+/// Frame length used when a termimation has no `frame_milliseconds`.
+const DEFAULT_FRAME_MS: u64 = 120;
+
+#[cfg(debug_assertions)]
+fn termimation_json() -> String {
+    std::fs::read_to_string("tui/src/termimations.json")
+        .or_else(|_| std::fs::read_to_string("src/termimations.json"))
+        .unwrap_or_default()
+}
+
+#[cfg(not(debug_assertions))]
+fn termimation_json() -> String {
+    include_str!("termimations.json").to_string()
+}
+
+fn termimation_patterns() -> &'static [Termimation] {
+    static PATTERNS: std::sync::OnceLock<Vec<Termimation>> = std::sync::OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let parsed: Vec<TermimationEntry> = serde_json::from_str(&termimation_json())
+            .unwrap_or_default();
+        let list: Vec<Termimation> = parsed
+            .into_iter()
+            .map(|t| Termimation {
+                frames: t.animation.chars().collect(),
+                frame_ms: t.frame_milliseconds.unwrap_or(DEFAULT_FRAME_MS).max(1),
+            })
+            .filter(|t| !t.frames.is_empty())
+            .collect();
+        if list.is_empty() {
+            vec![Termimation { frames: vec!['●'], frame_ms: DEFAULT_FRAME_MS }]
+        } else {
+            list
+        }
+    })
+}
+
+fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64, run_seed: u64, row_index: usize) -> String {
+    let patterns = termimation_patterns();
+    if patterns.is_empty() {
+        return "● ".to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let normalized_name = ag
+        .display_name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if normalized_name.is_empty() {
+        ag.id.hash(&mut hasher);
+    } else {
+        normalized_name.hash(&mut hasher);
+    }
+    let agent_hash = hasher.finish();
+
+    // Stagger phase per agent so multiple active agents do not pulse synchronously
+    // Keep agents visibly desynchronized even when their hashes/patterns happen
+    // to land on the same frame. The row offset is stable while the panel is
+    // ordered, while the hash still gives each agent its own long-term phase.
+    let phase_offset = (agent_hash >> 16).wrapping_add((row_index as u64).wrapping_mul(17));
+    let local_tick = tick.wrapping_add(phase_offset);
+
+    // Pick one pattern per run (fixed by the run seed) and hold it for the whole
+    // turn; only the frame within the pattern advances with the tick.
+    let mut pattern_hasher = std::collections::hash_map::DefaultHasher::new();
+    agent_hash.hash(&mut pattern_hasher);
+    run_seed.hash(&mut pattern_hasher);
+    let pattern_idx = (pattern_hasher.finish() as usize) % patterns.len();
+
+    let pattern = &patterns[pattern_idx];
+    // Advance the frame by elapsed real time divided by this pattern's frame
+    // length, so `frame_milliseconds` sets how long each frame is shown.
+    let elapsed_ms = local_tick.wrapping_mul(ANIMATION_TICK_MS);
+    let frame = (elapsed_ms / pattern.frame_ms) as usize % pattern.frames.len();
+    let ch = pattern.frames[frame];
+
+    if ch.width().unwrap_or(1) <= 1 {
+        format!("{ch} ")
+    } else {
+        format!("{ch}")
+    }
+}
+
+fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::Agents;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+    let items: Vec<ListItem> = if app.agents.is_empty() {
+        vec![ListItem::new(Span::styled("  No agents registered", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.agents
+            .iter()
+            .enumerate()
+            .map(|(idx, ag)| {
+                let is_selected = idx == app.selected_agent_idx;
+                let prefix = if is_selected { "> " } else { "  " };
+
+                let default_badge = match ag.agent_id.as_str() {
+                    "claude-code" => Color::Magenta,
+                    "codex" => Color::Cyan,
+                    "pi" => Color::Blue,
+                    _ => Color::Yellow,
+                };
+                let badge_color = resolve_color(ag.color.as_deref(), default_badge);
+
+                let name_style = if is_selected && is_focused {
+                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else if is_selected {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                };
+
+                let is_active = app.is_agent_active(ag);
+                let (ball_str, ball_style) = if is_active {
+                    let ball = agent_termimation_ball(ag, app.animation_tick, app.agent_run_seed(ag), idx);
+                    (ball, Style::default().fg(badge_color).add_modifier(Modifier::BOLD))
+                } else {
+                    ("● ".to_string(), Style::default().fg(badge_color))
+                };
+
+                let top_line = Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled(ball_str, ball_style),
+                    Span::styled(&ag.display_name, name_style),
+                    Span::raw(" "),
+                    Span::styled(format!("@{}", ag.mention), Style::default().fg(Color::DarkGray)),
+                ]);
+
+                let model_info = if !ag.model.is_empty() {
+                    &ag.model
+                } else {
+                    &ag.agent_id
+                };
+
+                let sub_line = Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(model_info, Style::default().fg(Color::DarkGray)),
+                ]);
+
+                ListItem::new(vec![top_line, sub_line])
+            })
+            .collect()
+    };
+
+    let title_style = if is_focused {
+        Style::default().fg(Color::Cyan).bold()
+    } else {
+        Style::default().fg(Color::White).bold()
+    };
+
+    let title = Span::styled(format!(" Agents · #{} ({}) ", app.active_channel_title(), app.agents.len()), title_style);
+
+    let agents_block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(title)
+        .border_style(Style::default().fg(border_color));
+
+    let list = List::new(items).block(agents_block);
+    frame.render_widget(list, area);
+}
+
+fn channel_termimation(app: &App, channel_id: &str) -> Option<String> {
+    let sessions: Vec<_> = app.active_sessions.iter()
+        .filter(|s| s.channel_id.as_deref() == Some(channel_id)).collect();
+    // The selector is rendered while one channel is loaded, but it shows all
+    // channels. Use the target channel's buffered agent/run state instead of
+    // the currently loaded channel's state; otherwise a shared agent profile
+    // makes every channel display the same spinner and seed.
+    let (channel_agents, active_ids, run_seeds): (&[crate::api::AgentItem], &std::collections::HashSet<String>, &std::collections::HashMap<String, u64>) =
+        if app.active_channel_id.as_deref() == Some(channel_id) {
+            (&app.agents, &app.active_agent_ids, &app.agent_run_seeds)
+        } else if let Some(buffer) = app.channel_buffers.get(channel_id) {
+            (&buffer.agents, &buffer.active_agent_ids, &buffer.agent_run_seeds)
+        } else {
+            (&[], &app.active_agent_ids, &app.agent_run_seeds)
+        };
+    let normalized_name = |name: &str| name.trim().to_lowercase().chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>().split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
+    let is_active = |ag: &crate::api::AgentItem| {
+        active_ids.contains(&ag.id)
+            || (!ag.mention.is_empty() && active_ids.contains(&ag.mention))
+            || (!ag.display_name.is_empty() && active_ids.contains(&ag.display_name))
+            || (!ag.display_name.is_empty() && active_ids.contains(&normalized_name(&ag.display_name)))
+            || ag.vault_agent_id.as_deref().is_some_and(|id| active_ids.contains(id))
+    };
+    let agents: Vec<_> = channel_agents.iter().enumerate().filter(|(_, ag)| {
+        if app.active_channel_id.as_deref() == Some(channel_id) || !active_ids.is_empty() {
+            is_active(ag)
+        } else {
+            sessions.iter().any(|s| s.registration_id.as_deref() == Some(&ag.id)
+                || (!s.mention.is_empty() && s.mention == ag.mention)
+                || (!s.author.is_empty() && s.author == ag.display_name))
+        }
+    }).collect();
+    if let [(idx, ag)] = agents.as_slice() {
+        if sessions.len() <= 1 {
+            let seed = run_seeds.get(&ag.id).copied().unwrap_or_else(|| app.agent_run_seed(ag));
+            return Some(agent_termimation_ball(ag, app.animation_tick, seed, *idx));
+        }
+    }
+    if agents.is_empty() && sessions.is_empty() { return None; }
+    // Pick a separate, stable pattern for a channel with concurrent runs.
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    channel_id.hash(&mut hash);
+    for (_, ag) in &agents {
+        run_seeds.get(&ag.id).copied().unwrap_or_else(|| app.agent_run_seed(ag)).hash(&mut hash);
+    }
+    let seed = hash.finish();
+    let patterns = termimation_patterns();
+    let pattern = &patterns[seed as usize % patterns.len()];
+    let ch = pattern.frames[(app.animation_tick.wrapping_mul(ANIMATION_TICK_MS)
+        / pattern.frame_ms) as usize % pattern.frames.len()];
+    Some(if ch.width().unwrap_or(1) <= 1 { format!("{ch} ") } else { ch.to_string() })
+}
+
+fn response_termimation(app: &App, message_index: usize) -> Option<String> {
+    let agent = agent_for_message(&app.agents, &app.messages[message_index])?;
+    if !app.is_agent_active(agent) || app.messages[message_index + 1..].iter()
+        .any(|msg| agent_for_message(&app.agents, msg).map(|ag| &ag.id) == Some(&agent.id)) {
+        return None;
+    }
+    let row = app.agents.iter().position(|ag| ag.id == agent.id)?;
+    Some(agent_termimation_ball(agent, app.animation_tick, app.agent_run_seed(agent), row))
+}
+
+fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::Users;
+    let items: Vec<ListItem> = if app.users.is_empty() {
+        vec![ListItem::new(Span::styled("  No users", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.users
+            .iter()
+            .enumerate()
+            .map(|(idx, user)| {
+                let display_name = if user.display_name.trim().is_empty() {
+                    &user.username
+                } else {
+                    &user.display_name
+                };
+                let color = if user.username == app.author {
+                    resolve_color(Some(app.author_color.as_str()), Color::White)
+                } else {
+                    resolve_color(user.color.as_deref(), Color::White)
+                };
+                let mut top = vec![
+                    Span::raw(if idx == app.selected_user_idx { "> " } else { "  " }),
+                    Span::styled("● ", Style::default().fg(color)),
+                    Span::styled(display_name, Style::default().fg(color).bold()),
+                ];
+                if display_name != &user.username {
+                    top.push(Span::raw(" "));
+                    top.push(Span::styled(format!("@{}", user.username), Style::default().fg(Color::DarkGray)));
+                }
+                let item = ListItem::new(vec![
+                    Line::from(top),
+                    Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(&user.role, Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]);
+                if idx == app.selected_user_idx && is_focused {
+                    item.style(Style::default().bg(Color::Cyan).fg(Color::Black).bold())
+                } else {
+                    item
+                }
+            })
+            .collect()
+    };
+
+    let block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(Span::styled(
+            format!(" Users ({}) ", app.users.len()),
+            Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
+        ))
+        .border_style(Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }));
+    frame.render_widget(List::new(items).block(block), area);
+}
+
+fn agent_for_message<'a>(
+    agents: &'a [crate::api::AgentItem],
+    msg: &crate::api::ChatMessage,
+) -> Option<&'a crate::api::AgentItem> {
+    // Registration IDs are unique. Author-facing identity comes next; provider
+    // IDs such as `codex` are shared by several profiles and are only safe when
+    // they identify exactly one agent in this channel.
+    if let Some(agent_id) = msg.agent_id.as_deref() {
+        if let Some(agent) = agents.iter().find(|agent| agent.id == agent_id) {
+            return Some(agent);
+        }
+    }
+    if let Some(agent) = agents.iter().find(|agent| {
+        agent.mention.eq_ignore_ascii_case(&msg.author)
+            || agent.display_name.eq_ignore_ascii_case(&msg.author)
+    }) {
+        return Some(agent);
+    }
+    let mut provider_matches = agents
+        .iter()
+        .filter(|agent| msg.agent_id.as_deref() == Some(agent.agent_id.as_str()));
+    let only = provider_matches.next()?;
+    provider_matches.next().is_none().then_some(only)
+}
+
+fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::Notes;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let items: Vec<ListItem> = if app.notes.is_empty() {
+        vec![ListItem::new(Span::styled("  No notes", Style::default().fg(Color::DarkGray)))]
+    } else {
+        app.notes
+            .iter()
+            .enumerate()
+            .map(|(idx, note)| {
+                let title = if note.title.is_empty() { "untitled" } else { &note.title };
+                let title_style = if idx == app.selected_note_idx && is_focused {
+                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+                } else if idx == app.selected_note_idx {
+                    Style::default().fg(Color::Cyan).bold()
+                } else {
+                    Style::default().fg(Color::White).bold()
+                };
+                let preview = note.content_preview.lines().next().unwrap_or("").trim();
+                ListItem::new(vec![
+                    Line::from(vec![Span::raw(if idx == app.selected_note_idx { "> " } else { "  " }), Span::styled(title, title_style)]),
+                    Line::from(vec![Span::raw("   "), Span::styled(preview, Style::default().fg(Color::DarkGray))]),
+                ])
+            })
+            .collect()
+    };
+
+    let block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(Span::styled(format!(" Notes ({}) ", app.notes.len()), Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold()))
+        .border_style(Style::default().fg(border_color));
+    // Notes occupy two terminal rows each. Stateful list rendering keeps the
+    // selected note inside the viewport as the arrow keys move through it.
+    let mut state = ListState::default().with_selected((!app.notes.is_empty()).then_some(app.selected_note_idx));
+    frame.render_stateful_widget(List::new(items).block(block), area, &mut state);
+}
+
+
+fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::ChatSelector;
+    let editing_name = app.new_channel_name.is_some();
+    let renaming = app.renaming_channel_idx.is_some();
+    let border_color = if editing_name {
+        Color::Green
+    } else if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Inline "new channel" input row, rendered right in the sidebar.
+    if let Some(name) = &app.new_channel_name {
+        let shown = if name.is_empty() {
+            "＋ type a name…".to_string()
+        } else {
+            format!("＋ {}█", name)
+        };
+        items.push(
+            ListItem::new(shown)
+                .style(Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+        );
+    }
+
+    items.extend(app.channels.iter().enumerate().map(|(idx, ch)| {
+        let is_selected = idx == app.selected_channel_idx;
+        let is_active = app.active_channel_id.as_deref() == Some(&ch.id);
+
+        let animation = channel_termimation(app, &ch.id);
+        let marker = animation.as_deref().unwrap_or(if is_active { "● " } else { "# " });
+        let prefix = if is_selected { "> " } else { "  " };
+
+        let text = format!("{}{}{}", prefix, marker, ch.title);
+
+        let style = if is_selected && is_focused && !editing_name {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        ListItem::new(text).style(style)
+    }));
+
+    let title = if editing_name {
+        let label = if renaming { " Rename channel " } else { " New channel " };
+        Span::styled(format!("{} Enter ✓  Esc ✗ ", label), Style::default().fg(Color::Green).bold())
+    } else {
+        Span::styled(
+            " Chats / Channels ",
+            Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
+        )
+    };
+
+    let selector_block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(title)
+        .border_style(Style::default().fg(border_color));
+
+    let list = List::new(items).block(selector_block);
+    frame.render_widget(list, area);
+}
+
+pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
+    let is_valid = {
+        let cache = app.chat_cache.read().unwrap();
+        !app.messages.is_empty() && cache.channel_id == app.active_channel_id
+            && cache.wrap_width == body_wrap_width
+            && cache.author == app.author
+            && cache.author_color == app.author_color
+            && cache.messages == app.messages
+            && cache.agents == app.agents
+            && cache.users == app.users
+    };
+
+    if is_valid {
+        return;
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut message_markers = Vec::new();
+    let mut inline_svgs = Vec::new();
+    let mut line_offsets: Vec<(usize, usize)> = Vec::new();
+    let mut chat_text = String::new();
+    let mut current_char_offset = 0;
+
+    let mut push_line = |line: Line<'static>, text_line: &str| {
+        let char_count = text_line.chars().count();
+        line_offsets.push((current_char_offset, char_count));
+        if !lines.is_empty() {
+            chat_text.push('\n');
+        }
+        chat_text.push_str(text_line);
+        current_char_offset += char_count + 1;
+        lines.push(line);
+        lines.len() - 1
+    };
+
+    if app.messages.is_empty() {
+        let msg = if app.receiving_messages.is_some() && app.receiving_messages == app.active_channel_id {
+            " Receiving messages…"
+        } else if let Some(error) = app.message_load_error.as_deref() {
+            error
+        } else {
+            " No messages in this channel yet."
+        };
+        push_line(
+            Line::from(Span::styled(
+                msg.to_string(),
+                Style::default().fg(Color::DarkGray).italic(),
+            )),
+            msg,
+        );
+    } else {
+        let msg_count = app.messages.len();
+        for (m_idx, msg) in app.messages.iter().enumerate() {
+            // Consecutive messages from the same author/agent within the grouping
+            // window fold together, just like the Electron frontend's chat batching.
+            let continues_group = m_idx > 0
+                && crate::api::continues_chat_group(&app.messages[m_idx - 1], msg);
+
+            // Author formatting
+            let maybe_agent = agent_for_message(&app.agents, msg);
+            let is_agent = maybe_agent.is_some()
+                || msg.agent_id.is_some()
+                || msg.author.to_lowercase().contains("bot")
+                || msg.author.to_lowercase().contains("agent")
+                || msg.author == "Codex"
+                || msg.author == "Pi";
+            // An agent mention wins over the display-name collision with the
+            // local user (for example, an agent named "chat2").
+            let is_self = msg.agent_id.is_none() && msg.author == app.author;
+
+            let author_color = if is_self {
+                resolve_color(Some(app.author_color.as_str()), Color::White)
+            } else if is_agent {
+                if let Some(ag) = maybe_agent {
+                    resolve_color(ag.color.as_deref(), Color::White)
+                } else {
+                    Color::White
+                }
+            } else if msg.author == "System" {
+                Color::Magenta
+            } else if let Some(user) = app.users.iter().find(|user| {
+                user.username.eq_ignore_ascii_case(&msg.author)
+                    || user.display_name.eq_ignore_ascii_case(&msg.author)
+            }) {
+                resolve_color(user.color.as_deref(), Color::White)
+            } else {
+                Color::White
+            };
+
+            if !continues_group {
+                let ts = crate::api::format_timestamp(&msg.created_at);
+                let author_line = Line::from(vec![
+                    Span::styled("● ", Style::default().fg(author_color)),
+                    Span::styled(msg.author.clone(), Style::default().fg(author_color).bold()),
+                    Span::raw("  "),
+                    Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
+                ]);
+                let text_line = format!("● {}  {}", msg.author, ts);
+                let row = push_line(author_line, &text_line);
+                message_markers.push((row, m_idx));
+            }
+
+            // A grouped continuation has no author line to mark its start, so its
+            // first content row gets a colored `>` in the margin instead.
+            let mut marker_pending = continues_group;
+
+            // Inline SVG is a message-body format, not an agent-only format:
+            // human-authored SVG messages should render in exactly the same
+            // position as generated diagrams.
+            let parts = if crate::purrvect::is_kitty_terminal() {
+                crate::purrvect::split_inline_svgs(&msg.body)
+            } else { vec![crate::purrvect::InlinePart::Text(&msg.body)] };
+            let mut svg_index = 0;
+            for part in parts { match part {
+              crate::purrvect::InlinePart::Text(text) => for body_line in text.lines() {
+                if body_line.trim().is_empty() {
+                    push_line(Line::from(""), "");
+                } else {
+                    for wrapped_chunk in wrap_text(body_line, body_wrap_width) {
+                        let marks_message = marker_pending;
+                        let (margin_str, margin_span) = if marker_pending {
+                            marker_pending = false;
+                            ("> ", Span::styled("> ", Style::default().fg(author_color)))
+                        } else {
+                            ("  ", Span::raw("  "))
+                        };
+                        let mut spans = vec![margin_span];
+                        spans.extend(styled_message_text(&wrapped_chunk, app));
+                        let line = Line::from(spans);
+                        let text_line = format!("{}{}", margin_str, wrapped_chunk);
+                        let row = push_line(line, &text_line);
+                        if marks_message { message_markers.push((row, m_idx)); }
+                    }
+                }
+              },
+              crate::purrvect::InlinePart::Svg(svg) => {
+                svg_index += 1;
+                let rows = 12u16;
+                let mut start_line = None;
+                for row_index in 0..rows {
+                    let marks_message = marker_pending;
+                    let margin = if marker_pending {
+                        marker_pending = false;
+                        Span::styled("> ", Style::default().fg(author_color))
+                    } else { Span::raw("  ") };
+                    let row = push_line(Line::from(margin), if row_index == 0 && marks_message { "> " } else { "" });
+                    start_line.get_or_insert(row);
+                    if marks_message { message_markers.push((row, m_idx)); }
+                }
+                inline_svgs.push(InlineSvgBlock { start_line: start_line.unwrap_or(0), rows,
+                    image_id: crate::purrvect::image_id(&msg.id, svg_index, svg), svg: svg.to_string() });
+              }
+            }}
+
+            // Attached-image indicator (the list API strips heavy data-URLs but flags them)
+            if msg.has_image() {
+                let label = match msg.image_count.max(msg.images.len()) {
+                    0 | 1 => " ▤ image ".to_string(),
+                    n => format!(" ▤ image ({}) ", n),
+                };
+                let marks_message = marker_pending;
+                let (margin_str, margin_span) = if marker_pending {
+                    marker_pending = false;
+                    ("> ", Span::styled("> ", Style::default().fg(author_color)))
+                } else {
+                    ("  ", Span::raw("  "))
+                };
+                let line = Line::from(vec![
+                    margin_span,
+                    Span::styled(label.clone(), Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
+                ]);
+                let text_line = format!("{}{}", margin_str, label);
+                let row = push_line(line, &text_line);
+                if marks_message { message_markers.push((row, m_idx)); }
+            }
+            let _ = marker_pending;
+
+            // Grouped continuations sit flush against each other; only a fresh
+            // group (or the stream's end) gets a blank line after it.
+            let next_continues = m_idx + 1 < msg_count
+                && crate::api::continues_chat_group(msg, &app.messages[m_idx + 1]);
+            if m_idx + 1 < msg_count && !next_continues {
+                push_line(Line::from(""), "");
+            }
+        }
+    }
+
+    let char_count = chat_text.chars().count();
+    *app.chat_cache.write().unwrap() = ChatRenderCache {
+        channel_id: app.active_channel_id.clone(),
+        messages: app.messages.clone(),
+        agents: app.agents.clone(),
+        users: app.users.clone(),
+        author: app.author.clone(),
+        author_color: app.author_color.clone(),
+        wrap_width: body_wrap_width,
+        lines,
+        message_markers,
+        line_offsets,
+        chat_text,
+        char_count,
+        inline_svgs,
+    };
+}
+
+pub fn chat_scroll_top(app: &App, cache: &ChatRenderCache, visible_lines: usize) -> usize {
+    let max_scroll = cache.lines.len().saturating_sub(visible_lines);
+    let mut scroll_y = max_scroll.saturating_sub(app.scroll_offset);
+
+    // Keep the text cursor visible while moving through the flattened log.
+    if app.active_pane == ActivePane::ChatMessages && app.scroll_offset == 0 {
+        if let Some(cursor) = app.chat_cursor {
+            let (cursor_line, _) = chat_line_column_from_offsets(&cache.line_offsets, cursor);
+            if cursor_line < scroll_y {
+                scroll_y = cursor_line;
+            } else if cursor_line >= scroll_y.saturating_add(visible_lines) {
+                scroll_y = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+            }
+            scroll_y = scroll_y.min(max_scroll);
+        }
+    }
+
+    scroll_y
+}
+
+fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::ChatMessages;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+    let active_title = format!(" #{} ", app.active_channel_title());
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let body_wrap_width = inner_width.saturating_sub(2).max(1);
+
+    ensure_chat_cache(app, body_wrap_width);
+    let cache = app.chat_cache.read().unwrap();
+
+    let messages_block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(Span::styled(active_title, Style::default().fg(if is_focused { FOCUS_COLOR } else { Color::White }).bold()))
+        .border_style(Style::default().fg(border_color));
+
+    let visible_lines = messages_block.inner(area).height as usize;
+    let total_lines = cache.lines.len();
+
+    let scroll_y = chat_scroll_top(app, &cache, visible_lines);
+
+    let selection_bounds = app.chat_selection_bounds(&cache.chat_text);
+
+    // Slice only the lines visible in the current viewport to avoid iterating,
+    // formatting, and cloning thousands of offscreen lines every frame.
+    let slice_end = (scroll_y + visible_lines).min(total_lines);
+    let visible_slice: Vec<Line> = if scroll_y < total_lines {
+        (scroll_y..slice_end)
+            .map(|idx| {
+                let mut line = cache.lines[idx].clone();
+                if let Ok(marker) = cache.message_markers.binary_search_by_key(&idx, |(row, _)| *row) {
+                    if let Some(ball) = response_termimation(app, cache.message_markers[marker].1) {
+                        if let Some(span) = line.spans.first_mut() {
+                            span.content = ball.into();
+                            span.style = span.style.bold();
+                        }
+                    }
+                }
+                if let Some((sel_start, sel_end)) = selection_bounds {
+                    let (line_start, line_len) = cache.line_offsets[idx];
+                    let line_end = line_start + line_len;
+                    if sel_start < line_end && sel_end > line_start {
+                        let start = sel_start.saturating_sub(line_start).min(line_len);
+                        let end = sel_end.saturating_sub(line_start).min(line_len);
+                        if start < end {
+                            highlight_line_range(&mut line, start, end);
+                        }
+                    }
+                }
+                line
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let paragraph = Paragraph::new(Text::from(visible_slice))
+        .block(messages_block);
+
+    frame.render_widget(paragraph, area);
+
+    for svg in &cache.inline_svgs {
+        let end = svg.start_line + usize::from(svg.rows);
+        if svg.start_line >= scroll_y && end <= scroll_y + visible_lines {
+            let y = area.y + 1 + (svg.start_line - scroll_y) as u16;
+            let x = area.x + 3;
+            let instance_id = svg.image_id ^ (u32::from(x) << 16) ^ u32::from(y);
+            crate::purrvect::place(crate::purrvect::Placement { image_id: instance_id.max(1),
+                area: Rect::new(x, y, body_wrap_width.min(u16::MAX as usize) as u16, svg.rows), svg: svg.svg.clone() });
+        }
+    }
+
+    if is_focused {
+        if let Some(cursor) = app.chat_cursor {
+            let (cursor_line, cursor_column) = chat_line_column_from_offsets(&cache.line_offsets, cursor);
+            if cursor_line >= scroll_y && cursor_line < scroll_y + visible_lines {
+                let max_x = area.width.saturating_sub(2);
+                let col_u16 = (cursor_column as u16).min(max_x.saturating_sub(1));
+                frame.set_cursor_position(Position {
+                    x: area.x + 1 + col_u16,
+                    y: area.y + 1 + (cursor_line - scroll_y) as u16,
+                });
+            }
+        }
+    }
+}
+
+fn highlight_line_range(line: &mut Line, start: usize, end: usize) {
+    let spans = std::mem::take(&mut line.spans);
+    let mut next = Vec::new();
+    let mut offset = 0;
+    for span in spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut chunk = String::new();
+        let mut selected = false;
+        for (index, c) in chars.iter().enumerate() {
+            let is_selected = start <= offset + index && offset + index < end;
+            if is_selected != selected && !chunk.is_empty() {
+                let style = if selected {
+                    span.style
+                        .bg(Color::Rgb(50, 50, 50))
+                } else { span.style };
+                next.push(Span::styled(std::mem::take(&mut chunk), style));
+            }
+            selected = is_selected;
+            chunk.push(*c);
+        }
+        if !chunk.is_empty() {
+            let style = if selected {
+                span.style
+                    .bg(Color::Rgb(50, 50, 50))
+            } else { span.style };
+            next.push(Span::styled(chunk, style));
+        }
+        offset += chars.len();
+    }
+    line.spans = next;
+}
+
+pub fn chat_line_column_from_offsets(line_offsets: &[(usize, usize)], offset: usize) -> (usize, usize) {
+    if line_offsets.is_empty() {
+        return (0, 0);
+    }
+    let idx = match line_offsets.binary_search_by(|&(start, len)| {
+        if offset < start {
+            std::cmp::Ordering::Greater
+        } else if offset <= start + len {
+            std::cmp::Ordering::Equal
+        } else {
+            std::cmp::Ordering::Less
+        }
+    }) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1).min(line_offsets.len() - 1),
+    };
+    let (start, len) = line_offsets[idx];
+    (idx, offset.saturating_sub(start).min(len))
+}
+
+#[allow(dead_code)]
+fn chat_line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 0;
+    let mut column = 0;
+    for (index, c) in text.chars().enumerate() {
+        if index >= offset {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
+pub fn chat_log_text(app: &App, body_wrap_width: usize) -> String {
+    ensure_chat_cache(app, body_wrap_width);
+    app.chat_cache.read().unwrap().chat_text.clone()
+}
+
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let max_width = max_width.max(1);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0;
+
+    for word in text.split_whitespace() {
+        let w_len = word.chars().count();
+        if cur.is_empty() {
+            if w_len > max_width {
+                let mut chunk = String::new();
+                for c in word.chars() {
+                    chunk.push(c);
+                    if chunk.chars().count() >= max_width {
+                        lines.push(chunk);
+                        chunk = String::new();
+                    }
+                }
+                if !chunk.is_empty() {
+                    cur = chunk;
+                    cur_len = cur.chars().count();
+                }
+            } else {
+                cur.push_str(word);
+                cur_len = w_len;
+            }
+        } else if cur_len + 1 + w_len <= max_width {
+            cur.push(' ');
+            cur.push_str(word);
+            cur_len += 1 + w_len;
+        } else {
+            lines.push(cur);
+            if w_len > max_width {
+                let mut chunk = String::new();
+                for c in word.chars() {
+                    chunk.push(c);
+                    if chunk.chars().count() >= max_width {
+                        lines.push(chunk);
+                        chunk = String::new();
+                    }
+                }
+                cur = chunk;
+                cur_len = cur.chars().count();
+            } else {
+                cur = word.to_string();
+                cur_len = w_len;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(text.to_string());
+    }
+    lines
+}
+
+fn mention_color(app: &App, mention: &str) -> Color {
+    let name = mention.trim_start_matches('@');
+    if !app.author.is_empty() && name.eq_ignore_ascii_case(&app.author) {
+        return resolve_color(Some(app.author_color.as_str()), Color::White);
+    }
+    if let Some(ag) = app.agents.iter().find(|a| a.mention.eq_ignore_ascii_case(name)) {
+        return resolve_color(ag.color.as_deref(), Color::White);
+    }
+    if let Some(user) = app.users.iter().find(|u| {
+        u.username.eq_ignore_ascii_case(name) || u.display_name.eq_ignore_ascii_case(name)
+    }) {
+        return resolve_color(user.color.as_deref(), Color::White);
+    }
+    Color::White
+}
+
+fn styled_message_text(text: &str, app: &App) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && i + 1 < chars.len()
+            && (chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' || chars[i + 1] == '-')
+        {
+            if start < i {
+                spans.push(Span::styled(chars[start..i].iter().collect::<String>(), Style::default().fg(Color::White)));
+            }
+            let mut end = i + 1;
+            while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_' || chars[end] == '-') {
+                end += 1;
+            }
+            let mention_text: String = chars[i..end].iter().collect();
+            let color = mention_color(app, &mention_text);
+            spans.push(Span::styled(mention_text, Style::default().fg(color).bold()));
+            start = end;
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    if start < chars.len() || spans.is_empty() {
+        spans.push(Span::styled(chars[start..].iter().collect::<String>(), Style::default().fg(Color::White)));
+    }
+    spans
+}
+
+fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.active_pane == ActivePane::ChatInput;
+    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+
+    let title = if app.pending_images.is_empty() {
+        Span::styled(format!(" Message · #{} ", app.active_channel_title()), Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }))
+    } else {
+        Span::styled(
+            format!(" Message · #{} [{} image{} attached] ", app.active_channel_title(), app.pending_images.len(), if app.pending_images.len() == 1 { "" } else { "s" }),
+            Style::default().fg(Color::Yellow).bold(),
+        )
+    };
+
+    let input_block = Block::default()
+        .borders(buffer_borders(area, frame.area()))
+        .title(title)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = input_block.inner(area);
+    let inner_height = inner.height as usize;
+    let text_width = area.width.saturating_sub(4).max(1) as usize;
+    let (cursor_visual_line, cursor_column) = wrapped_cursor_position(&app.input, app.cursor_pos, text_width);
+    let visual_line_count = app.visual_input_line_count(text_width);
+    let max_input_scroll = visual_line_count.saturating_sub(inner_height);
+    let mut input_scroll = app.input_scroll_offset.min(max_input_scroll);
+    if cursor_visual_line < input_scroll {
+        input_scroll = cursor_visual_line;
+    } else if cursor_visual_line >= input_scroll.saturating_add(inner_height) {
+        input_scroll = cursor_visual_line.saturating_sub(inner_height.saturating_sub(1));
+    }
+
+    let raw_lines: Vec<&str> = if app.input.is_empty() {
+        vec![""]
+    } else {
+        app.input.split('\n').collect()
+    };
+
+    let mut rendered_lines: Vec<Line> = Vec::new();
+    for line_text in &raw_lines {
+        rendered_lines.push(Line::from(vec![
+            Span::styled(*line_text, Style::default().fg(Color::White)),
+        ]));
+    }
+
+    frame.render_widget(input_block, area);
+    if inner.width >= 2 {
+        let prefix = if app.input_scroll_offset == 0 { "> " } else { "  " };
+        frame.render_widget(Paragraph::new(prefix).style(Style::default().fg(Color::Cyan)), inner);
+        let text_area = Rect::new(inner.x + 2, inner.y, inner.width - 2, inner.height);
+        frame.render_widget(Paragraph::new(rendered_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((input_scroll.min(u16::MAX as usize) as u16, 0)), text_area);
+    }
+
+    // Render blinking cursor if input is focused
+    if is_focused && inner_height > 0 {
+        if cursor_visual_line >= input_scroll && cursor_visual_line < input_scroll + inner_height {
+            let row_in_box = (cursor_visual_line - input_scroll) as u16;
+            let cursor_x = area.x + 3 + cursor_column as u16;
+            let cursor_y = area.y + 1 + row_in_box;
+            if cursor_x < area.x + area.width - 1 && cursor_y < area.y + area.height - 1 {
+                frame.set_cursor_position(Position { x: cursor_x, y: cursor_y });
+            }
+        }
+    }
+}
+
+fn wrapped_cursor_position(input: &str, cursor_pos: usize, width: usize) -> (usize, usize) {
+    let width = width.max(1);
+    let chars: Vec<char> = input.chars().collect();
+    let cursor_pos = cursor_pos.min(chars.len());
+    let mut line_start = 0;
+    let mut visual_line = 0;
+
+    for (idx, c) in chars.iter().enumerate() {
+        if *c != '\n' {
+            continue;
+        }
+        if cursor_pos <= idx {
+            return (visual_line + wrapped_cursor_line(&chars[line_start..idx], cursor_pos - line_start, width).0,
+                wrapped_cursor_line(&chars[line_start..idx], cursor_pos - line_start, width).1);
+        }
+        visual_line += wrapped_input_line_count(&chars[line_start..idx], width);
+        line_start = idx + 1;
+    }
+
+    let (line, column) = wrapped_cursor_line(&chars[line_start..], cursor_pos.saturating_sub(line_start), width);
+    (visual_line + line, column)
+}
+
+/// Match Paragraph::wrap(Wrap { trim: false }): complete words move to the
+/// next row when they do not fit, while oversized words split at cell width.
+fn wrapped_cursor_line(line: &[char], cursor_pos: usize, width: usize) -> (usize, usize) {
+    let cursor_pos = cursor_pos.min(line.len());
+    let mut visual_line = 0;
+    let mut column = 0;
+    let mut index = 0;
+
+    while index < line.len() {
+        if line[index].is_whitespace() {
+            let char_width = line[index].width().unwrap_or(0);
+            if char_width > 0 && column + char_width > width {
+                visual_line += 1;
+                column = 0;
+            }
+            if index >= cursor_pos {
+                return (visual_line, column);
+            }
+            column += char_width;
+            index += 1;
+            continue;
+        }
+
+        let word_start = index;
+        while index < line.len() && !line[index].is_whitespace() {
+            index += 1;
+        }
+        let word_width: usize = line[word_start..index]
+            .iter()
+            .map(|c| c.width().unwrap_or(0))
+            .sum();
+        if column > 0 && column + word_width > width {
+            visual_line += 1;
+            column = 0;
+        }
+
+        for (offset, c) in line[word_start..index].iter().enumerate() {
+            let char_width = c.width().unwrap_or(0);
+            if char_width > 0 && column + char_width > width {
+                visual_line += 1;
+                column = 0;
+            }
+            if word_start + offset >= cursor_pos {
+                return (visual_line, column);
+            }
+            column += char_width;
+        }
+    }
+
+    if cursor_pos >= line.len() && column >= width {
+        (visual_line + 1, 0)
+    } else {
+        (visual_line, column)
+    }
+}
+
+fn wrapped_input_line_count(line: &[char], width: usize) -> usize {
+    let end = wrapped_cursor_line(line, line.len(), width).0;
+    end + 1
+}
+
+/// Expand `(key, label)` hint pairs into alternating badge/text spans.
+pub fn supports_truecolor() -> bool {
+    if let Ok(force) = std::env::var("FORCE_ANSI") {
+        if force == "1" || force.eq_ignore_ascii_case("true") {
+            return false;
+        }
+    }
+    if let Ok(val) = std::env::var("COLORTERM") {
+        let val = val.to_ascii_lowercase();
+        if val == "truecolor" || val == "24bit" {
+            return true;
+        }
+    }
+    if let Ok(term) = std::env::var("TERM") {
+        let term = term.to_ascii_lowercase();
+        if term.contains("24bit") || term.contains("truecolor") || term.contains("direct") {
+            return true;
+        }
+    }
+    false
+}
+
+const ANSI_COLORS: &[(Color, u8, u8, u8)] = &[
+    (Color::Black, 0, 0, 0),
+    (Color::Red, 178, 34, 34),
+    (Color::Green, 34, 139, 34),
+    (Color::Yellow, 204, 153, 0),
+    (Color::Blue, 30, 144, 255),
+    (Color::Magenta, 186, 85, 211),
+    (Color::Cyan, 0, 191, 255),
+    (Color::Gray, 192, 192, 192),
+    (Color::DarkGray, 105, 105, 105),
+    (Color::LightRed, 255, 99, 71),
+    (Color::LightGreen, 50, 205, 50),
+    (Color::LightYellow, 255, 255, 0),
+    (Color::LightBlue, 100, 149, 237),
+    (Color::LightMagenta, 238, 130, 238),
+    (Color::LightCyan, 127, 255, 212),
+    (Color::White, 255, 255, 255),
+];
+
+pub fn closest_ansi_color(r: u8, g: u8, b: u8) -> Color {
+    let mut best_color = Color::White;
+    let mut min_dist = i64::MAX;
+
+    for &(color, ar, ag, ab) in ANSI_COLORS {
+        let dr = (r as i64) - (ar as i64);
+        let dg = (g as i64) - (ag as i64);
+        let db = (b as i64) - (ab as i64);
+        let dist = dr * dr + dg * dg + db * db;
+        if dist < min_dist {
+            min_dist = dist;
+            best_color = color;
+        }
+    }
+
+    best_color
+}
+
+pub fn rgb_to_display_color(r: u8, g: u8, b: u8) -> Color {
+    if supports_truecolor() {
+        Color::Rgb(r, g, b)
+    } else {
+        closest_ansi_color(r, g, b)
+    }
+}
+
+pub fn resolve_color(hex_str: Option<&str>, default_color: Color) -> Color {
+    let Some(hex) = hex_str else {
+        return default_color;
+    };
+    let Some((r, g, b)) = parse_hex_color(hex) else {
+        return default_color;
+    };
+    rgb_to_display_color(r, g, b)
+}
+
+/// Renders a full-width slider whose track is a gradient across the channel's
+/// entire range (other channels held at their current value) — the way
+/// native color-picker RGB sliders preview each axis, not a flat single tint.
+pub fn render_slider_line<'a>(
+    label: &'static str,
+    val: u16,
+    max: u16,
+    unit: &'static str,
+    is_selected: bool,
+    label_color: Color,
+    total_width: usize,
+    color_at: impl Fn(f64) -> (u8, u8, u8),
+) -> Line<'a> {
+    let prefix = format!("  {}: ", label);
+    let suffix = format!(" {:>3}{} ", val, unit);
+    let used = prefix.len() + suffix.len();
+    let track_width = total_width.saturating_sub(used).max(10);
+
+    let ratio = (val as f64 / max as f64).clamp(0.0, 1.0);
+    let knob_pos = (ratio * (track_width.saturating_sub(1) as f64)).round() as usize;
+
+    let label_style = if is_selected {
+        Style::default().fg(Color::Black).bg(label_color).bold()
+    } else {
+        Style::default().fg(label_color).bold()
+    };
+
+    let suffix_style = if is_selected {
+        Style::default().fg(Color::White).bold()
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(track_width + 2);
+    spans.push(Span::styled(prefix, label_style));
+
+    for i in 0..track_width {
+        let t = if track_width <= 1 { 0.0 } else { i as f64 / (track_width - 1) as f64 };
+        let (r, g, b) = color_at(t);
+        let track_color = rgb_to_display_color(r, g, b);
+        if i == knob_pos {
+            spans.push(Span::styled("●", Style::default().fg(Color::White).bold()));
+        } else {
+            spans.push(Span::styled("▆", Style::default().fg(track_color)));
+        }
+    }
+
+    spans.push(Span::styled(suffix, suffix_style));
+    Line::from(spans)
+}
+
+pub fn agent_modal_rect(area: Rect) -> Rect {
+    let width = 86.min(area.width.saturating_sub(4)).max(34);
+    let height = 34.min(area.height.saturating_sub(2)).max(18);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
+pub fn user_modal_rect(area: Rect) -> Rect {
+    let width = 86.min(area.width.saturating_sub(4)).max(34);
+    let height = 18.min(area.height.saturating_sub(2)).max(16);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
+fn format_reasoning_effort(val: &str) -> &'static str {
+    match val {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra High",
+        "max" => "Max",
+        "ultra" => "Ultra",
+        _ => "Default (CLI)",
+    }
+}
+
+fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
+    let Some(ref modal) = app.agent_settings_modal else {
+        return;
+    };
+
+    let area = agent_modal_rect(frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if modal.is_new {
+        format!(" Add Agent: {} (@{}) ", modal.agent.display_name, modal.agent.mention)
+    } else {
+        format!(" Customize Agent: {} (@{}) ", modal.agent.display_name, modal.agent.mention)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, Style::default().fg(Color::Cyan).bold()))
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let is_codex = modal.agent.agent_id == "codex";
+    let is_claude = modal.agent.agent_id == "claude-code";
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Summary line
+    lines.push(Line::from(vec![
+        Span::styled(" Agent Type: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&modal.agent.agent_id, Style::default().fg(Color::White).bold()),
+        Span::styled("   Vault: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(app.vault_name.as_str(), Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Name (display name)
+    let name_sel = modal.selected_field == AgentSettingsField::DisplayName;
+    let name_display = if modal.editing_name {
+        format!("{}▌", modal.name_input)
+    } else if modal.agent.display_name.trim().is_empty() {
+        "(unnamed)".to_string()
+    } else {
+        modal.agent.display_name.clone()
+    };
+    let name_hint = if modal.editing_name {
+        "  (typing... Enter to confirm, Esc to cancel)"
+    } else if name_sel {
+        "  (Enter to edit)"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Name:              ", if name_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled(format!(" {} ", name_display), if name_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(name_hint, Style::default().fg(Color::Yellow)),
+    ]));
+
+    // Handle (@mention)
+    let handle_sel = modal.selected_field == AgentSettingsField::Mention;
+    let handle_display = if modal.editing_handle {
+        format!("@{}▌", modal.handle_input)
+    } else if modal.agent.mention.trim().is_empty() {
+        "@(none)".to_string()
+    } else {
+        format!("@{}", modal.agent.mention)
+    };
+    let handle_hint = if modal.editing_handle {
+        "  (typing... Enter to confirm, Esc to cancel)"
+    } else if handle_sel {
+        "  (Enter to edit)"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Handle:            ", if handle_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled(format!(" {} ", handle_display), if handle_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(handle_hint, Style::default().fg(Color::Yellow)),
+    ]));
+
+    // 1. Model field
+    let model_sel = modal.selected_field == AgentSettingsField::Model;
+    let model_style = if model_sel {
+        Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let (model_display, _) = modal.current_model_display();
+    let model_text = format!(" < {} > ", model_display);
+    let model_hint = if modal.editing_custom_model {
+        "  (typing... Enter to confirm, Esc to cancel)"
+    } else if modal.is_custom_selected() {
+        "  (Space/Arrows to cycle, Enter to edit ID)"
+    } else if model_sel {
+        "  (Space/Arrows to cycle)"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Model:             ", if model_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled(model_text, model_style),
+        Span::styled(model_hint, Style::default().fg(Color::Yellow)),
+    ]));
+
+    // 2. Reasoning effort (Codex & Claude Code)
+    if is_codex || is_claude {
+        let r_sel = modal.selected_field == AgentSettingsField::ReasoningEffort;
+        let r_style = if r_sel {
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let r_text = format!(" < {} > ", format_reasoning_effort(&modal.agent.reasoning_effort));
+        lines.push(Line::from(vec![
+            Span::styled("  Reasoning Effort:  ", if r_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+            Span::styled(r_text, r_style),
+            if r_sel {
+                Span::styled("  (Space/Arrows to cycle)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
+        ]));
+    }
+
+    // 3. Fast mode (Codex only)
+    if is_codex {
+        let f_sel = modal.selected_field == AgentSettingsField::PriorityServiceTier;
+        let f_mark = if modal.agent.priority_service_tier { "[x]" } else { "[ ]" };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} Fast mode ", f_mark), if f_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+            Span::styled(" (Codex priority processing tier)", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    // Color (RGB / HSV) Section
+    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(Color::DarkGray))));
+
+    let hex_display = modal.agent.color.as_deref().unwrap_or("FFFFFF");
+    let swatch_color = resolve_color(Some(hex_display), Color::White);
+    lines.push(Line::from(vec![
+        Span::styled("  Preview: [", Style::default().fg(Color::DarkGray)),
+        Span::styled("██████████", Style::default().fg(swatch_color)),
+        Span::styled("] ", Style::default().fg(Color::DarkGray)),
+        Span::styled(hex_display, Style::default().fg(Color::White).bold()),
+        Span::styled(format!("  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let slider_width = inner_width.saturating_sub(1);
+
+    // 6 Full-Width Sliders — each track is a gradient sweeping its own channel
+    // end-to-end while the other channels stay pinned at their live value,
+    // matching the native RGB color-picker style the sliders were modeled on.
+    let (fixed_g, fixed_b) = (modal.color_g, modal.color_b);
+    let r_sel = modal.selected_field == AgentSettingsField::ColorR;
+    lines.push(render_slider_line("R", modal.color_r as u16, 255, "", r_sel, Color::LightRed, slider_width,
+        move |t| (((t * 255.0).round() as i32).clamp(0, 255) as u8, fixed_g, fixed_b)));
+
+    let (fixed_r, fixed_b) = (modal.color_r, modal.color_b);
+    let g_sel = modal.selected_field == AgentSettingsField::ColorG;
+    lines.push(render_slider_line("G", modal.color_g as u16, 255, "", g_sel, Color::LightGreen, slider_width,
+        move |t| (fixed_r, ((t * 255.0).round() as i32).clamp(0, 255) as u8, fixed_b)));
+
+    let (fixed_r, fixed_g) = (modal.color_r, modal.color_g);
+    let b_sel = modal.selected_field == AgentSettingsField::ColorB;
+    lines.push(render_slider_line("B", modal.color_b as u16, 255, "", b_sel, Color::LightBlue, slider_width,
+        move |t| (fixed_r, fixed_g, ((t * 255.0).round() as i32).clamp(0, 255) as u8)));
+
+    let (fixed_s, fixed_v) = (modal.color_s, modal.color_v);
+    let h_sel = modal.selected_field == AgentSettingsField::ColorH;
+    let h_label_color = {
+        let (hr, hg, hb) = crate::app::hsv_to_rgb(modal.color_h, 100, 100);
+        rgb_to_display_color(hr, hg, hb)
+    };
+    lines.push(render_slider_line("H", modal.color_h, 360, "°", h_sel, h_label_color, slider_width,
+        move |t| crate::app::hsv_to_rgb(((t * 360.0).round() as i32).clamp(0, 360) as u16, fixed_s, fixed_v)));
+
+    let (fixed_h, fixed_v2) = (modal.color_h, modal.color_v);
+    let s_sel = modal.selected_field == AgentSettingsField::ColorS;
+    lines.push(render_slider_line("S", modal.color_s as u16, 100, "%", s_sel, Color::LightCyan, slider_width,
+        move |t| crate::app::hsv_to_rgb(fixed_h, ((t * 100.0).round() as i32).clamp(0, 100) as u8, fixed_v2)));
+
+    let (fixed_h2, fixed_s2) = (modal.color_h, modal.color_s);
+    let v_sel = modal.selected_field == AgentSettingsField::ColorV;
+    lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", v_sel, Color::White, slider_width,
+        move |t| crate::app::hsv_to_rgb(fixed_h2, fixed_s2, ((t * 100.0).round() as i32).clamp(0, 100) as u8)));
+
+    // Replies Section
+    lines.push(Line::from(Span::styled("  ── Replies ─────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+
+    // Orchestrator
+    let o_sel = modal.selected_field == AgentSettingsField::Orchestrator;
+    let o_mark = if modal.agent.orchestrator { "[x]" } else { "[ ]" };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} Coordinate this channel ", o_mark), if o_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(" (supervisor reads all messages)", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    // Reply to every human message
+    let rep_sel = modal.selected_field == AgentSettingsField::ReplyToEveryMessage;
+    let rep_mark = if modal.agent.reply_to_every_message { "[x]" } else { "[ ]" };
+    let rep_hint = if modal.agent.orchestrator {
+        " (locked on while coordinating)"
+    } else {
+        " (otherwise only when @mentioned)"
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} Reply to every human message ", rep_mark), if rep_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(rep_hint, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    // Mentions Section
+    lines.push(Line::from(Span::styled("  ── Mentions ────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+
+    // Other agents
+    let tag_sel = modal.selected_field == AgentSettingsField::TaggableByAgents;
+    let tag_mark = if modal.agent.taggable_by_agents { "[x]" } else { "[ ]" };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} Other agents can @mention ", tag_mark), if tag_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+    ]));
+
+    // Other people
+    let ping_sel = modal.selected_field == AgentSettingsField::PingableByOthers;
+    let ping_mark = if modal.agent.pingable_by_others { "[x]" } else { "[ ]" };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} Other people in vault can @mention ", ping_mark), if ping_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+    ]));
+
+    // Execution Section
+    lines.push(Line::from(Span::styled("  ── Execution ───────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+
+    // Yolo
+    let yolo_sel = modal.selected_field == AgentSettingsField::Yolo;
+    let yolo_mark = if modal.agent.yolo { "[x]" } else { "[ ]" };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} Full host access (yolo mode) ", yolo_mark), if yolo_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(" (bypasses sandbox boundaries)", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Buttons
+    let save_sel = modal.selected_field == AgentSettingsField::Save;
+    let cancel_sel = modal.selected_field == AgentSettingsField::Cancel;
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(" [ Save Settings (Enter / Ctrl+S) ] ", if save_sel { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(Color::Green) }),
+        Span::raw("   "),
+        Span::styled(" [ Cancel (Esc) ] ", if cancel_sel { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Gray) }),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Controls: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("↑/↓ Navigate  ←/→ Adjust Slider  Shift+←/→ ±10  Bracket keys ±5  Enter Select  Ctrl+S Save  Esc Cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    if let Some(ref err) = modal.error_message {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Error: ", Style::default().fg(Color::Red).bold()),
+            Span::styled(err.as_str(), Style::default().fg(Color::Red)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn render_user_settings_modal(frame: &mut Frame, app: &App) {
+    let Some(ref modal) = app.user_settings_modal else { return; };
+    let area = user_modal_rect(frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            format!(" Edit User: @{} ", modal.user.username),
+            Style::default().fg(Color::Cyan).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Cyan));
+    let selected = |field: UserSettingsField| modal.selected_field == field;
+    let field_style = |field: UserSettingsField| {
+        if selected(field) { Style::default().fg(Color::Black).bg(Color::Cyan).bold() }
+        else { Style::default().fg(Color::White) }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" User: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("@{}", modal.user.username), Style::default().fg(Color::White).bold()),
+        ]),
+        Line::from(""),
+    ];
+    let display = if modal.editing_display_name {
+        format!("  Display name: {}_", modal.display_name_input)
+    } else {
+        format!("  Display name: {}", modal.user.display_name)
+    };
+    lines.push(Line::from(Span::styled(display, field_style(UserSettingsField::DisplayName))));
+    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    let hex = modal.user.color.as_deref().unwrap_or("FFFFFF");
+    let swatch = resolve_color(Some(hex), Color::White);
+    lines.push(Line::from(vec![
+        Span::styled("  Preview: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("██████████", Style::default().fg(swatch)),
+        Span::styled(format!("  {}  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", hex, modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(Color::DarkGray)),
+    ]));
+    let width = area.width.saturating_sub(3) as usize;
+    let (g, b) = (modal.color_g, modal.color_b);
+    lines.push(render_slider_line("R", modal.color_r as u16, 255, "", selected(UserSettingsField::ColorR), Color::LightRed, width, move |t| (((t * 255.0).round() as i32).clamp(0, 255) as u8, g, b)));
+    let (r, b) = (modal.color_r, modal.color_b);
+    lines.push(render_slider_line("G", modal.color_g as u16, 255, "", selected(UserSettingsField::ColorG), Color::LightGreen, width, move |t| (r, ((t * 255.0).round() as i32).clamp(0, 255) as u8, b)));
+    let (r, g) = (modal.color_r, modal.color_g);
+    lines.push(render_slider_line("B", modal.color_b as u16, 255, "", selected(UserSettingsField::ColorB), Color::LightBlue, width, move |t| (r, g, ((t * 255.0).round() as i32).clamp(0, 255) as u8)));
+    let (s, v) = (modal.color_s, modal.color_v);
+    lines.push(render_slider_line("H", modal.color_h, 360, "°", selected(UserSettingsField::ColorH), Color::White, width, move |t| crate::app::hsv_to_rgb(((t * 360.0).round() as i32).clamp(0, 360) as u16, s, v)));
+    let (h, v) = (modal.color_h, modal.color_v);
+    lines.push(render_slider_line("S", modal.color_s as u16, 100, "%", selected(UserSettingsField::ColorS), Color::LightCyan, width, move |t| crate::app::hsv_to_rgb(h, ((t * 100.0).round() as i32).clamp(0, 100) as u8, v)));
+    let (h, s) = (modal.color_h, modal.color_s);
+    lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", selected(UserSettingsField::ColorV), Color::White, width, move |t| crate::app::hsv_to_rgb(h, s, ((t * 100.0).round() as i32).clamp(0, 100) as u8)));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Save Profile (Enter / Ctrl+S)  ", if selected(UserSettingsField::Save) { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(Color::Green) }),
+        Span::styled("  Cancel (Esc)", if selected(UserSettingsField::Cancel) { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Gray) }),
+    ]));
+    lines.push(Line::from(Span::styled("  ↑/↓ Navigate  ←/→ Adjust  Shift+←/→ ±10  Bracket keys ±5  Enter Edit/Save  Esc Cancel", Style::default().fg(Color::DarkGray))));
+    if let Some(error) = &modal.error_message {
+        lines.push(Line::from(Span::styled(format!("  Error: {}", error), Style::default().fg(Color::Red))));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{AgentItem, Vault};
+
+    fn rendered_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let area = terminal.backend().buffer().area;
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn header_badges_share_single_cell_color_joins() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.backend_online = true;
+        app.runner_online = true;
+        app.vault_name = "My Vault".into();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 1)).unwrap();
+        terminal.draw(|frame| render_header(frame, &app, frame.area())).unwrap();
+        let text = rendered_text(&terminal);
+        assert!(text.contains("▌LIVE▌RUNNER▌⌂ My Vault▌"), "{text}");
+        let buffer = terminal.backend().buffer();
+        let caps: Vec<_> = (0..200).filter_map(|x| {
+            let cell = &buffer[(x, 0)];
+            (cell.symbol() == "▌").then_some((cell.fg, cell.bg))
+        }).collect();
+        let background = crate::terminal_theme::background();
+        assert_eq!(caps, vec![
+            (background, Color::Green),
+            (Color::Green, Color::Cyan),
+            (Color::Cyan, Color::Blue),
+            (Color::Blue, background),
+            (background, Color::Rgb(128, 128, 128)),
+            (Color::Rgb(128, 128, 128), Color::Rgb(64, 64, 64)),
+            (Color::Rgb(64, 64, 64), Color::Rgb(128, 128, 128)),
+            (Color::Rgb(128, 128, 128), Color::Rgb(64, 64, 64)),
+            (Color::Rgb(64, 64, 64), background),
+        ]);
+    }
+
+    #[test]
+    fn vault_origin_icons_appear_in_header_and_selector() {
+        for (origin, expected) in [
+            ("http://localhost:4000", "⌂ My Vault"),
+            ("https://cscd.online", "☁ My Vault"),
+        ] {
+            let mut app = App::new(crate::api::CascadeClient::new(origin.into(), None));
+            app.vault_name = "My Vault".into();
+            app.vault_id = Some("vault-1".into());
+            app.vaults = vec![Vault {
+                id: "vault-1".into(),
+                name: "My Vault".into(),
+                origin: None,
+                token: None,
+                role: None,
+            }];
+
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(rendered_text(&terminal).contains(expected));
+
+            app.show_vaults = true;
+            app.active_pane = ActivePane::Vaults;
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let text = rendered_text(&terminal);
+            let icon = expected.chars().next().unwrap();
+            assert!(text.contains(&format!("{icon} My Vault")), "{text}");
+            assert!(text.contains(if app.default_client.is_local_instance() { "⌂ Connect local server" } else { "⌂ Connect remote server" }), "{text}");
+            assert!(text.contains("☁ Connect remote server"), "{text}");
+        }
+    }
+
+    #[test]
+    fn header_shows_send_errors_and_pending_status() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        for width in [80, 120] {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            for status in ["Send error: server unavailable", "Sending message..."] {
+                app.status_message = status.into();
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+                assert!(footer.contains("C-x b") || footer.contains(" buffer"), "Missing Emacs footer: {footer}");
+            }
+            for status in ["Connected (2 channels loaded)", "Ready"] {
+                app.status_message = status.into();
+                app.active_pane = ActivePane::ChatInput;
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+                assert!(footer.contains("C-x b") || footer.contains(" buffer"), "Missing Emacs footer: {footer}");
+                assert!(!footer.contains("Enter Send"));
+                assert!(!footer.contains("F1"));
+            assert!(footer.contains("C-x") || footer.contains(" buffer"));
+            }
+        }
+    }
+
+    #[test]
+    fn unified_header_keeps_ticker_moving_and_frees_bottom_row() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.status_message = "Ready".into();
+        app.backend_online = true;
+        app.runner_online = true;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 24)).unwrap();
+        let mut headers = Vec::new();
+        for tick in [100, 120] {
+            app.animation_tick = tick;
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let header: String = (0..160).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+            assert!(header.contains("FIZZER") && header.contains("C-x b"));
+            let bottom: String = (0..160).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+            assert!(!bottom.contains("C-x b  buffer"));
+            assert!(header.trim_end().ends_with("C-x C-c quit▌"));
+            assert_eq!(app.panes.borrow().window_rectangles().iter().map(|(_, rect)| rect.bottom()).max(), Some(24));
+            headers.push(header);
+        }
+        assert_ne!(headers[0], headers[1], "ticker must continue scrolling beside fixed status");
+    }
+
+    #[test]
+    fn inverted_shared_rules_keep_titles_and_attachment_labels() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.channels.push(crate::api::ChannelItem { id: "tui".into(), title: "tui".into() });
+        app.active_channel_id = Some("tui".into());
+        app.pending_images.push("image-fixture".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let screen = rendered_text(&terminal);
+        assert!(screen.contains("Message · #tui [1 image attached]"), "{screen}");
+        assert!(screen.contains("Chats / Channels") && screen.contains("Agents"));
+        let mut rules = 0;
+        for cell in &terminal.backend().buffer().content {
+            assert_ne!(cell.symbol(), "▀");
+            if cell.symbol() == "┃" {
+                assert_eq!(cell.bg, BORDER_COLOR);
+                assert!(cell.fg == crate::terminal_theme::background() || cell.fg == FOCUS_COLOR);
+                rules += 1;
+            }
+        }
+        assert!(rules > 50);
+    }
+
+    #[test]
+    fn focus_wrap_uses_quarter_bands_and_tracks_selection() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 14)).unwrap();
+        for area in [Rect::new(3, 4, 8, 5), Rect::new(16, 4, 8, 5)] {
+            terminal.draw(|frame| {
+                frame.render_widget(Paragraph::new("header"), Rect::new(0, 0, 30, 1));
+                frame.buffer_mut()[(area.x, area.y + 1)].set_symbol("┃");
+                render_focus_wrap(frame, area);
+            }).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(area.x + 1, 4)].symbol(), "🭻");
+            assert_eq!(buffer[(area.x + 1, 9)].symbol(), "🮂");
+            assert_eq!(buffer[(area.x + 1, 9)].fg, FOCUS_COLOR);
+            assert!(buffer[(area.x + 1, 9)].modifier.contains(Modifier::UNDERLINED));
+            for y in [4] {
+                let cell = &buffer[(area.x + 1, y)];
+                assert_eq!(cell.fg, FOCUS_COLOR);
+                assert_eq!(cell.underline_color, BORDER_COLOR);
+                assert!(cell.modifier.contains(Modifier::UNDERLINED));
+            }
+            assert_eq!(buffer[(area.x + 1, 3)].symbol(), " ");
+            assert_eq!(buffer[(area.x + 1, 8)].symbol(), " ");
+            assert_eq!(buffer[(area.x, 5)].symbol(), "┃");
+            assert_eq!(buffer[(area.x, 5)].fg, FOCUS_COLOR);
+            assert_eq!(buffer[(area.x, 5)].bg, Color::Reset);
+            assert_eq!(buffer[(area.right() - 1, 5)].fg, FOCUS_COLOR);
+            assert_eq!(buffer[(0, 0)].symbol(), "h");
+            let other_x = if area.x == 3 { 16 } else { 3 };
+            assert_eq!(buffer[(other_x, 3)].symbol(), " ");
+            assert_ne!(buffer[(other_x, 5)].fg, FOCUS_COLOR);
+        }
+        terminal.draw(|frame| {
+            frame.render_widget(Paragraph::new("header"), Rect::new(0, 0, 30, 1));
+            render_focus_wrap(frame, Rect::new(0, 1, 30, 13));
+        }).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "h");
+        for x in [0, 29] {
+            let cell = &terminal.backend().buffer()[(x, 5)];
+            assert_eq!(cell.fg, if x == 0 { FOCUS_COLOR } else { BORDER_COLOR });
+            assert_eq!(cell.bg, if x == 0 { BORDER_COLOR } else { FOCUS_COLOR });
+        }
+    }
+
+    #[test]
+    fn focused_junctions_keep_base_rails_on_normal_background() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 14)).unwrap();
+        terminal.draw(|frame| {
+            frame.buffer_mut()[(12, 4)].set_symbol("▋").set_bg(BORDER_COLOR);
+            frame.buffer_mut()[(12, 8)].set_symbol("▋").set_bg(BORDER_COLOR);
+            render_focus_wrap(frame, Rect::new(0, 4, 13, 5));
+        }).unwrap();
+        for y in [4] {
+            let right = &terminal.backend().buffer()[(12, y)];
+            assert_eq!(right.symbol(), "🮈");
+            assert_eq!(right.fg, BORDER_COLOR);
+            assert_eq!(right.bg, crate::terminal_theme::background());
+            assert_eq!(right.underline_color, FOCUS_COLOR);
+            assert!(right.modifier.contains(Modifier::UNDERLINED));
+            let left = &terminal.backend().buffer()[(0, y)];
+            assert_eq!(left.symbol(), " ");
+            assert_eq!(left.bg, crate::terminal_theme::background());
+        }
+    }
+
+    #[test]
+    fn horizontal_border_attributes_reset_before_following_text() {
+        use ratatui::backend::Backend;
+        let mut output = Vec::new();
+        let mut backend = ratatui::backend::CrosstermBackend::new(&mut output);
+        let mut rule = ratatui::buffer::Cell::default();
+        rule.set_style(Style::default().fg(BORDER_COLOR)
+            .bg(crate::terminal_theme::background())
+            .add_modifier(Modifier::UNDERLINED));
+        let mut text = ratatui::buffer::Cell::default();
+        text.set_symbol("X");
+        backend.draw([(0, 0, &rule), (1, 0, &text)].into_iter()).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let underline = output.find("\x1b[4m").expect("underline on");
+        let no_underline = output.find("\x1b[24m").expect("underline off");
+        let text = output.find('X').unwrap();
+        assert!(underline < no_underline);
+        assert!(no_underline < text);
+    }
+
+    #[test]
+    fn buffer_title_underline_preserves_text_and_color() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.pending_images.push("image-fixture".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 5)).unwrap();
+        terminal.draw(|frame| {
+            render_input_composer(frame, &app, frame.area());
+            render_shared_borders(frame, &[(ratatui_hypertile::PaneId::new(0), frame.area())]);
+        }).unwrap();
+        assert!(rendered_text(&terminal).contains("[1 image attached]"));
+        let buffer = terminal.backend().buffer();
+        let mut title_cells = 0;
+        for x in 1..99 {
+            let cell = &buffer[(x, 0)];
+            assert!(cell.modifier.contains(Modifier::UNDERLINED));
+            if cell.symbol() != " " {
+                assert_eq!(cell.fg, Color::Yellow);
+                assert_eq!(cell.underline_color, BORDER_COLOR);
+                title_cells += 1;
+            }
+        }
+        assert!(title_cells > 10);
+        assert!(!buffer[(0, 0)].modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn bottom_row_is_available_for_buffer_content() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.input = "first\nsecond\nlast".into();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 4)).unwrap();
+        terminal.draw(|frame| {
+            render_input_composer(frame, &app, frame.area());
+            render_shared_borders(frame, &[(ratatui_hypertile::PaneId::new(0), frame.area())]);
+        }).unwrap();
+        let last: String = (0..30).map(|x| terminal.backend().buffer()[(x, 3)].symbol()).collect();
+        assert!(last.contains("last"), "{last}");
+        let text_cell = &terminal.backend().buffer()[(3, 3)];
+        assert_eq!(text_cell.symbol(), "l");
+        assert_eq!(text_cell.fg, Color::White);
+        assert_eq!(text_cell.underline_color, BORDER_COLOR);
+        assert!(text_cell.modifier.contains(Modifier::UNDERLINED));
+        let bounds = Rect::new(0, 0, 30, 4);
+        let mut awatch = crate::awatch::Awatch::default();
+        awatch.set_bounds(bounds);
+        assert_eq!(awatch.content_area(bounds).height, 3);
+        assert!(buffer_borders(Rect::new(0, 0, 30, 2), bounds).contains(Borders::BOTTOM));
+    }
+
+    #[test]
+    fn junctions_mirror_with_their_connected_edges() {
+        let background = Color::Rgb(17, 17, 17);
+        for mask in [5, 6, 9, 10, 7, 11, 15] {
+            let (symbol, style) = junction_cell(mask, background);
+            assert_eq!(symbol, " ");
+            assert_eq!(style.bg, Some(background));
+            assert!(style.add_modifier.is_empty());
+        }
+        let (left_branch, left_style) = junction_cell(13, background);
+        let (right_branch, right_style) = junction_cell(14, background);
+        assert_eq!((left_branch, right_branch), ("▋", "▍"));
+        assert_eq!(left_style.fg, Some(background));
+        assert_eq!(left_style.bg, Some(BORDER_COLOR));
+        assert_eq!(right_style.fg, Some(BORDER_COLOR));
+        assert_eq!(right_style.bg, Some(background));
+        let (_, up) = junction_cell(3 | 4, background);
+        let (_, down) = junction_cell(3 | 8, background);
+        assert!(up.add_modifier.is_empty());
+        assert!(down.add_modifier.is_empty());
+        let (_, cross) = junction_cell(15, background);
+        assert!(cross.add_modifier.is_empty());
+    }
+
+    #[test]
+    fn world_edges_override_turnstile_shapes_on_both_sides() {
+        use ratatui_hypertile::PaneId;
+        for split_on_left in [false, true] {
+            let split_x = if split_on_left { 0 } else { 10 };
+            let other_x = 10 - split_x;
+            let panes = [
+                (PaneId::new(0), Rect::new(other_x, 0, 10, 10)),
+                (PaneId::new(1), Rect::new(split_x, 0, 10, 5)),
+                (PaneId::new(2), Rect::new(split_x, 5, 10, 5)),
+            ];
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+            terminal.draw(|frame| {
+                for (_, rect) in panes {
+                    frame.render_widget(Block::default().borders(buffer_borders(rect, frame.area())),
+                        shared_border_area(rect, &panes, frame.area()));
+                }
+                render_shared_borders(frame, &panes);
+            }).unwrap();
+            let edge_x = if split_on_left { 0 } else { 19 };
+            let edge = &terminal.backend().buffer()[(edge_x, 5)];
+            assert_eq!(edge.symbol(), " ");
+            assert_eq!(edge.bg, crate::terminal_theme::background());
+            assert!(edge.modifier.is_empty());
+            let inside = &terminal.backend().buffer()[(10, 5)];
+            assert_eq!(inside.symbol(), if split_on_left { "▋" } else { "▍" });
+        }
+    }
+
+    #[test]
+    fn shared_rules_join_at_t_junction() {
+        use ratatui_hypertile::PaneId;
+        let panes = [
+            (PaneId::new(0), Rect::new(0, 0, 10, 10)),
+            (PaneId::new(1), Rect::new(10, 0, 10, 5)),
+            (PaneId::new(2), Rect::new(10, 5, 10, 5)),
+        ];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+        terminal.draw(|frame| {
+            for (_, rect) in &panes {
+                frame.render_widget(Block::default().borders(buffer_borders(*rect, frame.area())),
+                    shared_border_area(*rect, &panes, frame.area()));
+            }
+            render_shared_borders(frame, &panes);
+        }).unwrap();
+        let junction = &terminal.backend().buffer()[(10, 5)];
+        assert_eq!(junction.symbol(), "▍");
+        assert_eq!(junction.bg, crate::terminal_theme::background());
+        assert_eq!(junction.fg, BORDER_COLOR);
+        assert!(junction.modifier.is_empty());
+        let corner = &terminal.backend().buffer()[(0, 0)];
+        assert_eq!(corner.symbol(), " ");
+        assert_eq!(corner.bg, crate::terminal_theme::background());
+        assert!(corner.modifier.is_empty());
+        let top = &terminal.backend().buffer()[(2, 0)];
+        assert!(top.modifier.contains(Modifier::UNDERLINED));
+        let bottom = &terminal.backend().buffer()[(12, 9)];
+        assert_eq!(bottom.symbol(), " ");
+        assert!(bottom.modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(bottom.underline_color, BORDER_COLOR);
+        let horizontal = &terminal.backend().buffer()[(12, 5)];
+        let upper_last_row = &terminal.backend().buffer()[(12, 4)];
+        assert!(upper_last_row.modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(upper_last_row.underline_color, BORDER_COLOR);
+        assert_eq!(horizontal.symbol(), " ");
+        assert_eq!(horizontal.bg, crate::terminal_theme::background());
+        assert_eq!(horizontal.fg, BORDER_COLOR);
+        assert!(horizontal.modifier.contains(Modifier::UNDERLINED));
+        let vertical = &terminal.backend().buffer()[(10, 6)];
+        assert_eq!(vertical.symbol(), "┃");
+        assert!(vertical.modifier.contains(Modifier::BOLD));
+        assert!(!vertical.modifier.intersects(Modifier::UNDERLINED));
+        let left = &terminal.backend().buffer()[(0, 1)];
+        assert_eq!(left.symbol(), "▋");
+        assert_eq!(left.fg, crate::terminal_theme::background());
+        assert_eq!(left.bg, BORDER_COLOR);
+        let right = &terminal.backend().buffer()[(19, 1)];
+        assert_eq!(right.symbol(), "▍");
+        assert_eq!(right.fg, BORDER_COLOR);
+        assert_eq!(right.bg, crate::terminal_theme::background());
+    }
+
+    #[test]
+    fn test_header_adapts_to_long_rate_limit_errors_without_collision() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        let err = "Backend unreachable: Rate limited (429: Too Many Requests)";
+        app.status_message = err.into();
+        app.backend_online = false;
+
+        for width in [50, 70, 90, 120, 160] {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+
+            // Must never crash or collide
+            assert!(footer.contains("C-x") || footer.contains(" buffer"),
+                "Emacs legend should remain visible at width {width}: {footer}");
+        }
+    }
+
+    #[test]
+    fn chat_cache_tracks_edits_attachments_and_agent_colors() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.author = "test-user".into();
+        let message = crate::api::ChatMessage {
+            id: "first".into(), author: "chat2".into(), body: "before".into(),
+            created_at: "2026-09-08T12:00:00Z".into(), agent_id: None,
+            images: vec![], image_count: 0, has_images: false,
+        };
+        app.messages = vec![message.clone(), crate::api::ChatMessage {
+            id: "last".into(), ..message
+        }];
+        app.agents.push(serde_json::from_value(serde_json::json!({
+            "id": "agent-1", "agentId": "codex", "displayName": "Chat Two",
+            "mention": "chat2", "color": "#ff0000"
+        })).unwrap());
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("before"));
+        app.messages[0].body = "edited".into();
+        app.messages[1].body = "change".into();
+        ensure_chat_cache(&app, 80);
+        let text = app.chat_cache.read().unwrap().chat_text.clone();
+        assert!(text.contains("edited") && text.contains("change"));
+        assert!(!text.contains("before"));
+        app.messages[0].has_images = true;
+        app.messages[0].image_count = 2;
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("image (2)"));
+        app.agents[0].color = Some("#00ff00".into());
+        ensure_chat_cache(&app, 80);
+        assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
+            Some(resolve_color(Some("#00ff00"), Color::Cyan)));
+
+        app.author = "chat2".into();
+        app.author_color = "0000FF".into();
+        ensure_chat_cache(&app, 80);
+        assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
+            Some(resolve_color(Some("0000FF"), Color::White)));
+    }
+
+    #[test]
+    fn chat_color_prefers_exact_author_over_shared_provider() {
+        let agents: Vec<AgentItem> = serde_json::from_value(serde_json::json!([
+            {
+                "id": "chat2-registration", "agentId": "codex", "displayName": "chat2",
+                "mention": "chat2", "color": "FFFF00"
+            },
+            {
+                "id": "astra-registration", "agentId": "codex", "displayName": "astra",
+                "mention": "astra", "color": "00FF00"
+            }
+        ])).unwrap();
+        let message = crate::api::ChatMessage {
+            id: "astra-message".into(),
+            author: "astra".into(),
+            body: "hello".into(),
+            created_at: "2026-09-08T12:00:00Z".into(),
+            agent_id: Some("codex".into()),
+            images: vec![],
+            image_count: 0, has_images: false,
+        };
+
+        assert_eq!(agent_for_message(&agents, &message).map(|agent| agent.id.as_str()),
+            Some("astra-registration"));
+    }
+
+    #[test]
+    fn test_termimations_loaded() {
+        let patterns = termimation_patterns();
+        assert!(!patterns.is_empty());
+        assert!(patterns.len() >= 2);
+    }
+
+    #[test]
+    fn channel_termimation_uses_the_target_channel_buffer() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("first".into());
+        let first: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "agent-first", "agentId": "codex", "displayName": "First", "mention": "first"
+        })).unwrap();
+        let second: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "agent-second", "agentId": "codex", "displayName": "Second", "mention": "second"
+        })).unwrap();
+        app.agents = vec![first.clone()];
+        app.active_agent_ids.insert(first.id.clone());
+        app.agent_run_seeds.insert(first.id.clone(), 11);
+        app.channel_buffers.insert("second".into(), crate::app::ChannelBuffer {
+            agents: vec![second.clone()],
+            active_agent_ids: [second.id.clone()].into_iter().collect(),
+            agent_run_seeds: [(second.id.clone(), 22)].into_iter().collect(),
+            ..Default::default()
+        });
+        app.active_sessions = vec![
+            crate::api::ActiveSession { agent: "codex".into(), author: "First".into(), mention: "first".into(),
+                registration_id: Some(first.id.clone()), channel_id: Some("first".into()) },
+            crate::api::ActiveSession { agent: "codex".into(), author: "Second".into(), mention: "second".into(),
+                registration_id: Some(second.id.clone()), channel_id: Some("second".into()) },
+        ];
+
+        app.animation_tick = 7;
+        assert_eq!(channel_termimation(&app, "first"),
+            Some(agent_termimation_ball(&first, 7, 11, 0)));
+        assert_eq!(channel_termimation(&app, "second"),
+            Some(agent_termimation_ball(&second, 7, 22, 0)));
+    }
+
+    #[test]
+    fn test_agent_termimation_ball_animation() {
+        let agent = AgentItem {
+            id: "agent-1".into(),
+            display_name: "Bot".into(),
+            mention: "bot".into(),
+            agent_id: "codex".into(),
+            model: "".into(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+            color: None,
+        };
+
+        let ball_0 = agent_termimation_ball(&agent, 0, 0, 0);
+        let ball_1 = agent_termimation_ball(&agent, 1, 0, 0);
+        let ball_2 = agent_termimation_ball(&agent, 2, 0, 0);
+
+        assert!(!ball_0.is_empty());
+        assert!(!ball_1.is_empty());
+        assert!(!ball_2.is_empty());
+
+        // Ensure animation changes across ticks (frame advances within a fixed pattern)
+        let balls: Vec<String> = (0..32).map(|t| agent_termimation_ball(&agent, t, 0, 0)).collect();
+        let unique_balls: std::collections::HashSet<&String> = balls.iter().collect();
+        assert!(unique_balls.len() > 1);
+
+        let mut app = App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("channel".into());
+        app.agents.push(agent.clone());
+        app.active_agent_ids.insert(agent.id.clone());
+        app.refresh_run_seeds();
+        let message = crate::api::ChatMessage {
+            id: "old".into(), author: "bot".into(), body: "first".into(),
+            created_at: "2026-09-13T12:00:00Z".into(), agent_id: Some(agent.id.clone()),
+            images: vec![], image_count: 0, has_images: false,
+        };
+        app.messages.push(message.clone());
+        app.messages.push(crate::api::ChatMessage { id: "new".into(), body: "second".into(), ..message });
+        ensure_chat_cache(&app, 80);
+        let original_text = app.chat_cache.read().unwrap().chat_text.clone();
+        assert_eq!(app.chat_cache.read().unwrap().message_markers.len(), 2);
+        for tick in 0..32 {
+            app.animation_tick = tick;
+            let expected = agent_termimation_ball(&agent, tick, app.agent_run_seed(&agent), 0);
+            assert_eq!(response_termimation(&app, 0), None);
+            assert_eq!(response_termimation(&app, 1), Some(expected.clone()));
+            assert_eq!(channel_termimation(&app, "channel"), Some(expected));
+            ensure_chat_cache(&app, 80);
+            assert_eq!(app.chat_cache.read().unwrap().chat_text, original_text);
+        }
+        let mut second = agent.clone();
+        second.id = "agent-2".into();
+        second.mention = "second".into();
+        second.display_name = "Second".into();
+        app.active_agent_ids.insert(second.id.clone());
+        app.agents.push(second);
+        app.refresh_run_seeds();
+        let concurrent: std::collections::HashSet<_> = (0..128).map(|tick| {
+            app.animation_tick = tick;
+            channel_termimation(&app, "channel").unwrap()
+        }).collect();
+        assert!(concurrent.len() > 1);
+        app.active_agent_ids.clear();
+        assert_eq!(response_termimation(&app, 1), None);
+        assert_eq!(channel_termimation(&app, "channel"), None);
+        app.apply_active_sessions(vec![crate::api::ActiveSession {
+            agent: "codex".into(), author: "Bot".into(), mention: "bot".into(),
+            registration_id: Some(agent.id.clone()), channel_id: Some("background".into()),
+        }]);
+        assert!(channel_termimation(&app, "background").is_some());
+        assert_eq!(channel_termimation(&app, "channel"), None);
+    }
+
+    #[test]
+    fn test_ansi_color_fallback() {
+        // Pure red should match Red or LightRed
+        let ansi_red = closest_ansi_color(255, 0, 0);
+        assert!(ansi_red == Color::Red || ansi_red == Color::LightRed);
+
+        // Pure green should match Green or LightGreen
+        let ansi_green = closest_ansi_color(0, 255, 0);
+        assert!(ansi_green == Color::Green || ansi_green == Color::LightGreen);
+
+        // Pure blue should match Blue or LightBlue
+        let ansi_blue = closest_ansi_color(0, 0, 255);
+        assert!(ansi_blue == Color::Blue || ansi_blue == Color::LightBlue);
+    }
+
+    #[test]
+    fn test_render_slider_line_width() {
+        let line = render_slider_line("R", 128, 255, "", true, Color::LightRed, 60, |t| ((t * 255.0).round() as u8, 0, 0));
+        // Spans: prefix, one span per track cell, suffix.
+        let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(total_chars, 60);
+    }
+
+    #[test]
+    fn test_render_slider_line_gradient_sweeps_channel() {
+        // The gradient should actually vary the fixed-other-channel color
+        // across the track, not repeat a single flat color.
+        let line = render_slider_line("R", 0, 255, "", false, Color::LightRed, 60, |t| (((t * 255.0).round()) as u8, 10, 20));
+        let colors: std::collections::HashSet<Color> = line.spans.iter().map(|s| s.style.fg.unwrap_or(Color::Reset)).collect();
+        assert!(colors.len() > 2, "expected the track to sweep through multiple colors, got {:?}", colors);
+    }
+
+    #[test]
+    fn test_chat_cache_and_scrolling_performance() {
+        use crate::api::{CascadeClient, ChatMessage};
+        let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("chan-long".into());
+
+        for i in 0..500 {
+            app.messages.push(ChatMessage {
+                id: format!("msg-{i}"),
+                author: if i % 2 == 0 { "test-user".into() } else { "claude".into() },
+                body: format!("Message {i}: Here is some conversational content that will span across multiple wrapped lines in the chat stream!"),
+                created_at: "2026-09-08T04:00:00Z".into(),
+                agent_id: if i % 2 == 1 { Some("claude-code".into()) } else { None },
+                images: vec![],
+                image_count: 0, has_images: false,
+            });
+        }
+
+        // First call populates cache
+        ensure_chat_cache(&app, 80);
+        let total_lines = app.chat_cache.read().unwrap().lines.len();
+        assert!(total_lines > 500);
+
+        // Ensure subsequent ensure_chat_cache calls are instant cache hits
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            ensure_chat_cache(&app, 80);
+        }
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_millis(150), "1000 cache checks took {:?}", elapsed);
+
+        // Clamping test
+        for _ in 0..10000 {
+            app.scroll_up();
+        }
+        assert_eq!(app.scroll_offset, total_lines);
+        app.scroll_down();
+        assert_eq!(app.scroll_offset, total_lines.saturating_sub(1));
+    }
+
+    #[test]
+    fn test_chat_line_column_from_offsets() {
+        let offsets = vec![(0, 5), (6, 6), (13, 0), (14, 10)];
+        assert_eq!(chat_line_column_from_offsets(&offsets, 0), (0, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 3), (0, 3));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 5), (0, 5));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 6), (1, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 12), (1, 6));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 13), (2, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 14), (3, 0));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 24), (3, 10));
+        assert_eq!(chat_line_column_from_offsets(&offsets, 100), (3, 10));
+    }
+
+    #[test]
+    fn test_chat_cache_invalidates_on_streaming_update() {
+        use crate::api::{CascadeClient, ChatMessage};
+        let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+        app.active_channel_id = Some("chan-stream".into());
+        app.messages.push(ChatMessage {
+            id: "msg-1".into(),
+            author: "claude".into(),
+            body: "hello".into(),
+            created_at: "2026-09-08T04:00:00Z".into(),
+            agent_id: Some("claude-code".into()),
+            images: vec![],
+            image_count: 0, has_images: false,
+        });
+
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("hello"));
+        assert!(!app.chat_cache.read().unwrap().chat_text.contains("world"));
+
+        // Streaming update appends tokens to body
+        app.messages[0].body = "hello world".into();
+        ensure_chat_cache(&app, 80);
+        assert!(app.chat_cache.read().unwrap().chat_text.contains("hello world"));
+    }
+}

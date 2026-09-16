@@ -8,6 +8,20 @@ defmodule Cascade.Realtime.DomainAdapter do
   alias Cascade.Runs.{RunnerLifecycle, Store}
 
   @impl true
+  def authorize_delivery(run_id, owner_id) do
+    Store.delegated_owner(run_id) == owner_id and
+      RunnerLifecycle.delivery_allowed?(run_id, owner_id)
+  end
+
+  @impl true
+  def handle_action({:refresh_chat_presence, vault_id, channel_id}) do
+    Events.emit_presence(vault_id, channel_id)
+    :ok
+  end
+
+  def handle_action(_action), do: {:error, "Invalid realtime domain action"}
+
+  @impl true
   def authorize_namespace(namespace, identity, metadata)
       when namespace in ["/vault", "/runs", "/runners"] do
     {:ok, %{identity: identity, sid: metadata.sid}}
@@ -50,7 +64,7 @@ defmodule Cascade.Realtime.DomainAdapter do
          [
            {:join, "chat:#{route.sourceChannelId}"},
            {:emit, "vault:chatPresence", [payload]},
-           {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}
+           {:domain, {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}}
          ]}
 
       _ ->
@@ -65,7 +79,7 @@ defmodule Cascade.Realtime.DomainAdapter do
         {:ok,
          [
            {:leave, "chat:#{route.sourceChannelId}"},
-           {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}
+           {:domain, {:refresh_chat_presence, route.sourceVaultId, route.sourceChannelId}}
          ]}
 
       _ ->
@@ -96,16 +110,28 @@ defmodule Cascade.Realtime.DomainAdapter do
 
   def handle_event("/runners", "runner:runEvent", [data], identity, _context)
       when is_map(data) do
+    payload = field(data, :payload) || %{}
+
     with {:ok, run_id} <- positive_integer(field(data, :runId)),
          type when is_binary(type) and type != "" <- field(data, :type),
-         true <- RunnerLifecycle.accept_event?(run_id, identity.id) do
-      payload = field(data, :payload) || %{}
+         true <-
+           RunnerLifecycle.accept_event?(run_id, identity.id) or
+             (terminal_event?(type, payload) and Store.owned?(run_id, identity.id)) do
+      Store.acknowledge_delivery(run_id)
 
-      if type == "heartbeat",
-        do: RunnerLifecycle.heartbeat(run_id, identity.id),
-        else: persist_runner_event(run_id, type, payload, identity.id)
+      cond do
+        terminal_event?(type, payload) ->
+          settle_runner_event(run_id, payload, identity.id)
 
-      {:ok, []}
+        type == "heartbeat" ->
+          Store.mark_running(run_id)
+          RunnerLifecycle.heartbeat(run_id, identity.id)
+
+        true ->
+          persist_runner_event(run_id, type, payload, identity.id)
+      end
+
+      {:ok, if(field(data, :receipt) == true, do: [{:ack, [%{success: true}]}], else: [])}
     else
       _ -> {:error, "Run event rejected"}
     end
@@ -131,6 +157,12 @@ defmodule Cascade.Realtime.DomainAdapter do
     Store.publish(run_id, "session", payload)
   end
 
+  defp persist_runner_event(run_id, "status", %{"status" => "running"}, _owner_id),
+    do: Store.mark_running(run_id)
+
+  defp persist_runner_event(run_id, "status", %{status: "running"}, _owner_id),
+    do: Store.mark_running(run_id)
+
   defp persist_runner_event(run_id, "status", payload, owner_id) when is_map(payload) do
     status = field(payload, :status)
 
@@ -153,6 +185,39 @@ defmodule Cascade.Realtime.DomainAdapter do
 
   defp persist_runner_event(run_id, type, payload, _owner_id),
     do: Store.publish(run_id, type, payload)
+
+  defp terminal_event?("status", payload) when is_map(payload),
+    do: field(payload, :status) in ~w(completed failed canceled)
+
+  defp terminal_event?(_, _), do: false
+
+  defp settle_runner_event(run_id, payload, owner_id) do
+    Cascade.Realtime.OrderedPublisher.mutate(fn ->
+      Cascade.Accounts.SQL.transaction(fn ->
+        run = Store.get(run_id)
+
+        if Store.terminal?(run.status) do
+          # A lost ACK must not duplicate settlement or overwrite a prior Stop.
+          # Also repair the old finish-before-publish crash boundary.
+          if is_nil(
+               Cascade.Accounts.SQL.one(
+                 "SELECT 1 FROM run_events WHERE run_id=? AND type='status' AND json_extract(payload_json,'$.status') IN ('completed','failed','canceled') LIMIT 1",
+                 [run_id]
+               )
+             ) do
+            persist_runner_event(
+              run_id,
+              "status",
+              %{status: run.status, summary: run.summary, sessionId: run.session_id},
+              owner_id
+            )
+          end
+        else
+          persist_runner_event(run_id, "status", payload, owner_id)
+        end
+      end)
+    end)
+  end
 
   defp maybe_record_runner_error(_owner_id, _status, _summary), do: :ok
 

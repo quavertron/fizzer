@@ -25,6 +25,24 @@ test('bounds the replay buffer', () => {
   assert.deepEqual(state.snapshot().events.map((event) => event.bridgeSeq), [2, 3]);
 });
 
+test('completion survives other workers and a renderer cursor until server receipt', () => {
+  const state = new AgentRunState({ maxEvents: 2 });
+  state.start(1);
+  const terminal = state.record({ runId: 1, type: 'status', payload_json: '{"status":"completed","summary":"real result"}' });
+  state.start(2);
+  for (let i = 0; i < 5; i++) state.record({ runId: 2, type: 'harness', payload_json: '{}' });
+  const snapshot = state.snapshot(6);
+  assert.deepEqual(snapshot.activeRunIds, [2]);
+  assert.deepEqual(snapshot.events, [terminal]);
+  assert.equal(terminal.receiptRequired, true);
+  assert.equal(state.start(1), false);
+  assert.equal(state.acknowledge('old-instance', terminal.bridgeSeq), false);
+  assert.equal(state.acknowledge(state.instanceId, terminal.bridgeSeq + 1), false);
+  assert.deepEqual(state.snapshot(6).events, [terminal]);
+  assert.equal(state.acknowledge(state.instanceId, terminal.bridgeSeq), true);
+  assert.deepEqual(state.snapshot().events.map(event => event.runId), [2, 2]);
+});
+
 test('cancel acknowledges a child cleanup race after its owned promise settles', async () => {
   let settle;
   const running = new Promise((resolve) => { settle = resolve; });

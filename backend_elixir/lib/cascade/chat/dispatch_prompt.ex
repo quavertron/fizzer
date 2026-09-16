@@ -4,6 +4,8 @@ defmodule Cascade.Chat.DispatchPrompt do
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Messages, RoomContext, Schema}
   alias Cascade.Content.Privacy
+  alias Cascade.Missions.Dispatches
+  alias Cascade.Runs.PromptContext
 
   @without_images ~w(grok antigravity copilot hermes akron-grok)
   @labels %{
@@ -26,6 +28,12 @@ defmodule Cascade.Chat.DispatchPrompt do
   }
 
   @doc "Returns prompt, provider images, and the outgoing collaboration reply reference. Room context is added by the caller."
+  def build(%{messageId: "sys-mission-wiki-" <> _} = dispatch, _execution, _resume) do
+    message = field(dispatch, :message, %{})
+    prompt = PromptContext.append_mission_context(field(message, :body, ""), dispatch, field(dispatch, :requesterUserId))
+    %{prompt: prompt, images: [], reply_to: nil}
+  end
+
   def build(dispatch, execution, resume) do
     channel_id = execution.target_channel_id
     user_id = execution.runner_user_id
@@ -34,6 +42,13 @@ defmodule Cascade.Chat.DispatchPrompt do
     message = field(dispatch, :message) |> Privacy.sanitize_json()
     {:ok, registrations} = Agents.list_members(channel_id, user_id)
     registrations = [registration | registrations]
+    interpretation = Cascade.Missions.Interpretation.dispatch_prompt(text(dispatch, :id))
+
+    message =
+      if interpretation,
+        do: Map.put(message, :body, Cascade.Content.Privacy.redact_blocks(interpretation)),
+        else: message
+
     source = message_text(message)
     direct = strip_mentions(source, registrations)
     reply = field(message, :replyTo)
@@ -90,11 +105,30 @@ defmodule Cascade.Chat.DispatchPrompt do
 
       %{
         prompt:
-          join([
-            header(channel_name, registration, execution.agent, message, resume),
-            request,
-            media_notice
-          ]),
+          PromptContext.append_mission_context(
+            join([
+              header(channel_name, registration, execution.agent, message, resume),
+              interrupted_requests(dispatch, execution, message),
+              if(text(message, :missionTaskId) == "",
+                do: Cascade.Chat.Continuations.context(dispatch, registration)
+              ),
+              if(
+                text(message, :missionTaskId) == "" and field(registration, :orchestrator) == true and
+                  field(registration, :ambientGroupChat) != true and is_nil(interpretation),
+                do:
+                  Cascade.Missions.Interpretation.context(
+                    user_id,
+                    channel_id,
+                    text(registration, :id)
+                  ),
+                else: ""
+              ),
+              request,
+              media_notice
+            ]),
+            dispatch,
+            user_id
+          ),
         images: if(blind, do: [], else: run_images),
         reply_to: reply_to
       }
@@ -112,41 +146,91 @@ defmodule Cascade.Chat.DispatchPrompt do
     task = text(message, :missionTaskId)
 
     delivery =
-      if field(registration, :ambientGroupChat) == true and task == "" do
-        "You are a persistent participant in this shared conversation. Use your own judgment: reply, ask, disagree, use tools, or pursue useful project work. Your final response is posted automatically; do not call cascade-chat send or collaboration tools."
-      else
-        join(
-          [
-            "Complete requested work and verification before replying; use judgment and do not over-research. Keep the final chat reply short: outcome first; skip process narrative, restated questions, and unsolicited next steps. Keep progress in the run trace; do not post separate chat messages.",
-            if(field(registration, :finalReplyOnly) == true,
-              do:
-                "Write one normal group-chat message, never a work log: no planning, status, reasoning, tool narration, or generic agreement. Respond to concrete claims in the triggering message. If you have no new evidence, correction, question, or decision, output exactly [no-reply].",
-              else: ""
-            ),
-            if(not continued,
-              do:
-                "Use #{if agent == "akron-grok", do: "the harness `scratchpad`", else: "`cascade-scratchpad`"} only for a durable root cause, decision, or dead end; skip routine progress and simple Q&A.",
-              else: ""
-            )
-          ],
-          " "
-        )
+      cond do
+        task != "" ->
+          ""
+
+        field(registration, :ambientGroupChat) == true ->
+          "You are a persistent participant in this shared conversation. Use your own judgment: reply, ask, disagree, use tools, or pursue useful project work. Your final response is posted automatically; do not call cascade-chat send or collaboration tools."
+
+        true ->
+          join(
+            [
+              if(field(registration, :finalReplyOnly) == true,
+                do:
+                  "Write one normal group-chat message, never a work log: no planning, status, reasoning, tool narration, or generic agreement. Respond to concrete claims in the triggering message. If you have no new evidence, correction, question, or decision, output exactly [no-reply].",
+                else: ""
+              )
+            ],
+            " "
+          )
       end
 
     role =
       cond do
         task != "" ->
-          "You are a mission worker, not the channel control plane. Fizzer mission task id: #{task}. Execute only this assigned task; do not start a mission, delegate further, or spawn subagents. The mission card updates when this run ends. If blocked, run `cascade-chat mission update --task #{task} --status blocked --summary \"<what is needed>\"` and stop."
+          "You are the worker assigned to Fizzer mission task #{task}. Work the assigned purpose and return concrete artifacts, changed files, and evidence to the mission coordinator. #{Cascade.Missions.Children.guidance(task)} Record progress with `cascade-chat mission update --task #{task} --status running --summary \"<progress and evidence reference>\"`. For a review task, include `--review-outcome accepted` or `--review-outcome changes_requested`; for verification, include `--verification-passed true` or `--verification-passed false`. If blocked, record the concrete dependency or observable blocker with status blocked. Use the available tools and helpers needed for the assigned work; do not silently change mission scope."
+
+        String.starts_with?(text(message, :id), ["sys-mission-", "sys-next-"]) ->
+          ""
 
         field(registration, :orchestrator) == true and
             field(registration, :ambientGroupChat) != true ->
-          "You coordinate this channel. Treat clear actionable requests as implementation authority; clarify only a requested mission/kanban or a material scope, authority, or product choice. Stay available as a lightweight control plane: answer trivial questions directly; for actionable work immediately use `cascade-chat mission start --control-plane`, then pass the request unchanged to one anonymous self-subagent with `cascade-chat mission delegate --anonymous`. The worker uses the channel working directory and normal CLI path; do not plan, verify, poll, or wait in the coordinator turn. Its successful final response completes the mission and replies automatically. Use `--isolated`, multiple workers, dependencies, or coordinator review only when explicitly needed by the user; use `--after`, `--priority`, or `--effort` when needed. Workers are ephemeral task-scoped copies of your model, tools, authority, and safety policy, not vault agents. Keep mission summaries short. Fix it with the smallest test that would have caught it. Open images with `cascade-chat attachment --message-id <id>`."
+          "You are the mission orchestrator for this channel. Keep explicit user scope and the mission brief and linked-note revisions authoritative; do not ask for another manual approval or human review of already authorized work, inspect current task evidence before acting, and preserve explicit Stop or changed scope. For substantial work, delegate explicit research, implementation, independent review, fix/re-review, integration, and verification tasks with their purpose and brief-note revision snapshot. Use your own anonymous self-subagents by default: `cascade-chat mission delegate --task <title> --purpose <purpose> --message <instructions>` without --to inherits your provider, model, profile and reasoning settings in a fresh task session. Review uses a separate fresh self-subagent, not the implementation session. Use --to only for an explicit human assignment override; never automatically choose another channel agent or fall back to one on failure. Do not implement on behalf of the mission by default. A worker/provider success is evidence only: reconcile its artifacts, review outcome, integration candidate and verification outcome before advancing or closing. Use the current mission context and task endpoints; respond outcome-first."
 
         true ->
           ""
       end
 
     join([identity, delivery, role, if(note == "", do: "", else: "Channel note: " <> note)], " ")
+  end
+
+  # A provider may never receive an interrupted queued turn. The room cursor
+  # alone cannot carry its unanswered request into the resumed provider session.
+  defp interrupted_requests(dispatch, execution, message) do
+    if not Dispatches.human?(%{message: message, messageId: text(message, :id)}) or
+         text(dispatch, :conversationId) == "" do
+      ""
+    else
+      SQL.all(
+        """
+        SELECT d.message_id, EXISTS (
+          SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='status'
+          AND json_extract(e.payload_json,'$.steering')=1
+        )
+        FROM runs r JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
+        JOIN chat_messages m ON m.id=d.message_id
+        WHERE d.registration_id=? AND r.conversation_id=?
+          AND m.rowid < (SELECT rowid FROM chat_messages WHERE id=?)
+        ORDER BY r.id DESC LIMIT 20
+        """,
+        [execution.registration.id, text(dispatch, :conversationId), text(message, :id)]
+      )
+      |> Enum.take_while(fn [_id, steered] -> steered == 1 end)
+      |> Enum.reverse()
+      |> Enum.flat_map(fn [id, _] ->
+        case Messages.get(execution.target_channel_id, execution.runner_user_id, id) do
+          {:ok, prior} ->
+            if Dispatches.human?(%{message: prior, messageId: id}),
+              do: [
+                "#{text(prior, :author)} (#{id}): #{message_text(Privacy.sanitize_json(prior))}"
+              ],
+              else: []
+
+          _ ->
+            []
+        end
+      end)
+      |> case do
+        [] ->
+          ""
+
+        requests ->
+          "Earlier requests interrupted by follow-ups (still unanswered):\n" <>
+            Enum.join(requests, "\n") <>
+            "\nAnswer these questions along with the latest message. Apply later corrections and honor explicit Stop; a follow-up alone does not withdraw an earlier request."
+      end
+    end
   end
 
   defp preceding_batch(route, user_id, message) do
@@ -288,7 +372,7 @@ defmodule Cascade.Chat.DispatchPrompt do
           text(message, :body)
           | Enum.map(List.wrap(field(message, :attachments)), &text(&1, :name))
         ],
-        " "
+        "\n"
       )
 
   defp strip_mentions(source, registrations) do
@@ -304,7 +388,6 @@ defmodule Cascade.Chat.DispatchPrompt do
             " "
           )
     end)
-    |> String.replace(~r/\s+/, " ")
     |> String.trim()
   end
 

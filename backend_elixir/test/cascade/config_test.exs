@@ -17,6 +17,35 @@ defmodule Cascade.ConfigTest do
     end)
   end
 
+  test "runtime requires explicit finite or unlimited admission capacity and retains binding validation" do
+    variable = "CASCADE_DATA_DIR"
+    previous = System.get_env(variable)
+    dir = Path.join(System.tmp_dir!(), "admission-config-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    System.put_env(variable, dir)
+    on_exit(fn ->
+      if previous, do: System.put_env(variable, previous), else: System.delete_env(variable)
+      File.rm_rf!(dir)
+    end)
+    owner = %{"ownerId" => 1, "tasks" => [], "retainedRuns" => []}
+    write = fn entry ->
+      File.write!(Path.join(dir, "execution-admission.json"), Jason.encode!(%{"version" => 1, "owners" => [entry]}))
+    end
+    for limit <- [1, 2, "unlimited"] do
+      entry = Map.put(owner, "maxConcurrent", limit)
+      write.(entry)
+      assert runtime_value(:execution_admission)["owners"] == [entry]
+    end
+    for entry <- [owner | Enum.map([nil, 0, -1, 3, "2", "Unlimited", false], &Map.put(owner, "maxConcurrent", &1))] do
+      write.(entry)
+      assert_raise RuntimeError, "Invalid execution admission bindings", fn -> runtime_value(:execution_admission) end
+    end
+    for entry <- [Map.put(owner, "ownerId", 0), Map.put(owner, "tasks", [%{}]), Map.put(owner, "retainedRuns", [%{}])] do
+      write.(Map.put(entry, "maxConcurrent", "unlimited"))
+      assert_raise RuntimeError, "Invalid execution admission bindings", fn -> runtime_value(:execution_admission) end
+    end
+  end
+
   test "runtime keeps the 120-second reclaim parity default" do
     System.delete_env(@variable)
     assert runtime_reclaim_ms() == 120_000

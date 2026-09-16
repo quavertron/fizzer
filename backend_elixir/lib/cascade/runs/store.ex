@@ -189,19 +189,55 @@ defmodule Cascade.Runs.Store do
     |> event()
   end
 
-  def record_delegated(run_id, owner_id) do
-    SQL.exec("UPDATE runs SET owner_user_id=? WHERE id=?", [owner_id, run_id])
+  def record_delegated(run_id, owner_id, payload \\ nil) do
+    SQL.transaction(fn ->
+      if SQL.changes(
+           "UPDATE runs SET owner_user_id=? WHERE id=? AND status IN ('queued','running') AND (owner_user_id IS NULL OR owner_user_id=?)",
+           [owner_id, run_id, owner_id]
+         ) > 0 do
+        SQL.exec(
+          """
+          INSERT INTO delegated_runs (run_id,owner_user_id,started_at,delivery_payload_json,delivery_sent_at,delivery_attempts)
+          VALUES (?,?,datetime('now'),?,datetime('now'),?)
+          ON CONFLICT(run_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,
+            delivery_payload_json=COALESCE(excluded.delivery_payload_json,delegated_runs.delivery_payload_json),
+            delivery_sent_at=CASE WHEN excluded.delivery_payload_json IS NOT NULL THEN excluded.delivery_sent_at ELSE delegated_runs.delivery_sent_at END,
+            delivery_attempts=delegated_runs.delivery_attempts+excluded.delivery_attempts
+          """,
+          [run_id, owner_id, if(payload, do: Jason.encode!(payload)), if(payload, do: 1, else: 0)]
+        )
 
-    SQL.exec(
+        :ok
+      else
+        {:error, :run_not_active}
+      end
+    end)
+  end
+
+  def pending_deliveries do
+    SQL.all("""
+    SELECT d.run_id,d.owner_user_id FROM delegated_runs d JOIN runs r ON r.id=d.run_id
+    WHERE r.status='queued' AND d.delivery_payload_json IS NOT NULL
+      AND d.delivery_sent_at<datetime('now','-15 seconds')
+    """)
+    |> Enum.map(fn [id, owner] -> {id, owner} end)
+  end
+
+  def pending_delivery(run_id, owner_id) do
+    SQL.one(
       """
-      INSERT INTO delegated_runs (run_id,owner_user_id,started_at)
-      VALUES (?,?,datetime('now'))
-      ON CONFLICT(run_id) DO UPDATE SET owner_user_id=excluded.owner_user_id
+      SELECT d.delivery_payload_json,d.delivery_attempts FROM delegated_runs d JOIN runs r ON r.id=d.run_id
+      WHERE d.run_id=? AND d.owner_user_id=? AND r.status='queued' AND d.delivery_payload_json IS NOT NULL
       """,
       [run_id, owner_id]
     )
+  end
 
-    :ok
+  def acknowledge_delivery(run_id) do
+    SQL.exec(
+      "UPDATE delegated_runs SET delivery_payload_json=NULL WHERE run_id=? AND delivery_payload_json IS NOT NULL",
+      [run_id]
+    )
   end
 
   def clear_delegated(run_id) do
@@ -275,7 +311,7 @@ defmodule Cascade.Runs.Store do
           """,
           [
             status,
-            clean(summary, 20_000),
+            clean(summary, if(Cascade.WikiMaintenance.run?(run_id), do: 200_000, else: 20_000)),
             if(missing_session?, do: 1, else: 0),
             nil_if_blank(session_id),
             run_id
@@ -283,17 +319,30 @@ defmodule Cascade.Runs.Store do
         )
 
         clear_delegated(run_id)
-        Cascade.Missions.DispatchReannouncer.wake()
+        Cascade.Missions.WorkAvailable.notify()
+
+        Cascade.WikiMaintenance.run_finished(run_id, status, summary)
         :ok
     end
   end
 
   def mark_running(run_id) do
-    SQL.exec("UPDATE runs SET status='running' WHERE id=? AND status='queued'", [run_id])
-    publish(run_id, "status", %{status: "running"})
+    OrderedPublisher.mutate(fn ->
+      SQL.transaction(fn ->
+        if SQL.changes("UPDATE runs SET status='running' WHERE id=? AND status='queued'", [run_id]) >
+             0,
+           do: publish(run_id, "status", %{status: "running"})
+      end)
+    end)
   end
 
+
   def cancel(run_id, opts \\ []) do
+    unless Keyword.get(opts, :steering, false) do
+      Cascade.Missions.PendingSteering.cancel_pending(run_id)
+      Cascade.Chat.Continuations.stop(run_id)
+    end
+
     case get(run_id) do
       nil -> false
       %{status: status} when status in @terminal -> true
@@ -326,14 +375,17 @@ defmodule Cascade.Runs.Store do
           value -> value
         end
 
-      :ok = finish(run_id, "canceled", summary)
+      if not steering?, do: Cascade.Missions.Interpretation.stop_run(run_id)
+      result = finish(run_id, "canceled", summary)
 
-      publish(run_id, "status", %{
-        status: "canceled",
-        summary: summary,
-        steering: steering?,
-        suppressChatBody: Keyword.get(opts, :suppress_chat_body, false)
-      })
+      if result == :ok or match?(%{status: "canceled"}, get(run_id)) do
+        publish(run_id, "status", %{
+          status: "canceled",
+          summary: summary,
+          steering: steering?,
+          suppressChatBody: Keyword.get(opts, :suppress_chat_body, false)
+        })
+      end
 
       true
     end
@@ -425,8 +477,9 @@ defmodule Cascade.Runs.Store do
       type == "status" or
         not is_nil(SQL.one("SELECT 1 FROM chat_messages WHERE run_id=? LIMIT 1", [run_id]))
 
-    if target? and Code.ensure_loaded?(Cascade.Runs.ChatProjection) do
-      Cascade.Runs.ChatProjection.sync(run_id)
+    if target? do
+      project = Application.fetch_env!(:cascade_elixir, :run_chat_projector)
+      project.(run_id)
     end
 
     :ok

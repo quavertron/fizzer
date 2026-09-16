@@ -6,6 +6,110 @@ defmodule Cascade.Missions.Scheduler do
   alias Cascade.Missions.{Dispatches, Store}
   alias Cascade.Realtime.OrderedPublisher
 
+  # The scheduler holds the publisher lock and database transaction.
+  defp reconcile(mission_id) do
+    filter = if mission_id, do: " AND m.id=?", else: ""
+
+    SQL.all(
+      """
+      SELECT t.dispatch_id,r.id,r.status,COALESCE(r.summary,'')
+      FROM chat_mission_tasks t JOIN chat_missions m ON m.id=t.mission_id
+      JOIN chat_agent_dispatches d ON d.id=t.dispatch_id
+      JOIN runs r ON r.chat_dispatch_id=d.id AND r.id=COALESCE(t.run_id,d.run_id)
+      WHERE m.status NOT IN ('completed','canceled') AND t.status IN ('pending','running')
+        AND r.status IN ('completed','failed','canceled') #{filter}
+      """,
+      if(mission_id, do: [mission_id], else: [])
+    )
+    |> Enum.each(fn [dispatch_id, run_id, status, summary] ->
+      {:ok, _} = Store.attach_run(dispatch_id, run_id)
+      {:ok, _} = Store.settle_run(run_id, status, summary)
+    end)
+  end
+
+  # Retry provider cancellation after crashes/disconnects, outside SQL locks.
+  def replay_cancellations(cancel \\ &cancel_run/2, mission_id \\ nil) do
+    filter = if mission_id, do: " AND m.id=?", else: ""
+    params = if mission_id, do: [mission_id], else: []
+
+    worker_rows = """
+    SELECT r.id AS run_id,m.created_by AS owner_user_id
+    FROM chat_mission_tasks t
+    JOIN chat_missions m ON m.id=t.mission_id
+    JOIN runs r ON r.id=t.run_id
+    WHERE t.status='canceled' AND r.status IN ('queued','running') #{filter}
+    """
+
+    rows =
+      if SQL.table_exists?("chat_mission_cancellation_replays") do
+        SQL.all(
+          """
+          SELECT run_id,MAX(owner_user_id)
+          FROM (
+            #{worker_rows}
+            UNION ALL
+            SELECT r.id,COALESCE(c.owner_user_id,r.owner_user_id,m.created_by)
+            FROM chat_mission_cancellation_replays c
+            JOIN chat_missions m ON m.id=c.mission_id
+            JOIN runs r ON r.id=c.run_id
+            WHERE r.status IN ('queued','running') #{filter}
+          )
+          GROUP BY run_id
+          """,
+          params ++ params
+        )
+      else
+        SQL.all(worker_rows, params)
+      end
+
+    Enum.each(rows, fn [run, user] ->
+      if cancel.(user, run) do
+        Cascade.Runs.Store.finish(run, "canceled", "Mission task canceled.")
+
+        Cascade.Runs.Store.publish(run, "status", %{
+          status: "canceled",
+          summary: "Mission task canceled."
+        })
+      end
+    end)
+  end
+
+  defp cancel_run(user, run), do: Cascade.Runs.RunnerLifecycle.cancel(user, run, 2_000)
+
+  @doc "One maintenance selection for periodic and explicit recovery sweeps."
+  def maintenance_missions do
+    SQL.all("""
+    SELECT id,created_by FROM chat_missions m
+    WHERE (
+      (m.phase IN ('planning','executing') AND m.status NOT IN ('completed','canceled'))
+      OR (m.status='completed' AND EXISTS (
+        SELECT 1 FROM chat_mission_interpretations i
+        WHERE i.mission_id=m.id AND i.stopped=0
+          AND (i.pending_fingerprint<>'' OR i.publication_pending IS NOT NULL
+            OR json_extract(i.state_json,'$.executionCompleted') IS NOT 1
+            OR EXISTS (
+              SELECT 1 FROM json_each(i.state_json,'$.commitments') c
+              WHERE json_extract(c.value,'$.status')='open'
+                AND json_extract(c.value,'$.accepted') IS NOT 0
+            ) OR EXISTS (
+              SELECT 1 FROM json_each(i.state_json,'$.questions') q
+              WHERE COALESCE(json_extract(q.value,'$.status'),'open') NOT IN
+                ('answered','fulfilled','canceled','stopped','declined')
+                AND TRIM(COALESCE(json_extract(q.value,'$.answer'),''))=''
+            ))
+      )) OR EXISTS (
+        SELECT 1 FROM chat_mission_tasks t JOIN runs r ON r.id=t.run_id
+        WHERE t.mission_id=m.id AND t.status='canceled' AND r.status IN ('queued','running')
+      ) OR EXISTS (
+        SELECT 1
+        FROM chat_mission_cancellation_replays c
+        JOIN runs r ON r.id=c.run_id
+        WHERE c.mission_id=m.id AND r.status IN ('queued','running')
+      )
+    )
+    """)
+  end
+
   def schedule(mission_id \\ nil, opts \\ []) do
     OrderedPublisher.mutate(fn -> do_schedule(mission_id, opts) end)
   end
@@ -13,7 +117,9 @@ defmodule Cascade.Missions.Scheduler do
   defp do_schedule(mission_id, opts) do
     result =
       SQL.transaction(fn ->
-        Cascade.Missions.Recovery.reconcile(mission_id)
+        reconcile(mission_id)
+        Cascade.Missions.Progression.reconcile(mission_id)
+        Cascade.Missions.Children.resume_ready(mission_id)
         scheduled = Store.schedulable(mission_id)
         dispatches = Enum.map(scheduled.candidates, &materialize_candidate!/1)
 
@@ -23,9 +129,7 @@ defmodule Cascade.Missions.Scheduler do
              if(mission_id,
                do: [mission_id],
                else:
-                 SQL.all(
-                   "SELECT id FROM chat_missions WHERE wake_sent=0 AND status NOT IN ('completed','canceled')"
-                 )
+                 maintenance_missions()
                  |> Enum.map(&hd/1)
              ))
           |> Enum.uniq()
@@ -69,23 +173,21 @@ defmodule Cascade.Missions.Scheduler do
     |> Enum.each(fn {wake, item} -> emit_wake(wake, item, events) end)
 
     if result.finalUpdate, do: emit_projection(result.finalUpdate, events)
-    result
-  end
 
-  def pending_dispatches do
-    SQL.all("""
-    SELECT d.id,m.created_by,m.vault_id,m.channel_id
-    FROM chat_agent_dispatches d
-    JOIN chat_missions m ON (
-      (d.message_id LIKE 'sys-mission-' || m.id || '-%' AND m.wake_sent=1
-        AND d.message_id=(SELECT msg.id FROM chat_messages msg
-          WHERE msg.id LIKE 'sys-mission-' || m.id || '-%' ORDER BY msg.rowid DESC LIMIT 1)
-        AND NOT EXISTS (SELECT 1 FROM chat_mission_tasks active WHERE active.mission_id=m.id
-          AND (active.status='running' OR (active.status='pending' AND active.dispatch_id IS NOT NULL))))
-      OR EXISTS (SELECT 1 FROM chat_mission_tasks t WHERE t.mission_id=m.id
-        AND t.dispatch_id=d.id AND t.status='pending' AND t.run_id IS NULL))
-    WHERE d.run_id IS NULL AND m.status NOT IN ('completed','canceled')
-    """)
+    ids =
+      if mission_id,
+        do: [mission_id],
+        else:
+          SQL.all(
+            "SELECT mission_id FROM chat_mission_interpretations WHERE publication_pending IS NOT NULL"
+          )
+          |> List.flatten()
+
+    Enum.each(ids, &Cascade.Missions.Interpretation.flush(&1, events))
+    # Reconcile terminal evidence even if the coordinator acknowledges quietly.
+    # Periodic independent notification jobs also cover offline/startup failures.
+    if mission_id, do: Cascade.Missions.Notifications.reconcile(mission_id, events)
+    result
   end
 
   def emit_projection(update, events \\ Cascade.Chat.Events.Noop) do
@@ -169,7 +271,13 @@ defmodule Cascade.Missions.Scheduler do
         %{
           id: message_id,
           body:
-            "@#{assignee_mention} #{candidate.prompt}\n\n#{Cascade.Missions.Authority.context(candidate.missionId)}",
+            [
+              "@#{assignee_mention} #{candidate.prompt}",
+              Cascade.Missions.Children.context(candidate.taskId),
+              Cascade.Missions.Authority.context(candidate.missionId)
+            ]
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.join("\n\n"),
           createdAt: now(),
           registrationId: candidate.coordinatorRegistrationId,
           missionTaskId: candidate.taskId
@@ -192,8 +300,8 @@ defmodule Cascade.Missions.Scheduler do
 
   defp materialize_wake!(wake) do
     SQL.exec(
-      "UPDATE chat_missions SET wake_sent=1,review_fingerprint=?,updated_at=datetime('now') WHERE id=?",
-      [wake.generation, wake.mission.id]
+      "UPDATE chat_missions SET wake_sent=1,updated_at=datetime('now') WHERE id=?",
+      [wake.mission.id]
     )
 
     carrier_id = "agent-trace-#{wake.mission.id}-#{wake.generation}"
@@ -201,31 +309,16 @@ defmodule Cascade.Missions.Scheduler do
     user = user!(wake.createdBy)
     {:ok, route} = Store.owner_route(wake.createdBy, wake.vaultId, wake.channelId)
 
-    task_lines =
-      Enum.map(wake.mission.tasks, fn task ->
-        line =
-          "- #{task.title} — @#{nonblank(task.assigneeMention, task.assignee)}: #{task.status}"
-
-        if task.summary == "", do: line, else: line <> " — " <> String.slice(task.summary, 0, 600)
-      end)
-
-    review_state =
-      if wake.mission.status == "attention",
-        do: "one or more tasks need attention; the mission remains open",
-        else: wake.mission.status
-
     body =
-      [
-        "@#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) is ready for your review (#{review_state})."
-        | task_lines
-      ]
-      |> Kernel.++([
-        "",
-        Cascade.Missions.Authority.context(wake.mission.id),
-        "Before retrying any operation, inspect existing artifacts, running work, and deployment status. Do not duplicate side effects or overwrite concurrent work. Mission closure is coordinator bookkeeping and must not block independently authorized implementation. Finish with --verification containing independently observed checks and artifact or live revision evidence. If recovery repeatedly fails, leave a concrete limitation for the user; do not spin or expand authority.",
-        "Continue this existing mission; do not start a new mission for this review. Review existing evidence once. If closure fails or a blocker is unchanged, stop and report the exact missing evidence or authority; do not dispatch verification workers merely to satisfy bookkeeping. Use the recovery-evidence relationship for authorized evidence from another task. Resolve or explain failures, and perform any authorized integration and verification still needed. Finish this mission when the user request is fulfilled, then reply once with the outcome."
-      ])
-      |> Enum.join("\n")
+      if Map.has_key?(wake, :interpretation) do
+        "Reviewing updates for mission #{wake.mission.id}: #{wake.mission.title}"
+      else
+        """
+        @#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.
+        #{Cascade.Missions.Authority.context(wake.mission.id)}
+        Continue this existing mission; do not create a replacement. Read the latest owner messages first. If still authorized, delegate the missing implementation tasks and continue delivery. Honor Stop and changed scope. Inspect existing artifacts and work before retrying any operation; do not duplicate side effects. This is one setup recovery attempt, not permission to keep retrying.
+        """
+      end
 
     with {:ok, carrier} <-
            Messages.create(
@@ -249,7 +342,13 @@ defmodule Cascade.Missions.Scheduler do
                id: message_id,
                body: body,
                createdAt: now(),
-               registrationId: wake.coordinatorRegistrationId
+               registrationId: wake.coordinatorRegistrationId,
+               replyTo: %{
+                 messageId: wake.rootMessageId,
+                 author: "",
+                 preview: wake.mission.title,
+                 relationship: "builds_on"
+               }
              },
              access: :agent
            ),
@@ -260,6 +359,12 @@ defmodule Cascade.Missions.Scheduler do
              message,
              wake.coordinatorRegistrationId
            ) do
+      unless SQL.one("SELECT id FROM chat_mission_events WHERE source_key=?", ["coordinator-dispatch:" <> dispatch.id]) do
+        Store.record_event(wake.mission.id, %{kind: "coordinator_dispatch", summary: dispatch.id, source_key: "coordinator-dispatch:" <> dispatch.id})
+      end
+      if Map.has_key?(wake, :interpretation),
+        do: Cascade.Missions.Interpretation.admitted(wake.mission.id, dispatch.id)
+
       %{carrier: carrier, message: message, dispatch: dispatch}
     else
       {:error, reason} -> raise "Mission coordinator wake could not be materialized: #{reason}"

@@ -54,14 +54,16 @@ defmodule Cascade.ApplicationSupervisionTest do
 
   test "server boot starts only one dispatch worker" do
     port = Application.fetch_env!(:cascade_elixir, :port)
+
     try do
       :ok = Application.stop(:cascade_elixir)
       Application.put_env(:cascade_elixir, :server, true)
       Application.put_env(:cascade_elixir, :port, 0)
       assert {:ok, _} = Application.ensure_all_started(:cascade_elixir)
+
       assert Enum.count(Supervisor.which_children(Cascade.Supervisor), fn {id, _, _, _} ->
-        id == Cascade.Missions.DispatchReannouncer
-      end) == 1
+               id == Cascade.Missions.DispatchReannouncer
+             end) == 1
     after
       :ok = Application.stop(:cascade_elixir)
       Application.put_env(:cascade_elixir, :server, false)

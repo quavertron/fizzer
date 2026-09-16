@@ -3,6 +3,14 @@ name: Deploy Production
 on:
   push:
     branches: [master]
+    paths:
+      - '**'
+      - '!docs/**'
+      - 'docs/user-guide.md'
+      - '!**/*.test.*'
+      - '!backend_elixir/test/**'
+      - '!AGENTS.md'
+      - '!README.md'
   workflow_dispatch:
   workflow_run:
     workflows: [Desktop builds]
@@ -40,7 +48,9 @@ jobs:
           ssh-keygen -y -f ~/.ssh/production_deploy >/dev/null
 
       - name: Deploy exact triggering revision
+        id: delivery
         env:
+          GH_TOKEN: ${{ github.token }}
           DEPLOY_HOST: ${{ secrets.PRODUCTION_DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.PRODUCTION_DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.PRODUCTION_DEPLOY_USER }}
@@ -48,6 +58,15 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          # Resolve after acquiring workflow concurrency, including time queued.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            CURRENT_MASTER="$(gh api "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
+            if [[ "$CURRENT_MASTER" != "$REVISION" ]]; then
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              echo "Skipped installer refresh for superseded desktop revision $REVISION." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
           PORT="${DEPLOY_PORT:-22}"
           ssh -i ~/.ssh/production_deploy -p "$PORT" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
@@ -55,6 +74,7 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" "deploy $REVISION"
 
       - name: Verify exact live revision and internal health
+        if: steps.delivery.outputs.skipped != 'true'
         env:
           DEPLOY_HOST: ${{ secrets.PRODUCTION_DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.PRODUCTION_DEPLOY_PORT }}
@@ -68,6 +88,7 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" "verify $REVISION"
 
       - name: Verify public health
+        if: steps.delivery.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 6 --retry-all-errors \

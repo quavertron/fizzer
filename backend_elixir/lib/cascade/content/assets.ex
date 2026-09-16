@@ -18,6 +18,7 @@ defmodule Cascade.Content.Assets do
     "video/mp4" => "mp4",
     "application/pdf" => "pdf",
     "text/plain" => "txt",
+    "text/html" => "html",
     "text/markdown" => "md"
   }
   @mime_by_extension %{
@@ -31,6 +32,7 @@ defmodule Cascade.Content.Assets do
     ".mp4" => "video/mp4",
     ".pdf" => "application/pdf",
     ".txt" => "text/plain",
+    ".html" => "text/html",
     ".md" => "text/markdown"
   }
 
@@ -94,7 +96,7 @@ defmodule Cascade.Content.Assets do
       "application/pdf" ->
         byte_size(bytes) >= 5 and binary_part(bytes, 0, 5) == "%PDF-"
 
-      media_type when media_type in ["text/plain", "text/markdown"] ->
+      media_type when media_type in ["text/plain", "text/markdown", "text/html"] ->
         String.valid?(bytes) and not String.contains?(bytes, <<0>>)
 
       _ ->
@@ -146,6 +148,9 @@ defmodule Cascade.Content.Assets do
     if data == "", do: raise(ArgumentError, "Asset data is required")
     bytes = decode_data(data)
 
+    if media_type == "text/html" and byte_size(bytes) > 1_048_576,
+      do: raise(ArgumentError, "HTML preview is too large (max 1MB)")
+
     if byte_size(bytes) > @max_bytes,
       do: raise(ArgumentError, "Asset is too large (max #{div(@max_bytes, 1_024 * 1_024)}MB)")
 
@@ -190,7 +195,7 @@ defmodule Cascade.Content.Assets do
 
   def response_metadata(path) do
     extension = path |> Path.extname() |> String.downcase()
-    downloadable? = extension in [".svg", ".pdf", ".txt", ".md"]
+    downloadable? = extension in [".svg", ".pdf", ".txt", ".md", ".html"]
 
     %{
       content_type: Map.get(@mime_by_extension, extension, "application/octet-stream"),

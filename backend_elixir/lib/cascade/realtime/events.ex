@@ -10,7 +10,7 @@ defmodule Cascade.Realtime.Events do
 
   @behaviour Cascade.Chat.Events
 
-  alias Cascade.Accounts.{CommunityActivity, SQL}
+  alias Cascade.Accounts.SQL
   alias Cascade.Chat.Channel
   alias Cascade.Realtime.{Hub, PresenceDispatcher}
 
@@ -39,16 +39,24 @@ defmodule Cascade.Realtime.Events do
   @doc "Options to mount on CascadeWeb.ContentRouter."
   def content_options, do: [events: __MODULE__]
 
-  @doc "Installs the storage-level note activity sink used by folder and tag mutations."
-  def install_note_mutation_sink do
-    Application.put_env(:cascade_elixir, :note_mutation_sink, &note_mutation/3)
-  end
-
   @impl true
   def emit(intent) when is_map(intent) do
     case field(intent, :event) do
       event when event in [@chat_created, @chat_updated] ->
-        emit_chat_message(event, intent)
+        message = field(intent, :message) || %{}
+
+        if String.starts_with?(to_string(field(message, :id)), "sys-next-") or
+             Cascade.Chat.Messages.terminal_shell?(message) do
+          # Background dispatch consumes these durable envelopes. Retract the old
+          # visible projection too, including on clients that predate this fix.
+          emit_chat_deleted(%{
+            vaultId: field(intent, :vaultId),
+            channelId: field(intent, :channelId),
+            messageId: field(field(intent, :message), :id)
+          })
+        else
+          emit_chat_message(event, intent)
+        end
 
       @chat_deleted ->
         emit_chat_deleted(intent)
@@ -181,20 +189,6 @@ defmodule Cascade.Realtime.Events do
   end
 
   def channel_created(_payload), do: :ok
-
-  def note_mutation(note_id, actor_user_id, _kind)
-      when is_binary(note_id) and is_integer(actor_user_id) do
-    CommunityActivity.record_note_change(note_id, actor_user_id)
-
-    case SQL.one("SELECT vault_id FROM notes WHERE id=?", [note_id]) do
-      [vault_id] -> community_changed_for_vault(vault_id)
-      _ -> :ok
-    end
-  rescue
-    _ -> :ok
-  end
-
-  def note_mutation(_note_id, _actor_user_id, _kind), do: :ok
 
   def vault_event(vault_id, event, payload)
       when is_binary(vault_id) and is_binary(event) and is_map(payload) do
@@ -432,7 +426,6 @@ defmodule Cascade.Realtime.Events do
 
   defp participant_removed(intent) do
     participant = field(intent, :participant) || %{}
-    local_channel_id = field(participant, :channelId)
     user_id = field(participant, :userId)
 
     case {field(participant, :sourceVaultId), field(participant, :sourceChannelId)} do
@@ -441,12 +434,15 @@ defmodule Cascade.Realtime.Events do
         if is_integer(user_id),
           do: Hub.evict_user(user_id, @vault_namespace, "chat:#{source_channel_id}")
 
-        local_vault_id = field(participant, :localVaultId) || field(intent, :vaultId)
+        for link <- field(participant, :removedLinks) || [] do
+          vault_event(field(link, :localVaultId), "vault:noteDeleted", %{
+            noteId: field(link, :channelId),
+            vaultId: field(link, :localVaultId)
+          })
+        end
 
-        vault_event(local_vault_id, "vault:noteDeleted", %{
-          noteId: local_channel_id,
-          vaultId: local_vault_id
-        })
+        if field(participant, :membershipRemoved),
+          do: members_changed(%{vaultId: source_vault_id})
 
         emit_presence(source_vault_id, source_channel_id)
 

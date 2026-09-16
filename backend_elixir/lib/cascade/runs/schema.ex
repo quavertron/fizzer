@@ -45,6 +45,10 @@ defmodule Cascade.Runs.Schema do
     CREATE INDEX IF NOT EXISTS delegated_runs_owner_idx ON delegated_runs(owner_user_id);
     """)
 
+    SQL.ensure_column("delegated_runs", "delivery_payload_json", "TEXT")
+    SQL.ensure_column("delegated_runs", "delivery_sent_at", "TEXT")
+    SQL.ensure_column("delegated_runs", "delivery_attempts", "INTEGER NOT NULL DEFAULT 0")
+
     SQL.ensure_column("runs", "agent", "TEXT NOT NULL DEFAULT 'claude-code'")
     SQL.ensure_column("runs", "session_id", "TEXT")
     SQL.ensure_column("runs", "conversation_id", "TEXT NOT NULL DEFAULT ''")

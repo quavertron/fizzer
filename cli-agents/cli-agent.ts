@@ -56,17 +56,30 @@
  */
 
 import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getHermesProfileCommand } from './hermes-profile-command.js';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir(): string {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
 
 export const activeCliProcesses = new Map<number, ChildProcess>();
 const activePersistentCancels = new Map<number, () => void>();
 const groupedCliProcesses = new Set<number>();
 const agentProcessLeaseDir = process.env.CASCADE_AGENT_PROCESS_DIR
-  || path.join(os.homedir(), '.cascade', 'agent-processes');
+  || path.join(fizzerDir(), 'agent-processes');
 
 type AgentProcessLease = {
   version: 1;
@@ -310,8 +323,33 @@ export function cancelCliAgentRun(runId: number): boolean {
 // TYPES
 // ═══════════════════════════════════════════════════════════════
 
-export type AgentEmit = (type: 'text' | 'user' | 'harness' | 'session', payload: unknown) => void;
+export type AgentEmit = (type: 'text' | 'user' | 'harness' | 'session' | 'timing', payload: unknown) => void;
 export type CliImage = { media_type: string; data: string };
+
+/** Runner-clock observations, not provider queue or model execution measurements. */
+export function createRequestTiming(emit: AgentEmit | undefined, boundary: string) {
+  const requestId = randomBytes(12).toString('hex');
+  const started = performance.now();
+  let responded = false;
+  let completed = false;
+  const record = (phase: string, observation = { at: new Date().toISOString(), monotonic: performance.now() }, outcome?: string) => {
+    emit?.('timing', { requestId, boundary, phase, observedAt: observation.at,
+      elapsedMs: Math.max(0, observation.monotonic - started), ...(outcome ? { outcome } : {}) });
+  };
+  record('request_start');
+  return {
+    firstResponse(observation?: { at: string; monotonic: number }) {
+      if (responded || completed) return;
+      responded = true;
+      record('first_response', observation);
+    },
+    complete(outcome: string, observation?: { at: string; monotonic: number }) {
+      if (completed) return;
+      completed = true;
+      record('completion', observation, outcome);
+    },
+  };
+}
 
 /** Emit a raw harness/terminal chunk (stdout/stderr or formatted SDK lines). */
 function emitHarness(emit: AgentEmit | undefined, data: string): void {
@@ -701,6 +739,7 @@ function driveProcess(
   const idleTimeoutMs = hermes?.idleTimeoutMs ?? CLI_IDLE_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
+    const timing = createRequestTiming(emit, 'cli_process_stdout');
     let child;
     const leaseToken = hermes ? randomBytes(16).toString('hex') : undefined;
     if (hermes) emitHarness(emit, `\x1b[2m# launching ${label} harness\x1b[0m\r\n`);
@@ -745,6 +784,7 @@ function driveProcess(
           clearAgentProcessLease(runId);
         }
       }
+      timing.complete('launch_failed');
       reject(new Error(`Failed to launch ${label} ('${bin}'): ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
@@ -784,6 +824,7 @@ function driveProcess(
     const idle = createIdleTimer(() => {
       if (!settled) {
         settled = true;
+        timing.complete('idle_timeout');
         if (heartbeat) clearInterval(heartbeat);
         cleanUpProcess();
         if (hermes) terminateCliProcessWithEscalation(child, process.platform !== 'win32');
@@ -793,6 +834,7 @@ function driveProcess(
     }, idleTimeoutMs);
 
     child.stdout.on('data', (d: Buffer | string) => {
+      if (d.length) timing.firstResponse();
       const chunk = d.toString();
       quietSince = Date.now();
       idle.bump();
@@ -833,6 +875,7 @@ function driveProcess(
     });
 
     child.on('error', (err) => {
+      timing.complete('launch_failed');
       if (settled) return;
       settled = true;
       idle.clear();
@@ -841,7 +884,8 @@ function driveProcess(
       reject(new Error(`${label} ('${bin}') could not be started: ${err.message}. Is it installed and on PATH?`));
     });
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      timing.complete(signal ? 'signaled' : code === 0 ? 'completed' : 'failed');
       if (settled) return;
       settled = true;
       idle.clear();
@@ -917,8 +961,9 @@ type JsonObject = Record<string, any>;
 type CodexAppTurn = {
   threadId: string; turnId: string; runId?: number; emit: AgentEmit;
   resolve: (result: CliAgentResult) => void; reject: (error: Error) => void;
-  summary: string; emittedText: boolean; emittedTools: Set<string>;
+  summary: string; emittedText: boolean; emittedTools: Set<string>; agentText: Map<string, string>;
   idle: ReturnType<typeof createIdleTimer>;
+  timing: ReturnType<typeof createRequestTiming>;
 };
 
 /** Long-lived protocol peer; avoids rebuilding Codex's app-server every turn. */
@@ -990,57 +1035,65 @@ class CodexAppServerClient {
       effort: normalizeCodexEffort(options.reasoningEffort),
       approvalPolicy: 'never',
     };
-    let started: JsonObject;
+    const timing = createRequestTiming(options.emit, 'codex_app_server_turn');
     try {
-      started = await this.request('turn/start', turnParams);
-    } catch (error) {
-      if (!this.isActiveWriterError(error)) throw error;
-      emitHarness(options.emit, '\x1b[33m# Codex left this thread busy — interrupting its unfinished turn\x1b[0m\r\n');
-      const interrupted = await this.interruptActiveTurn(threadId);
+      let started: JsonObject;
       try {
-        if (!interrupted) throw error;
-        started = await this.requestWithActiveWriterRetry('turn/start', turnParams);
-      } catch (retryError) {
-        if (!this.isActiveWriterError(retryError)) throw retryError;
-        void this.request('thread/unsubscribe', { threadId }).catch(() => {});
-        emitHarness(options.emit, '\x1b[33m# Codex did not release that thread — continuing in a fresh session\x1b[0m\r\n');
-        response = await this.request('thread/start', common);
-        threadId = String(response?.thread?.id || '');
-        if (!threadId) throw new Error('Codex app-server did not return a replacement thread id.');
-        started = await this.request('turn/start', { ...turnParams, threadId });
+        started = await this.request('turn/start', turnParams);
+      } catch (error) {
+        if (!this.isActiveWriterError(error)) throw error;
+        if (options.resumeId && options.env?.CASCADE_IMPORTED_CODEX_SESSION === options.resumeId) throw error;
+        emitHarness(options.emit, '\x1b[33m# Codex left this thread busy — interrupting its unfinished turn\x1b[0m\r\n');
+        const interrupted = await this.interruptActiveTurn(threadId);
+        try {
+          if (!interrupted) throw error;
+          started = await this.requestWithActiveWriterRetry('turn/start', turnParams);
+        } catch (retryError) {
+          if (!this.isActiveWriterError(retryError)) throw retryError;
+          void this.request('thread/unsubscribe', { threadId }).catch(() => {});
+          emitHarness(options.emit, '\x1b[33m# Codex did not release that thread — continuing in a fresh session\x1b[0m\r\n');
+          response = await this.request('thread/start', common);
+          threadId = String(response?.thread?.id || '');
+          if (!threadId) throw new Error('Codex app-server did not return a replacement thread id.');
+          started = await this.request('turn/start', { ...turnParams, threadId });
+        }
       }
+      options.emit('session', { sessionId: threadId });
+      emitHarness(options.emit, `\x1b[2m# codex app-server · ${options.cwd}\x1b[0m\r\n`);
+      if (options.model) emitCascadeStats(options.emit, { model: options.model });
+      const turnId = String(started?.turn?.id || '');
+      if (!turnId) throw new Error('Codex app-server did not return a turn id.');
+      return await new Promise<CliAgentResult>((resolve, reject) => {
+        const idle = createIdleTimer(() => {
+          void this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+          this.finishTurn(turnId, new Error(`Codex produced no output for ${CLI_IDLE_TIMEOUT_MS}ms and was stopped.`));
+        });
+        this.turns.set(turnId, {
+          threadId, turnId, runId: options.runId, emit: options.emit, resolve, reject,
+          summary: '', emittedText: false, emittedTools: new Set(), agentText: new Map(), idle, timing,
+        });
+        if (options.runId !== undefined) activePersistentCancels.set(options.runId, () => {
+          void this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+        });
+        const buffered = this.earlyNotifications.get(turnId) || [];
+        this.earlyNotifications.delete(turnId);
+        for (const message of buffered) this.onMessage(message);
+      });
+    } catch (error) {
+      timing.complete('failed');
+      throw error;
     }
-    options.emit('session', { sessionId: threadId });
-    emitHarness(options.emit, `\x1b[2m# codex app-server · ${options.cwd}\x1b[0m\r\n`);
-    if (options.model) emitCascadeStats(options.emit, { model: options.model });
-    const turnId = String(started?.turn?.id || '');
-    if (!turnId) throw new Error('Codex app-server did not return a turn id.');
-    return new Promise<CliAgentResult>((resolve, reject) => {
-      const idle = createIdleTimer(() => {
-        void this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
-        this.finishTurn(turnId, new Error(`Codex produced no output for ${CLI_IDLE_TIMEOUT_MS}ms and was stopped.`));
-      });
-      this.turns.set(turnId, {
-        threadId, turnId, runId: options.runId, emit: options.emit, resolve, reject,
-        summary: '', emittedText: false, emittedTools: new Set(), idle,
-      });
-      if (options.runId !== undefined) activePersistentCancels.set(options.runId, () => {
-        void this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
-      });
-      const buffered = this.earlyNotifications.get(turnId) || [];
-      this.earlyNotifications.delete(turnId);
-      for (const message of buffered) this.onMessage(message);
-    });
   }
 
   private async openThread(options: {
-    resumeId?: string; emit: AgentEmit;
+    resumeId?: string; emit: AgentEmit; env?: NodeJS.ProcessEnv;
   }, common: JsonObject): Promise<JsonObject> {
     if (!options.resumeId) return this.request('thread/start', common);
     const resumeParams = { threadId: options.resumeId, excludeTurns: true, ...common };
     try {
       return await this.request('thread/resume', resumeParams);
     } catch (error) {
+      if (options.resumeId && options.env?.CASCADE_IMPORTED_CODEX_SESSION === options.resumeId) throw error;
       if (isDeadCodexSession(String(error))) {
         emitHarness(options.emit, '\x1b[33m# that session is gone from Codex\'s store — starting a fresh one\x1b[0m\r\n');
         return this.request('thread/start', common);
@@ -1149,6 +1202,7 @@ class CodexAppServerClient {
   }
 
   private onMessage(message: JsonObject): void {
+    const observation = message.timingObservation || { at: new Date().toISOString(), monotonic: performance.now() };
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -1166,40 +1220,70 @@ class CodexAppServerClient {
     }
     const params = message.params || {};
     const turnId = String(params.turnId || params.turn?.id || '');
-    const turn = this.turns.get(turnId)
-      || [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
+    // An explicit turn ID owns the event; a stale attempt must never fall
+    // through to another active turn in the same conversation.
+    const turn = turnId ? this.turns.get(turnId)
+      : [...this.turns.values()].find((candidate) => candidate.threadId === params.threadId);
+    if (turn && params.threadId && turn.threadId !== params.threadId) return;
     if (!turn) {
-      if (turnId && ['item/started', 'item/completed', 'turn/completed', 'error'].includes(message.method)) {
+      if (turnId && ['item/started', 'item/completed', 'item/agentMessage/delta', 'turn/completed', 'error'].includes(message.method)) {
         const buffered = this.earlyNotifications.get(turnId) || [];
-        buffered.push(message);
+        buffered.push({ ...message, timingObservation: observation });
         this.earlyNotifications.set(turnId, buffered.slice(-100));
       }
       return;
     }
     turn.idle.bump();
-    if (message.method === 'item/started') this.emitItem(turn, params.item, false);
+    if (['item/started', 'item/completed'].includes(message.method)
+      && params.item?.type && !['userMessage', 'contextCompaction'].includes(params.item.type)) {
+      turn.timing.firstResponse(observation);
+    }
+    if (message.method === 'item/agentMessage/delta' && params.itemId && typeof params.delta === 'string' && params.delta) {
+      turn.timing.firstResponse(observation);
+      this.emitAgentText(turn, params.itemId, (turn.agentText.get(params.itemId) || '') + params.delta);
+    } else if (message.method === 'item/started') this.emitItem(turn, params.item, false);
     else if (message.method === 'item/completed') this.emitItem(turn, params.item, true);
     else if (message.method === 'thread/tokenUsage/updated') emitCascadeStats(turn.emit, statsFromUsageBlob(params.tokenUsage || params.usage));
     else if (message.method === 'turn/completed') {
       const status = params.turn?.status;
+      turn.timing.complete(status || 'failed', observation);
       this.finishTurn(turnId, status === 'completed' ? undefined : new Error(params.turn?.error?.message || `Codex turn ${status || 'failed'}.`));
     } else if (message.method === 'error') {
+      // Stream errors are progress while Codex retries the same turn. Keep
+      // ownership, heartbeat and cancellation alive until a terminal event.
+      if (params.willRetry === true) {
+        emitHarness(turn.emit, `${params.error?.message || params.message || 'Codex retrying.'}\r\n`);
+        return;
+      }
+      turn.timing.complete('failed', observation);
       this.finishTurn(turnId, new Error(params.error?.message || params.message || 'Codex app-server error.'));
     }
   }
 
+  private emitAgentText(turn: CodexAppTurn, itemId: string, text: string): void {
+    const previous = turn.agentText.get(itemId);
+    // Completion repeats the full item; only publish its not-yet-streamed suffix.
+    const delta = previous === undefined ? text : text.startsWith(previous) ? text.slice(previous.length) : '';
+    turn.agentText.set(itemId, text);
+    if (!delta) return;
+    turn.emit('text', { chatVisible: true, message: { content: [{ type: 'text',
+      text: `${previous === undefined && turn.emittedText ? '\n\n' : ''}${delta}` }] } });
+    turn.emittedText = true;
+  }
+
   private emitItem(turn: CodexAppTurn, item: JsonObject | undefined, completed: boolean): void {
     if (!item?.type) return;
-    if (item.type === 'agentMessage' && completed) {
+    if (item.type === 'agentMessage') {
+      if (!completed) return;
       const text = String(item.text || '');
       if (text) {
         turn.summary = text;
-        turn.emit('text', { chatVisible: true, message: { content: [{ type: 'text', text: `${turn.emittedText ? '\n\n' : ''}${text}` }] } });
-        turn.emittedText = true;
+        this.emitAgentText(turn, String(item.id || ''), text);
       }
       return;
     }
-    if (item.type === 'reasoning' && completed) {
+    if (item.type === 'reasoning') {
+      if (!completed) return;
       const text = [...(item.summary || []), ...(item.content || [])].filter(Boolean).join('\n');
       if (text) turn.emit('text', { message: { content: [{ type: 'thinking', text }] } });
       return;
@@ -1219,6 +1303,7 @@ class CodexAppServerClient {
   private finishTurn(turnId: string, error?: Error): void {
     const turn = this.turns.get(turnId);
     if (!turn) return;
+    turn.timing.complete(error ? 'failed' : 'completed');
     this.turns.delete(turnId);
     turn.idle.clear();
     if (turn.runId !== undefined) activePersistentCancels.delete(turn.runId);
@@ -1455,6 +1540,9 @@ async function runCodex(
     'Codex', runId, emit, env, collectStderr,
   );
   const retryFresh = async () => {
+    if (resumeId && env?.CASCADE_IMPORTED_CODEX_SESSION === resumeId) {
+      throw new Error('The imported Codex session could not be resumed. Its history was preserved; no replacement session was started.');
+    }
     emitHarness(emit, '\x1b[33m# that session is gone from Codex\'s store — starting a fresh one\x1b[0m\r\n');
     stderrText = '';
     return { summary: await drive(buildArgs(undefined)), sessionId };
@@ -1619,7 +1707,7 @@ function antigravityBin(): string {
 }
 
 function antigravityTranscriptPath(conversationId: string): string {
-  return path.join(
+  const p1 = path.join(
     os.homedir(),
     '.gemini',
     'antigravity',
@@ -1629,6 +1717,19 @@ function antigravityTranscriptPath(conversationId: string): string {
     'logs',
     'transcript.jsonl',
   );
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.join(
+    os.homedir(),
+    '.gemini',
+    'antigravity-cli',
+    'brain',
+    conversationId,
+    '.system_generated',
+    'logs',
+    'transcript.jsonl',
+  );
+  if (fs.existsSync(p2)) return p2;
+  return p1;
 }
 
 /** Planner narration ("I will view…") is harness/thinking — not a chat reply. */
@@ -1641,88 +1742,79 @@ function agyIsPlannerMonologue(text: string): boolean {
   return false;
 }
 
-function resolveAntigravityProjectConfigPath(cwd: string): string | null {
-  const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
-  if (!fs.existsSync(projectsDir)) return null;
-  const absCwd = path.resolve(cwd);
-  for (const file of fs.readdirSync(projectsDir)) {
-    if (!file.endsWith('.json')) continue;
-    const filePath = path.join(projectsDir, file);
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      if (content.includes(absCwd) || content.includes(`file://${absCwd}`)) return filePath;
-    } catch { /* ignore */ }
+const AGY_MANAGED_PROJECT_PREFIX = 'fizzer-agy-full-';
+
+type AgyProject = {
+  id?: string;
+  projectResources?: { resources?: Array<{ gitFolder?: { folderUri?: string } }> };
+};
+
+/** Match workspace roots, never permission strings or another project's name. */
+export function selectAntigravityProject(projects: AgyProject[], cwd: string): string | undefined {
+  const target = path.resolve(cwd);
+  let best: { id: string; depth: number; primary: boolean } | undefined;
+  for (const project of projects) {
+    if (!project.id || project.id.startsWith(AGY_MANAGED_PROJECT_PREFIX)) continue;
+    for (const [index, resource] of (project.projectResources?.resources || []).entries()) {
+      const uri = resource.gitFolder?.folderUri;
+      if (!uri) continue;
+      let root: string;
+      try { root = path.resolve(fileURLToPath(uri)); } catch { continue; }
+      const relative = path.relative(root, target);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      const primary = index === 0;
+      if (!best || root.length > best.depth || (root.length === best.depth && primary && !best.primary)) {
+        best = { id: project.id, depth: root.length, primary };
+      }
+    }
   }
-  return null;
+  return best?.id;
 }
 
-/**
- * Patch the Antigravity project config so Cascade hookup runs auto-approve
- * plans/commands instead of blocking on IDE permission prompts.
- */
-function ensureAntigravityCascadeHookup(cwd: string, yolo?: boolean): void {
-  const configPath = resolveAntigravityProjectConfigPath(cwd);
-  if (!configPath) return;
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return;
-  }
-
-  const settings = (data.settings as Record<string, unknown>) || {};
-  settings.fileAccessPolicy = 'AGENT_SETTING_POLICY_ALLOW';
-  settings.autoExecutionPolicy = 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER';
-  settings.artifactReviewMode = 'ARTIFACT_REVIEW_MODE_TURBO';
-  if (yolo) settings.internetPolicy = 'AGENT_SETTING_POLICY_ALLOW';
-  data.settings = settings;
-
-  const absCwd = path.resolve(cwd);
-  const grants = new Set<string>();
-  const existing = data.permissionGrants as { permissionGrants?: { allow?: string[] } } | undefined;
-  for (const g of existing?.permissionGrants?.allow || []) grants.add(g);
-  for (const prefix of ['read_file', 'write_file']) {
-    grants.add(`${prefix}(${absCwd})`);
-    grants.add(`${prefix}(${absCwd}/.env)`);
-  }
-  for (const cmd of ['npm', 'node', 'npx', 'agentapi', 'curl', 'rg', 'git', 'bash', 'sh', 'tsx', 'tsc']) {
-    grants.add(`command(${cmd})`);
-  }
-  data.permissionGrants = { permissionGrants: { allow: [...grants] } };
-
-  try {
-    fs.writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`);
-  } catch { /* ignore */ }
+/** Full host access is opt-in in Fizzer, and must not alter the user's IDE project. */
+export function antigravityFullHostProject(source: Record<string, any>, cwd: string) {
+  const root = path.resolve(cwd);
+  const key = createHash('sha256').update(`${source.id}\n${root}`).digest('hex').slice(0, 24);
+  return {
+    id: `${AGY_MANAGED_PROJECT_PREFIX}${key}`,
+    name: `Fizzer runtime: ${path.basename(root)} (full host access)`,
+    projectResources: { resources: [{ gitFolder: { folderUri: pathToFileURL(root).href, allowWrite: true } }] },
+    permissionGrants: source.permissionGrants,
+    settings: {
+      ...source.settings,
+      sandboxMode: false,
+      permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO',
+      fileAccessPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+      internetPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+      autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER',
+      artifactReviewMode: 'ARTIFACT_REVIEW_MODE_TURBO',
+    },
+  };
 }
 
-/** Best-effort LS call to unblock pending plan/permission prompts. */
-function agyLsPost(endpoint: string, body: Record<string, unknown>): boolean {
-  const discovered = discoverAntigravityEnv();
-  const addr = discovered.ANTIGRAVITY_LS_ADDRESS || process.env.ANTIGRAVITY_LS_ADDRESS;
-  const token = discovered.ANTIGRAVITY_CSRF_TOKEN || process.env.ANTIGRAVITY_CSRF_TOKEN;
-  if (!addr || !token) return false;
+/** Keep connection/project context; discard nested agent provenance and stale executable overrides. */
+export function antigravityChildEnv(base: NodeJS.ProcessEnv, discovered: Record<string, string>): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('ANTIGRAVITY_'))),
+    ...discovered,
+  };
+}
+
+/** All control calls use the same server as the launched conversation. */
+async function agyLsRequest(endpoint: string, body: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<Record<string, any>> {
+  const addr = env.ANTIGRAVITY_LS_ADDRESS;
+  const token = env.ANTIGRAVITY_CSRF_TOKEN;
+  if (!addr || !token) throw new Error('Antigravity language server connection is missing.');
   const host = addr.includes('://') ? addr : `http://${addr}`;
-  const url = `${host.replace(/\/$/, '')}/exa.language_server_pb.LanguageServerService/${endpoint}`;
-  try {
-    const result = spawnSync(
-      'curl',
-      [
-        '-sS', '-m', '4',
-        '-X', 'POST', url,
-        '-H', 'Content-Type: application/json',
-        '-H', `X-Codeium-Csrf-Token: ${token}`,
-        '-d', JSON.stringify(body),
-      ],
-      { encoding: 'utf8', timeout: 6000 },
-    );
-    return result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
-function agyTryAutoApprove(conversationId: string): void {
-  agyLsPost('ResolveOutstandingSteps', { cascadeId: conversationId });
+  const response = await fetch(`${host.replace(/\/$/, '')}/exa.language_server_pb.LanguageServerService/${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Codeium-Csrf-Token': token },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(4000),
+  });
+  const result = await response.json() as Record<string, any>;
+  if (!response.ok) throw new Error(`Antigravity ${endpoint}: ${result.message || response.status}`);
+  return result;
 }
 
 /** Map configured model ids (slugs, enums, labels) to agentapi --model= tiers. */
@@ -1742,7 +1834,7 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
   }
   // High flash / mid flash / generic flash → flash
   if (
-    /flash.*\(high\)|flash.*\(medium\)|m132\b|m20\b|m18\b|m21\b|gemini-3-flash|gemini-3\.5-flash|gemini-2\.5-flash|gemini-3\.1-flash/i.test(raw)
+    /flash.*\(high\)|flash.*\(medium\)|m132\b|m20\b|m18\b|m21\b|gemini-3-flash|gemini-3\.8-flash|gemini-3\.5-flash|gemini-2\.5-flash|gemini-3\.1-flash/i.test(raw)
     || lower === 'flash'
   ) {
     return 'flash';
@@ -1765,47 +1857,73 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
  * Discover Antigravity language_server HTTP address + CSRF + project id.
  * Prefer env, then /proc cmdline + language_server.log, then /proc environ.
  */
-function discoverAntigravityEnv(cwd?: string): Record<string, string> {
+function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = { ANTIGRAVITY_AGENT: '1' };
 
-  if (process.env.ANTIGRAVITY_PROJECT_ID) {
-    env.ANTIGRAVITY_PROJECT_ID = process.env.ANTIGRAVITY_PROJECT_ID;
-  } else {
-    try {
-      const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
-      if (fs.existsSync(projectsDir)) {
-        const files = fs.readdirSync(projectsDir);
-        let projectId: string | undefined;
-        const searchCwd = cwd ? path.resolve(cwd) : process.cwd();
-        for (const file of files) {
-          if (!file.endsWith('.json')) continue;
-          try {
-            const filePath = path.join(projectsDir, file);
-            const content = fs.readFileSync(filePath, 'utf-8');
-            const data = JSON.parse(content) as { id?: string; name?: string };
-            if (content.includes(searchCwd) || content.includes(`file://${searchCwd}`) || data.name === 'cascade') {
-              projectId = data.id || file.replace(/\.json$/, '');
-              break;
-            }
-          } catch { /* ignore */ }
-        }
-        if (!projectId) {
-          const firstJson = files.find((f) => f.endsWith('.json'));
-          if (firstJson) projectId = firstJson.replace(/\.json$/, '');
-        }
-        if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
-      }
-    } catch { /* ignore */ }
-  }
+  try {
+    const projectsDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
+    const projects: AgyProject[] = [];
+    for (const file of fs.readdirSync(projectsDir).sort()) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const project = JSON.parse(fs.readFileSync(path.join(projectsDir, file), 'utf8')) as AgyProject;
+        projects.push({ ...project, id: project.id || file.slice(0, -5) });
+      } catch { /* Skip malformed project files. */ }
+    }
+    const projectId = selectAntigravityProject(projects, cwd || process.cwd());
+    if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
+  } catch { /* Report a missing workspace before launch. */ }
 
-  if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
-    env.ANTIGRAVITY_LS_ADDRESS = process.env.ANTIGRAVITY_LS_ADDRESS;
-    env.ANTIGRAVITY_CSRF_TOKEN = process.env.ANTIGRAVITY_CSRF_TOKEN;
+  if (base.ANTIGRAVITY_LS_ADDRESS && base.ANTIGRAVITY_CSRF_TOKEN) {
+    env.ANTIGRAVITY_LS_ADDRESS = base.ANTIGRAVITY_LS_ADDRESS;
+    env.ANTIGRAVITY_CSRF_TOKEN = base.ANTIGRAVITY_CSRF_TOKEN;
     return env;
   }
 
   let token: string | undefined;
   let port: string | undefined;
+
+  // macOS has no /proc: inspect the running language_server via `ps` (for the
+  // --csrf_token) and `lsof` (for its live listening port). The Antigravity log
+  // records a random port but is unreliable across restarts, so trust the socket.
+  if (process.platform === 'darwin') {
+    try {
+      const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf-8' });
+      const lines = (ps.stdout || '').split('\n');
+      for (const l of lines) {
+        // The real LS binary, not the "Antigravity Helper" Electron children.
+        if (!/\/language_server(\s|$)/.test(l)) continue;
+        const tokenMatch = l.match(/--csrf_token\s+(\S+)/);
+        const pidMatch = l.match(/^\s*(\d+)\s/);
+        if (!tokenMatch || !pidMatch) continue;
+        token = tokenMatch[1];
+        const pid = pidMatch[1];
+        const lsof = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pid], { encoding: 'utf-8' });
+        const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
+          .map((m) => parseInt(m[1], 10))
+          .filter((n) => Number.isFinite(n));
+        // Probe ports to find the real HTTP/gRPC LanguageServerService endpoint.
+        // The LS opens paired HTTPS/HTTP ports initially plus internal sandbox proxy ports later.
+        // The real HTTP endpoint serves HTML with __APP_CONFIG__ and returns HTTP 200 on /.
+        for (const p of ports) {
+          try {
+            const probe = spawnSync('curl', ['-s', '-m', '1', `http://127.0.0.1:${p}/`], { encoding: 'utf-8' });
+            if (probe.stdout && (probe.stdout.includes('__APP_CONFIG__') || probe.stdout.includes('<!doctype html>'))) {
+              port = String(p);
+              break;
+            }
+          } catch { /* ignore */ }
+        }
+        break;
+      }
+    } catch { /* fall through to /proc + log scanning below */ }
+
+    if (port && token) {
+      env.ANTIGRAVITY_LS_ADDRESS = `127.0.0.1:${port}`;
+      env.ANTIGRAVITY_CSRF_TOKEN = token;
+      return env;
+    }
+  }
 
   try {
     for (const file of fs.readdirSync('/proc')) {
@@ -1924,8 +2042,7 @@ function runCommand(
   baseEnv?: NodeJS.ProcessEnv,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const discoveredEnv = discoverAntigravityEnv(cwd);
-    const env = { ...(baseEnv || process.env), ...discoveredEnv };
+    const env = baseEnv || antigravityChildEnv(process.env, discoverAntigravityEnv(cwd));
 
     if (!env.ANTIGRAVITY_LS_ADDRESS || !env.ANTIGRAVITY_CSRF_TOKEN) {
       reject(new Error(
@@ -1938,10 +2055,12 @@ function runCommand(
     emitHarness(emit, `\x1b[2m$ ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}\x1b[0m\r\n`);
     emitHarness(emit, `\x1b[2m# antigravity ls ${env.ANTIGRAVITY_LS_ADDRESS} · project ${env.ANTIGRAVITY_PROJECT_ID || '?'}\x1b[0m\r\n`);
 
+    const timing = createRequestTiming(emit, 'agentapi_process_stdout');
     let child: ChildProcess;
     try {
       child = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
+      timing.complete('launch_failed');
       reject(new Error(`Failed to launch agentapi: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
@@ -1955,6 +2074,7 @@ function runCommand(
     };
 
     child.stdout?.on('data', (d: Buffer | string) => {
+      if (d.length) timing.firstResponse();
       const chunk = d.toString();
       stdout += chunk;
       // agentapi returns one JSON blob — keep harness tidy (no full prompt dump)
@@ -1965,12 +2085,14 @@ function runCommand(
       emitHarness(emit, `\x1b[31m${chunk}\x1b[0m`);
     });
     child.on('error', (err) => {
+      timing.complete('launch_failed');
       if (settled) return;
       settled = true;
       cleanup();
       reject(new Error(`agentapi could not start: ${err.message}`));
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      timing.complete(signal ? 'signaled' : code === 0 ? 'completed' : 'failed');
       if (settled) return;
       settled = true;
       cleanup();
@@ -1983,6 +2105,69 @@ function runCommand(
       }
     });
   });
+}
+
+function writeAntigravityHelperContext(
+  conversationId: string | undefined,
+  runId: number | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+): void {
+  try {
+    const home = os.homedir();
+    let basePayload: Record<string, unknown> = {};
+    if (env?.CASCADE_HELPER_CONFIG && fs.existsSync(env.CASCADE_HELPER_CONFIG)) {
+      try {
+        basePayload = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf-8')) as Record<string, unknown>;
+      } catch { /* ignore */ }
+    } else if (runId) {
+      const runContextPath = path.join(fizzerDir(), 'run-contexts', `${runId}.json`);
+      if (fs.existsSync(runContextPath)) {
+        try {
+          basePayload = JSON.parse(fs.readFileSync(runContextPath, 'utf-8')) as Record<string, unknown>;
+        } catch { /* ignore */ }
+      }
+    }
+
+    let token = String(env?.CASCADE_NOTE_TOKEN || basePayload.token || '').trim();
+    if (!token) {
+      try {
+        const diskTokenPath = path.join(fizzerDir(), 'token');
+        if (fs.existsSync(diskTokenPath)) {
+          token = fs.readFileSync(diskTokenPath, 'utf-8').trim();
+        }
+      } catch { /* ignore */ }
+    }
+
+    const payload: Record<string, unknown> = {
+      ...basePayload,
+      url: env?.CASCADE_NOTE_URL || basePayload.url || 'https://cscd.online',
+      token,
+      vaultId: env?.CASCADE_NOTE_VAULT || basePayload.vaultId || '',
+      chatChannelId: env?.CASCADE_CHAT_CHANNEL || basePayload.chatChannelId || '',
+      chatMessageId: env?.CASCADE_CHAT_MESSAGE || basePayload.chatMessageId || '',
+      chatTriggeringMessageId: env?.CASCADE_CHAT_TRIGGERING_MESSAGE || basePayload.chatTriggeringMessageId || '',
+      chatAuthor: env?.CASCADE_CHAT_AUTHOR || basePayload.chatAuthor || '',
+      runId: runId ?? (basePayload.runId as number | undefined),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const content = JSON.stringify(payload, null, 2);
+
+    if (conversationId) {
+      const convDir = path.join(fizzerDir(), 'conversations');
+      fs.mkdirSync(convDir, { recursive: true, mode: 0o700 });
+      const convPath = path.join(convDir, `${conversationId}.json`);
+      fs.writeFileSync(convPath, content, { mode: 0o600 });
+      try { fs.chmodSync(convPath, 0o600); } catch { /* ignore */ }
+    }
+
+    const helperContextPath = path.join(fizzerDir(), 'agent-helper-context.json');
+    fs.mkdirSync(path.dirname(helperContextPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(helperContextPath, content, { mode: 0o600 });
+    try { fs.chmodSync(helperContextPath, 0o600); } catch { /* ignore */ }
+  } catch {
+    // Best effort
+  }
 }
 
 /**
@@ -2002,7 +2187,64 @@ async function runAntigravity(
 ): Promise<CliAgentResult> {
   const bin = antigravityBin();
   assertCliAgentAvailable('antigravity');
-  ensureAntigravityCascadeHookup(cwd, yolo);
+  // Permission policy belongs to the user/IDE. Rewriting every project and the
+  // global allow list here neither configures Seatbelt reliably nor preserves denials.
+  let childEnv = antigravityChildEnv({ ...process.env, ...env }, discoverAntigravityEnv(cwd, { ...process.env, ...env }));
+  if (!childEnv.ANTIGRAVITY_PROJECT_ID) {
+    throw new Error(`No Antigravity workspace contains ${cwd}. Open that folder in Antigravity, then retry.`);
+  }
+  let liveProject: Record<string, any>;
+  try {
+    liveProject = await agyLsRequest('ReadProject', { id: childEnv.ANTIGRAVITY_PROJECT_ID }, childEnv);
+  } catch (error) {
+    // An inherited address/token pair may belong to a dead parent session.
+    const refreshed = antigravityChildEnv({ ...process.env, ...env }, discoverAntigravityEnv(cwd, {}));
+    if (!refreshed.ANTIGRAVITY_LS_ADDRESS || (
+      refreshed.ANTIGRAVITY_LS_ADDRESS === childEnv.ANTIGRAVITY_LS_ADDRESS &&
+      refreshed.ANTIGRAVITY_CSRF_TOKEN === childEnv.ANTIGRAVITY_CSRF_TOKEN
+    )) throw error;
+    childEnv = refreshed;
+    liveProject = await agyLsRequest('ReadProject', { id: childEnv.ANTIGRAVITY_PROJECT_ID }, childEnv);
+  }
+  if (!liveProject.project || selectAntigravityProject([liveProject.project], cwd) !== childEnv.ANTIGRAVITY_PROJECT_ID) {
+    throw new Error(`Antigravity's live workspace does not contain ${cwd}. Reopen that folder in its IDE, then retry.`);
+  }
+  if (yolo === true) {
+    const project = antigravityFullHostProject(liveProject.project, cwd);
+    const current = await agyLsRequest('ReadProject', { id: project.id }, childEnv);
+    if (current.notFoundOnDisk) {
+      try {
+        await agyLsRequest('CreateProject', { project }, childEnv);
+      } catch (error) {
+        // Another run for this same workspace may have created it concurrently.
+        const created = await agyLsRequest('ReadProject', { id: project.id }, childEnv);
+        if (JSON.stringify(created.project?.settings) !== JSON.stringify(project.settings)) throw error;
+      }
+    } else {
+      if (!current.project) throw new Error('Antigravity did not return the full-host runtime project.');
+      const changed = ['settings', 'permissionGrants', 'projectResources'].some(key =>
+        JSON.stringify(current.project[key]) !== JSON.stringify(project[key as keyof typeof project]));
+      if (changed) await agyLsRequest('UpdateProject', { project: { ...current.project, ...project } }, childEnv);
+    }
+    childEnv.ANTIGRAVITY_PROJECT_ID = project.id;
+  }
+
+  if (resumeId) {
+    try {
+      const prior = await agyLsRequest('GetConversationMetadata', { conversationId: resumeId }, childEnv);
+      if (!prior.metadata?.projectId) throw new Error('Cannot verify the saved Antigravity conversation permission mode.');
+      if (prior.metadata.projectId !== childEnv.ANTIGRAVITY_PROJECT_ID) {
+        emitHarness(emit, '\x1b[2m# workspace or permission mode changed; starting a fresh Antigravity conversation\x1b[0m\r\n');
+        resumeId = undefined;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/(?:conversation|session)[^\n]*(?:not found|does not exist|unknown)|not_found/i.test(message)) throw error;
+      resumeId = undefined;
+      emitHarness(emit, '\x1b[2m# saved Antigravity conversation is gone; starting fresh\x1b[0m\r\n');
+    }
+  }
+  writeAntigravityHelperContext(resumeId, runId, env);
   if (runId !== undefined) antigravityCancelFlags.delete(runId);
 
   // Snapshot line count before send-message so we only stream new turns.
@@ -2030,229 +2272,272 @@ async function runAntigravity(
     emitCascadeStats(emit, { model: tier });
   }
 
-  let stdoutStr: string;
-  try {
-    stdoutStr = await runCommand(bin, args, cwd, runId, emit, env ? { ...process.env, ...env } : undefined);
-  } catch (err) {
-    throw new Error(`Failed to run agentapi: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
   let conversationId = '';
-  try {
-    const res = JSON.parse(stdoutStr) as {
-      error?: string;
-      response?: {
-        newConversation?: { conversationId?: string };
-        sendMessage?: { recipientId?: string };
-      };
-    };
-    if (res.error) throw new Error(res.error);
-    conversationId = res.response?.newConversation?.conversationId
-      || res.response?.sendMessage?.recipientId
-      || '';
-  } catch (err) {
-    if (err instanceof Error && !err.message.includes('JSON')) throw err;
-    throw new Error(`Failed to parse agentapi JSON output: ${stdoutStr.slice(0, 500)}`);
-  }
-  if (!conversationId) {
-    throw new Error(`No conversationId returned by agentapi: ${stdoutStr.slice(0, 500)}`);
-  }
-
-  emit('session', { sessionId: conversationId });
-
-  emitHarness(emit, `\x1b[2m# conversation ${conversationId}\x1b[0m\r\n`);
-  const transcriptPath = antigravityTranscriptPath(conversationId);
-
-  // Wait for transcript file
-  const waitDeadline = Date.now() + AGY_TRANSCRIPT_WAIT_MS;
-  while (!fs.existsSync(transcriptPath)) {
-    if (Date.now() > waitDeadline) {
-      throw new Error(`Transcript file was not created at ${transcriptPath}`);
-    }
-    if (runId !== undefined && antigravityCancelFlags.has(runId)) {
-      return { summary: 'Run canceled by user.', sessionId: conversationId };
-    }
-    await sleep(AGY_POLL_MS);
-  }
-
-  let summary = '';
-  let done = false;
-  let sawFinalPlanner = false;
-  let idleAfterFinal = 0;
-  let stallPolls = 0;
-  let approvePolls = 0;
-  const pendingToolIds: string[] = [];
-  const emittedTools = new Set<string>();
-  let emittedText = false;
-
-  const checkTranscript = (): void => {
-    let content: string;
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      content = fs.readFileSync(transcriptPath, 'utf-8');
-    } catch {
-      return;
-    }
-    const lines = content.split('\n').filter((l) => l.trim());
-    if (lines.length <= processedLines) {
-      stallPolls += 1;
-      if (sawFinalPlanner) {
-        idleAfterFinal += 1;
-        if (idleAfterFinal >= AGY_IDLE_AFTER_FINAL_POLLS) done = true;
-      } else if (stallPolls >= AGY_STALL_POLLS) {
-        emitHarness(emit, `\x1b[33m# stall timeout after ${Math.round((AGY_STALL_POLLS * AGY_POLL_MS) / 1000)}s with no transcript progress\x1b[0m\r\n`);
-        done = true;
+      const output = await runCommand(bin, args, cwd, runId, emit, childEnv);
+      let result: { error?: string; response?: { newConversation?: { conversationId?: string }; sendMessage?: { recipientId?: string } } };
+      try { result = JSON.parse(output); } catch {
+        throw new Error(`Failed to parse agentapi JSON output: ${output.slice(0, 500)}`);
       }
-      return;
+      if (result.error) throw new Error(result.error);
+      conversationId = result.response?.newConversation?.conversationId || result.response?.sendMessage?.recipientId || '';
+      if (!conversationId) throw new Error('No conversationId returned by agentapi.');
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === 0 && resumeId && /(?:conversation|session)[^\n]*(?:not found|does not exist|unknown)/i.test(message)) {
+        emitHarness(emit, '\x1b[2m# saved Antigravity conversation is gone; starting a new conversation\x1b[0m\r\n');
+        args.splice(0, args.length, 'new-conversation', ...(tier ? [`--model=${tier}`] : []), prompt);
+        processedLines = 0;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  writeAntigravityHelperContext(conversationId, runId, env);
+
+  if (runId !== undefined) antigravityActiveConversations.set(runId, { conversationId, env: childEnv });
+  let providerFinished = false;
+  try {
+    emit('session', { sessionId: conversationId });
+    emitHarness(emit, `\x1b[2m# conversation ${conversationId}\x1b[0m\r\n`);
+    let transcriptPath = antigravityTranscriptPath(conversationId);
+
+    // Wait for transcript file
+    const waitDeadline = Date.now() + AGY_TRANSCRIPT_WAIT_MS;
+    while (!fs.existsSync(transcriptPath)) {
+      if (Date.now() > waitDeadline) {
+        throw new Error(`Transcript file was not created at ${transcriptPath}`);
+      }
+      if (runId !== undefined && antigravityCancelFlags.has(runId)) {
+        return { summary: 'Run canceled by user.', sessionId: conversationId };
+      }
+      await sleep(AGY_POLL_MS);
+      transcriptPath = antigravityTranscriptPath(conversationId);
     }
 
-    stallPolls = 0;
-    idleAfterFinal = 0;
+    let summary = '';
+    let done = false;
+    let sawFinalPlanner = false;
+    let idleAfterFinal = 0;
+    let stallPolls = 0;
+    let failure = '';
+    let lastToolError = '';
+    let statusPolls = 0;
+    const pendingToolIds: string[] = [];
+    const pendingSandboxBypassToolIds = new Set<string>();
+    const emittedTools = new Set<string>();
+    let emittedText = false;
 
-    for (let i = processedLines; i < lines.length; i++) {
-      let step: AgyTranscriptStep;
+    const checkTranscript = (): void => {
+      let content: string;
       try {
-        step = JSON.parse(lines[i]) as AgyTranscriptStep;
+        content = fs.readFileSync(transcriptPath, 'utf-8');
       } catch {
-        continue;
+        return;
+      }
+      // The writer may split a JSON record across polls. Only consume complete lines.
+      const lines = content.slice(0, content.lastIndexOf('\n') + 1).split('\n').filter((l) => l.trim());
+      if (lines.length <= processedLines) {
+        stallPolls += 1;
+        if (sawFinalPlanner && pendingToolIds.length === 0) {
+          idleAfterFinal += 1;
+          if (idleAfterFinal >= AGY_IDLE_AFTER_FINAL_POLLS) done = true;
+        } else if (stallPolls >= AGY_STALL_POLLS) {
+          failure = lastToolError || 'Antigravity stopped making progress before returning a response.';
+          emitHarness(emit, `\x1b[33m# stall timeout after ${Math.round((AGY_STALL_POLLS * AGY_POLL_MS) / 1000)}s with no transcript progress\x1b[0m\r\n`);
+          done = true;
+        }
+        return;
       }
 
-      const source = step.source || '';
-      const type = (step.type || '').toUpperCase();
-      const status = (step.status || '').toUpperCase();
+      stallPolls = 0;
+      idleAfterFinal = 0;
 
-      // Skip system noise in structured stream (still ignore raw dump).
-      if (type === 'CONVERSATION_HISTORY' || type === 'USER_INPUT' || type === 'SYSTEM_MESSAGE') {
-        continue;
-      }
+      for (let i = processedLines; i < lines.length; i++) {
+        let step: AgyTranscriptStep;
+        try {
+          step = JSON.parse(lines[i]) as AgyTranscriptStep;
+        } catch {
+          continue;
+        }
 
-      if (source === 'MODEL' && type === 'PLANNER_RESPONSE') {
-        const text = (step.content || '').trim();
-        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
-        const isThinking = toolCalls.length > 0 || agyIsPlannerMonologue(text);
+        const source = step.source || '';
+        const type = (step.type || '').toUpperCase();
+        const status = (step.status || '').toUpperCase();
 
-        if (text) {
-          if (isThinking) {
-            // Monologue before tools → thinking only (never chat body / summary).
+        // Skip system noise in structured stream (still ignore raw dump).
+        if (type === 'CONVERSATION_HISTORY' || type === 'USER_INPUT' || type === 'SYSTEM_MESSAGE') {
+          continue;
+        }
+
+        if (source === 'MODEL' && type === 'PLANNER_RESPONSE') {
+          const text = (step.content || '').trim();
+          const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+          const isThinking = toolCalls.length > 0 || agyIsPlannerMonologue(text);
+
+          if (text) {
+            if (isThinking) {
+              // Monologue before tools → thinking only (never chat body / summary).
+              emit('text', {
+                message: { content: [{ type: 'thinking', thinking: text }] },
+              });
+              emitHarness(emit, `\x1b[2m# thinking\x1b[0m\r\n\x1b[2m${text.slice(0, 500)}\x1b[0m\r\n`);
+            } else {
+              summary = text;
+              const sep = emittedText ? '\n\n' : '';
+              emit('text', {
+                message: { content: [{ type: 'text', text: sep + text }] },
+              });
+              emittedText = true;
+              emitHarness(emit, `${text}\r\n`);
+            }
+          }
+
+          for (const tc of toolCalls) {
+            const toolId = tc.id || `agy-${conversationId}-${step.step_index ?? i}-${pendingToolIds.length}`;
+            if (emittedTools.has(toolId)) continue;
+            emittedTools.add(toolId);
+            pendingToolIds.push(toolId);
+            const name = agyToolFriendlyName(tc.name || 'tool');
+            const input = agyNormalizeToolArgs(tc.args);
+            const rawArgs = (tc.args && typeof tc.args === 'object') ? tc.args as Record<string, unknown> : {};
+            const isBypass = String(input.BypassSandbox || rawArgs.BypassSandbox || '').toLowerCase() === 'true';
+            if (isBypass) pendingSandboxBypassToolIds.add(toolId);
             emit('text', {
-              message: { content: [{ type: 'thinking', thinking: text }] },
+              message: {
+                content: [{ type: 'tool_use', id: toolId, name, input }],
+              },
             });
-            emitHarness(emit, `\x1b[2m# thinking\x1b[0m\r\n\x1b[2m${text.slice(0, 500)}\x1b[0m\r\n`);
+            const preview = agyPreviewInput(input);
+            emitHarness(emit, `\x1b[36m▶ ${name}\x1b[0m${preview ? ` ${preview}` : ''}\r\n`);
+          }
+
+          // True completion: planner finished with no more tools.
+          if (status === 'DONE' && toolCalls.length === 0 && text && !isThinking) {
+            sawFinalPlanner = true;
           } else {
-            summary = text;
-            const sep = emittedText ? '\n\n' : '';
-            emit('text', {
-              message: { content: [{ type: 'text', text: sep + text }] },
-            });
-            emittedText = true;
-            emitHarness(emit, `${text}\r\n`);
+            sawFinalPlanner = false;
           }
+          continue;
         }
 
-        for (const tc of toolCalls) {
-          const toolId = tc.id || `agy-${conversationId}-${step.step_index ?? i}-${pendingToolIds.length}`;
-          if (emittedTools.has(toolId)) continue;
-          emittedTools.add(toolId);
-          pendingToolIds.push(toolId);
-          const name = agyToolFriendlyName(tc.name || 'tool');
-          const input = agyNormalizeToolArgs(tc.args);
-          emit('text', {
-            message: {
-              content: [{ type: 'tool_use', id: toolId, name, input }],
-            },
-          });
-          const preview = agyPreviewInput(input);
-          emitHarness(emit, `\x1b[36m▶ ${name}\x1b[0m${preview ? ` ${preview}` : ''}\r\n`);
-        }
-
-        // True completion: planner finished with no more tools.
-        if (status === 'DONE' && toolCalls.length === 0) {
-          sawFinalPlanner = true;
-        } else {
-          sawFinalPlanner = false;
-        }
-        continue;
-      }
-
-      // Tool results and other model steps
-      if (source === 'MODEL' || source === 'SYSTEM') {
-        if (type === 'ERROR_MESSAGE' || status === 'ERROR') {
-          const msg = String(step.content || 'Antigravity error').slice(0, 2000);
-          if (/denied permission|pending review|user interaction|awaiting approval/i.test(msg)) {
-            agyTryAutoApprove(conversationId);
+        // Tool results and other model steps
+        if (source === 'MODEL' || source === 'SYSTEM') {
+          if (type === 'ERROR_MESSAGE' || status === 'ERROR') {
+            const msg = String(step.content || 'Antigravity error').slice(0, 2000);
+            if (type === 'ERROR_MESSAGE') {
+              failure = msg;
+              done = true;
+            } else {
+              lastToolError = msg;
+            }
+            emitHarness(emit, `\x1b[31m✖ ${msg}\x1b[0m\r\n`);
+            const toolId = pendingToolIds.shift();
+            if (toolId) {
+              pendingSandboxBypassToolIds.delete(toolId);
+              emit('user', {
+                message: {
+                  content: [{
+                    type: 'tool_result',
+                    tool_use_id: toolId,
+                    content: truncate(msg, 8000),
+                    is_error: true,
+                  }],
+                },
+              });
+            }
+            continue;
           }
-          emitHarness(emit, `\x1b[31m✖ ${msg}\x1b[0m\r\n`);
-          const toolId = pendingToolIds.shift();
-          if (toolId) {
+
+          // Tool execution result steps (VIEW_FILE, RUN_COMMAND, …)
+          if (type !== 'PLANNER_RESPONSE' && type !== 'EPHEMERAL_MESSAGE' && type !== 'CHECKPOINT') {
+            const outText = String(step.content || '');
+            const toolId = pendingToolIds.shift() || `agy-result-${step.step_index ?? i}`;
+            pendingSandboxBypassToolIds.delete(toolId);
+            const isPermissionDenied = /operation not permitted|permission denied|awaiting approval|user denied permission/i.test(outText);
+            const commandFailed = /command exited with code\s+(?!0\b)\d+/i.test(outText);
+            const isError = status === 'ERROR' || commandFailed || isPermissionDenied;
+            if (isError) lastToolError = truncate(outText, 2000);
             emit('user', {
               message: {
                 content: [{
                   type: 'tool_result',
                   tool_use_id: toolId,
-                  content: truncate(msg, 8000),
-                  is_error: true,
+                  content: truncate(outText, 8000),
+                  is_error: isError,
                 }],
               },
             });
+            if (isError) {
+              void import('./auto-papercut.mjs')
+                .then((mod) => mod.autoPapercut(outText, { tool: String(type || 'tool') }))
+                .catch(() => {});
+            }
+            const preview = outText.replace(/\s+/g, ' ').trim().slice(0, 160);
+            emitHarness(emit, `${isError ? '\x1b[31m' : '\x1b[2m'}◀ ${type}${preview ? `: ${preview}` : ''}\x1b[0m\r\n`);
+            sawFinalPlanner = false;
           }
-          continue;
-        }
-
-        // Tool execution result steps (VIEW_FILE, RUN_COMMAND, …)
-        if (type !== 'PLANNER_RESPONSE' && type !== 'EPHEMERAL_MESSAGE' && type !== 'CHECKPOINT') {
-          const outText = String(step.content || '');
-          const toolId = pendingToolIds.shift() || `agy-result-${step.step_index ?? i}`;
-          const isError = status === 'ERROR';
-          emit('user', {
-            message: {
-              content: [{
-                type: 'tool_result',
-                tool_use_id: toolId,
-                content: truncate(outText, 8000),
-                is_error: isError,
-              }],
-            },
-          });
-          if (isError) {
-            void import('./auto-papercut.mjs')
-              .then((mod) => mod.autoPapercut(outText, { tool: String(type || 'tool') }))
-              .catch(() => {});
-          }
-          const preview = outText.replace(/\s+/g, ' ').trim().slice(0, 160);
-          emitHarness(emit, `${isError ? '\x1b[31m' : '\x1b[2m'}◀ ${type}${preview ? `: ${preview}` : ''}\x1b[0m\r\n`);
-          sawFinalPlanner = false;
         }
       }
-    }
-    processedLines = lines.length;
+      processedLines = lines.length;
 
-    // If we already saw final planner and drained new lines, allow settle.
-    if (sawFinalPlanner && pendingToolIds.length === 0) {
-      idleAfterFinal = Math.max(idleAfterFinal, 1);
-    }
-  };
+      // If we already saw final planner and drained new lines, allow settle.
+      if (sawFinalPlanner && pendingToolIds.length === 0) {
+        idleAfterFinal = Math.max(idleAfterFinal, 1);
+      }
+    };
 
-  while (!done) {
-    if (runId !== undefined && antigravityCancelFlags.has(runId)) {
-      return { summary: summary || 'Run canceled by user.', sessionId: conversationId };
+    while (!done) {
+      if (runId !== undefined && antigravityCancelFlags.has(runId)) {
+        return { summary: summary || 'Run canceled by user.', sessionId: conversationId };
+      }
+      // Desktop cancel kills the agentapi child; after that we only poll. Also
+      // treat explicit cancel flag on the process map absence mid-wait as soft.
+      try {
+        checkTranscript();
+      } catch { /* ignore single poll errors */ }
+      // Transcript files can stop after a failed tool or provider quota error.
+      // Ask the provider whether it stopped, rather than inventing completion.
+      statusPolls += 1;
+      if (!done && stallPolls > 0 && statusPolls % 15 === 0) {
+        try {
+          const state = await agyLsRequest('GetCascadeTrajectory', { cascadeId: conversationId }, childEnv);
+          if (state.status === 'CASCADE_RUN_STATUS_IDLE') {
+            checkTranscript();
+            if (!sawFinalPlanner || pendingToolIds.length > 0) {
+              failure = pendingSandboxBypassToolIds.size > 0
+                ? 'Antigravity stopped with a sandbox permission request pending. Review the request in its IDE before retrying.'
+                : lastToolError || 'Antigravity stopped without returning a response. Check its IDE for a provider error or pending permission.';
+            }
+            done = true;
+          }
+        } catch { /* A transient status RPC failure does not end a progressing run. */ }
+      }
+      if (!done) await sleep(AGY_POLL_MS);
     }
-    // Desktop cancel kills the agentapi child; after that we only poll. Also
-    // treat explicit cancel flag on the process map absence mid-wait as soft.
-    try {
-      checkTranscript();
-    } catch { /* ignore single poll errors */ }
-    approvePolls += 1;
-    if (approvePolls % 15 === 0) agyTryAutoApprove(conversationId);
-    if (!done) await sleep(AGY_POLL_MS);
+
+    if (failure) throw new Error(failure);
+    providerFinished = true;
+
+    if (!emittedText || !summary.trim() || agyIsPlannerMonologue(summary)) {
+      // No user-visible success placeholder — empty summary drops the chat shell.
+      summary = '';
+    }
+
+    emitHarness(emit, `\x1b[2m# done · ${processedLines} transcript lines\x1b[0m\r\n`);
+    return { summary, sessionId: conversationId };
+  } finally {
+    if (!providerFinished && (runId === undefined || !antigravityCancelFlags.has(runId))) {
+      await agyLsRequest('CancelCascadeInvocation', { cascadeId: conversationId, killBackgroundTasks: true }, childEnv).catch(() => {});
+    }
+    if (runId !== undefined) {
+      antigravityActiveConversations.delete(runId);
+      antigravityCancelFlags.delete(runId);
+    }
   }
-
-  if (!emittedText || !summary.trim() || agyIsPlannerMonologue(summary)) {
-    // No user-visible success placeholder — empty summary drops the chat shell.
-    summary = '';
-  }
-
-  emitHarness(emit, `\x1b[2m# done · ${processedLines} transcript lines\x1b[0m\r\n`);
-  if (runId !== undefined) antigravityCancelFlags.delete(runId);
-  return { summary, sessionId: conversationId };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -2261,10 +2546,16 @@ function sleep(ms: number): Promise<void> {
 
 /** Set by cancel hooks so transcript polling stops promptly. */
 const antigravityCancelFlags = new Set<number>();
+const antigravityActiveConversations = new Map<number, { conversationId: string; env: NodeJS.ProcessEnv }>();
 
 /** Allow desktop cancel to stop transcript polling without a live child. */
 export function cancelAntigravityRun(runId: number): void {
   antigravityCancelFlags.add(runId);
+  const active = antigravityActiveConversations.get(runId);
+  if (active) {
+    void agyLsRequest('CancelCascadeInvocation', { cascadeId: active.conversationId, killBackgroundTasks: true }, active.env).catch(() => {});
+    antigravityActiveConversations.delete(runId);
+  }
   const child = activeCliProcesses.get(runId);
   if (child) {
     try { child.kill('SIGTERM'); } catch { /* ignore */ }

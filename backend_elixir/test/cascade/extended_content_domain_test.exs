@@ -207,7 +207,13 @@ defmodule Cascade.ExtendedContentDomainTest do
       [channel.id, vault.id]
     )
 
+    Query.execute(
+      "INSERT INTO chat_messages (id, channel_id, vault_id, author, body, status) VALUES ('sys-next-search', ?, ?, 'Astra', 'deploy production checkpoint instructions', NULL)",
+      [channel.id, vault.id]
+    )
+
     all = QMD.search(vault.id, "deploy production", scope: "all", limit: 10)
+    refute Enum.any?(all, &(&1.id == "sys-next-search"))
     assert Enum.any?(all, &(&1.type == "note" and &1.id == alpha.id and &1.score > 0))
 
     assert Enum.any?(
@@ -243,6 +249,34 @@ defmodule Cascade.ExtendedContentDomainTest do
     refute File.exists?(
              Path.join(user_dir, Base.url_encode64(secret.id, padding: false) <> ".md")
            )
+  end
+
+  test "chat excerpts retain a match after multibyte text without returning the full body",
+       context do
+    vault = Store.create_vault(context.user_id, %{name: "Unicode excerpts"})
+
+    channel =
+      Store.create_note(vault.id, context.user_id, %{
+        title: "Chat",
+        content: "cascade://chat-channel"
+      })
+
+    body = String.duplicate("🌊é ", 200) <> "NEEDLE matched" <> String.duplicate(" trailing", 100)
+
+    Query.execute(
+      "INSERT INTO chat_messages (id, channel_id, vault_id, author, body, status) VALUES ('unicode-hit', ?, ?, 'Astra', ?, NULL)",
+      [channel.id, vault.id, body]
+    )
+
+    [hit] = QMD.search(vault.id, "needle", scope: "chat")
+    assert hit.id == "unicode-hit"
+    assert hit.channelId == channel.id
+    assert String.contains?(hit.snippet, "NEEDLE matched")
+    assert String.length(hit.snippet) <= 242
+    refute Map.has_key?(hit, :body)
+
+    assert [%{body: ^body}] =
+             Query.maps("SELECT body FROM chat_messages WHERE id = 'unicode-hit'", [], [:body])
   end
 
   test "QMD search ranks the matching live note first", context do
@@ -453,10 +487,10 @@ defmodule Cascade.ExtendedContentDomainTest do
     assert Evolution.build_agent_memory_injection(vault.id).enabled == false
   end
 
-  test "isolated router exposes the exact 23-route catalog and preserves wrappers/statuses",
+  test "isolated router exposes the exact 25-route catalog and preserves wrappers/statuses",
        context do
-    assert length(CascadeWeb.ExtendedContentRoutes.catalog()) == 23
-    assert length(Enum.uniq(CascadeWeb.ExtendedContentRoutes.catalog())) == 23
+    assert length(CascadeWeb.ExtendedContentRoutes.catalog()) == 25
+    assert length(Enum.uniq(CascadeWeb.ExtendedContentRoutes.catalog())) == 25
     vault = Store.create_vault(context.user_id, %{name: "HTTP extended"})
 
     unauthorized = request(:get, "/api/vaults/#{vault.id}/scratchpad/status", nil, nil)

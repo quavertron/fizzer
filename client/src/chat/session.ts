@@ -118,6 +118,9 @@ function restoreWorkspace(value: unknown): PersistedWorkspace {
     layout = Layout.migrateFromLegacy(openTabs.map((tab) => tab.id), activeTabId, splitTabId);
   }
 
+  // Legacy single-pane sessions can still name a removed mission view as active.
+  // Reconcile the layout as well as tabs before choosing any focused content.
+  layout = Layout.ensureValid(layout, validIds);
   const focusedPaneId =
     typeof parsed.focusedPaneId === 'string' && Layout.findPane(layout, parsed.focusedPaneId)
       ? parsed.focusedPaneId

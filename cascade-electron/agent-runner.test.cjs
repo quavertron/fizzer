@@ -10,6 +10,7 @@ const runnerStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-runner-sta
 const runnerBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-runner-bin-'));
 process.env.CASCADE_AGENT_PROCESS_DIR = runnerLeaseDir;
 process.env.CASCADE_AGENT_STATE_DIR = runnerStateDir;
+process.env.CASCADE_DATA_DIR = runnerStateDir;
 process.env.CASCADE_AGENT_BIN_DIR = runnerBinDir;
 const {
   buildRunHelperEnv,
@@ -21,6 +22,7 @@ const {
   renderInlineSvgAttachments,
   normalizeClaudeEffort,
   startLocalAgentRun,
+  cancelLocalAgentRun,
 } = require('./agent-runner.cjs');
 
 test('inline SVG prompt markup becomes a PNG attachment plus a temporary source note', (t) => {
@@ -70,6 +72,9 @@ test('durable work item identity reaches both the provider env and helper contex
     assert.equal(env.CASCADE_WORK_ITEM_ID, 'work-item-1');
     const helper = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf8'));
     assert.equal(helper.workItemId, 'work-item-1');
+    assert.equal(env.CASCADE_NOTE_VAULT, 'vault-1');
+    assert.equal(helper.vaultId, 'vault-1');
+    assert.ok(env.PATH.split(path.delimiter).includes(runnerBinDir));
   } finally {
     cleanupRunHelperConfig(runId);
   }
@@ -129,6 +134,11 @@ send({ type: 'result', subtype: 'success', result: 'CLI answer', session_id: 'cl
     chatChannelId: 'channel-1',
   }, (event) => events.push(event));
 
+  const timings = events.filter(event => event.type === 'timing').map(event => JSON.parse(event.payload_json));
+  assert.deepEqual(timings.map(event => event.phase), ['request_start', 'first_response', 'completion']);
+  assert.equal(new Set(timings.map(event => event.requestId)).size, 1);
+  assert.equal(timings[2].outcome, 'completed');
+  assert.ok(timings.every(event => event.boundary === 'claude_cli_stdout'));
   assert.equal(result.sessionId, 'claude-session-1');
   const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
   assert.ok(args.includes('--output-format'));
@@ -199,6 +209,10 @@ process.stdout.write('bridged answer\\n');
   assert.equal(terminal.type, 'status');
   assert.equal(JSON.parse(terminal.payload_json).status, 'completed');
 
+  // Durable /proc start-tick leases are a Linux-only implementation. On macOS
+  // the crash fixture otherwise waits forever for a lease that is never made.
+  if (process.platform !== 'linux') return;
+
   // Reproduce a hard Electron-main crash: the detached Akron process group is
   // adopted by PID 1, while its durable lease survives on disk.
   const crashedRunId = 92002;
@@ -249,6 +263,9 @@ test('runner recovers from failed initial and replacement builds without restart
   fs.symlinkSync(path.join(__dirname, 'node_modules'), path.join(dir, 'node_modules'));
   const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
   fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
+  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs']) {
+    fs.copyFileSync(path.join(__dirname, name), path.join(dir, 'cascade-electron', name));
+  }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
   const modPath = path.join(dir, 'dist', 'cli-agents', 'cli-agent.js');
   let revision = 0;
@@ -303,4 +320,57 @@ test('non-Claude setup failure cleans helper context, SVG attachments, and heart
   assert.equal(intervals.mock.callCount(), 1);
   assert.equal(intervals.mock.calls[0].result._destroyed, true);
   assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
+});
+
+
+for (const stop of [false, true]) test(`retrying a persistent Codex turn ends ${stop ? 'canceled on Stop' : 'completed'}`, {timeout: 5000}, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-codex-cancel-'));
+  const bin = path.join(dir, 'codex');
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const readline = require('readline');
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+readline.createInterface({input: process.stdin}).on('line', line => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') send({id: m.id, result: {}});
+  if (m.method === 'thread/start') send({id: m.id, result: {thread: {id: 'cancel-thread'}}});
+  if (m.method === 'turn/start') {
+    send({id: m.id, result: {turn: {id: 'cancel-turn'}}});
+    send({method: 'error', params: {threadId: 'cancel-thread', turnId: 'cancel-turn', willRetry: true, error: {message: 'Reconnecting... 1/5'}}});
+    if (!${stop}) setTimeout(() => send({method: 'turn/completed', params: {turn: {id: 'cancel-turn', status: 'completed'}}}), 100);
+  }
+  if (m.method === 'turn/interrupt') {
+    send({method: 'turn/completed', params: {turn: {id: 'cancel-turn', status: 'interrupted'}}});
+    send({id: m.id, result: {}});
+  }
+  if (m.method === 'thread/unsubscribe') send({id: m.id, result: {}});
+});
+`);
+  fs.chmodSync(bin, 0o755);
+  const modulePath = path.join(__dirname, '..', 'dist', 'cli-agents', 'cli-agent.js');
+  t.after(async () => {
+    const mod = await import(pathToFileURL(modulePath).href + `?t=${fs.statSync(modulePath).mtimeMs}`);
+    mod.shutdownPersistentCliAgents();
+  });
+  const previous = process.env.CODEX_BIN;
+  process.env.CODEX_BIN = bin;
+  process.env.RUNNER_CODEX_PERSISTENT = '1';
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previous;
+    fs.rmSync(dir, {recursive: true, force: true});
+  });
+  const events = [];
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  const run = startLocalAgentRun({runId: 92005, agent: 'codex', prompt: 'wait', cwd: dir}, event => {
+    events.push(event);
+    if (event.type === 'harness' && JSON.parse(event.payload_json).data.includes('Reconnecting')) ready();
+  });
+  await started;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events.filter(e => e.type === 'status').map(e => JSON.parse(e.payload_json).status), ['running']);
+  if (stop) assert.equal(await cancelLocalAgentRun(92005), true);
+  await run;
+  const statuses = events.filter(event => event.type === 'status').map(event => JSON.parse(event.payload_json).status);
+  assert.deepEqual(statuses, ['running', stop ? 'canceled' : 'completed']);
 });

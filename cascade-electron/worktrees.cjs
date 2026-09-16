@@ -38,9 +38,19 @@ const MAX_REVIEW_TEXT_BYTES = 512 * 1024;
 const WORKSPACE_MAX_IDLE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Root for Cascade-managed worktrees. Overridable for tests. */
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir() {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
+
 function workspacesRoot() {
   return process.env.CASCADE_WORKTREE_ROOT
-    || path.join(os.homedir(), '.cascade', 'worktrees');
+    || path.join(fizzerDir(), 'worktrees');
 }
 
 function run(file, args, cwd, timeout = GIT_TIMEOUT_MS) {

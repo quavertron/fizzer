@@ -6,7 +6,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const sourceDir = path.join(root, 'cli-agents');
 const targetDir = path.join(root, 'dist', 'cli-agents');
-const wrappers = ['cascade-note', 'cascade-chat', 'cascade-scratchpad', 'auto-papercut.mjs'];
+const wrappers = ['cascade-note', 'cascade-chat', 'cascade-scratchpad', 'auto-papercut.mjs', 'cli-common.mjs'];
 // TypeScript preserves the include root and emits cli-agents/*.ts at dist/*.js,
 // while Electron deliberately loads the runtime from dist/cli-agents so it can
 // sit beside the helper executables outside app.asar. Refresh that runtime on

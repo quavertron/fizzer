@@ -52,6 +52,8 @@ function specification(action, args, c) {
   }
 }
 async function control(input, c) {
+  const tasks = require('./task-control.cjs');
+  if (tasks.reads[input.action] || tasks.writes[input.action]) return tasks.control(input, c);
   if (input.action === 'updateAgentAvatar') return require('./along-avatar.cjs').avatar(input, c);
   if (input.op === 'appCapabilities') {
     exact(input, ['op']);
@@ -61,7 +63,9 @@ async function control(input, c) {
       operations: [
         ...Object.entries(reads).map(([action, fields]) => ({ action, mode: 'read', fields, implemented: true, invokesModel: false })),
         ...Object.entries(writes).map(([action, fields]) => ({ action, mode: 'plan_apply_reconcile', fields, implemented: true, confirmation: 'shared_or_public_requires_specific_approval', sharedApply: false })),
-        ...Object.entries(blocked).map(([action, reason]) => ({ action, implemented: false, confirmation: 'specific_owner_action', reason })),
+        ...Object.entries(tasks.reads).map(([action, fields]) => ({ action, fields, implemented: true, mode: 'read', backendProjectionMayRefresh: action === 'missions' || action === 'mission' })),
+        ...Object.entries(tasks.writes).map(([action, fields]) => ({ action, fields, implemented: true, mode: 'plan_apply_reconcile', sharedApply: false, grant: 'exact_plan_private_local_owner_turn', contract: 'fizzer_task_control_v1' })),
+        ...Object.entries(blocked).filter(([action]) => !tasks.writes[action]).map(([action, reason]) => ({ action, implemented: false, confirmation: 'specific_owner_action', reason })),
       ], limits: { responseBytes: 1048576, historyWindow: 40, atomicMetadataCAS: false },
       receiptSemantics: 'write_ahead_no_automatic_replay_of_uncertain_mutations' };
   }

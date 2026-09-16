@@ -9,7 +9,8 @@ import { hasVisibleChatMessageContent, isEmptyChatMessage, isLiveAgentPlaceholde
 
 import { canGroupChatMessages, stripChatControlMarkers } from './shared';
 import type { ChatMessage } from './types';
-import { humanizeActivityLine, previewStructuredDetail, recentActivityLines } from './harnessActivity';
+import { missionMessageIdentities, type MissionMessageIdentity } from './missionIdentity';
+import { humanizeActivityLine, previewStructuredDetail, recentActivityLines, recentActivityText, stripTerminalNoise } from './harnessActivity';
 export { humanizeActivityLine } from './harnessActivity';
 
 export interface ChatMessageGroup {
@@ -56,9 +57,9 @@ export function isWorkTraceMessage(
 
 /** Always a compact line — never the user-facing final answer. */
 export function isForcedWorkTraceLine(
-  message: Pick<ChatMessage, 'id' | 'author' | 'missionTaskId'>,
+  message: Pick<ChatMessage, 'id' | 'author' | 'missionTaskId' | 'runId'>,
 ): boolean {
-  if (message.missionTaskId) return true;
+  if (message.missionTaskId && message.runId == null) return true;
   return isSystemCascadeMessage(message);
 }
 
@@ -183,6 +184,14 @@ export function workTracePreview(body: string, max = 110): string {
   return truncateActivity(fallback, max);
 }
 
+/** Only public assistant text blocks feed the transient decal, never reasoning or tool I/O. */
+export function workTraceOutput(message: Pick<ChatMessage, 'status' | 'blocks'>): string {
+  if (message.status !== 'running') return '';
+  const block = message.blocks?.slice().reverse().find((block) => block.type === 'text' && !block.redacted && block.text?.trim());
+  const paragraphs = stripChatControlMarkers(block?.text || '').trim().split(/\n\s*\n/);
+  return truncateActivity(paragraphs.at(-1) || '', 320);
+}
+
 export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body' | 'harnessLog'>): string {
   if (message.status === 'running') {
     const live = message.harnessLog
@@ -193,11 +202,12 @@ export function workTraceStatusLabel(message: Pick<ChatMessage, 'status' | 'body
     if (current && !/^Thinking(?:\.{3}|…)$/i.test(current)) return current;
     return 'Working · no progress update yet';
   }
-  if ((message.status === 'sending' || message.status === 'queued')) return 'queued…';
+  if (message.status === 'sending' || message.status === 'queued') return 'queued…';
   if (message.status === 'failed') return 'failed';
   if (isSteeringContinuationMessage(message)) return 'steered';
   if (message.status === 'canceled') return 'canceled';
-  const preview = workTracePreview(message.body || '');
+  const outcome = recentActivityLines(message.body || '').find((line) => humanizeActivityLine(line));
+  const preview = workTracePreview(outcome || '');
   return preview || '(empty)';
 }
 
@@ -247,6 +257,8 @@ export function workTracePhase(
   // Steering cancel is intentional flow, not a hard block.
   if (isSteeringContinuationMessage(message)) return 'steering';
   if (message.status === 'failed') return 'blocked';
+  if (message.status === 'queued' || message.status === 'sending') return 'routing';
+  if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
   if (message.status === 'canceled') return 'blocked';
   if (!isLiveAgentStatus(message.status) && !isSystemCascadeMessage(message)) return 'complete';
   if (/\b(steer|redirect|change direction|supersed)/.test(text)) return 'steering';
@@ -255,7 +267,7 @@ export function workTracePhase(
   if (isLiveAgentStatus(message.status)) {
     if (/\b(deploy|ship|release|production|prod\b)/.test(text)) return 'deploying';
     if (/\b(test|verify|verification|lint|runtime|regression|check)/.test(text)) return 'testing';
-    if ((message.status === 'sending' || message.status === 'queued')) return 'routing';
+    if (/\b(wait|waiting|blocked on|dependency|agent busy)/.test(text)) return 'waiting';
     return 'working';
   }
   if (message.missionTaskId) return 'complete';
@@ -348,19 +360,45 @@ export function segmentTranscript(
   messages: ChatMessage[],
   options?: {
     agentAuthors?: ReadonlySet<string>;
+    missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   },
 ): TranscriptSegment[] {
   messages = messages.filter((message, index) => !isEmptyChatMessage(message)
     || (isWorkTraceCarrier(message) && messages[index + 1]
       && isSystemCascadeMessage(messages[index + 1]) && !isEmptyChatMessage(messages[index + 1])));
   const agentAuthors = options?.agentAuthors;
+  const identities = options?.missionIdentities || missionMessageIdentities(messages);
+  // Relocate only when the destination card is present. A paginated transcript
+  // (or a stale identity cache) must never swallow work whose mission is absent.
+  const missionHosts = new Set(messages.flatMap((message) => message.mission ? [message.mission.id] : []));
+  const missionTraces = new Map<string, ChatMessage[]>();
+  messages = messages.filter((message) => {
+    const identity = identities.get(message.id);
+    const detailsOnly = isLiveAgentStatus(message.status)
+      || isForcedWorkTraceLine(message)
+      || isSteeringContinuationMessage(message)
+      || !stripChatControlMarkers(message.body || '').trim();
+    if (!identity || !missionHosts.has(identity.id) || isDurableWorkArtifact(message) || !detailsOnly) return true;
+    const trace = missionTraces.get(identity.id) || [];
+    trace.push(message);
+    missionTraces.set(identity.id, trace);
+    return false;
+  });
+  // Interrupted progress has no rendered body. Keep its stored run details (and
+  // mission trace above), but do not leave a standalone avatar/header behind.
+  messages = messages.filter((message) => !isSteeringContinuationMessage(message)
+    || isDurableWorkArtifact(message));
   const segments: TranscriptSegment[] = [];
   let index = 0;
 
   while (index < messages.length) {
     const head = messages[index];
     if (isDurableWorkArtifact(head)) {
-      segments.push({ kind: 'group', group: { messages: [head] } });
+      const trace = head.mission && missionTraces.get(head.mission.id);
+      if (trace?.length) {
+        segments.push({ kind: 'work', id: head.id, trace,
+          carrier: { ...head, body: '', status: undefined }, fullGroups: [], updateGroups: [] });
+      } else segments.push({ kind: 'group', group: { messages: [head] } });
       index += 1;
       continue;
     }
@@ -372,7 +410,7 @@ export function segmentTranscript(
         const message = messages[index];
         const messageIsAgent = Boolean(message.agentId || message.registrationId)
           || Boolean(agentAuthors && message.author && agentAuthors.has(message.author));
-        if (messageIsAgent || isWorkTraceCarrier(message)) break;
+        if (messageIsAgent || isWorkTraceCarrier(message) || isDurableWorkArtifact(message)) break;
         human.push(messages[index]);
         index += 1;
       }
@@ -403,12 +441,18 @@ export function segmentTranscript(
       // for what was only one dispatch. Unowned/cross-agent artifacts still
       // retain their own chronological row.
       const sameAgentMission = Boolean(message.mission)
+        && !missionTraces.has(message.mission!.id)
         && messageIsAgent
         && messageKey === identityKey;
       if ((isDurableWorkArtifact(message) && !sameAgentMission)
         || ((!messageIsAgent || messageKey !== identityKey) && !carrierWake)) break;
       work.push(messages[index]);
       index += 1;
+      // A completed reply is a transcript boundary. Later wakes or replies
+      // must not demote an answer the user was reading into an update line.
+      if (message.runId != null && !isLiveAgentStatus(message.status)
+        && !isForcedWorkTraceLine(message) && !isSteeringContinuationMessage(message)
+        && message.body?.trim()) break;
     }
 
     const { trace: rawTrace, full } = partitionWorkRun(work);
@@ -481,13 +525,17 @@ export interface WorkTracePeek {
  */
 export function workTracePeek(trace: ChatMessage[]): WorkTracePeek | null {
   if (trace.length === 0) return null;
-  const liveMessage = [...trace].reverse().find((message) => (
-    isLiveAgentStatus(message.status)
-  ));
-  const message = liveMessage || trace[trace.length - 1];
+  const liveMessage = [...trace].reverse().find((message) => message.status === 'running')
+    || [...trace].reverse().find((message) => isLiveAgentStatus(message.status));
+  const attention = [...trace].reverse().find((message) => message.status === 'failed'
+    || (message.status === 'canceled' && !isSteeringContinuationMessage(message)));
+  const message = liveMessage || attention || trace[trace.length - 1];
   const live = Boolean(liveMessage);
-  // Prefer harness tail (live tools/thinking), then body — both humanized.
-  const label = workTraceStatusLabel(message);
+  // Keep the newest public update readable; detailed activity remains expandable.
+  const label = live
+    ? (message.status === 'running' ? workTraceOutput(message) || 'Working…' : 'Queued…')
+    : message.status === 'failed' ? 'Failed'
+      : message.status === 'canceled' ? 'Canceled' : 'Work details';
   const decals = workTraceDecals(trace);
   const phase = workTracePhase(message);
   return {

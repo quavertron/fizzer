@@ -66,6 +66,16 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     for await (const chunk of response.body) { size += chunk.length; if (size > 65536) fail('upstream_too_large'); chunks.push(Buffer.from(chunk)); }
     return Buffer.concat(chunks);
   }
+  async function channelAsset(route, channelId) {
+    checkId(channelId);
+    if (typeof route !== 'string' || !new RegExp('^/api/notes/'+channelId+'/assets/[A-Za-z0-9_-]{16}$').test(route)) fail('invalid_request');
+    const response = await browserFetch(origin + route, { method: 'GET', redirect: 'error', headers: { 'x-cascade-browser': '1' }, signal: AbortSignal.timeout(10000) });
+    if (!response.ok) fail(`upstream_${response.status}`);
+    if (response.headers.get('content-type')?.split(';')[0] !== 'image/png') fail('readback_mismatch');
+    let size = 0; const chunks = [];
+    for await (const chunk of response.body) { size += chunk.length; if (size > 8 * 1024 * 1024) fail('upstream_too_large'); chunks.push(Buffer.from(chunk)); }
+    return Buffer.concat(chunks);
+  }
   async function privateVault(id) {
     checkId(id);
     const { vault, role } = await browser(`/api/vaults/${id}`);
@@ -77,11 +87,13 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     return { id: vault.id, name: vault.name, visibility: vault.visibility, ownerId: vault.created_by,
       role, members: membership.members.map(m => ({ userId: m.userId, role: m.role })) };
   }
-  async function authorize() {
+  async function authorize(browserOnly = false, selectedVaultId = vaultId) {
+    checkId(selectedVaultId);
     const me = await browser('/api/me');
     const vaults = await browser('/api/vaults');
     if (me.user?.id !== ownerId || !vaults.vaults?.some(v =>
-      v.id === vaultId && v.role === 'owner')) fail('owner_scope_mismatch');
+      v.id === selectedVaultId && v.role === 'owner')) fail('owner_scope_mismatch');
+    if (browserOnly) return browser;
     const { token } = await browser('/api/auth/agent-token', 'POST');
     if (typeof token !== 'string' || !token) fail('agent_auth_unavailable');
     // Token exists only in this request closure. Cookie fallback is forbidden.
@@ -106,9 +118,20 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
   }
   async function execute(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid_request');
+    if (['mediaCapabilities', 'mediaUpload', 'mediaSend'].includes(input.op)) {
+      return require('./media-control.cjs').control(input, {
+        scope, ownerId, agentId, author, receiptDir, durableWrite, authorize, browser, note, asset: channelAsset, checkId,
+      });
+    }
     if (['appCapabilities', 'appRead', 'appPlan', 'appApply', 'appReconcile'].includes(input.op)) {
       return require('./app-control.cjs').control(input, {
         browser, avatarAsset, ownerId, agentId, author, scope, receiptDir, durableWrite, checkId,
+      });
+    }
+    if (['listFolders', 'createFolder', 'moveNote', 'updateNote'].includes(input.op)) {
+      return require('./wiki-organization.cjs').organize(input, {
+        authorize: () => authorize(true), privateVault: () => privateVault(vaultId),
+        browser, base, vaultId, scope, receiptDir, durableWrite, hash, checkId,
       });
     }
     const fields = {
@@ -120,7 +143,7 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     if (!fields || Object.keys(input).some(k => !fields.includes(k)) || fields.some(k => !(k in input))) fail('invalid_request');
     if (['createChannel', 'createNote'].includes(input.op) && (typeof input.title !== 'string' || !input.title.trim() || input.title.length > 160)) fail('invalid_title');
     if (input.op === 'createNote' && (typeof input.content !== 'string' || !input.content.trim() ||
-        input.content.length > 8000 || input.content.includes('cascade://'))) fail('invalid_note_content');
+        input.content.length > 65536 || input.content.includes('cascade://'))) fail('invalid_note_content');
     if (input.op === 'send' && (typeof input.body !== 'string' || !input.body.trim() || input.body.length > 8000 || /@|\/compact/i.test(input.body))) fail('nonping_required');
     if (input.requestId !== undefined && !/^[A-Za-z0-9_-]{1,80}$/.test(input.requestId)) fail('invalid_request_id');
     const api = await authorize();
@@ -212,12 +235,13 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     if (busy) return reply(409, { error: 'busy' });
     busy = true;
     try {
-      let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 262144) fail('request_too_large'); }
+      let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 12 * 1024 * 1024) fail('request_too_large'); }
       let input; try { input = JSON.parse(body); } catch { fail('invalid_json'); }
+      if (input?.op !== 'mediaUpload' && Buffer.byteLength(body) > 262144) fail('request_too_large');
       reply(200, await execute(input));
     } catch (error) {
       // Fixed vocabulary only: no upstream bodies, tokens, paths, or exception strings.
-      const code = /^(upstream_\d{3}|upstream_too_large|upstream_invalid_json|invalid_avatar_image|owner_grant_required|unsafe_grant|avatar_authorization_mismatch|avatar_identity_mismatch|avatar_registration_materialization_required|owner_scope_mismatch|agent_auth_unavailable|invalid_id|note_out_of_scope|invalid_request|invalid_title|invalid_note_content|private_vault_required|wiki_already_exists|nonping_required|nonping_backend_unsupported|invalid_request_id|readback_mismatch|unsafe_receipt|uncertain_write|idempotency_conflict|receipt_limit|unexpected_dispatch|request_too_large|invalid_json|vault_out_of_scope|action_not_implemented|stale_plan|intent_not_found|specific_approval_required)$/.test(error.message) ? error.message : 'operation_failed';
+      const code = /^(upstream_\d{3}|upstream_too_large|upstream_invalid_json|invalid_media|running_work|vault_out_of_scope|action_not_implemented|specific_approval_required|stale_plan|intent_not_found|invalid_avatar_image|owner_grant_required|unsafe_grant|avatar_authorization_mismatch|avatar_identity_mismatch|avatar_registration_materialization_required|owner_scope_mismatch|agent_auth_unavailable|invalid_id|note_out_of_scope|invalid_request|invalid_title|invalid_note_content|private_vault_required|wiki_already_exists|nonping_required|nonping_backend_unsupported|invalid_request_id|readback_mismatch|unsafe_receipt|uncertain_write|idempotency_conflict|receipt_limit|unexpected_dispatch|request_too_large|invalid_json)$/.test(error.message) ? error.message : 'operation_failed';
       reply(400, { error: code });
     } finally { busy = false; }
   });

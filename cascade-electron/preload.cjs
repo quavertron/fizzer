@@ -16,6 +16,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose safe IPC methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
+  ...(process.platform !== 'win32' ? { showAgentAccountSetup: () => ipcRenderer.invoke('agent:showAccountSetup') } : {}),
   // ── Windows ─────────────────────────────────────────────────
   /**
    * Pop a tab out into its own OS window. Resolves with `{ popped }`: true when
@@ -53,16 +54,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Configure main-process helper env (token/url) after login. */
   setRunnerToken: ({ token, apiUrl }) => ipcRenderer.invoke('runner:setToken', { token, apiUrl }),
   clearRunnerToken: () => ipcRenderer.invoke('runner:clearToken'),
+  connectRemoteInstance: ({ origin, username, password }) => ipcRenderer.invoke('desktop:connectRemote', { origin, username, password }),
+  rememberServerSession: () => ipcRenderer.invoke('desktop:rememberSession'),
+  acceptRemoteInvite: ({ inviteUrl, username, password }) => ipcRenderer.invoke('desktop:acceptRemoteInvite', { inviteUrl, username, password }),
+  getRemoteVaults: () => ipcRenderer.invoke('desktop:getRemoteVaults'),
+  listConnections: () => ipcRenderer.invoke('desktop:listConnections'),
+  openConnection: ({ id, origin }) => ipcRenderer.invoke('desktop:openConnection', { id, origin }),
+  saveRemoteVaults: (vaults) => ipcRenderer.invoke('desktop:saveRemoteVaults', vaults),
+  getDesktopInstance: () => ipcRenderer.invoke('desktop:instance'),
   getRunnerStatus: () => ipcRenderer.invoke('runner:status'),
   /** Read locally authenticated Claude, Codex, and Grok plan usage. */
   getRunnerPlanUsage: () => ipcRenderer.invoke('runner:planUsage'),
   /** Inspect local Claude/Codex sessions and caption them through local Ollama. */
   getLocalAgents: ({ template } = {}) => ipcRenderer.invoke('orbit:getLocalAgents', { template }),
+  listCodexSessions: (options = {}) => ipcRenderer.invoke('codex:listSessions', options),
+  readCodexSession: (options) => ipcRenderer.invoke('codex:readSession', options),
   readClipboardImage: () => ipcRenderer.invoke('clipboard:readImage'),
   // Local CLI execution (renderer hosts /runners; main spawns agents).
   startAgentRun: (opts) => ipcRenderer.invoke('agent:start', opts),
   cancelAgentRun: (runId) => ipcRenderer.invoke('agent:cancel', runId),
   getAgentRunState: (afterSeq = 0) => ipcRenderer.invoke('agent:getState', afterSeq),
+  acknowledgeAgentEvent: (receipt) => ipcRenderer.invoke('agent:acknowledge', receipt),
   onAgentEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('agent:event', listener);

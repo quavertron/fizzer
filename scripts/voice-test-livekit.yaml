@@ -1,0 +1,20 @@
+# Disposable loopback-only synthetic media fixture. NOT production credentials.
+port: 17880
+# Bind inside a disposable container; publish every port ONLY on host 127.0.0.1.
+# Never run this fixture with --network host.
+bind_addresses: [0.0.0.0]
+rtc:
+
+  tcp_port: 17881
+  udp_port: 17882
+  use_external_ip: false
+keys:
+  fizzer-test-key: fizzer-test-secret-at-least-32-characters
+room:
+  empty_timeout: 10
+  departure_timeout: 5
+logging:
+  level: warn
+turn:
+  enabled: true
+  udp_port: 17883

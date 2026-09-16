@@ -57,9 +57,6 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     Cascade.Accounts.Schema.ensure!()
     Cascade.Runs.Schema.ensure!()
     Cascade.Chat.Schema.ensure!()
-    reset_database()
-    PresenceDispatcher.invalidate_user_channels()
-
     root =
       Path.join(
         System.tmp_dir!(),
@@ -69,6 +66,9 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     previous_root = System.get_env("CASCADE_VAULTS_BASE_DIR")
     previous_sink = Application.get_env(:cascade_elixir, :note_mutation_sink)
     System.put_env("CASCADE_VAULTS_BASE_DIR", root)
+
+    reset_database()
+    PresenceDispatcher.invalidate_user_channels()
 
     SQL.exec("""
     INSERT INTO users(id,username,password_hash,display_name,avatar_url,auth_version) VALUES
@@ -126,6 +126,25 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     assert Enum.count(queries, &String.contains?(&1, "JOIN vault_members member")) == 1
     assert Enum.count(queries, &String.contains?(&1, "WITH source AS")) == 1
     refute Enum.any?(queries, &String.contains?(&1, "sqlite_master"))
+  end
+
+  test "HTTP presence gives both linked-channel users each other's photo", %{target: target} do
+    {source, source_channel, local, local_channel} = linked_chat()
+    avatar = "data:image/png;base64,alice-photo"
+    SQL.exec("UPDATE users SET avatar_url=? WHERE id=1", [avatar])
+
+    for {vault, channel, id, username} <- [
+          {source, source_channel, 1, "alice"},
+          {local, local_channel, 2, "bob"}
+        ] do
+      url = "#{target}/api/vaults/#{vault.id}/channels/#{channel.id}/presence"
+      assert {200, payload} = http_json(:get, url, "Bearer #{token(id, username)}")
+      assert payload["profiles"]["alice"]["avatarUrl"] == avatar
+      assert payload["profiles"]["bob"]["avatarUrl"] == "bob.png"
+
+      assert {404, %{"error" => "Chat channel not found"}} =
+               http_json(:get, url, "Bearer #{token(3, "eve")}")
+    end
   end
 
   test "presence never embeds profile avatars" do
@@ -186,7 +205,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
                     %{reason: :other}}
   end
 
-  test "participant snapshots preserve exact mixed-case author identity" do
+  test "participant snapshots exclude history-only author aliases" do
     {source, source_channel, _local, _local_channel} = linked_chat()
 
     SQL.exec(
@@ -195,7 +214,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     )
 
     snapshot = Channel.participant_snapshot(source.id, source_channel.id)
-    assert "ALICE" in snapshot.participants
+    refute "ALICE" in snapshot.participants
     assert "alice" in snapshot.participants
     assert Map.has_key?(snapshot.profiles, "alice")
     refute Map.has_key?(snapshot.profiles, "ALICE")
@@ -251,6 +270,50 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     refute "builder" in snapshot.participants
     refute "Sol" in snapshot.participants
     refute "eve" in snapshot.participants
+  end
+
+  test "member kick evicts sockets without announcing source note deletion", %{target: target} do
+    source = Store.create_vault(1, %{name: "Member kick"})
+
+    source_channel =
+      Store.create_note(source.id, 1, %{title: "Room", content: "cascade://chat-channel"})
+
+    {:ok, _} = Cascade.Accounts.VaultMembers.add(source.id, 1, 2, "editor")
+    alice = open_probe(target, token(1, "alice"), "alice")
+    bob = open_probe(target, token(2, "bob"), "bob")
+    close_on_exit([alice, bob])
+    join_vault(alice, source.id, 1)
+    join_vault(bob, source.id, 2)
+    join_chat(bob, source_channel.id, source_channel.id, 2)
+    flush_probe(alice)
+    flush_probe(bob)
+
+    {:ok, participant} = Channel.remove_participant(source_channel.id, 1, "bob")
+
+    Events.emit(%{
+      event: "vault:chatParticipantRemoved",
+      vaultId: source.id,
+      channelId: source_channel.id,
+      participant: participant
+    })
+
+    assert receive_matching(
+             alice,
+             fn event ->
+               refute event["event"] == "vault:noteDeleted"
+               event["event"] == "vault:membersChanged"
+             end,
+             5_000
+           )
+
+    assert eventually(fn ->
+             not joined?("vault:#{source.id}", 2) and not joined?("chat:#{source_channel.id}", 2)
+           end)
+
+    Events.emit_presence_now(source.id, source_channel.id)
+    presence = await_event(alice, "vault", "vault:chatPresence")
+    assert get_in(presence, ["args", Access.at(0), "participants"]) == ["alice"]
+    assert Store.get_note(source_channel.id).id == source_channel.id
   end
 
   test "real Bandit keeps mutation responses in the stream owner", %{target: target} do
@@ -375,6 +438,41 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
 
     assert get_in(bob_event, ["args", Access.at(0), "dispatches", Access.at(0), "id"]) ==
              "bob-dispatch"
+
+    for event <- ["vault:chatMessageCreated", "vault:chatMessageUpdated"],
+        {id, body} <- [
+          {"sys-next-completed-hidden", "Internal checkpoint instructions"},
+          {"empty-completed-hidden", " \n"}
+        ] do
+      Events.emit(%{
+        event: event,
+        vaultId: source.id,
+        channelId: source_channel.id,
+        message: %{
+          message
+          | id: id,
+            body: body
+        },
+        dispatches: [%{id: "internal-dispatch", registration: %{ownerUserId: 1}}]
+      })
+
+      for client <- [alice, bob] do
+        retraction =
+          receive_matching(
+            client,
+            fn packet ->
+              refute packet["event"] in ["vault:chatMessageCreated", "vault:chatMessageUpdated"]
+              packet["event"] == "vault:chatMessageDeleted"
+            end,
+            5_000
+          )
+
+        payload = get_in(retraction, ["args", Access.at(0)])
+        assert payload["messageId"] == id
+        refute Map.has_key?(payload, "message")
+        refute Map.has_key?(payload, "dispatches")
+      end
+    end
 
     refute_receive {^eve, {:data, _}}, 400
   end
@@ -541,7 +639,7 @@ defmodule Cascade.Realtime.OutboundEventIntegrationTest do
     assert get_in(await_event(bob, "vault", "vault:visibilityChanged"), ["args", Access.at(0)]) ==
              stringify(settings)
 
-    Events.install_note_mutation_sink()
+    Cascade.Content.Activity.install()
     note = Store.create_note(vault.id, 1, %{title: "Realtime note", content: "body"})
     assert Store.get_note(note.id).id == note.id
     assert await_event(bob, "vault", "community:changed")

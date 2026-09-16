@@ -1,3 +1,5 @@
+import { applyRemoteChatMessage, captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
+import { ChatGroupRow } from "../components/ChatGroupRow";
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -5,7 +7,6 @@ import {
   ChatView,
   ReasoningEffortSelect,
   getRunningMessageState,
-  getSteeringPromptLabels,
   isPendingAgentRunShell,
   mergeChatPresence,
   shouldRenderRunPanel,
@@ -17,8 +18,7 @@ import { applyLocalUserProfile } from '../chat/shared';
 import type { ChatAgentRegistration, ChatMessage } from '../chat/types';
 import { chatMessageStore } from '../chat/messageStore';
 import { ChatWorkTrace } from '../components/ChatWorkTrace';
-import { ChatMissionCard } from '../components/ChatMissionCard';
-import { CascadeRunPanel } from '../components/CascadeRunPanel';
+import { ChatMessageText } from '../components/ChatMarkdown';
 
 const agent: ChatAgentRegistration = {
   id: 'reg-sol',
@@ -85,7 +85,35 @@ describe('chat sticky bottom intent', () => {
 });
 
 describe('agent steering presentation', () => {
-  it('marks the newest active response and its triggering follow-up', () => {
+  it('omits interrupted progress rows while keeping the latest reply and Stop control', () => {
+    const rows = [
+      message('request', { body: '@sol fix the regression' }),
+      message('steered-1', { author: 'Sol', agentId: 'codex', status: 'canceled',
+        body: 'I will trace the issue.\n\n> ⚠️ Steered into the continuation below.', hasHarness: true }),
+      message('followup', { body: 'in the vault folder tree' }),
+      message('steered-2', { author: 'Sol', agentId: 'codex', status: 'canceled',
+        body: 'Understood.\n\n> ⚠️ Steered into the continuation below.' }),
+      message('followup-2', { body: 'also remove empty messages' }),
+      message('latest', { author: 'Sol', agentId: 'codex', runId: 42, status: 'running', body: 'Fixing both.' }),
+    ];
+    for (const status of ['running', undefined] as const) {
+      chatMessageStore.set('channel', rows.map(row => ({ ...row, createdAt: '2026-09-09T13:22:00Z', ...(row.id === 'latest' ? { status } : {}) })));
+      const html = renderToStaticMarkup(createElement(ChatView, {
+        channelId: 'channel', channelName: 'General', currentUser: 'owner',
+        presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [],
+        onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+      }));
+      expect(html.match(/class="chat-message-meta"/g)).toHaveLength(2);
+      expect(html).not.toContain('Steered into the continuation');
+      expect(html).not.toContain('I will trace the issue.');
+      expect(html).toContain('in the vault folder tree');
+      expect(html).toContain('also remove empty messages');
+      if (!status) expect(html).toContain('Fixing both.');
+      expect(html.includes('>Stop<')).toBe(status === 'running');
+    }
+  });
+
+  it('tracks the newest active response', () => {
     const messages = [
       message('1', { author: 'Sol', agentId: 'codex', registrationId: agent.id, status: 'running', body: 'Thinking…' }),
       message('2', { body: '@sol also check mobile' }),
@@ -93,30 +121,6 @@ describe('agent steering presentation', () => {
     ];
     const state = getRunningMessageState(messages);
     expect(state.get(agent.id)).toEqual({ latestId: '3', count: 2 });
-    expect(getSteeringPromptLabels(messages, [agent], state).get('2')).toBe('sol');
-  });
-
-  it('does not call the first prompt steering', () => {
-    const messages = [
-      message('1', { body: '@sol start' }),
-      message('2', { author: 'Sol', agentId: 'codex', registrationId: agent.id, status: 'running' }),
-    ];
-    expect(getSteeringPromptLabels(messages, [agent]).size).toBe(0);
-  });
-
-  it('keeps the steering decal after the interrupted response settles', () => {
-    const messages = [
-      message('1', {
-        author: 'Sol', agentId: 'codex', registrationId: agent.id,
-        status: 'canceled', body: 'Steered into the continuation below.',
-      }),
-      message('2', { body: 'also answer the subscription question' }),
-      message('3', {
-        author: 'Sol', agentId: 'codex', registrationId: agent.id,
-        body: 'It is low risk for personal CLI use.',
-      }),
-    ];
-    expect(getSteeringPromptLabels(messages, [agent]).get('2')).toBe('sol');
   });
 
   it('keeps running-step details folded even when the activity list is open', () => {
@@ -204,6 +208,10 @@ describe('agent steering presentation', () => {
     }));
     expect(markup).toContain('is-live');
     expect(markup.includes('is-embedded')).toBe(embedded);
+    expect(markup.includes('is-open')).toBe(false);
+    expect(markup).not.toContain(live.body);
+    expect(markup).toContain('Working…');
+    expect(markup).not.toContain('chat-work-lines');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain('chat-work-trace-body');
     expect(markup).toContain(live.body);
@@ -268,11 +276,12 @@ describe('chat run panel lifecycle', () => {
     expect(completed.blocks).toEqual([{ type: 'text', text: 'A complete final answer.' }]);
   });
 
-  it('keeps live and failed run diagnostics visible', () => {
+  it('keeps live diagnostics selectable and failures visible', () => {
     expect(shouldRenderRunPanel(message('1', { status: 'running' }), false, true)).toBe(true);
-    expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(false);
+    expect(shouldRenderRunPanel(message('2', { status: 'running' }), false, false)).toBe(true);
     expect(shouldRenderRunPanel(message('3', { status: 'failed' }), false, true)).toBe(true);
-    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(true);
+    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), false, true)).toBe(false);
+    expect(shouldRenderRunPanel(message('4', { status: 'canceled' }), true, true)).toBe(true);
     expect(shouldRenderRunPanel(message('5', { status: 'sending', body: 'Queued...' }), false, true)).toBe(false);
   });
 
@@ -322,6 +331,23 @@ describe('mergeChatPresence', () => {
     expect(merged.profiles).toEqual({ alice, bob });
   });
 
+  it('preserves both users HTTP photos through lean realtime updates and accepts explicit clearing', () => {
+    const bob = { id: 2, username: 'bob', displayName: 'Bob', avatarUrl: 'bob.png' };
+    const loaded = mergeChatPresence(undefined, {
+      participants: ['alice', 'bob'], profiles: { alice, bob },
+    });
+    const merged = mergeChatPresence(loaded, {
+      profiles: { alice: { id: 1, username: 'alice', displayName: 'Alice Updated' } },
+    });
+    const rendered = applyLocalUserProfile(merged, bob);
+    expect(rendered.profiles?.alice.avatarUrl).toBe(alice.avatarUrl);
+    expect(rendered.profiles?.alice.displayName).toBe('Alice Updated');
+    expect(rendered.profiles?.bob.avatarUrl).toBe(bob.avatarUrl);
+    expect(mergeChatPresence(merged, {
+      profiles: { alice: { ...alice, avatarUrl: '' } },
+    }).profiles?.alice.avatarUrl).toBe('');
+  });
+
   it('starts from the incoming payload when there is no cache yet', () => {
     const merged = mergeChatPresence(undefined, { participants: ['alice'], online: ['alice'], owner: 'alice', profiles: { alice } });
     expect(merged).toEqual({ participants: ['alice'], online: ['alice'], owner: 'alice', profiles: { alice } });
@@ -342,5 +368,236 @@ describe('mergeChatPresence', () => {
     });
     expect(painted.profiles?.alice.avatarUrl).toBe('data:image/jpeg;base64,abc');
     expect(presence.profiles?.alice.avatarUrl).toBeUndefined();
+  });
+});
+
+it('renders a next-step question without exposing its durable evidence marker', () => {
+  const html = renderToStaticMarkup(createElement(ChatMessageText, {
+    messageId: 'proposal', mentionableAliases: [],
+    body: '<!-- fizzer-next:source-123 -->\n\nThis keeps interrupting you. Should fixing it be next?',
+  }));
+  expect(html).toContain('Should fixing it be next?');
+  expect(html).not.toContain('fizzer-next');
+  expect(html).not.toContain('source-123');
+});
+
+describe('quiet conversation activity', () => {
+  const renderRow = (row: ChatMessage, avatarKind: 'agent' | 'human' = 'agent') => renderToStaticMarkup(createElement(ChatGroupRow, {
+    group: { messages: [row] }, avatarKind,
+    selectedMessageId: null, jumpHighlightMessageId: null,
+    latestRunningMessageId: row.id, runningSiblingCount: 1,
+    mentionableAliases: [], notes: [],
+    loadedMessageIds: new Set([row.id]), scrollRootRef: { current: null },
+    onCancelRun() {}, onToggleSelect() {}, onContextMenu() {}, onReply() {},
+    onJumpToMessage() {}, onLightbox() {}, onImageLoad() {},
+  }));
+
+  it('renders persisted agent image metadata and human upload URLs identically', () => {
+    const url = '/api/notes/channel/assets/existing-image';
+    const image = { url, data: '', media_type: 'image/png', name: 'existing.png' };
+    const row = message('image', { body: 'Published image', images: [image] });
+    const metadataHtml = renderRow(row);
+    expect(metadataHtml).toContain(`src="${url}"`);
+    expect(metadataHtml).toContain(`href="${url}"`);
+    expect(metadataHtml).not.toContain('[object Object]');
+    expect(metadataHtml).toBe(renderRow({ ...row, images: [url] }));
+    expect(row.images).toEqual([image]); // Rendering does not rewrite durable receipts.
+  });
+
+  it('omits mission reply previews while preserving ordinary replies and source identity', () => {
+    const replyTo = { messageId: 'root', author: 'Owner', mention: '', preview: 'Original request preview' };
+    const normal = message('reply', { body: 'A normal reply', replyTo });
+    const normalHtml = renderRow(normal, 'human');
+    expect(normalHtml).toContain('chat-reply-quote');
+    expect(normalHtml).toContain(replyTo.preview);
+
+    const missionRow = message('mission-card', { replyTo, mission: {
+      id: 'mission', rootMessageId: 'root', title: 'Fix legibility', objective: 'Original request',
+      status: 'active', coordinator: 'astra', coordinatorMention: 'astra',
+      tasks: [], summary: '', createdAt: '', updatedAt: '',
+    } });
+    const missionHtml = renderRow(missionRow);
+    expect(missionHtml).toContain('chat-mission-card');
+    expect(missionHtml).toContain('Fix legibility');
+    expect(missionHtml).not.toContain('chat-reply-quote');
+    expect(missionHtml).not.toContain(replyTo.preview);
+    expect(missionRow.replyTo).toEqual(replyTo);
+    expect(missionRow.mission?.rootMessageId).toBe(replyTo.messageId);
+    expect(missionRow.mission?.status).toBe('active');
+  });
+
+  it('keeps startup visible and publishes one outcome through mission replacement, cleanup and reconnect', () => {
+    const shell = message('shell', { agentId: 'codex', status: 'queued', body: '', seq: 1 });
+    expect(renderRow(shell)).toContain('Queued');
+    let rows = applyRemoteChatMessage([], shell);
+    const mission = { id: 'mission', rootMessageId: 'root', title: 'Fix legibility', objective: '',
+      status: 'active' as const, coordinator: 'astra', coordinatorMention: 'astra',
+      tasks: [], summary: '', createdAt: '', updatedAt: '' };
+    rows = applyRemoteChatMessage(rows, { ...shell, status: undefined, mission });
+    expect(rows).toHaveLength(1);
+    expect(renderRow(rows[0])).toContain('Fix legibility');
+    const baseline = captureChatMessageSnapshotBaseline(rows);
+    const outcome = message('outcome', { agentId: 'codex', seq: 2, body: 'Fixed legibility. Lifecycle checks passed.' });
+    rows = applyRemoteChatMessage(rows, outcome);
+    rows = applyRemoteChatMessage(rows, outcome); // duplicate realtime delivery
+    rows = applyRemoteChatMessage(rows, message('transient', { agentId: 'codex', status: 'running', body: '' }));
+    rows = applyRemoteChatMessage(rows, message('transient', { agentId: 'codex', body: '' }));
+    rows = reconcileChatMessageSnapshot(rows, [{ ...shell, status: undefined, mission }], baseline);
+    rows = reconcileChatMessageSnapshot(rows, rows, captureChatMessageSnapshotBaseline(rows));
+    const html = rows.map((row) => renderRow(row)).join('');
+    expect(html.split(outcome.body)).toHaveLength(2);
+    expect(html).not.toContain('thinking-spinner');
+    expect(rows.map((row) => row.id)).toEqual(['shell', 'outcome']);
+  });
+
+  it('preserves the verification outcome while clearing transient text and misplaced checkpoint metadata', () => {
+    const marker = '<!-- fizzer-next-none:sys-mission-c43e70cb-review -->';
+    let rows = [message('verification', { agentId: 'codex', status: 'running',
+      body: '', blocks: [{ type: 'text', text: `Checking the desktop. ${marker.slice(0, -3)}` }] })];
+    const running = renderRow(rows[0]);
+    expect(running).toContain('Checking the desktop.');
+    expect(running).not.toContain('fizzer-next');
+    const final = 'Desktop check blocked: no streaming response was visible.';
+    rows = applyRemoteChatMessage(rows, { ...rows[0], status: undefined,
+      body: `${final}\n\n${marker}`, blocks: [] });
+    rows = reconcileChatMessageSnapshot(rows, rows, captureChatMessageSnapshotBaseline(rows));
+    const settled = renderRow(rows[0]);
+    expect(settled).toContain(final);
+    expect(settled).not.toContain('fizzer-next');
+    expect(settled).not.toContain('thinking-spinner');
+    expect(settled).not.toContain('chat-working-output');
+  });
+
+  it('streams public text inside the message activity panel without a separate decal', () => {
+    let rows = [message('stream', { agentId: 'codex', status: 'running', body: 'Thinking...',
+      blocks: [{ type: 'thinking', text: 'Private reasoning' },
+        { type: 'tool_result', text: 'Raw tool output' },
+        { type: 'text', text: 'Checking the first file' }],
+    })];
+    const first = renderRow(rows[0]);
+    expect(first).not.toContain('chat-working-decal');
+    expect(first).toContain('cascade-run-panel');
+    expect(first).toMatch(/crp-live-detail[^>]*>Checking the first file<\/span>/);
+    expect(first.match(/thinking-spinner /g)).toHaveLength(1);
+    expect(first).not.toContain('Private reasoning');
+    expect(first).not.toContain('Raw tool output');
+    rows = applyRemoteChatMessage(rows, { ...rows[0], blocks: [{ type: 'text', text: 'Now checking the second file' }] });
+    const next = renderRow(rows[0]);
+    expect(next).toContain('Now checking the second file');
+    expect(next).not.toContain('Checking the first file');
+    for (const status of [undefined, 'failed', 'canceled'] as const) {
+      const settled = applyRemoteChatMessage(rows, { ...rows[0], status, body: 'Substantive final outcome.' });
+      const html = renderRow(settled[0]);
+      expect(html).not.toContain('chat-working-output');
+      expect(html).not.toContain('thinking-spinner');
+      expect(html).toContain('Substantive final outcome.');
+    }
+  });
+
+  it('replaces queued/running process output and removes activity on every terminal state', () => {
+    const base = message('activity', {
+      author: 'Sol', agentId: 'codex', runId: 42,
+      body: 'I will inspect the runtime instructions.',
+      harnessLog: '# thinking\nInternal runtime instructions',
+    });
+    for (const status of ['queued', 'sending', 'running'] as const) {
+      const html = renderRow({ ...base, status });
+      expect(html).toContain('thinking-spinner');
+      expect(html).not.toContain('chat-working-decal');
+      expect(html).toContain('cascade-run-panel');
+      expect(html).toContain(status === 'running' ? 'Working' : 'Queued');
+      expect(html).not.toContain(base.body);
+      expect(html).not.toContain('Internal runtime instructions');
+    }
+    for (const status of [undefined, 'failed', 'canceled'] as const) {
+      const html = renderRow({ ...base, status, body: 'Useful result or failure explanation.' });
+      expect(html).not.toContain('thinking-spinner');
+      expect(html).toContain('Useful result or failure explanation.');
+    }
+    expect(renderRow({ ...base, agentId: undefined, status: 'sending' }, 'human')).toContain(base.body);
+  });
+});
+
+
+describe('adjacent displayed author grouping', () => {
+  const mission = message('mission-card', {
+    author: 'Sol', agentId: 'codex', registrationId: agent.id, body: 'Mission created.',
+    createdAt: '2026-09-06T08:58:00',
+    replyTo: { messageId: 'request', author: 'Owner', mention: '', preview: 'Original mission request' },
+    mission: { id: 'mission', rootMessageId: 'request', title: 'Simplify mission coordination', objective: 'Original mission request',
+      status: 'active', coordinator: 'Sol', coordinatorMention: 'sol',
+      tasks: [], summary: '', createdAt: '', updatedAt: '' },
+  });
+  const outcome = message('outcome', {
+    author: 'Sol', agentId: 'codex', body: 'Shipped result', runId: 123,
+    createdAt: '2026-09-06T08:59:00',
+    replyTo: { messageId: 'request', author: 'Owner', mention: '', preview: 'Normal reply navigation' },
+  });
+  const renderChat = (rows: ChatMessage[], registrations = [agent]) => {
+    chatMessageStore.set('channel', rows);
+    return renderToStaticMarkup(createElement(ChatView, {
+      channelId: 'channel', channelName: 'new-channel', currentUser: 'owner',
+      presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: registrations,
+      onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+    }));
+  };
+  const headers = (html: string) => (html.match(/class="chat-message-meta"/g) || []).length;
+
+  it.each([false, true])('shares a header across a mission and result (attached trace: %s)', (withTrace) => {
+    const trace = message('trace', { author: 'Sol', agentId: 'codex', registrationId: agent.id,
+      body: 'Working', status: 'running', createdAt: '2026-09-06T08:58:30',
+      missionTaskId: 'task', runId: 42 });
+    const card: ChatMessage = withTrace ? { ...mission, mission: { ...mission.mission!, tasks: [{
+      id: 'task', title: 'Implement', assignee: 'Sol', assigneeMention: 'sol', assigneeModel: '', status: 'running' as const,
+      runId: 42, summary: '', dependsOn: [], waitingFor: [], priority: 0, reasoningEffort: '', queueReason: '', attempt: 0, updatedAt: '',
+    }] } } : mission;
+    const html = renderChat(withTrace ? [card, trace, outcome] : [card, outcome]);
+    expect(headers(html)).toBe(1);
+    expect(html).toContain('is-continuation');
+    expect(html).toContain('data-mission-id="mission"');
+    expect(html).toContain('chat-mission-toggle');
+    expect(html).toContain('Shipped result');
+    expect(html.indexOf('Simplify mission coordination')).toBeLessThan(html.indexOf('Shipped result'));
+    expect(html).not.toContain('Original mission request');
+    expect(html).toContain('Normal reply navigation');
+    expect(html).toContain('chat-reply-quote');
+  });
+
+  it('groups other special messages and ordinary messages with the same displayed identity', () => {
+    const attachment = { ...mission, mission: undefined, replyTo: undefined, attachments: [{ name: 'result.txt', url: '/result.txt', media_type: 'text/plain' }] };
+    expect(headers(renderChat([attachment, outcome]))).toBe(1);
+  });
+
+  it.each([
+    { author: 'Terra', registrationId: 'terra' },
+    { createdAt: '2026-09-06T09:00:00' },
+  ])('keeps real author and elapsed time boundaries: %j', (change) => {
+    expect(headers(renderChat([mission, { ...outcome, ...change }]))).toBe(2);
+  });
+
+  it('keeps different agents separate even when their display names match', () => {
+    expect(headers(renderChat([mission, { ...outcome, registrationId: 'other' }], [agent, { ...agent, id: 'other', vaultAgentId: 'other-agent' }]))).toBe(2);
+  });
+
+  it('keeps the local date boundary within the grouping window', () => {
+    expect(headers(renderChat([{ ...mission, createdAt: '2026-09-05T23:59:50' }, { ...outcome, createdAt: '2026-09-06T00:00:10' }]))).toBe(2);
+  });
+});
+
+
+describe('quiet channel loading', () => {
+  it('shows one accessible indicator without a loading heading or premature history button', () => {
+    chatMessageStore.set('unloaded-channel', []);
+    const html = renderToStaticMarkup(createElement(ChatView, {
+      channelId: 'unloaded-channel', channelName: 'unloaded', vaultId: 'vault', currentUser: 'owner',
+      isLoadingMessages: true, presence: { participants: [], online: [] },
+      availableAgents: [], registeredAgents: [],
+      onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+    }));
+    expect(html).toContain('role="status" aria-label="Loading messages"');
+    expect(html).not.toContain('Load older messages');
+    expect(html).not.toContain('Loading older messages');
+    expect(html).not.toContain('<strong>Loading');
+    expect(html.match(/class="loading-indicator"/g)).toHaveLength(1);
   });
 });

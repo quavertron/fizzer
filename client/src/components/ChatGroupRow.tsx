@@ -1,13 +1,17 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { LoadingIndicator } from './LoadingIndicator';
+import { HtmlAttachment } from './HtmlAttachment';
+import type { AgentOwnership } from '../chat/agents';
+import { isLiveAgentStatus } from '../chat/runBlocks';
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Paperclip } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
 import { bodyHasNoteRefs } from '../docEmbeds';
 import { formatChatTime } from '../chat/time';
-import type { ChatAgentRegistration, ChatMessage, PlanUsage } from '../chat/types';
+import type { ChatMessage, PlanUsage, SharedChatNote } from '../chat/types';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { isSteeringContinuationMessage } from '../chat/workTrace';
+import { missionAccent, type MissionMessageIdentity } from '../chat/missionIdentity';
 import type { ChatMessageGroup } from '../chat/workTrace';
-import { escapeRegExp, normalizeMention } from '../chat/mentions';
 import { CascadeRunPanel } from './CascadeRunPanel';
 import { ChatAvatar } from './ChatAvatar';
 import { ChatClarificationCard } from './ChatClarificationCard';
@@ -30,53 +34,12 @@ export function getRunningMessageState(messages: ChatMessage[]) {
   return byAgent;
 }
 
-export function getSteeringPromptLabels(
-  messages: ChatMessage[],
-  registeredAgents: ChatAgentRegistration[],
-  runningState = getRunningMessageState(messages),
-) {
-  const labels = new Map<string, string>();
-  for (const [key, state] of runningState) {
-    if (state.count <= 1) continue;
-    const registration = registeredAgents.find((item) => item.id === key || item.agentId === key);
-    if (!registration) continue;
-    const mention = normalizeMention(registration.mention || registration.agentId);
-    const latestIndex = messages.findIndex((message) => message.id === state.latestId);
-    for (let index = latestIndex - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.agentId) continue;
-      const explicitlyMentions = new RegExp(`(^|\\s)@${escapeRegExp(mention)}(?=\\s|$|[.,!?;:])`, 'i').test(message.body);
-      const repliesToAgent = normalizeMention(message.replyTo?.mention || '') === mention;
-      if (explicitlyMentions || repliesToAgent) labels.set(message.id, mention);
-      break;
-    }
-  }
-  // Once the interrupted response settles as canceled, there is no longer a
-  // pair of simultaneously running bubbles and the live-only decal above used
-  // to disappear. Preserve it from the durable transcript shape: canceled
-  // agent response, human correction, then the same agent's continuation.
-  for (let index = 1; index < messages.length - 1; index += 1) {
-    const prompt = messages[index];
-    if (prompt.agentId || labels.has(prompt.id)) continue;
-    const before = messages[index - 1];
-    const after = messages[index + 1];
-    const beforeKey = before.registrationId || before.agentId;
-    const afterKey = after.registrationId || after.agentId;
-    if (!beforeKey || beforeKey !== afterKey || before.status !== 'canceled') continue;
-    if (!isSteeringContinuationMessage(before)) continue;
-    const registration = registeredAgents.find((item) => item.id === afterKey || item.agentId === afterKey);
-    if (!registration) continue;
-    labels.set(prompt.id, normalizeMention(registration.mention || registration.agentId));
-  }
-  return labels;
-}
-
 function hasExpandableTrace(message: ChatMessage): boolean {
   return hasRunActivity(message);
 }
 
 /**
- * Keep the live harness visible while work is happening and surface failures,
+ * Keep runtime details behind message selection and surface failures,
  * but let a successful final answer return to being a normal chat message.
  * Completed traces remain selectable, so none of the persisted run detail is
  * discarded or made inaccessible.
@@ -84,12 +47,12 @@ function hasExpandableTrace(message: ChatMessage): boolean {
 export function shouldRenderRunPanel(
   message: ChatMessage,
   selected: boolean,
-  isLatestRunningMessage: boolean,
+  _isLatestRunningMessage: boolean,
 ): boolean {
-  if (selected) return true;
-  if ((message.status === 'queued' || message.status === 'sending') && message.id.startsWith('agent-dispatch-')) return true;
-  if (message.status === 'failed' || message.status === 'canceled') return true;
-  return message.status === 'running' && isLatestRunningMessage;
+  if (selected || message.status === 'running') return true;
+  if (message.agentId && isLiveAgentStatus(message.status)) return true;
+  if (message.status === 'failed') return true;
+  return false;
 }
 
 function groupHasDocEmbed(group: ChatMessageGroup): boolean {
@@ -104,10 +67,10 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl,
   authorLabel,
   ownerLabel,
+  ownerNames,
+  ownership = 'unknown',
   planUsage,
   latestRunningMessageId,
-  runningSiblingCount,
-  steeringPromptLabels,
   mentionableAliases,
   notes,
   onOpenNote,
@@ -122,13 +85,16 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onImageLoad,
   onAgentAvatarClick,
   scrollRootRef,
+  deferInitialBody = false,
   vaultId,
   onHydrateMessage,
   traceContent,
-  traceAfterFirstMessage = false,
+  continuesPrevious = false,
   contextMenuMessage,
+  missionIdentities,
 }: {
   group: ChatMessageGroup;
+  missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   /** Pre-filtered by the parent: non-null only when the selection is inside this group. */
   selectedMessageId: string | null;
   /** Pre-filtered by the parent: briefly pulses the exact row reached by a jump. */
@@ -137,14 +103,15 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   avatarUrl?: string;
   authorLabel?: string;
   ownerLabel?: string;
+  ownerNames?: string[];
+  ownership?: AgentOwnership;
   planUsage?: PlanUsage | null;
   latestRunningMessageId?: string;
   runningSiblingCount: number;
-  steeringPromptLabels: ReadonlyMap<string, string>;
   mentionableAliases: string[];
   notes: NoteSummary[];
   onOpenNote?: (id: string) => void;
-  onOpenSharedNote?: (messageId: string, title: string) => void;
+  onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
   onCancelRun: (runId: number) => void;
   onToggleSelect: (id: string) => void;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
@@ -159,12 +126,14 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onAgentAvatarClick?: (event: React.MouseEvent) => void;
   /** Chat scroller element — used as IntersectionObserver root. */
   scrollRootRef: RefObject<HTMLDivElement | null>;
+  /** Defer the initial recent-history body to viewport observation, not older-page prepends. */
+  deferInitialBody?: boolean;
   vaultId?: string;
   onHydrateMessage?: (message: ChatMessage) => void;
   /** A collapsed workflow trace carried by this agent row. */
   traceContent?: ReactNode;
-  /** Keep later user-facing updates under this author header, after the mission/work trace. */
-  traceAfterFirstMessage?: boolean;
+  /** Adjacent rows share the displayed author header within the grouping window. */
+  continuesPrevious?: boolean;
   /** Mission origin targeted when the user right-clicks anywhere on this row. */
   contextMenuMessage?: ChatMessage;
 }) {
@@ -175,10 +144,14 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   const groupSelected = group.messages.some((message) => message.id === selectedMessageId);
   const articleRef = useRef<HTMLElement | null>(null);
   const heightRef = useRef(0);
-  // Start mounted so first paint / stick-to-bottom has real content; IO then unmounts offscreen.
-  const [inView, setInView] = useState(true);
+  const revealAboveRef = useRef<number | null>(null);
+  // Let the existing observer choose the initial viewport + 600px buffer from
+  // actual scroller geometry, after ChatView has pinned the placeholders. Starting
+  // every body mounted pays the entire markdown/layout cost before IO can prune it.
+  const [inView, setInView] = useState(() => !deferInitialBody || typeof IntersectionObserver === 'undefined');
   const forceMounted = groupSelected
-    || group.messages.some((message) => message.status === 'running')
+    || Boolean(jumpHighlightMessageId)
+    || group.messages.some((message) => isLiveAgentStatus(message.status))
     // Never unmount mid-swipe: orphan pointer capture freezes clicks until restart.
     || swipeGestureActive();
 
@@ -191,8 +164,16 @@ export const ChatGroupRow = memo(function ChatGroupRow({
         const entry = entries[0];
         if (!entry) return;
         if (entry.isIntersecting) {
+          // First reveals replace estimates with variable-height content. Keep a
+          // history reader's viewport still when that happens in the upper buffer.
+          // The existing ChatView ResizeObserver owns bottom-following instead.
+          if (root && el.classList.contains('is-offscreen')
+            && el.getBoundingClientRect().bottom <= root.getBoundingClientRect().top
+            && root.scrollHeight - root.scrollTop - root.clientHeight > 48) {
+            revealAboveRef.current = el.offsetHeight;
+          }
           setInView(true);
-        } else if (!forceMounted && !swipeGestureActive()) {
+        } else if (!forceMounted && !swipeGestureActive() && !el.contains(document.activeElement)) {
           // Preserve height so scroll position doesn't jump when unmounting markdown.
           heightRef.current = el.offsetHeight || heightRef.current;
           setInView(false);
@@ -210,71 +191,74 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   }, [scrollRootRef, forceMounted, group.messages.length]);
 
   useLayoutEffect(() => {
-    if (inView && articleRef.current) {
+    if ((inView || forceMounted) && articleRef.current) {
       heightRef.current = articleRef.current.offsetHeight || heightRef.current;
+      if (revealAboveRef.current != null && scrollRootRef.current) {
+        scrollRootRef.current.scrollTop += heightRef.current - revealAboveRef.current;
+        revealAboveRef.current = null;
+      }
     }
   });
 
   const showBody = inView || forceMounted;
-  const placeholderH = heightRef.current || (groupHasRunWidget ? 120 : 72);
+  const placeholderH = heightRef.current || Math.max(groupHasRunWidget ? 120 : 72, group.messages.length * 72);
 
   return (
     <article
       ref={articleRef}
-      className={`chat-message-group ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
+      data-message-id={showBody ? undefined : head.id}
+      data-agent-ownership={avatarKind === 'agent' ? ownership : undefined}
+      className={`chat-message-group ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
       style={showBody ? undefined : { height: placeholderH, minHeight: placeholderH }}
-      aria-hidden={showBody ? undefined : true}
+      tabIndex={showBody ? undefined : 0}
+      aria-label={showBody ? undefined : `Messages by ${authorLabel || head.author}`}
+      onFocusCapture={() => setInView(true)}
       onContextMenu={contextMenuMessage
         ? (event) => onContextMenu(event, contextMenuMessage)
         : undefined}
     >
       {showBody ? (
         <>
-          <ChatAvatar
+          {continuesPrevious ? <span className="chat-avatar chat-avatar-spacer" aria-hidden="true" /> : <ChatAvatar
             name={authorLabel || head.author}
             kind={avatarKind}
+            ownership={ownership}
+            ownerLabel={ownerLabel}
+            ownerNames={ownerNames}
             avatarUrl={avatarUrl}
             onClick={avatarKind === 'agent' ? onAgentAvatarClick : undefined}
             title={avatarKind === 'agent' && onAgentAvatarClick
               ? `Open settings for ${authorLabel || head.author}`
               : undefined}
-          />
+          />}
           <div className="chat-message-body">
-            <div className="chat-message-meta">
+            {!continuesPrevious && <div className="chat-message-meta">
               <strong>{authorLabel || head.author}</strong>
               {avatarKind === 'agent' && planUsage && <PlanUsageMeters usage={planUsage} />}
-              {avatarKind === 'agent' && ownerLabel && <span className="chat-agent-owner">{ownerLabel}'s agent</span>}
+              {avatarKind === 'agent' && <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId === tail.id && runningSiblingCount > 1 && (
-                <span className="chat-message-status is-steering">working</span>
-              )}
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId === tail.id && runningSiblingCount <= 1 && <span className="chat-message-status">working</span>}
-              {avatarKind === 'agent' && tail.status === 'running' && latestRunningMessageId !== tail.id && <span className="chat-message-status is-steered">continued below</span>}
-              {avatarKind === 'agent' && (tail.status === 'sending' || tail.status === 'queued') && <span className="chat-message-status">queued</span>}
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
-              {avatarKind === 'agent' && tail.status === 'canceled' && isSteeringContinuationMessage(tail) && (
-                <span className="chat-message-status is-steered">continued</span>
-              )}
-              {avatarKind === 'agent' && tail.status === 'canceled' && !isSteeringContinuationMessage(tail) && (
-                <span className="chat-message-status is-error">canceled</span>
-              )}
-            </div>
-            {group.messages.map((message, messageIndex) => {
+            </div>}
+            {group.messages.map((message) => {
               const hasRunWidget = message.status === 'running';
               const hasThoughtBlocks = hasExpandableTrace(message);
               const isLatestRunningMessage = message.status !== 'running' || latestRunningMessageId === message.id;
-              const isTappable = hasRunWidget || hasThoughtBlocks;
+              const isTappable = hasRunWidget || hasThoughtBlocks || message.status === 'canceled';
+              const identity = !message.mission ? missionIdentities?.get(message.id) : undefined;
               const selected = selectedMessageId === message.id;
+              const actionMessage = message.id.startsWith('mission-coordinator-row:') ? (contextMenuMessage || message) : message;
               const jumpHighlighted = jumpHighlightMessageId === message.id;
               return (<Fragment key={message.id}>
                 <SwipeToReply
                   messageId={message.id}
-                  className={`chat-message-chunk ${isTappable ? 'has-run-widget' : ''} ${selected ? 'selected' : ''} ${jumpHighlighted ? 'is-jump-highlighted' : ''}`}
-                  onReply={() => onReply(message)}
+                  style={identity ? { '--mission-accent': missionAccent(identity.id) } as CSSProperties : undefined}
+                  title={identity ? `${identity.title} · ${identity.role}${identity.taskTitle ? ` · ${identity.taskTitle}` : ''}` : undefined}
+                  className={`chat-message-chunk ${identity ? 'has-mission-accent' : ''} ${isTappable ? 'has-run-widget' : ''} ${selected ? 'selected' : ''} ${jumpHighlighted ? 'is-jump-highlighted' : ''}`}
+                  onReply={() => onReply(actionMessage)}
                   onClick={() => {
                     if (isTappable) onToggleSelect(message.id);
                   }}
-                  onContextMenu={(event) => onContextMenu(event, message)}
+                  onContextMenu={(event) => onContextMenu(event, actionMessage)}
                 >
                   <ChatQuoteRefs
                     message={message}
@@ -283,32 +267,30 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                       message.replyTo && loadedMessageIds.has(message.replyTo.messageId),
                     )}
                   />
-                  {steeringPromptLabels.has(message.id) && (
-                    <div className="chat-steering-prompt">
-                      ↳ Follow-up to @{steeringPromptLabels.get(message.id)}
-                    </div>
-                  )}
                   {message.images && message.images.length > 0 && (
                     <div className="chat-msg-images">
-                      {message.images.map((src, imageIndex) => (
-                        <a
-                          key={imageIndex}
-                          href={src}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            onLightbox(src);
-                          }}
-                        >
-                          <img src={src} alt="" className="chat-msg-image" onLoad={onImageLoad} />
-                        </a>
-                      ))}
+                      {message.images.map((image, imageIndex) => {
+                        const src = typeof image === 'string' ? image : image.url;
+                        return (
+                          <a
+                            key={imageIndex}
+                            href={src}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              onLightbox(src);
+                            }}
+                          >
+                            <img src={src} alt="" className="chat-msg-image" onLoad={onImageLoad} />
+                          </a>
+                        );
+                      })}
                     </div>
                   )}
                   {message.hasImages && !message.images?.length && (
                     <div className="chat-msg-media-loading" role="status">
-                      Loading media…
+                      <LoadingIndicator label="Loading media" />
                     </div>
                   )}
                   {message.attachments && message.attachments.length > 0 && (
@@ -330,6 +312,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                             </video>
                             {attachment.name && <span className="chat-msg-video-label">{attachment.name}</span>}
                           </div>
+                        ) : attachment.media_type === 'text/html' ? (
+                          <HtmlAttachment key={attachmentIndex} attachment={attachment} />
                         ) : (
                           <a
                             key={attachmentIndex}
@@ -348,7 +332,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   )}
                   {message.body
                     && !isSteeringContinuationMessage(message)
-                    && !(message.status === 'running' && /^Thinking(?:\.{3}|…)$/.test(message.body.trim()))
+                    && !(avatarKind === 'agent' && isLiveAgentStatus(message.status))
                     && <ChatMessageText messageId={message.id} body={message.body} streaming={message.status === 'running'} isAgent={avatarKind === 'agent'} mentionableAliases={mentionableAliases} notes={notes} onOpenNote={onOpenNote} onOpenSharedNote={onOpenSharedNote} />}
                   {message.mission && (
                     <ChatMissionCard
@@ -408,10 +392,9 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                     />
                   )}
                 </SwipeToReply>
-                {traceAfterFirstMessage && messageIndex === 0 && traceContent}
               </Fragment>);
             })}
-            {!traceAfterFirstMessage && traceContent}
+            {traceContent}
           </div>
         </>
       ) : (
@@ -434,10 +417,10 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.avatarUrl === next.avatarUrl
   && prev.authorLabel === next.authorLabel
   && prev.ownerLabel === next.ownerLabel
+  && prev.ownerNames === next.ownerNames
   && prev.planUsage === next.planUsage
   && prev.latestRunningMessageId === next.latestRunningMessageId
   && prev.runningSiblingCount === next.runningSiblingCount
-  && prev.steeringPromptLabels === next.steeringPromptLabels
   && prev.mentionableAliases === next.mentionableAliases
   // Same trick as ChatMessageText: note churn only invalidates groups that
   // actually render an embed.
@@ -456,7 +439,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.scrollRootRef === next.scrollRootRef
   && prev.vaultId === next.vaultId
   && prev.onHydrateMessage === next.onHydrateMessage
-  && prev.traceAfterFirstMessage === next.traceAfterFirstMessage
+  && prev.continuesPrevious === next.continuesPrevious
   && prev.contextMenuMessage === next.contextMenuMessage
   && prev.traceContent === next.traceContent;
 });

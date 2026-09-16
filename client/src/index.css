@@ -349,6 +349,55 @@ button:focus-visible,
   background: var(--accent);
   flex-shrink: 0;
 }
+.desktop-chooser-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-base);
+}
+.desktop-chooser-panel {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: clamp(24px, 5vw, 48px);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
+}
+.desktop-chooser-intro { display: grid; gap: 7px; }
+.desktop-chooser-intro h2 { margin: 0; color: var(--text-primary); font-size: 1.55rem; }
+.desktop-chooser-intro p { margin: 0; color: var(--text-secondary); }
+.desktop-chooser-vaults { display: grid; gap: 9px; max-height: 260px; overflow: auto; }
+.desktop-chooser-vaults button,
+.desktop-chooser-actions > button {
+  appearance: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.desktop-chooser-vaults button:hover,
+.desktop-chooser-vaults button.is-active { border-color: var(--accent); }
+.desktop-chooser-vaults small { color: var(--text-tertiary); }
+.desktop-chooser-empty { margin: 0; color: var(--text-tertiary); }
+.desktop-chooser-actions { display: grid; gap: 10px; }
+.desktop-chooser-form { display: grid; gap: 9px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); }
+.desktop-chooser-form label { color: var(--text-secondary); font-size: .78rem; }
+.desktop-chooser-form input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-deep); color: var(--text-primary); }
+.desktop-chooser-form div { display: flex; gap: 8px; margin-top: 4px; }
+.desktop-chooser-form button,
+.desktop-chooser-continue { padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--accent); color: var(--bg-deep); font-weight: 700; cursor: pointer; }
+.desktop-chooser-form button + button { background: transparent; color: var(--text-secondary); }
+.desktop-chooser-continue { justify-self: end; }
 .auth-shell {
   min-height: 100vh;
   display: grid;
@@ -619,6 +668,10 @@ button:focus-visible,
   opacity: 0.76;
 }
 .activity-dot.is-human { background: #f4f5f7; }
+.activity-dot.is-agent-queued {
+  background: transparent;
+  border: 1px solid var(--text-muted);
+}
 .activity-dot.is-agent-running {
   background: var(--accent-hover);
   box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 52%, transparent);
@@ -700,7 +753,7 @@ button:focus-visible,
   transition: background var(--transition-fast);
 }
 .sidebar-header .vault-current-label { padding-left: 2px; }
-.vault-switcher-menu {
+.vault-manager-menu {
   position: fixed;
   z-index: 300;
   inset: 0;
@@ -712,11 +765,12 @@ button:focus-visible,
   box-shadow: none;
   backdrop-filter: none;
 }
-.vault-switcher-shell {
+.vault-manager-shell {
+  width: min(100%, 760px);
   min-height: 100%;
   margin: 0 auto;
 }
-.vault-switcher-heading {
+.vault-manager-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -725,17 +779,16 @@ button:focus-visible,
   font-family: var(--font-display);
   font-weight: 700;
   font-style: italic;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
+  color: var(--text-primary);
 }
-.vault-switcher-heading > div { display: grid; gap: 5px; }
-.vault-switcher-heading small {
+.vault-manager-heading > div { display: grid; gap: 5px; }
+.vault-manager-heading small {
   font: 500 0.6875rem/1.2 var(--font-mono);
   color: var(--text-secondary);
   text-transform: none;
   letter-spacing: 0;
 }
-.vault-switcher-menu .vault-switcher-close {
+.vault-manager-menu .vault-manager-close {
   width: 38px;
   height: 38px;
   display: grid;
@@ -748,8 +801,9 @@ button:focus-visible,
   color: var(--text-secondary);
   cursor: pointer;
 }
-.vault-switcher-menu .vault-switcher-close:hover { background: var(--bg-overlay); color: var(--text-primary); }
-.vault-switcher-section-title {
+.vault-manager-menu .vault-manager-close:hover { background: var(--bg-overlay); color: var(--text-primary); }
+.vault-manager-section { margin-top: 28px; }
+.vault-manager-section-title {
   margin: 0 2px 12px;
   color: var(--text-tertiary);
   font: 700 0.625rem/1 var(--font-display);
@@ -757,18 +811,21 @@ button:focus-visible,
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.vault-switcher-grid,
-.vault-switcher-action-grid {
+.vault-manager-grid,
+.vault-manager-action-grid {
   display: grid;
   gap: 14px;
 }
-.vault-switcher-action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.vault-switcher-row {
-  position: relative;
+.vault-manager-grid { grid-template-columns: 1fr; }
+.vault-manager-action-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.vault-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
-.vault-switcher-row > button:first-child,
-.vault-switcher-action {
+.vault-manager-row > button:first-child,
+.vault-manager-action {
   appearance: none;
   width: 100%;
   overflow: hidden;
@@ -784,104 +841,63 @@ button:focus-visible,
     color var(--transition-fast),
     transform var(--transition-fast);
 }
-.vault-switcher-row > button:first-child {
-  display: grid;
-  grid-template-rows: minmax(118px, 1fr) auto;
-  padding: 0;
+.vault-manager-row > button:first-child {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
 }
-.vault-switcher-row > button:first-child:hover,
-.vault-switcher-action:hover {
+.vault-manager-row > button:first-child:hover,
+.vault-manager-action:hover {
   border-color: var(--border);
   background: var(--bg-raised);
   color: var(--text-primary);
   transform: translateY(-2px);
 }
-.vault-switcher-row > button:first-child:focus-visible,
-.vault-switcher-action:focus-visible {
+.vault-manager-row > button:first-child:focus-visible,
+.vault-manager-action:focus-visible {
   outline: 2px solid var(--accent-hover);
   outline-offset: 3px;
 }
-.vault-switcher-row > button:first-child.is-active {
+.vault-manager-row > button:first-child.is-active {
   border-color: var(--accent);
   background: var(--bg-raised);
   color: var(--text-primary);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
 }
-.vault-switcher-art {
-  min-height: 118px;
-  display: grid;
-  place-items: center;
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.vault-switcher-icon {
-  width: 68px;
-  height: 68px;
-  display: grid;
-  place-items: center;
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  color: var(--accent-hover);
-  background: var(--bg-surface);
-}
-.vault-switcher-copy {
+.vault-manager-copy {
   min-width: 0;
   display: grid;
   gap: 4px;
 }
-.vault-switcher-row > button:first-child > .vault-switcher-copy { padding: 12px 13px 13px; }
-.vault-switcher-title-line { min-width: 0; display: flex; align-items: center; gap: 7px; }
-.vault-switcher-copy strong {
+.vault-manager-row > button:first-child > .vault-manager-copy { padding: 12px 13px 13px; }
+.vault-manager-title-line { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.vault-manager-copy strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 650;
   white-space: nowrap;
 }
-.vault-switcher-copy small { color: var(--text-tertiary); font-weight: 500; text-transform: capitalize; }
-.vault-switcher-check { margin-left: auto; flex: none; color: var(--accent-hover); }
-.vault-switcher-menu .vault-switcher-rename,
-.vault-switcher-menu .vault-switcher-delete,
-.vault-switcher-menu .vault-switcher-manage {
-  position: absolute;
-  z-index: 2;
-  top: 8px;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  padding: 0;
+.vault-manager-copy small { white-space: normal; color: var(--text-tertiary); font-size: 0.6875rem; font-weight: 500; }
+.vault-manager-menu .vault-manager-manage {
+  padding: 10px 14px;
+  min-height: 44px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-surface);
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   cursor: pointer;
-  opacity: 0;
 }
-.vault-switcher-menu .vault-switcher-manage { right: 8px; opacity: 1; }
-.vault-switcher-menu .vault-switcher-delete { right: 48px; }
-.vault-switcher-menu .vault-switcher-rename { right: 88px; }
-.vault-switcher-row:hover .vault-switcher-rename,
-.vault-switcher-row:hover .vault-switcher-delete,
-.vault-switcher-row:hover .vault-switcher-manage,
-.vault-switcher-menu .vault-switcher-rename:focus-visible,
-.vault-switcher-menu .vault-switcher-delete:focus-visible,
-.vault-switcher-menu .vault-switcher-manage:focus-visible { opacity: 1; }
-.vault-switcher-menu .vault-switcher-rename:hover,
-.vault-switcher-menu .vault-switcher-delete:hover,
-.vault-switcher-menu .vault-switcher-manage:hover { background: var(--bg-overlay); color: var(--accent-hover); }
-@media (hover: none) {
-  .vault-switcher-menu .vault-switcher-rename,
-  .vault-switcher-menu .vault-switcher-delete,
-  .vault-switcher-menu .vault-switcher-manage { opacity: 1; }
-}
-.vault-switcher-action {
+.vault-manager-action {
+  min-height: 132px;
   display: flex;
   align-items: center;
   gap: 15px;
 }
-.vault-switcher-action-icon {
+.vault-manager-action-icon {
   width: 54px;
   height: 54px;
   display: grid;
@@ -892,8 +908,8 @@ button:focus-visible,
   background: var(--bg-deep);
   color: var(--accent-hover);
 }
-.vault-switcher-action .vault-switcher-copy strong { color: var(--text-primary); }
-.vault-switcher-create-form {
+.vault-manager-action .vault-manager-copy strong { color: var(--text-primary); white-space: normal; }
+.vault-manager-create-form {
   min-width: 0;
   min-height: 132px;
   display: grid;
@@ -904,8 +920,8 @@ button:focus-visible,
   border-radius: 8px;
   background: var(--bg-raised);
 }
-.vault-switcher-create-form > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 0.8125rem; }
-.vault-switcher-create-form input {
+.vault-manager-create-form > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 0.8125rem; }
+.vault-manager-create-form input {
   min-width: 0;
   width: 100%;
   padding: 8px 9px;
@@ -915,9 +931,9 @@ button:focus-visible,
   background: var(--bg-base);
   color: var(--text-primary);
 }
-.vault-switcher-create-form input:focus { border-color: var(--accent); }
-.vault-switcher-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
-.vault-switcher-create-form button {
+.vault-manager-create-form input:focus { border-color: var(--accent); }
+.vault-manager-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.vault-manager-create-form button {
   width: auto;
   padding: 7px 10px;
   border: 0;
@@ -926,19 +942,15 @@ button:focus-visible,
   color: var(--text-secondary);
   cursor: pointer;
 }
-.vault-switcher-create-form button:last-child { background: var(--accent); color: var(--bg-base); font-weight: 700; }
-.vault-switcher-create-form button:disabled { cursor: default; opacity: 0.45; }
-.vault-switcher-rename-form { min-height: 188px; }
+.vault-manager-create-form button:last-child { background: var(--accent); color: var(--bg-base); font-weight: 700; }
+.vault-manager-create-form button:disabled { cursor: default; opacity: 0.45; }
 @media (max-width: 760px) {
-  .vault-switcher-menu { padding: 18px; }
-  .vault-switcher-action-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  .vault-manager-menu { padding: 18px; }
+  .vault-manager-action-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 }
 @media (max-width: 460px) {
-  .vault-switcher-grid,
-  .vault-switcher-action-grid { grid-template-columns: 1fr; }
-  .vault-switcher-row > button:first-child { min-height: 160px; grid-template-rows: minmax(96px, 1fr) auto; }
-  .vault-switcher-art { min-height: 96px; }
-  .vault-switcher-action { min-height: 104px; }
+  .vault-manager-action-grid { grid-template-columns: 1fr; }
+  .vault-manager-action { min-height: 104px; }
 }
 .sidebar-header .vault-name-text {
   overflow: hidden;
@@ -1099,6 +1111,13 @@ button:focus-visible,
   overflow-x: hidden;
   padding: 2px var(--rail-pad-x) 14px;
 }
+/* Sidebar navigation must be styled before the lazy mission workspace loads. */
+.sidebar-missions { flex: none; min-width: 0; }
+.sidebar-mission-list { max-height: min(28vh, 240px); overflow-y: auto; padding: 0 var(--rail-pad-x); }
+.sidebar-mission-phase { flex: none; color: var(--text-tertiary); font-size: .6rem; }
+.sidebar-mission-history summary { cursor: pointer; padding: 6px var(--rail-pad-x); color: var(--text-tertiary); font-size: .72rem; }
+.sidebar-mission-history summary span { margin-left: 4px; }
+.sidebar-mission-history summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tree-item {
   display: flex;
   align-items: center;
@@ -4244,11 +4263,29 @@ button:focus-visible,
   line-height: 1.5;
   text-wrap: balance;
 }
-.chat-loading-dot {
-  width: 18px;
-  height: 18px;
+.chat-history-sentinel {
+  text-align: center;
+}
+.chat-history-sentinel button {
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.chat-history-sentinel button:hover {
+  color: var(--text-secondary);
+}
+.loading-indicator {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+  width: 14px;
+  height: 14px;
   border: 2px solid var(--border);
-  border-top-color: var(--text-secondary);
+  border-top-color: var(--text-tertiary);
   border-radius: 50%;
   animation: chat-loading-spin 700ms linear infinite;
 }
@@ -4260,6 +4297,12 @@ button:focus-visible,
     contain: layout style;
   position: relative;
   -webkit-tap-highlight-color: transparent;
+}
+.chat-message-group.is-continuation {
+  padding-top: 0;
+}
+.chat-avatar-spacer {
+  visibility: hidden;
 }
 .chat-message-group.is-offscreen {
   display: block;
@@ -4401,6 +4444,10 @@ button.chat-avatar.is-clickable:focus-visible {
   object-fit: cover;
   pointer-events: none;
 }
+.chat-avatar-agent[data-agent-ownership="owned"],
+.chat-avatar-agent[data-agent-ownership="other"] {
+  background: color-mix(in srgb, var(--agent-tint, var(--accent)) 8%, var(--bg-raised));
+}
 .chat-message-body {
   min-width: 0;
   flex: 1;
@@ -4510,20 +4557,6 @@ button.chat-avatar.is-clickable:focus-visible {
   color: var(--accent-hover);
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   background: var(--accent-subtle);
-}
-.chat-message-status.is-steered {
-  color: var(--text-tertiary);
-  font-style: italic;
-}
-.chat-steering-prompt {
-  display: inline-flex;
-  margin: 0 0 6px;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
-  border-radius: 6px;
-  background: var(--accent-subtle);
-  color: var(--accent-hover);
-  font: 0.6875rem/1.4 var(--font-mono);
 }
 .chat-message-group.status-running .chat-avatar {
   box-shadow: 0 0 0 2px var(--accent-glow);
@@ -5018,9 +5051,6 @@ button.chat-avatar.is-clickable:focus-visible {
   font-weight: 450;
   letter-spacing: 0;
 }
-.cascade-run-panel.is-running:not(.open) .crp-toggle-icon {
-  animation: chat-activity-flicker 1.45s ease-in-out infinite;
-}
 .crp-toggle {
   min-width: 0;
   min-height: 30px;
@@ -5440,6 +5470,18 @@ button.chat-avatar.is-clickable:focus-visible {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.chat-paste-status {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 3px 4px;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-paste-status[role="alert"] { color: #ffb4ab; }
 .chat-paste-remove {
   position: absolute;
   top: -6px;
@@ -5560,16 +5602,6 @@ button.chat-avatar.is-clickable:focus-visible {
   color: var(--text-muted);
   font-size: 0.75rem;
 }
-.chat-msg-media-loading::before {
-  content: '';
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--border);
-  border-top-color: var(--text-secondary);
-  border-radius: 50%;
-  animation: chat-media-spin 0.8s linear infinite;
-}
-@keyframes chat-media-spin { to { transform: rotate(360deg); } }
 .chat-msg-image {
   max-width: 240px;
   max-height: 240px;
@@ -5605,35 +5637,6 @@ button.chat-avatar.is-clickable:focus-visible {
   box-shadow: 0 12px 48px hsla(226, 12%, 2%, 0.6);
   cursor: default;
 }
-.chat-shared-note {
-  width: min(760px, calc(100vw - 32px));
-  max-height: min(82vh, 900px);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-}
-.chat-shared-note > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.chat-shared-note > header h2 {
-  font-size: 1rem;
-  letter-spacing: 0;
-}
-.chat-shared-note-body {
-  overflow: auto;
-  padding: 18px 20px 28px;
-  line-height: 1.65;
-}
-.chat-shared-note-body > * + * { margin-top: 12px; }
 .chat-lightbox-close {
   position: absolute;
   top: 16px;
@@ -6153,15 +6156,15 @@ button.chat-avatar.is-clickable:focus-visible {
   background: color-mix(in srgb, var(--bg-raised) 40%, transparent);
 }
 .chat-user.chat-agent-user {
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raised));
+  background: color-mix(in srgb, var(--agent-tint, var(--accent)) 8%, var(--bg-raised));
 }
 .chat-user.chat-agent-user:hover,
 .chat-user.chat-agent-user.is-editing {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-raised));
+  background: color-mix(in srgb, var(--agent-tint, var(--accent)) 14%, var(--bg-raised));
   color: var(--text-primary);
 }
 .chat-user.chat-agent-user.is-editing {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--agent-tint, var(--accent)) 35%, transparent);
 }
 .chat-user-row {
   display: flex;
@@ -6324,13 +6327,6 @@ button.chat-avatar.is-clickable:focus-visible {
   font-weight: 400;
   color: var(--text-secondary);
 }
-.chat-vault-pick-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 4px;
-}
 .chat-agent-picker-list {
   display: flex;
   flex-direction: column;
@@ -6338,10 +6334,6 @@ button.chat-avatar.is-clickable:focus-visible {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-}
-.chat-vault-pick-row.is-in-channel .chat-vault-pick-btn {
-  opacity: 0.55;
-  cursor: default;
 }
 .chat-vault-pick-btn {
   display: flex;
@@ -6360,18 +6352,6 @@ button.chat-avatar.is-clickable:focus-visible {
 }
 .chat-vault-pick-btn:disabled {
   cursor: default;
-}
-.chat-vault-edit-agent {
-  flex: 0 0 auto;
-  padding: 5px 7px;
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  font-size: 0.625rem;
-  white-space: nowrap;
-}
-.chat-vault-edit-agent:hover {
-  background: hsla(226, 12%, 17%, 0.75);
-  color: var(--text-primary);
 }
 .chat-agent-identity-link {
   display: flex;
@@ -6418,9 +6398,6 @@ button.chat-avatar.is-clickable:focus-visible {
 .chat-remove-agent:hover {
   background: var(--danger-subtle);
   color: var(--danger);
-}
-.chat-vault-pick-row .chat-remove-agent {
-  opacity: 1;
 }
 .chat-agent-menu,
 .chat-invite-menu {
@@ -6733,13 +6710,6 @@ button.chat-avatar.is-clickable:focus-visible {
   cursor: default;
 }
 @media (max-width: 700px) {
-  .chat-vault-pick-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .chat-vault-pick-row .chat-vault-edit-agent {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
   .chat-agent-editor {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
@@ -7798,11 +7768,6 @@ button.chat-avatar.is-clickable:focus-visible {
   padding: 2px 0;
   background: transparent;
 }
-@keyframes chat-activity-flicker {
-  0%, 100% { opacity: 1; }
-  48% { opacity: 0.46; }
-  58% { opacity: 0.78; }
-}
 .chat-work-trace-toggle {
   width: 100%;
   min-height: 30px;
@@ -7824,12 +7789,6 @@ button.chat-avatar.is-clickable:focus-visible {
     color: hsl(222, 13%, 82%);
     background: hsla(226, 12%, 100%, 0.03);
   }
-}
-.chat-work-trace-count {
-  flex-shrink: 0;
-  color: var(--text-secondary);
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
 }
 .chat-work-trace-toggle:focus-visible,
 .crp-toggle:focus-visible {
@@ -7965,10 +7924,9 @@ button.chat-avatar.is-clickable:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .is-spinning,
-  .chat-loading-dot,
+  .loading-indicator,
   .session-manager-live-dot,
   .crp-term-cursor,
-  .chat-msg-media-loading::before,
   .ai-spinner,
   .thinking-spinner,
   .chat-mission-peek.is-live .chat-mission-peek-dot {
@@ -9438,21 +9396,6 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .new-tab-shortcuts span { display: inline-flex; align-items: center; gap: 6px; }
 .new-tab-shortcuts kbd { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-base); color: var(--text-secondary); font: 0.62rem var(--font-mono); }
 
-.vault-switcher-menu {
-  background:
-    radial-gradient(circle at 18% 0%, hsla(38, 75%, 36%, 0.085), transparent 30%),
-    var(--bg-base);
-}
-.vault-switcher-shell { width: min(100%, 980px); }
-.vault-switcher-heading { padding: 8px 2px 24px; font-size: 1.35rem; color: var(--text-primary); }
-.vault-switcher-section { margin-top: 32px; }
-.vault-switcher-section-title { margin-bottom: 14px; font-size: 0.66rem; }
-.vault-switcher-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
-.vault-switcher-row > button:first-child { min-height: 204px; }
-.vault-switcher-action { min-height: 116px; padding: 20px; }
-.vault-switcher-copy strong { font-size: 0.96rem; }
-.vault-switcher-copy small { font-size: 0.72rem; }
-
 .session-manager { width: min(1180px, calc(100vw - 48px)); height: min(800px, calc(100dvh - 48px)); border-radius: 12px; }
 .session-manager-header { min-height: 70px; padding: 12px 18px; }
 .session-manager-header h2 { font-size: 1.08rem; }
@@ -9544,11 +9487,9 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   .new-tab-page { margin: auto 16px; padding: 30px 22px; }
   .new-tab-shortcuts { display: none; }
 
-  .vault-switcher-menu { padding: calc(18px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
-  .vault-switcher-heading { font-size: 1.1rem; }
-  .vault-switcher-row > button:first-child { min-height: 168px; grid-template-rows: 96px auto; }
-  .vault-switcher-art { min-height: 96px; }
-  .vault-switcher-action { min-height: 96px; }
+  .vault-manager-menu { padding: calc(18px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
+  .vault-manager-heading { font-size: 1.1rem; }
+  .vault-manager-action { min-height: 96px; }
 }
 
 /* Direct messages are a first-class inbox. The vault-backed transport remains
@@ -9753,3 +9694,42 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
   .documentation-assistant { right: 8px; bottom: calc(68px + env(safe-area-inset-bottom)); width: calc(100vw - 16px); height: min(620px, calc(100dvh - 86px)); }
   .documentation-assistant.is-expanded { inset: 0; width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
 }
+
+/* Mission identity is stable; status remains in its own badge and single spinner. */
+.chat-mission-card[data-mission-id] {
+  border-left: 3px solid var(--mission-accent);
+}
+.chat-mission-card[data-mission-id] .chat-mission-kicker {
+  color: var(--mission-accent);
+  border-color: color-mix(in srgb, var(--mission-accent) 42%, transparent);
+  background: color-mix(in srgb, var(--mission-accent) 9%, transparent);
+}
+.has-mission-accent {
+  border-left: 2px solid color-mix(in srgb, var(--mission-accent) 55%, transparent);
+  padding-left: 8px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mission-accent) 5%, transparent), transparent 65%);
+}
+.chat-mission-peek-copy { display: grid; gap: 3px; min-width: 0; }
+.chat-mission-peek-task { color: var(--text-secondary); font-weight: 600; font-size: 0.75rem; }
+.chat-mission-peek .chat-mission-peek-label,
+.chat-work-trace .chat-work-trace-summary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: initial;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.chat-note-preview {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.chat-note-preview > header { display: flex; align-items: center; gap: 12px; }
+.chat-note-preview > header strong { flex: 1; overflow-wrap: anywhere; }
+.chat-note-preview > header button { color: var(--text-muted); font: inherit; cursor: pointer; background: none; border: 0; }
+.chat-note-preview-body { max-height: 360px; overflow: auto; overflow-wrap: anywhere; margin-top: 8px; }
+.chat-mission-peek { align-items: start; }
+.chat-work-trace:not(.is-open) { max-width: min(100%, 44rem); }
+.chat-work-trace:not(.is-open) .chat-work-trace-toggle { align-items: start; }

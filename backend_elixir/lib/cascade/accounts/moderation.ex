@@ -267,6 +267,8 @@ defmodule Cascade.Accounts.Moderation do
             target_id
           ])
 
+          Cascade.Chat.Agents.remove_departed_owners(vault_id)
+
           SQL.exec(
             """
             UPDATE public_vault_join_requests SET status='rejected',reviewed_by=?,updated_at=datetime('now')

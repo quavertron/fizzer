@@ -13,12 +13,13 @@ class AgentRunState {
     this.nextSeq = 1;
     this.active = new Set();
     this.events = [];
+    this.terminals = new Map();
   }
 
   start(runId) {
     const id = Number(runId);
     if (!Number.isFinite(id)) throw new Error('Invalid run id');
-    if (this.active.has(id)) return false;
+    if (this.active.has(id) || this.terminals.has(id)) return false;
     this.active.add(id);
     return true;
   }
@@ -36,6 +37,8 @@ class AgentRunState {
         const status = JSON.parse(payload.payload_json || '{}')?.status;
         if (status === 'completed' || status === 'failed' || status === 'canceled') {
           this.active.delete(runId);
+          event.receiptRequired = true;
+          this.terminals.set(runId, event);
         }
       } catch { /* malformed status is forwarded but cannot settle ownership */ }
     }
@@ -46,12 +49,29 @@ class AgentRunState {
     this.active.delete(Number(runId));
   }
 
+  acknowledge(instanceId, seq) {
+    if (instanceId !== this.instanceId) return false;
+    for (const [runId, event] of this.terminals) {
+      if (event.bridgeSeq !== seq) continue;
+      this.terminals.delete(runId);
+      this.events = this.events.filter((item) => item.bridgeSeq !== seq);
+      return true;
+    }
+    return false;
+  }
+
   snapshot(afterSeq = 0) {
     const cursor = Number.isFinite(Number(afterSeq)) ? Number(afterSeq) : 0;
     return {
       instanceId: this.instanceId,
       activeRunIds: [...this.active],
-      events: this.events.filter((event) => event.bridgeSeq > cursor),
+      // A renderer cursor only acknowledges progress, not server receipt of a
+      // terminal result. Keep those results independently of the log cap.
+      events: [...new Map([
+        ...this.events.filter((event) => event.bridgeSeq > cursor),
+        ...this.terminals.values(),
+      ].map((event) => [event.bridgeSeq, event])).values()]
+        .sort((a, b) => a.bridgeSeq - b.bridgeSeq),
       cursor: this.nextSeq - 1,
     };
   }

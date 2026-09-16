@@ -1,0 +1,20 @@
+# COPY to a protected host path, substitute existing public IP and private keypair.
+# Never deploy CHANGE_ME values. No dev mode; no unauthenticated rooms.
+port: 7880
+bind_addresses: [0.0.0.0]
+rtc:
+  node_ip: CHANGE_ME_EXISTING_HOST_PUBLIC_IPV4
+  use_external_ip: false
+  tcp_port: 7881
+  udp_port: 7882
+turn:
+  enabled: true
+  udp_port: 3478
+room:
+  max_participants: 32
+  empty_timeout: 60
+  departure_timeout: 20
+keys:
+  CHANGE_ME_API_KEY: CHANGE_ME_RANDOM_SECRET_AT_LEAST_32_BYTES
+logging:
+  level: warn

@@ -1,10 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import {
   DESKTOP_RUNNER_SOCKET_OPTIONS,
+  deliverTerminalWithReceipt,
   LatestRunnerSetup,
   reconcileCancelAcknowledgement,
   registerThenReplayBufferedEvents,
 } from '../desktopRunnerHost';
+
+it('only releases a terminal result after a successful server receipt', () => {
+  let callback!: (error: Error | null, response?: { success?: boolean }) => void;
+  const sent: unknown[][] = [];
+  const socket = {
+    timeout: () => ({ emit: (...args: unknown[]) => {
+      callback = args.at(-1) as typeof callback;
+      sent.push(args.slice(0, -1));
+    } }),
+  } as unknown as Parameters<typeof deliverTerminalWithReceipt>[0];
+  let received = 0;
+  let settled = 0;
+  const send = () => deliverTerminalWithReceipt(socket,
+    { runId: 42, type: 'status', payload: { status: 'completed' } },
+    () => { received += 1; }, () => { settled += 1; });
+  send();
+  expect(received).toBe(0);
+  callback(new Error('connection dropped'));
+  expect(received).toBe(0);
+  send();
+  callback(null, { success: false });
+  expect(received).toBe(0);
+  send();
+  callback(null, { success: true });
+  expect(received).toBe(1);
+  expect(settled).toBe(3);
+  expect(sent[0]).toEqual(['runner:runEvent', {
+    runId: 42, type: 'status', payload: { status: 'completed' }, receipt: true,
+  }]);
+});
 
 describe('desktop runner transport isolation', () => {
   it('uses a dedicated polling manager instead of a renderer WebSocket upgrade', () => {

@@ -1,0 +1,1136 @@
+defmodule Cascade.Missions.Interpretation do
+  @moduledoc "Durable coordinator understanding and acknowledgment over the mission event/dispatch outbox."
+  alias Cascade.Accounts.SQL
+  alias Cascade.Chat.{Messages, Channel}
+  alias Cascade.Missions.Store
+  alias Cascade.Realtime.OrderedPublisher
+
+  @max_retries 3
+
+  @columns "state_json,revision,handled_fingerprint,pending_fingerprint,pending_context_json,dispatch_id,attempt,retry_after,stopped,publication_pending"
+
+  defp coordinator(id),
+    do: SQL.one("SELECT coordinator_registration_id FROM chat_missions WHERE id=?", [id]) |> hd()
+
+  def initialize(id) do
+    if SQL.changes("INSERT OR IGNORE INTO chat_mission_interpretations(mission_id) VALUES(?)", [
+         id
+       ]) > 0 do
+      # Adopt an already admitted pre-upgrade review instead of starting another
+      # coordinator beside it. Its prompt is refreshed at normal admission.
+      case SQL.one(
+             """
+             SELECT d.id FROM chat_agent_dispatches d JOIN chat_missions m ON m.id=?
+             LEFT JOIN runs r ON r.id=d.run_id
+             WHERE d.message_id LIKE 'sys-mission-' || m.id || '-%'
+               AND d.registration_id=m.coordinator_registration_id AND d.failed_at IS NULL
+               AND (d.run_id IS NULL OR r.status IN ('queued','running')) ORDER BY d.rowid DESC LIMIT 1
+             """,
+             [id]
+           ) do
+        [dispatch] ->
+          evidence = snapshot(id, %{})
+
+          SQL.exec(
+            "UPDATE chat_mission_interpretations SET dispatch_id=?,pending_fingerprint=?,pending_context_json=? WHERE mission_id=?",
+            [dispatch, fingerprint(evidence), Jason.encode!(evidence), id]
+          )
+
+        _ ->
+          :ok
+      end
+    end
+  end
+  def migration_decision_pending?(id) do
+    case SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id]) do
+      [encoded] ->
+        state = Jason.decode!(encoded || "{}")
+        Enum.any?(agenda(state)["questions"], &(&1["id"] == "migration-resumption"))
+      _ -> false
+    end
+  end
+
+  def resolve_migration_decision(id, user_id) do
+    if migration_decision_pending?(id) do
+      [encoded] = SQL.one("SELECT state_json FROM chat_mission_interpretations WHERE mission_id=?", [id])
+      state = Jason.decode!(encoded)
+      questions = Enum.map(state["questions"], fn
+        %{"id" => "migration-resumption"} = question ->
+          Map.merge(question, %{"status" => "answered", "answer" => "User #{user_id} approved the current brief for fresh execution."})
+        question -> question
+      end)
+      SQL.exec("UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1 WHERE mission_id=?", [Jason.encode!(Map.put(state, "questions", questions)), id])
+    end
+    :ok
+  end
+
+  @doc "Coalesces a successful linked-note mutation into the mission awareness snapshot."
+  def note_changed(note_id, actor_id, kind, opts \\ []) do
+    persist = fn ->
+      rows =
+        SQL.all(
+          "SELECT mission_id FROM chat_mission_notes WHERE note_id=?",
+          [note_id]
+        )
+
+      previous_revision = Keyword.get(opts, :previous_revision)
+
+      committed_revision =
+        Keyword.get(opts, :committed_revision) ||
+          case SQL.one("SELECT revision_counter FROM notes WHERE id=?", [note_id]) do
+            [revision_counter] ->
+              Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter})
+            _ -> ""
+          end
+
+      mutation_id = Keyword.get(opts, :mutation_id) || Ecto.UUID.generate()
+      auth = Keyword.get(opts, :auth) || %{actor_id: actor_id, origin: :external}
+
+      Enum.each(rows, fn [mission_id] ->
+        SQL.exec(
+          "UPDATE chat_mission_notes SET revision=?,updated_at=datetime('now') WHERE mission_id=? AND note_id=?",
+          [committed_revision, mission_id, note_id]
+        )
+
+        source_key =
+          "mission-note:#{mission_id}:#{note_id}:#{committed_revision}:#{mutation_id}"
+
+        SQL.exec(
+          """
+          INSERT OR IGNORE INTO chat_mission_events
+            (mission_id,kind,summary,source_key)
+          VALUES (?,?,?,?)
+          """,
+          [
+            mission_id,
+            "mission_note_changed",
+            Jason.encode!(%{
+              noteId: note_id,
+              actorId: actor_id,
+              kind: to_string(kind),
+              mutationId: mutation_id,
+              previousRevision: previous_revision,
+              committedRevision: committed_revision,
+              auth: auth_payload(auth, actor_id)
+            }),
+            source_key
+          ]
+        )
+
+        initialize(mission_id)
+      end)
+
+      :ok
+    end
+
+    if Keyword.get(opts, :in_transaction, false), do: persist.(), else: SQL.transaction(persist)
+  end
+
+  defp auth_payload(auth, actor_id) when is_map(auth) do
+    %{
+      actorId: Map.get(auth, :actor_id, Map.get(auth, "actor_id", actor_id)),
+      origin: Map.get(auth, :origin, Map.get(auth, "origin", "external")) |> to_string(),
+      registrationId: Map.get(auth, :registration_id, Map.get(auth, "registration_id")),
+      runId: Map.get(auth, :run_id, Map.get(auth, "run_id")),
+      dispatchId: Map.get(auth, :dispatch_id, Map.get(auth, "dispatch_id"))
+    }
+  end
+
+  defp auth_payload(_auth, actor_id), do: %{actorId: actor_id, origin: "external"}
+
+  defp auth_field(auth, key) do
+    Map.get(auth, key) ||
+      Map.get(auth, Atom.to_string(key)) ||
+      Map.get(auth, camel_auth_key(key))
+  end
+
+  defp camel_auth_key(:actor_id), do: "actorId"
+  defp camel_auth_key(:registration_id), do: "registrationId"
+  defp camel_auth_key(:run_id), do: "runId"
+  defp camel_auth_key(:dispatch_id), do: "dispatchId"
+  defp camel_auth_key(key), do: Atom.to_string(key)
+
+  defp note_event_authored_by_dispatch?(summary, mission_id, dispatch_id) do
+    auth = summary["auth"] || %{}
+
+    with [registration, run_id, coordinator, owner] <-
+           SQL.one(
+             """
+             SELECT d.registration_id,d.run_id,m.coordinator_registration_id,m.created_by
+             FROM chat_agent_dispatches d JOIN chat_missions m ON m.id=?
+             WHERE d.id=?
+             """,
+             [mission_id, dispatch_id]
+           ),
+         true <- is_binary(registration) and is_integer(run_id),
+         true <- auth_field(auth, :origin) in ["agent", :agent],
+         ^registration <- auth_field(auth, :registration_id),
+         ^run_id <- auth_field(auth, :run_id),
+         ^dispatch_id <- auth_field(auth, :dispatch_id),
+         ^coordinator <- registration,
+         ^owner <- auth_field(auth, :actor_id) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp acknowledge_self_note_changes(context, mission_id, dispatch_id) do
+    cursor =
+      case Integer.parse(to_string(context["eventCursor"] || "0")) do
+        {value, ""} -> value
+        _ -> 0
+      end
+
+    changes =
+      SQL.all(
+        """
+        SELECT summary FROM chat_mission_events
+        WHERE mission_id=? AND id>? AND kind='mission_note_changed'
+        ORDER BY id
+        """,
+        [mission_id, cursor]
+      )
+      |> Enum.map(fn [summary] -> Jason.decode!(summary) end)
+
+    latest_by_note =
+      Enum.reduce(changes, %{}, fn change, acc ->
+        Map.put(acc, change["noteId"], change)
+      end)
+
+    self_changes =
+      Enum.filter(changes, fn change ->
+        latest_by_note[change["noteId"]] == change and
+          note_event_authored_by_dispatch?(change, mission_id, dispatch_id)
+      end)
+
+    if self_changes == [] do
+      context
+    else
+      linked_notes =
+        Enum.map(context["linkedNotes"] || [], fn note ->
+          case Enum.find(self_changes, &(&1["noteId"] == note["noteId"])) do
+            %{"committedRevision" => revision} ->
+              updated_at =
+                SQL.one(
+                  "SELECT n.updated_at FROM chat_mission_notes mn JOIN notes n ON n.id=mn.note_id WHERE mn.mission_id=? AND mn.note_id=?",
+                  [mission_id, note["noteId"]]
+                )
+                |> case do
+                  [value] -> value
+                  _ -> note["updatedAt"]
+                end
+
+              note
+              |> Map.put("revision", revision)
+              |> Map.put("updatedAt", updated_at)
+
+            _ ->
+              note
+          end
+        end)
+
+      note_changes =
+        Enum.uniq_by(
+          Enum.reverse(self_changes) ++ (context["noteChanges"] || []),
+          &{&1["noteId"], &1["committedRevision"], &1["mutationId"]}
+        )
+        |> Enum.take(32)
+
+      context
+      |> Map.put("linkedNotes", linked_notes)
+      |> Map.put("noteChanges", note_changes)
+    end
+  end
+
+
+  defp row(id) do
+    case SQL.one("SELECT #{@columns} FROM chat_mission_interpretations WHERE mission_id=?", [id]) do
+      [state, revision, handled, pending, context, dispatch, attempt, retry, stopped, publication] ->
+        %{
+          state: Jason.decode!(state),
+          revision: revision,
+          handled: handled,
+          pending: pending,
+          context: Jason.decode!(context),
+          dispatch: dispatch,
+          attempt: attempt,
+          retry: retry,
+          stopped: stopped == 1,
+          publication: publication
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  # Progress remains in task history. Only deliberate findings and settled work
+  # need interpretation; child results belong to their integrating parent.
+  defp snapshot(id, state) do
+    [objective, status, summary, verification, phase, approved_at, approved_by, approved_revisions] =
+      SQL.one(
+        "SELECT objective,status,summary,verification,phase,approved_at,approved_by,approved_revisions_json FROM chat_missions WHERE id=?",
+        [id]
+      )
+
+    approved_revisions =
+      case Jason.decode(approved_revisions || "{}") do
+        {:ok, value} -> value
+        _ -> %{}
+      end
+
+    findings =
+      SQL.all(
+        """
+        SELECT t.id,t.title,t.status,
+          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN t.summary ELSE e.summary END,
+          CASE WHEN t.status IN ('completed','blocked','failed','canceled') THEN COALESCE(w.verification,'') ELSE '' END,
+          t.depends_on_json
+        FROM chat_mission_tasks t
+        LEFT JOIN work_items w ON w.id=t.work_item_id
+        LEFT JOIN chat_mission_events e ON e.id=(
+          SELECT MAX(id) FROM chat_mission_events
+          WHERE mission_id=t.mission_id AND task_id=t.id AND kind='task_finding' AND attempt=t.attempt
+        )
+        WHERE t.mission_id=? AND t.parent_task_id IS NULL
+          AND (e.id IS NOT NULL OR t.status IN ('completed','blocked','failed','canceled'))
+        ORDER BY t.id
+        """,
+        [id]
+      )
+      |> Enum.map(fn [task, title, status, summary, verification, dependencies] ->
+        finding = %{
+          taskId: task,
+          title: title,
+          status: status,
+          summary: summary,
+          verification: verification
+        }
+
+        if status in ~w(blocked failed) do
+          waiting =
+            Jason.decode!(dependencies || "[]")
+            |> Enum.map(fn dependency ->
+              case SQL.one(
+                     "SELECT title,status FROM chat_mission_tasks WHERE id=? AND mission_id=?",
+                     [dependency, id]
+                   ) do
+                [title, status] -> %{taskId: dependency, title: title, status: status}
+                _ -> %{taskId: dependency, status: "unknown"}
+              end
+            end)
+
+          Map.put(finding, :blocker, %{
+            reason: if(String.trim(summary || "") != "", do: summary),
+            dependencies: waiting,
+            resumeWhen:
+              if(waiting != [] and Enum.any?(waiting, &(&1.status != "completed")),
+                do:
+                  "Recorded task dependencies must complete; inspect the remaining blocker before retrying."
+              )
+          })
+        else
+          finding
+        end
+      end)
+
+    linked_notes =
+      SQL.all(
+        """
+        SELECT mn.note_id,mn.kind,mn.parent_note_id,n.title,n.revision_counter,n.updated_at
+        FROM chat_mission_notes mn JOIN notes n ON n.id=mn.note_id
+        WHERE mn.mission_id=? ORDER BY mn.position,mn.note_id
+        """,
+        [id]
+      )
+      |> Enum.map(fn [note_id, kind, parent, title, revision_counter, updated_at] ->
+        %{noteId: note_id, kind: kind, parentNoteId: parent, title: title, revision: Cascade.Content.Privacy.note_revision(%{revision_counter: revision_counter}), updatedAt: updated_at}
+      end)
+
+    note_changes =
+      SQL.all(
+        "SELECT summary FROM chat_mission_events WHERE mission_id=? AND kind='mission_note_changed' ORDER BY id DESC LIMIT 32",
+        [id]
+      )
+      |> Enum.map(fn [summary] -> Jason.decode!(summary) end)
+
+    overdue =
+      Enum.filter(state["commitments"] || [], fn item ->
+        item["status"] == "open" and item["accepted"] != false and due?(item["dueAt"])
+      end)
+
+    %{
+      objective: objective,
+      phase: phase,
+      approval: %{
+        approvedAt: approved_at,
+        approvedBy: approved_by,
+        approvedRevisions: approved_revisions
+      },
+      eventCursor:
+        SQL.one("SELECT COALESCE(MAX(id),0) FROM chat_mission_events WHERE mission_id=?", [id])
+        |> hd(),
+      findings: findings,
+      linkedNotes: linked_notes,
+      noteChanges: note_changes,
+      delivery:
+        if(status == "completed",
+          do: %{status: status, summary: summary, verification: verification}
+        ),
+      recoveryEvidence: Store.recovery_context(id),
+      overdueCommitments: overdue
+    }
+    |> with_agenda(agenda(state))
+  end
+
+  # Derive the agenda from existing responsibility; the interpretation outbox
+  # owns its wake and acknowledgment. Unchanged blocked work does not poll.
+  defp agenda(state) do
+    %{
+      "commitments" =>
+        Enum.filter(state["commitments"] || [], fn item ->
+          item["status"] == "open" and item["accepted"] != false and is_nil(item["dueAt"])
+        end),
+      "questions" =>
+        Enum.filter(state["questions"] || [], fn item ->
+          item["status"] not in ~w(answered fulfilled canceled stopped declined) and
+            String.trim(to_string(item["answer"] || "")) == ""
+        end)
+    }
+  end
+
+  defp with_agenda(evidence, agenda) do
+    evidence = Map.drop(evidence, [:agenda, "agenda"])
+
+    if Enum.all?(Map.values(agenda), &(&1 == [])),
+      do: evidence,
+      else: Map.put(evidence, "agenda", agenda)
+  end
+
+  defp due?(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, time, _} -> DateTime.compare(time, DateTime.utc_now()) != :gt
+      _ -> false
+    end
+  end
+
+  defp due?(_), do: false
+
+
+  defp fingerprint(value) do
+    value = if is_map(value), do: Map.drop(value, [:eventCursor, "eventCursor"]), else: value
+    :crypto.hash(:sha256, :erlang.term_to_binary(canonical(value))) |> Base.encode16(case: :lower)
+  end
+
+  defp canonical(value) when is_map(value),
+    do: {:map, value |> Enum.map(fn {k, v} -> {to_string(k), canonical(v)} end) |> Enum.sort()}
+
+  defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
+  defp canonical(value), do: value
+
+  # Called under the scheduler's existing transaction. One outstanding batch per
+  # objective; evidence arriving during a turn is picked up after its acknowledgment.
+  def claim(update) do
+    id = update.mission.id
+    initialize(id)
+    record = row(id)
+    current = snapshot(id, record.state)
+    digest = fingerprint(current)
+
+    approval = current[:approval] || current["approval"] || %{}
+    approved_at = approval[:approvedAt] || approval["approvedAt"]
+
+    approval_changed =
+      current[:phase] == "executing" and is_binary(approved_at) and approved_at != "" and
+        digest != record.handled
+
+    meaningful =
+      current.findings != [] or current.linkedNotes != [] or current.noteChanges != [] or
+        current.delivery != nil or current.overdueCommitments != [] or
+        current.recoveryEvidence != [] or Map.has_key?(current, "agenda") or
+        approval_changed or record.handled != ""
+
+    cond do
+      update.mission.status == "canceled" or record.stopped ->
+        nil
+
+      record.dispatch != nil ->
+        retry(update, record)
+
+      digest == record.handled or not meaningful ->
+        nil
+
+      true ->
+        SQL.exec(
+          """
+          UPDATE chat_mission_interpretations SET pending_fingerprint=?,pending_context_json=?,attempt=0,retry_after=NULL
+          WHERE mission_id=?
+          """,
+          [digest, Jason.encode!(current), id]
+        )
+
+        wake(update, %{record | pending: digest, context: current, attempt: 0})
+    end
+  end
+
+  defp retry(update, record) do
+    case SQL.one(
+           """
+           SELECT d.run_id,r.status,d.failed_at FROM chat_agent_dispatches d
+           LEFT JOIN runs r ON r.id=d.run_id WHERE d.id=?
+           """,
+           [record.dispatch]
+         ) do
+      [run, "canceled", _] ->
+        if SQL.one(
+             "SELECT 1 FROM run_events WHERE run_id=? AND type='status' AND json_extract(payload_json,'$.steering')=1 LIMIT 1",
+             [run]
+           ) do
+          retry_wake(update, record)
+        else
+          SQL.exec("UPDATE chat_mission_interpretations SET stopped=1 WHERE mission_id=?", [
+            update.mission.id
+          ])
+
+          nil
+        end
+
+      [_, status, failure] when status in ["completed", "failed"] or not is_nil(failure) ->
+        retry_wake(update, record)
+
+      nil ->
+        wake(update, record)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp retry_wake(update, record) do
+    current = snapshot(update.mission.id, record.state)
+    digest = fingerprint(current)
+
+    cond do
+      record.attempt >= @max_retries and digest != record.pending ->
+        # Only a settled batch reaches here. Preserve its understanding while
+        # giving changed evidence a fresh budget and invalidating stale writers.
+        SQL.exec(
+          """
+          UPDATE chat_mission_interpretations SET revision=revision+1,
+            pending_fingerprint=?,pending_context_json=?,attempt=0,retry_after=NULL
+          WHERE mission_id=?
+          """,
+          [digest, Jason.encode!(current), update.mission.id]
+        )
+
+        wake(update, %{
+          record
+          | revision: record.revision + 1,
+            pending: digest,
+            context: current,
+            attempt: 0,
+            retry: nil
+        })
+
+      record.attempt >= @max_retries ->
+        # Keep the unacknowledged responsibility available to its coordinator;
+        # elapsed time alone must not restart an unchanged failed batch forever.
+        nil
+
+      record.retry == nil ->
+        seconds = min(300, 10 * (record.attempt + 1))
+
+        SQL.exec(
+          "UPDATE chat_mission_interpretations SET retry_after=datetime('now',?) WHERE mission_id=?",
+          ["+#{seconds} seconds", update.mission.id]
+        )
+
+        nil
+
+      SQL.one(
+        "SELECT 1 FROM chat_mission_interpretations WHERE mission_id=? AND retry_after<=datetime('now')",
+        [update.mission.id]
+      ) == [1] ->
+        next = %{record | attempt: record.attempt + 1, retry: nil}
+
+        SQL.exec(
+          "UPDATE chat_mission_interpretations SET attempt=?,retry_after=NULL WHERE mission_id=?",
+          [next.attempt, update.mission.id]
+        )
+
+        wake(update, next)
+
+      true ->
+        nil
+    end
+  end
+
+  defp wake(update, record) do
+    Map.merge(update, %{
+      coordinatorRegistrationId: coordinator(update.mission.id),
+      generation: "interpret-#{record.revision}-#{record.pending}-#{record.attempt}",
+      interpretation: %{
+        revision: record.revision,
+        fingerprint: record.pending,
+        evidence: record.context,
+        understanding: record.state
+      }
+    })
+  end
+
+  def admitted(id, dispatch_id),
+    do:
+      SQL.exec("UPDATE chat_mission_interpretations SET dispatch_id=? WHERE mission_id=?", [
+        dispatch_id,
+        id
+      ])
+
+  def keep_wake?(id) do
+    SQL.one(
+      """
+      SELECT 1 FROM chat_mission_interpretations i JOIN chat_missions m ON m.id=i.mission_id
+      WHERE i.dispatch_id=? AND i.stopped=0 AND i.pending_fingerprint<>'' AND m.status<>'canceled'
+      """,
+      [id]
+    ) == [1]
+  end
+
+  def action_key(run_id, action) do
+    case SQL.one(
+           "SELECT i.mission_id,i.revision FROM chat_mission_interpretations i JOIN runs r ON r.chat_dispatch_id=i.dispatch_id WHERE r.id=? AND i.stopped=0",
+           [run_id]
+         ) do
+      [mission, revision] -> "interpretation-action:#{mission}:#{revision}:#{fingerprint(action)}"
+      _ -> nil
+    end
+  end
+
+  def stop_run(run_id) do
+    SQL.exec(
+      """
+      UPDATE chat_mission_interpretations SET stopped=1
+      WHERE dispatch_id IN (SELECT chat_dispatch_id FROM runs WHERE id=?)
+      """,
+      [run_id]
+    )
+  end
+
+  # Refresh the batch once at admission, so a queued wake interprets all findings
+  # that arrived while the owner was offline/busy, rather than replaying each event.
+  # Prompt building already holds the SQL lock: never enter OrderedPublisher here.
+  def dispatch_prompt(dispatch_id) do
+    SQL.transaction(fn ->
+      case SQL.one(
+             "SELECT mission_id FROM chat_mission_interpretations WHERE dispatch_id=? AND stopped=0",
+             [dispatch_id]
+           ) do
+        [id] ->
+          {:ok, update} = Store.refresh(id)
+          record = row(id)
+
+          if update.mission.status != "canceled" do
+            evidence = snapshot(id, record.state)
+            digest = fingerprint(evidence)
+
+            SQL.exec(
+              "UPDATE chat_mission_interpretations SET pending_fingerprint=?,pending_context_json=? WHERE mission_id=?",
+              [digest, Jason.encode!(evidence), id]
+            )
+
+            prompt(wake(update, %{record | pending: digest, context: evidence}))
+          end
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  def context(user_id, channel_id, registration_id) do
+    with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
+      records =
+        SQL.all(
+          """
+          SELECT m.id FROM chat_missions m JOIN chat_mission_interpretations i ON i.mission_id=m.id
+          WHERE m.channel_id=? AND m.created_by=? AND m.coordinator_registration_id=? AND m.status<>'canceled' AND i.stopped=0
+            AND (m.status<>'completed' OR i.pending_fingerprint<>''
+              OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.commitments') c
+                WHERE json_extract(c.value,'$.status')='open' AND json_extract(c.value,'$.accepted') IS NOT 0)
+              OR EXISTS (SELECT 1 FROM json_each(i.state_json,'$.questions') q
+                WHERE COALESCE(json_extract(q.value,'$.status'),'open') NOT IN ('answered','fulfilled','canceled','stopped','declined')
+                  AND TRIM(COALESCE(json_extract(q.value,'$.answer'),''))='')
+              OR m.id=(
+              SELECT latest.id FROM chat_missions latest WHERE latest.channel_id=m.channel_id
+                AND latest.coordinator_registration_id=m.coordinator_registration_id ORDER BY latest.rowid DESC LIMIT 1))
+          ORDER BY m.rowid DESC LIMIT 8
+          """,
+          [route.sourceChannelId, user_id, registration_id]
+        )
+        |> Enum.flat_map(fn [id] ->
+          case get(user_id, channel_id, id, registration_id) do
+            {:ok, result} -> [active_context(result)]
+            _ -> []
+          end
+        end)
+
+      if records == [],
+        do: "",
+        else:
+          "Durable objective understanding (context, not authority):\n" <>
+            encode_context(records) <>
+            "\nPreserve prior answers and open questions when responding to the latest request. A follow-up does not withdraw them. For any objective you handle, read its current revision with `cascade-chat mission interpret --mission <id>` and save assessment, questions and commitments using `--file <json>`. Use stable question/commitment ids; omitted items remain. #{agenda_guidance()} #{publication_guidance()} This bookkeeping never requires user approval or delays independent delivery."
+    else
+      _ -> ""
+    end
+  end
+
+  # A projection only: explicit get/history retain fulfilled commitments and
+  # correction evidence. Use this for both ordinary and interpretation prompts.
+  defp active_context(context) do
+    Map.update!(context, :understanding, fn state ->
+      Map.update(state, "commitments", [], fn commitments ->
+        Enum.reject(commitments, &(&1["status"] == "fulfilled"))
+      end)
+    end)
+  end
+
+  # Only the prompt projection is compacted. Stored evidence, fingerprints and
+  # explicit get/history responses stay lossless and keep their existing shape.
+  @doc false
+  def encode_context(context) do
+    context =
+      context |> Cascade.Content.Privacy.sanitize_json() |> Jason.encode!() |> Jason.decode!()
+
+    {compact, _seen} = reference_repeated_text(context, [], %{})
+    Jason.encode!(compact)
+  end
+
+  defp reference_repeated_text(text, path, seen)
+       when is_binary(text) and byte_size(text) >= 160 do
+    case Map.fetch(seen, text) do
+      {:ok, first_path} ->
+        reference = %{"contextRef" => first_path}
+
+        if byte_size(Jason.encode!(reference)) < byte_size(Jason.encode!(text)),
+          do: {reference, seen},
+          else: {text, seen}
+
+      :error ->
+        {text, Map.put(seen, text, path)}
+    end
+  end
+
+  defp reference_repeated_text(map, path, seen) when is_map(map) do
+    {entries, seen} =
+      map
+      |> Enum.sort()
+      |> Enum.map_reduce(seen, fn {key, value}, seen ->
+        {value, seen} = reference_repeated_text(value, path ++ [key], seen)
+        {{key, value}, seen}
+      end)
+
+    {Map.new(entries), seen}
+  end
+
+  defp reference_repeated_text(list, path, seen) when is_list(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.map_reduce(seen, fn {value, index}, seen ->
+      reference_repeated_text(value, path ++ [index], seen)
+    end)
+  end
+
+  defp reference_repeated_text(value, _path, seen), do: {value, seen}
+
+  def get(user_id, channel_id, mission_id, registration_id) do
+    with {:ok, update} <- authorized(user_id, channel_id, mission_id, registration_id) do
+      initialize(update.mission.id)
+      record = row(update.mission.id)
+
+      {:ok,
+       %{
+         missionId: update.mission.id,
+         objective: update.mission.objective,
+         revision: record.revision,
+         fingerprint: record.pending,
+         understanding: record.state,
+         evidence:
+           if(record.pending == "",
+             do: snapshot(update.mission.id, record.state),
+             else: record.context
+           )
+       }}
+    end
+  end
+
+  defp authorized(user_id, channel_id, mission_id, registration_id) do
+    with {:ok, update} <- Store.get(user_id, channel_id, mission_id, registration_id),
+         true <- update.createdBy == user_id and coordinator(update.mission.id) == registration_id,
+         {:ok, route} <- Channel.assert_channel(channel_id, user_id),
+         [^user_id] <-
+           SQL.one(
+             """
+             SELECT va.owner_user_id FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id
+             WHERE m.id=? AND m.channel_id=?
+             """,
+             [registration_id, route.sourceChannelId]
+           ) do
+      {:ok, update}
+    else
+      _ -> {:error, "Mission interpretation belongs to its owning coordinator"}
+    end
+  end
+
+  def record(user, channel_id, mission_id, registration_id, input, run_id, events) do
+    OrderedPublisher.mutate(fn ->
+      result =
+        SQL.transaction(fn ->
+          with {:ok, update} <- authorized(user.id, channel_id, mission_id, registration_id),
+               :ok <- coordinator_run(user.id, registration_id, run_id),
+               false <- update.mission.status == "canceled" do
+            initialize(update.mission.id)
+            save!(user, update, input, row(update.mission.id))
+          else
+            true -> {:error, "Mission was stopped"}
+            {:error, _} = error -> error
+          end
+        end)
+
+      case result do
+        {:ok, %{missionId: id}} -> flush(id, events)
+        _ -> :ok
+      end
+
+      result
+    end)
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  defp coordinator_run(user, registration, run) do
+    if SQL.one(
+         """
+         SELECT 1 FROM runs r JOIN chat_agent_dispatches d ON d.id=r.chat_dispatch_id
+         WHERE r.id=? AND r.owner_user_id=? AND d.registration_id=? AND r.status IN ('queued','running')
+           AND NOT EXISTS (SELECT 1 FROM chat_mission_tasks t WHERE t.run_id=r.id)
+         """,
+         [run, user, registration]
+       ) == [1],
+       do: :ok,
+       else: {:error, "Only a live coordinator run can record interpretation; workers cannot"}
+  end
+
+  defp revision_conflict(record, input, message) do
+    Cascade.RevisionConflict.error(
+      message,
+      record.revision,
+      Map.put(record.state, "fingerprint", record.pending),
+      input
+    )
+  end
+
+  defp save!(user, update, input, record) do
+    id = update.mission.id
+    revision = input["revision"]
+    key = "interpretation:#{id}:#{revision}"
+    previous = SQL.one("SELECT summary FROM chat_mission_events WHERE source_key=?", [key])
+
+    cond do
+      previous != nil ->
+        [encoded] = previous
+        data = Jason.decode!(encoded)["result"]
+
+        result =
+          Map.new(
+            ~w(missionId inputFingerprint handledEventId handledFingerprint revision messageId noMaterialChange)a,
+            &{&1, data[to_string(&1)]}
+          )
+
+        if result.inputFingerprint == fingerprint(input),
+          do: {:ok, result},
+          else:
+            revision_conflict(
+              record,
+              input,
+              "Interpretation changed; read current state and merge"
+            )
+
+      record.stopped ->
+        {:error, "Interpretation was stopped"}
+
+      revision != record.revision ->
+        revision_conflict(record, input, "Interpretation changed; read current state and merge")
+
+      (input["fingerprint"] || "") != record.pending ->
+        revision_conflict(record, input, "Evidence batch changed; read current interpretation")
+
+      true ->
+        state = merge_state(record.state, input)
+
+        state =
+          if record.context["delivery"] != nil,
+            do: Map.put(state, "executionCompleted", true),
+            else: state
+
+        body = String.trim(input["body"] || "")
+        acknowledging = record.pending != ""
+
+        if acknowledging and body == "" and input["noMaterialChange"] != true,
+          do: raise("Publish an explanation or explicitly record noMaterialChange")
+
+        if body != "" and input["noMaterialChange"] == true,
+          do: raise("An explanation and noMaterialChange are mutually exclusive")
+
+        message_id = if body != "", do: "mission-explanation-#{id}-#{revision}"
+        correction = input["correctsMessageId"]
+
+        if correction && not Enum.any?(state["claims"] || [], &(&1["messageId"] == correction)),
+          do: raise("A correction must reference a previous explanation for this objective")
+
+        if message_id do
+          {:ok, route} = Store.owner_route(user.id, update.vaultId, update.channelId)
+
+          reply = %{
+            messageId: correction || update.mission.rootMessageId,
+            author: "",
+            preview: "",
+            relationship: if(correction, do: "contradiction", else: "builds_on")
+          }
+
+          {:ok, _} =
+            Messages.create(
+              user,
+              route.localVaultId,
+              route.localChannelId,
+              %{
+                id: message_id,
+                body: body,
+                registrationId: coordinator(update.mission.id),
+                createdAt: DateTime.utc_now() |> DateTime.to_iso8601(),
+                replyTo: reply
+              },
+              access: :agent
+            )
+        end
+
+        state =
+          if message_id,
+            do:
+              Map.update(
+                state,
+                "claims",
+                [%{"messageId" => message_id, "body" => body}],
+                &(&1 ++
+                    [
+                      %{
+                        "messageId" => message_id,
+                        "body" => body,
+                        "correctsMessageId" => correction
+                      }
+                    ])
+              ),
+            else: state
+
+        result = %{
+          missionId: id,
+          inputFingerprint: fingerprint(input),
+          handledEventId: record.context["eventCursor"],
+          handledFingerprint: record.pending,
+          revision: revision + 1,
+          messageId: message_id,
+          noMaterialChange: input["noMaterialChange"] == true
+        }
+
+        previously_due = record.context["overdueCommitments"] || []
+        current_commitments = Map.new(state["commitments"] || [], &{&1["id"], &1})
+
+        still_due =
+          previously_due
+          |> Enum.map(&current_commitments[&1["id"]])
+          |> Enum.filter(
+            &(&1 && &1["status"] == "open" && &1["accepted"] != false && due?(&1["dueAt"]))
+          )
+
+        # Acknowledge only responsibility presented in this batch. Newly saved
+        # items still get a wake, while disposition changes do not make a loop.
+        remaining =
+          Map.new(agenda(state), fn {field, entries} ->
+            presented = get_in(record.context, ["agenda", field]) || []
+            ids = MapSet.new(presented, & &1["id"])
+            {field, Enum.filter(entries, &MapSet.member?(ids, &1["id"]))}
+          end)
+
+        handled =
+          if record.pending == "",
+            do: record.handled,
+            else:
+              record.context
+              |> Map.put("overdueCommitments", still_due)
+              |> with_agenda(remaining)
+              |> acknowledge_self_note_changes(id, record.dispatch)
+              |> fingerprint()
+
+        SQL.exec(
+          """
+          UPDATE chat_mission_interpretations SET state_json=?,revision=revision+1,
+            handled_fingerprint=?,
+            pending_fingerprint='',pending_context_json='{}',dispatch_id=NULL,attempt=0,retry_after=NULL,
+            publication_pending=COALESCE(?,publication_pending) WHERE mission_id=?
+          """,
+          [Jason.encode!(state), handled, message_id, id]
+        )
+
+        SQL.exec(
+          "INSERT INTO chat_mission_events(mission_id,kind,summary,source_key) VALUES(?,?,?,?)",
+          [
+            id,
+            "interpretation_recorded",
+            Jason.encode!(%{
+              result: result,
+              changes:
+                Map.take(
+                  input,
+                  ~w(assessment questions commitments evidenceReferences correctsMessageId)
+                )
+            }),
+            key
+          ]
+        )
+
+        if record.dispatch do
+          SQL.exec(
+            "UPDATE chat_agent_dispatches SET failed_at=datetime('now'),error='Interpretation already handled' WHERE id=? AND run_id IS NULL",
+            [record.dispatch]
+          )
+
+          Cascade.Chat.PendingReply.retract(record.dispatch)
+        end
+
+        {:ok, result}
+    end
+  end
+
+  defp merge_state(state, input) do
+    if byte_size(Jason.encode!(input)) > 64_000, do: raise("Interpretation must stay under 64KB")
+
+    state =
+      if is_binary(input["assessment"]),
+        do: Map.put(state, "assessment", input["assessment"]),
+        else: state
+
+    state =
+      Enum.reduce(~w(questions commitments), state, fn field, acc ->
+        if Map.has_key?(input, field) do
+          entries = input[field]
+
+          unless is_list(entries) and
+                   Enum.all?(entries, &(is_map(&1) and is_binary(&1["id"]) and &1["id"] != "")),
+                 do: raise("#{field} must be objects with stable ids")
+
+          entries =
+            if field == "commitments" do
+              Enum.map(entries, fn entry ->
+                if entry["status"] && entry["status"] not in ~w(open fulfilled canceled),
+                  do: raise("Commitment status must be open, fulfilled or canceled")
+
+                if entry["dueAt"] &&
+                     not match?({:ok, _, _}, DateTime.from_iso8601(entry["dueAt"])),
+                   do: raise("Commitment dueAt must be an ISO8601 timestamp")
+
+                if Enum.any?(acc[field] || [], &(&1["id"] == entry["id"])),
+                  do: entry,
+                  else: Map.put_new(entry, "status", "open")
+              end)
+            else
+              entries
+            end
+
+          merged =
+            Enum.reduce(entries, Map.new(acc[field] || [], &{&1["id"], &1}), fn entry, old ->
+              Map.update(old, entry["id"], entry, &Map.merge(&1, entry))
+            end)
+            |> Map.values()
+            |> Enum.sort_by(& &1["id"])
+
+          Map.put(acc, field, merged)
+        else
+          acc
+        end
+      end)
+
+    references = input["evidenceReferences"] || []
+    unless is_list(references), do: raise("evidenceReferences must be a list")
+
+    Map.put(
+      state,
+      "evidenceReferences",
+      Enum.uniq((state["evidenceReferences"] || []) ++ references)
+    )
+  end
+
+  # The message and acknowledgment commit together. Fanout can replay the same
+  # message id after a crash; normal chat clients already upsert by id.
+  def flush(id, events) do
+    # Drain every committed publication, not only the most recent revision. A
+    # second coordinator write cannot overwrite a message awaiting fanout.
+    SQL.all(
+      """
+      SELECT e.id,json_extract(e.summary,'$.result.messageId'),m.created_by,m.vault_id,m.channel_id
+      FROM chat_mission_events e JOIN chat_missions m ON m.id=e.mission_id
+      JOIN chat_mission_interpretations i ON i.mission_id=m.id
+      WHERE m.id=? AND e.kind='interpretation_recorded'
+        AND json_extract(e.summary,'$.result.messageId') IS NOT NULL AND i.stopped=0 AND m.status<>'canceled'
+        AND NOT EXISTS (SELECT 1 FROM chat_mission_events sent WHERE sent.source_key='interpretation-published:' || e.id)
+      ORDER BY e.id
+      """,
+      [id]
+    )
+    |> Enum.each(fn [event_id, message_id, owner, vault, channel] ->
+      with {:ok, route} <- Store.owner_route(owner, vault, channel),
+           {:ok, message} <- Messages.get(route.localChannelId, owner, message_id) do
+        OrderedPublisher.chat(events, %{
+          event: "vault:chatMessageCreated",
+          vaultId: vault,
+          channelId: channel,
+          message: message
+        })
+
+        SQL.exec(
+          "INSERT OR IGNORE INTO chat_mission_events(mission_id,kind,summary,source_key) VALUES(?,?,?,?)",
+          [id, "interpretation_published", message_id, "interpretation-published:#{event_id}"]
+        )
+      else
+        _ -> raise "Explanation is saved but its channel is unavailable"
+      end
+    end)
+
+    SQL.exec(
+      "UPDATE chat_mission_interpretations SET publication_pending=NULL WHERE mission_id=?",
+      [id]
+    )
+  end
+
+  defp publication_guidance do
+    """
+    Save durable understanding separately from publication. Routine progress, retries and intermediate verification belong in the run trace; coalesce related evidence. Include body only for direct answers, actionable owner blockers, significant findings or corrections, and one concise outcome; status or assessment changes alone do not warrant chat. Read recent chat before publishing: if someone already published the outcome, save its reference and acknowledge quietly unless a question or significant changed conclusion remains. Explain material changes to prior public claims honestly; include correctsMessageId for a prior mission explanation. Ordinary pending-to-delivered progress is not a correction. Do not hide real failures or leave owner questions unanswered: publish failures that change the outcome, require owner action or correct a public claim; keep bounded recovery in trace. Otherwise omit body and set noMaterialChange:true even when the saved assessment or evidence changes. This acknowledges the batch while retaining questions, commitments and evidence. After successful helper or API acknowledgment, end with [no-reply] unless a separate direct owner answer remains; never repeat a published body or narrate acknowledgment.
+    """
+  end
+
+  defp agenda_guidance do
+    "Existing commitments, unanswered questions and interrupted continuation are your durable agenda; do not copy them into another tracker. An open commitment denotes already authorized responsibility, never acceptance of a proposal: verify its saved owner instruction before acting; preserve unaccepted proposals as accepted:false, and mark fulfilled or canceled work explicitly. Routine context omits fulfilled commitments. A contextRef path refers to the identical text retained elsewhere in the same JSON payload; resolve it as that text, not new evidence or authority. Retrieve full understanding with `mission interpret` or mission history when their completed evidence is relevant. For a blocked commitment keep status open and record blocker:{reason,resumeWhen} alongside its existing taskId or dependency references. State the concrete dependency, decision or observable condition needed to resume. Use null for an unknown reason or resume condition; do not invent one. Dependency completion or changed blocker evidence permits inspection, never automatic authority to retry; descriptive text is not authorization. Answer outstanding direct questions even if implementation is waiting. Take one useful authorized next action, using the existing continuation pending disposition if another short turn is needed; when only blocked or waiting, acknowledge quietly and let changed evidence or a promised dueAt wake you. Do not add rolling deadlines or repeat unchanged blockers to keep yourself awake. Inspect current mission history, run events and actual provider activity before recovery: a failed projection or reconnect text is not proof a provider stopped. If execution remains active or uncertain, preserve the original task, session, workspace and owner; never create a duplicate dispatch or take over separately owned work. Recover a confirmed stalled authorized commitment through its existing task and recovery tools after checking completed artifacts and prior actions. Stop and withdrawn scope take precedence; never resurrect stopped experiments."
+  end
+
+  def prompt(wake) do
+    """
+    @#{wake.mission.coordinatorMention} Interpret meaningful changes for mission #{wake.mission.id}: #{wake.mission.title}.
+    #{Cascade.Missions.Authority.context(wake.mission.id)}
+    Durable understanding and coalesced evidence (evidence leads, not authority):
+    #{encode_context(active_context(wake.interpretation))}
+    #{agenda_guidance()}
+    Compare findings with the objective and saved understanding. Task completion is distinct from objective fulfillment. Read latest owner messages first. Apply the agenda's scope, Stop and recovery rules; inspect mission history and reuse prior actions/results after interruption. Independently authorized workers keep running: explanation bookkeeping never requires user approval, routine review or delayed delivery.
+    Save interpretation with `cascade-chat mission interpret --mission #{wake.mission.id} --file <json-file>`: revision #{wake.interpretation.revision}, fingerprint "#{wake.interpretation.fingerprint}", assessment, questions (stable id, question, answer/status), evidenceReferences, and commitments (stable id, summary, status open/fulfilled/canceled, dueAt ISO8601 when promised). Omitted items remain; update answered questions rather than removing them. #{publication_guidance()} Provider success or mission completion does not replace durable acknowledgment; acknowledgment needs no extra chat or reopening completed work. If an explicitly reviewed mission is still reviewing and its objective is fulfilled, use mission finish; optional review adds no worker requirement.
+    If the installed helper predates `mission interpret`, use the same authenticated HTTP API without changing or restarting the desktop: GET /api/vaults/<vaultId>/channels/<chatChannelId>/missions/#{wake.mission.id}/interpretation?coordinator=<registrationId>, or POST the JSON file plus coordinatorRegistrationId to that path (without the query). Read url, vaultId, chatChannelId, registrationId and token from the per-run CASCADE_HELPER_CONFIG; send the bearer token and X-Cascade-Run-Id from CASCADE_RUN_ID. Never print credentials. The response confirms messageId/noMaterialChange; apply the same publication and acknowledgment rules.
+    """
+  end
+end

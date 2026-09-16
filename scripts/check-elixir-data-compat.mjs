@@ -8,7 +8,13 @@ import process from 'node:process';
 import Database from 'better-sqlite3';
 
 const DEFAULT_ALLOWED_ADDITIONS = new Set(['cascade_elixir_schema_migrations']);
-const RECOVERY_EVIDENCE_SQL_SHA256 = '8039530f643ab926e1306c88d074dc731b6b5c248cd032ac3d591bbaf2ee185b';
+const EMPTY_TABLE_ADDITIONS = new Map([
+  ['chat_mission_interpretations', 'd44a76a3db95aa4badbbc1b189948c2af6d8ba2693506bbdf52b2fb4f9914da6'],
+  ['chat_coordinator_continuations', 'b7bd613258c91ef2efe0c6d8c296135380d22a0b4079d09a651944e255aed1af'],
+  ['app_context', '57acd5d3a9e2688fae0f37e190087ce250cee5c421a0bdd6e938fe1de021cf94'],
+  ['chat_mission_recovery_evidence', '8039530f643ab926e1306c88d074dc731b6b5c248cd032ac3d591bbaf2ee185b'],
+  ['chat_next_step_checks', '975a576a29b23ab328602d5f3a7a888cc1f3624e89242bcb44f38ae0654fd6e5'],
+]);
 const FTS5_SHADOW_SUFFIXES = ['config', 'data', 'docsize', 'idx'];
 const DISPATCH_ADMISSION_COLUMNS = [
   ['requester_user_id', 'INTEGER REFERENCES users(id)'],
@@ -25,7 +31,7 @@ const DISPATCH_ADMISSION_COLUMNS = [
 // compare equal: the resulting schema must be the reviewed Node-compatible
 // shape as well.
 const NORMALIZED_TABLE_SQL_SHA256 = new Map([
-  ['chat_agent_members', '30fe78099a2ac07b54f147ed25e4032966f9b0a1187852e5a5aece9cca765b43'],
+  ['chat_agent_members', 'cbad10329484a7a611ef7c9c5789bc88987431279e0fdd44d51817579d693676'],
   ['chat_channel_links', '5c044d64e74a55bae505e0dc14fa0943d8f2ec550a3a4ee0c8cee6098b8b2f51'],
   ['chat_messages', 'c0ec7be003cb9470e0854022dd4197394b8b52e5b6d81369ab274151ccaf7ae4'],
   ['chat_messages_fts', 'a0537f09f6a0d235e2c50e090ce48214ddd0efa80544131812ccd37822e501a1'],
@@ -33,6 +39,8 @@ const NORMALIZED_TABLE_SQL_SHA256 = new Map([
 ]);
 
 const NORMALIZED_OBJECT_SQL_SHA256 = new Map([
+  ['index:chat_mission_interpretations_dispatch_idx', 'a324dce25b644dbb70a98b0d7844d90004045f14283a414ab27e28464aa5d1b0'],
+  ['index:chat_mission_tasks_parent_idx', '7f97ee4f014dd90c75c5256385a9fb24806dfb35328915cf9d17b4c06eff4c47'],
   ['index:chat_messages_activity_idx', '57b71e5d8f446140a9ea1a97fdd9b06bf02943fc0c09c38e2a7208ba49dc9fd1'],
   ['index:chat_messages_channel_idx', 'cf59031cf62c9ad6b72e763f899a42bc683db9547811618c25b71720948f4bf2'],
   ['trigger:chat_messages_ai', 'fe4b388168890405a812c0baa7c785d19637612a642546e67820ecb975c9ce0e'],
@@ -53,15 +61,36 @@ const MIGRATION_LEDGER_ROW = {
 
 // Reviewed schema transitions that are safe while the previous release is
 // still serving. Keep these exact and directional: an unrecognized DDL change
-// must continue through the snapshot-backed maintenance cutover.
+// must be migrated separately before the replacement image is deployed.
 const ROLLING_SCHEMA_TRANSITIONS = new Map([
   ['table:chat_agent_members', new Map([
     ['caa0376559c9e2b1327b414bea0b8c92c110f093b2d83277ffbc0778367cd59c',
       '47958f4df6d7c4133c1a4d0841d2f061a18aa79f9d62bf861b1d423eb18ef7a1'],
     ['47958f4df6d7c4133c1a4d0841d2f061a18aa79f9d62bf861b1d423eb18ef7a1',
       '30fe78099a2ac07b54f147ed25e4032966f9b0a1187852e5a5aece9cca765b43'],
+    ['30fe78099a2ac07b54f147ed25e4032966f9b0a1187852e5a5aece9cca765b43',
+      'cbad10329484a7a611ef7c9c5789bc88987431279e0fdd44d51817579d693676'],
   ])],
 ]);
+
+// Actual old-release boot (461382ce) -> reviewed mission workspace boot.
+// Alternate hashes preserve production column order and legacy review columns.
+// This transition fences work and writes briefs; it is NEVER rolling-safe.
+const MISSION_WORKSPACE_SCHEMA_TRANSITION = new Map([
+  ['table:chat_mission_tasks', [['33b1e39de513ad50a87310b8fb08c032cc03ed6f27859c9711a30ef174b49e7e', '1f39d416fe9554b58cf75d7d096c7458f468cc9e2b00ecee609a01a669666617'], ['6dee158cd48767338b886689ebbbcfcb64d42a3cb8b4c506ffa3499195a48045', '92a7eb3272060a4255d800b57e928df020b960e41068b441ddf6f667ece12e2d']]],
+  ['table:chat_missions', [['295076a884512f48c0fdb397c9c2e878e1bb1aefd3e8e64b3687d2a8cdae5526', '51dc5b55c2a7b5e147f44fb3007b60c0a6e388b4a69df94f9140f2d0ab9ffbb9'], ['07b03b57d5347786b723f4ab2f211cb62ab874e6122639db4b5f2ff620aec013', '0b043e64bed589284c1f9246f387255979e326c1770dfa742ad7ebcaad4833e3']]],
+  ['table:notes', [['9bd0b8f5bd1a321dd2ed475329eaaabb01aabf0b2167584550342d853d4b72fd', '5a7c290bbde43be7ca74a2650286916d9c6bb15057b5c0d536ed407e45186ecc'], ['bfeb909f026ae136e7f2e6349ceb8e7b6235a718dbe76062ab428cf46487ef9c', '3dd9a3367f38a5be09a84b7917dd149c9712029baadde12ff186be52788fdef1']]],
+  ['index:chat_mission_cancellation_replays_mission_idx', [[null, '04a96f71656bc5b645eb6785c6422eb1ea720766d6b55940d368ce3443a3c3a7']]],
+  ['index:chat_mission_notes_parent_idx', [[null, '010a66b38fcc5c10c4b65e08da59bc0e0ebedb0f04ff0545e508f674cd5e0b3b']]],
+  ['table:chat_mission_cancellation_replays', [[null, '94f6d8dbbad7b2e8bc9d09841df8b9ebeb8646625e66569a5f63ad0f08cb5547']]],
+  ['table:chat_mission_migrations', [[null, '265e3213c7aa1aa60c5768d48bd05623d4aaacb0cb6ca9a1d9358d80056a15df']]],
+  ['table:chat_mission_notes', [[null, '51b3ab915b2289e8db061712f3fe193ba49082c4726183bb8c8f03df098f6996']]],
+]);
+const NOTE_REVISION_LEDGER_ROW = {
+  "version": 2,
+  "name": "note_revision_counter",
+  "checksum": "c3f35b7730ea9f2780477c1dbdbffe4337ef709da82644fde0810dae2e3060ce"
+};
 
 function parseArgs(argv) {
   const args = { allowTable: [], requireIdentical: false, schemaOnly: false };
@@ -71,6 +100,10 @@ function parseArgs(argv) {
     const key = arg.slice(2);
     if (key === 'require-identical') {
       args.requireIdentical = true;
+      continue;
+    }
+    if (key === 'allow-mission-workspace-migration') {
+      args.allowMissionWorkspaceMigration = true;
       continue;
     }
     if (key === 'schema-only') {
@@ -113,6 +146,9 @@ function parseArgs(argv) {
     throw new Error('--require-identical and --schema-only are mutually exclusive');
   }
   if ((args.beforeSchema || args.afterSchema) && !args.schemaOnly) args.schemaOnly = true;
+  if (args.allowMissionWorkspaceMigration && !args.schemaOnly) {
+    throw new Error('--allow-mission-workspace-migration requires --schema-only');
+  }
   return args;
 }
 
@@ -267,6 +303,11 @@ function databaseSnapshotFromCopy(filename) {
         "SELECT COUNT(*) AS count FROM chat_missions WHERE review_fingerprint <> ''",
       ).get().count;
     }
+    if (tables.chat_mission_tasks?.columns.some((column) => column.name === 'joining_children')) {
+      compatibility.missionChildNonDefaults = db.prepare(
+        'SELECT COUNT(*) AS count FROM chat_mission_tasks WHERE parent_task_id IS NOT NULL OR child_result_delivered <> 0 OR joining_children <> 0',
+      ).get().count;
+    }
     if (tables.chat_mission_tasks) {
       const hasWorkspaceMode = tables.chat_mission_tasks.columns
         .some((column) => column.name === 'workspace_mode');
@@ -312,6 +353,14 @@ function databaseSnapshotFromCopy(filename) {
       `).all();
     }
     if (tables.delegated_runs) {
+      if (['delivery_payload_json', 'delivery_sent_at', 'delivery_attempts'].every(name => (
+        tables.delegated_runs.columns.some(column => column.name === name)
+      ))) {
+        compatibility.deliveryNonDefaults = db.prepare(`
+          SELECT COUNT(*) AS count FROM delegated_runs WHERE delivery_payload_json IS NOT NULL
+            OR delivery_sent_at IS NOT NULL OR delivery_attempts IS NOT 0
+        `).get().count;
+      }
       compatibility.delegatedRunOwners = db.prepare(`
         SELECT run_id AS runId,owner_user_id AS ownerUserId
         FROM delegated_runs ORDER BY run_id
@@ -375,18 +424,13 @@ export function readSchemaFingerprintFromDb(db) {
 }
 
 export function readSchemaFingerprint(filename) {
-  const directory = databaseScratchDirectory('cascade-schema-fingerprint-');
-  const disposable = path.join(directory, 'database.sqlite');
+  // Read schema and ledger from one SQLite snapshot, including committed WAL.
+  // Copying the main file both scales with user data and misses WAL-only DDL.
+  const db = new Database(path.resolve(filename), { readonly: true, fileMustExist: true });
   try {
-    fs.copyFileSync(path.resolve(filename), disposable, fs.constants.COPYFILE_FICLONE);
-    const db = new Database(disposable, { readonly: true, fileMustExist: true });
-    try {
-      return readSchemaFingerprintFromDb(db);
-    } finally {
-      db.close();
-    }
+    return db.transaction(() => readSchemaFingerprintFromDb(db))();
   } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
+    db.close();
   }
 }
 
@@ -397,33 +441,86 @@ export function loadSchemaFingerprint(source) {
   return readSchemaFingerprint(source);
 }
 
+export function recognizeMissionWorkspaceMigration(before, after) {
+  if (!same(before.migrations, [MIGRATION_LEDGER_ROW])
+      || !same(after.migrations, [MIGRATION_LEDGER_ROW, NOTE_REVISION_LEDGER_ROW])) return false;
+  const beforeObjects = new Map(before.objects.map(object => [`${object.type}:${object.name}`, object]));
+  const afterObjects = new Map(after.objects.map(object => [`${object.type}:${object.name}`, object]));
+  if (beforeObjects.size !== before.objects.length || afterObjects.size !== after.objects.length) return false;
+  for (const [key, transitions] of MISSION_WORKSPACE_SCHEMA_TRANSITION) {
+    const oldObject = beforeObjects.get(key);
+    const nextObject = afterObjects.get(key);
+    const oldHash = oldObject ? sha256(normalizedSql(oldObject.sql)) : null;
+    const newHash = nextObject ? sha256(normalizedSql(nextObject.sql)) : null;
+    if (!nextObject || !transitions.some(([from, to]) => from === oldHash && to === newHash)) return false;
+    if (oldObject && (oldObject.type !== nextObject.type || oldObject.name !== nextObject.name
+        || oldObject.tableName !== nextObject.tableName)) return false;
+    beforeObjects.delete(key);
+    afterObjects.delete(key);
+  }
+  // Unrelated DDL, indexes, triggers, removals and ledger drift still fail.
+  return same([...beforeObjects], [...afterObjects]);
+}
+
+const PROFILE_COLOR_TABLES = new Set(['users', 'chat_agent_members', 'vault_agents']);
+const PROFILE_COLOR_LEDGER_ROW = {
+  version: 3,
+  name: 'profile_colors',
+  checksum: 'd3e46239f158d82455643c652333e60247448736e49ff71251a494e3c9a43ac7',
+};
+
+function exactProfileColorAddition(before, after) {
+  if (!after || before.type !== 'table' || after.type !== 'table'
+      || before.name !== after.name || before.tableName !== after.tableName
+      || !PROFILE_COLOR_TABLES.has(before.name)) return false;
+  const db = new Database(':memory:');
+  try {
+    // Let SQLite produce the exact ALTER result, including legacy constraints
+    // and column ordering. No other schema difference is authorized.
+    db.exec(before.sql);
+    db.exec(`ALTER TABLE ${before.name} ADD COLUMN color TEXT NOT NULL DEFAULT 'FFFFFF'`);
+    const { sql } = db.prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?').get('table', before.name);
+    return normalizedSql(sql) === normalizedSql(after.sql);
+  } catch {
+    return false;
+  } finally { db.close(); }
+}
+
 export function compareSchemaFingerprints(before, after) {
   const failures = [];
   const beforeObjects = new Map(before.objects.map((object) => [`${object.type}:${object.name}`, object]));
   const afterObjects = new Map(after.objects.map((object) => [`${object.type}:${object.name}`, object]));
-  let objectsMatch = beforeObjects.size === afterObjects.size;
-  if (objectsMatch) {
-    for (const [key, oldObject] of beforeObjects) {
-      const nextObject = afterObjects.get(key);
-      if (!nextObject) {
-        objectsMatch = false;
-        break;
-      }
-      if (same(oldObject, nextObject)) continue;
-      const transitions = ROLLING_SCHEMA_TRANSITIONS.get(key);
-      const oldHash = sha256(normalizedSql(oldObject.sql));
-      const nextHash = sha256(normalizedSql(nextObject.sql));
-      if (oldObject.type !== nextObject.type
-          || oldObject.name !== nextObject.name
-          || oldObject.tableName !== nextObject.tableName
-          || transitions?.get(oldHash) !== nextHash) {
-        objectsMatch = false;
-        break;
-      }
+  // New ordinary tables and their indexes cannot change existing callers.
+  // Existing tables, constraints, triggers and indexes retain their exact schema.
+  const addedTables = new Set(after.objects.filter((object) =>
+    !beforeObjects.has(`table:${object.name}`) && object.type === 'table'
+      && /^CREATE TABLE\b/i.test(object.sql),
+  ).map((object) => object.name));
+  let objectsMatch = true;
+  for (const [key, oldObject] of beforeObjects) {
+    const nextObject = afterObjects.get(key);
+    if (nextObject && same(oldObject, nextObject)) continue;
+    if (exactProfileColorAddition(oldObject, nextObject)) continue;
+    const transitions = ROLLING_SCHEMA_TRANSITIONS.get(key);
+    if (!nextObject || oldObject.type !== nextObject.type
+        || oldObject.name !== nextObject.name || oldObject.tableName !== nextObject.tableName
+        || transitions?.get(sha256(normalizedSql(oldObject.sql))) !== sha256(normalizedSql(nextObject.sql))) {
+      objectsMatch = false;
+      break;
+    }
+  }
+  for (const [key, object] of afterObjects) {
+    if (beforeObjects.has(key)) continue;
+    if (!(object.type === 'table' && addedTables.has(object.name))
+        && !(object.type === 'index' && addedTables.has(object.tableName))) {
+      objectsMatch = false;
+      break;
     }
   }
   if (!objectsMatch) failures.push('database schema changed');
-  if (!same(before.migrations, after.migrations)) failures.push('migration ledger changed');
+  const colorsRecorded = !before.migrations.some(row => row.version === 3)
+    && same(after.migrations, [...before.migrations, PROFILE_COLOR_LEDGER_ROW]);
+  if (!same(before.migrations, after.migrations) && !colorsRecorded) failures.push('migration ledger changed');
   return failures;
 }
 
@@ -491,36 +588,50 @@ function exactRowsOrMissionTaskBackfill(table, before, after) {
   return true;
 }
 
-function exactMissionRecoveryMigration(before, after, fingerprintOnly = false) {
-  const oldTable = before.tables.chat_missions;
-  const newTable = after.tables.chat_missions;
-  const additions = fingerprintOnly ? [
-    { name: 'review_fingerprint', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
-  ] : [
-    { name: 'authority_json', type: 'TEXT', notnull: 1, dflt_value: "'[]'", pk: 0 },
-    { name: 'verification', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
-    { name: 'review_attempt', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
-  ];
-  if (oldTable.columns.some((column) => additions.some(({ name }) => column.name === name))) return false;
-  const newColumns = newTable.columns.slice(oldTable.columns.length);
-  if (!same(newColumns.map(({ name, type, notnull, dflt_value, pk }) => (
+function exactDefaultColumnMigration(before, after, table, additions, nonDefaults) {
+  const oldTable = before.tables[table];
+  const newTable = after.tables[table];
+  if (oldTable.columns.some(column => additions.some(({ name }) => column.name === name))) return false;
+  if (!same(newTable.columns.slice(oldTable.columns.length).map(({ name, type, notnull, dflt_value, pk }) => (
     { name, type, notnull, dflt_value, pk }
   )), additions)) return false;
-  const suffix = additions.map(({ name, type, dflt_value }) => (
-    `, ${name} ${type} NOT NULL DEFAULT ${dflt_value}`
+  const suffix = additions.map(({ name, type, notnull, dflt_value }) => (
+    `, ${name} ${type}${notnull ? ' NOT NULL' : ''}${dflt_value == null ? '' : ` DEFAULT ${dflt_value}`}`
   )).join('');
-  // SQLite inserts columns before table constraints, not necessarily before the closing parenthesis.
+  // SQLite inserts added columns before trailing table constraints.
   return newTable.schema.sql.replace(suffix, '') === oldTable.schema.sql
     && same(oldTable.columns, newTable.columns.slice(0, oldTable.columns.length))
     && same(oldTable.normalizedForeignKeys, newTable.normalizedForeignKeys)
     && oldTable.rows.count === newTable.rows.count
     && oldTable.rows.includesRowid === newTable.rows.includesRowid
-    && oldTable.rows.columns.every((column) => (
-      oldTable.rows.columnSha256[column] === newTable.rows.columnSha256[column]
-    ))
-    && (fingerprintOnly
-      ? after.compatibility.missionFingerprintNonDefaults
-      : after.compatibility.missionRecoveryNonDefaults) === 0;
+    && oldTable.rows.columns.every(column => oldTable.rows.columnSha256[column] === newTable.rows.columnSha256[column])
+    && after.compatibility[nonDefaults] === 0;
+}
+
+function exactMissionRecoveryMigration(before, after, fingerprintOnly = false) {
+  return exactDefaultColumnMigration(before, after, 'chat_missions', fingerprintOnly ? [
+    { name: 'review_fingerprint', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
+  ] : [
+    { name: 'authority_json', type: 'TEXT', notnull: 1, dflt_value: "'[]'", pk: 0 },
+    { name: 'verification', type: 'TEXT', notnull: 1, dflt_value: "''", pk: 0 },
+    { name: 'review_attempt', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+  ], fingerprintOnly ? 'missionFingerprintNonDefaults' : 'missionRecoveryNonDefaults');
+}
+
+function exactMissionChildMigration(before, after) {
+  return exactDefaultColumnMigration(before, after, 'chat_mission_tasks', [
+    { name: 'parent_task_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    { name: 'child_result_delivered', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+    { name: 'joining_children', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+  ], 'missionChildNonDefaults');
+}
+
+function exactDeliveryMigration(before, after) {
+  return exactDefaultColumnMigration(before, after, 'delegated_runs', [
+    { name: 'delivery_payload_json', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    { name: 'delivery_sent_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    { name: 'delivery_attempts', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+  ], 'deliveryNonDefaults');
 }
 
 function exactMissionWorkspaceModeMigration(before, after) {
@@ -707,7 +818,8 @@ function exactChatAgentMemberAdditiveMigration(before, after) {
   const newTable = after.tables.chat_agent_members;
   if (!oldTable || !newTable) return false;
   const oldNames = new Set(oldTable.columns.map((column) => column.name));
-  const expectedName = oldNames.has('ambient_group_chat') ? 'final_reply_only' : 'ambient_group_chat';
+  const expectedName = oldNames.has('final_reply_only') ? 'next_step_suggestions'
+    : oldNames.has('ambient_group_chat') ? 'final_reply_only' : 'ambient_group_chat';
   if (oldNames.has(expectedName)) return false;
   const added = newTable.columns.find((column) => column.name === expectedName);
   if (!added || added.type !== 'INTEGER' || Number(added.notnull) !== 1
@@ -843,9 +955,13 @@ export function compareDatabaseSnapshots(before, after, allowedAdditions = DEFAU
     } else if (table === 'chat_missions' && (exactMissionRecoveryMigration(before, after)
         || exactMissionRecoveryMigration(before, after, true))) {
       // Add only pinned empty defaults; preserve all existing mission values.
+    } else if (table === 'chat_mission_tasks' && exactMissionChildMigration(before, after)) {
+      // Existing tasks retain their values; new child state starts empty.
     } else if (table === 'chat_mission_tasks'
         && exactMissionWorkspaceModeMigration(before, after)) {
       // workspace_mode is an additive, default-shared mission task migration.
+    } else if (table === 'delegated_runs' && exactDeliveryMigration(before, after)) {
+      // Only empty delivery state may be added to historical leases.
     } else if (table === 'chat_agent_dispatches'
         && exactDispatchAdmissionMigration(before, after)) {
       // Admission columns remain NULL for historical dispatches.
@@ -874,10 +990,10 @@ export function compareDatabaseSnapshots(before, after, allowedAdditions = DEFAU
   }
   for (const table of afterTables) {
     if (beforeTables.has(table)) continue;
-    if (table === 'chat_mission_recovery_evidence') {
+    if (EMPTY_TABLE_ADDITIONS.has(table)) {
       const added = after.tables[table];
-      if (added.schema.sqlSha256 !== RECOVERY_EVIDENCE_SQL_SHA256 || added.rows.count !== 0) {
-        failures.push('recovery evidence addition differs from pinned empty schema');
+      if (added.schema.sqlSha256 !== EMPTY_TABLE_ADDITIONS.get(table) || added.rows.count !== 0) {
+        failures.push(`${table} addition differs from pinned empty schema`);
       }
       continue;
     }
@@ -1026,8 +1142,11 @@ export function runComparison(options) {
   if (options.schemaOnly) {
     const before = options.beforeFingerprint || loadSchemaFingerprint(options.beforeSchema || options.before);
     const after = options.afterFingerprint || loadSchemaFingerprint(options.afterSchema || options.after);
-    const failures = compareSchemaFingerprints(before, after);
+    const drained = options.allowMissionWorkspaceMigration
+      && recognizeMissionWorkspaceMigration(before, after);
+    const failures = drained ? [] : compareSchemaFingerprints(before, after);
     return {
+      ...(drained ? { cutoverMode: 'drained' } : {}),
       ok: failures.length === 0,
       failures,
       beforeTables: tableCountFromFingerprint(before),
@@ -1078,7 +1197,9 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  if (args.requireIdentical) {
+  if (result.cutoverMode === 'drained') {
+    console.log('Reviewed mission workspace migration requires drained cutover.');
+  } else if (args.requireIdentical) {
     console.log(
       `Rolling data identity check passed: ${result.beforeTables} existing tables; ${result.afterTables} tables after boot.`,
     );

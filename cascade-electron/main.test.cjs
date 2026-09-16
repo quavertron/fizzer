@@ -10,7 +10,7 @@ test('desktop startup paints a window before housekeeping and does not HEAD the 
   assert.match(source, /backgroundColor: APP_BACKGROUND/);
   assert.match(source, /createWindow\(\);/);
   const backendAt = source.indexOf('await startEmbeddedBackend(');
-  const createAt = source.indexOf('createWindow();');
+  const createAt = source.indexOf('createWindow();', backendAt);
   const reapAt = source.indexOf('void reapOrphanedLocalAgentRuns()');
   const pruneAt = source.indexOf('void worktrees.pruneWorkspaces()');
   assert.ok(backendAt > 0 && createAt > backendAt && reapAt > createAt && pruneAt > createAt);
@@ -81,6 +81,27 @@ for (const tracked of [false, true]) {
       git(cwd, 'commit', '-m', message);
     }
     fs.writeFileSync(path.join(upstream, 'release.txt'), 'new release\n');
+    // A pulled release can introduce dependencies absent from the old desktop.
+    // Use the shipped prebuild hook with real npm, including a workspace and
+    // NODE_ENV=production, without running any native/lifecycle installers.
+    fs.appendFileSync(path.join(upstream, '.gitignore'), 'node_modules/\n');
+    fs.mkdirSync(path.join(upstream, 'client'));
+    fs.mkdirSync(path.join(upstream, 'fixture-dependency'));
+    fs.writeFileSync(path.join(upstream, 'fixture-dependency/package.json'), JSON.stringify({
+      name: 'update-fixture-dependency', version: '1.0.0', main: 'index.cjs',
+      scripts: { install: 'node -e "process.exit(97)"' },
+    }));
+    fs.writeFileSync(path.join(upstream, 'fixture-dependency/index.cjs'), 'module.exports = "installed";');
+    fs.writeFileSync(path.join(upstream, 'client/package.json'), JSON.stringify({
+      name: 'update-fixture-client', version: '1.0.0',
+      devDependencies: { 'update-fixture-dependency': 'file:../fixture-dependency' },
+    }));
+    const manifest = JSON.parse(fs.readFileSync(path.join(upstream, 'package.json')));
+    manifest.workspaces = ['client'];
+    manifest.scripts.prebuild = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'))).scripts.prebuild;
+    manifest.scripts.postinstall = 'node -e "process.exit(98)"';
+    manifest.scripts.build = `node -e "if(require(require.resolve('update-fixture-dependency',{paths:['./client']}))!=='installed')process.exit(99)" && ${manifest.scripts.build}`;
+    fs.writeFileSync(path.join(upstream, 'package.json'), JSON.stringify(manifest));
     git(upstream, 'add', '.');
     git(upstream, 'commit', '-m', 'release');
     fs.writeFileSync(path.join(checkout, 'local.txt'), 'unsaved work\n');
@@ -89,7 +110,7 @@ for (const tracked of [false, true]) {
     const update = require('node:vm').runInNewContext(
       source.slice(source.indexOf('function runUpdateCommand('), source.indexOf('/** Reload every renderer'))
         + '\nupdateDesktopInPlace',
-      { spawn, process, getProjectRoot: () => checkout },
+      { spawn, process: { ...process, env: { ...process.env, NODE_ENV: 'production' } }, getProjectRoot: () => checkout },
     );
     await update();
     assert.equal(git(checkout, 'rev-parse', 'HEAD'), git(upstream, 'rev-parse', 'HEAD'));

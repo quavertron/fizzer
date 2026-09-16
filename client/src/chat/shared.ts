@@ -4,20 +4,25 @@ import type {
 } from './types';
 
 export const CHAT_NOTE_MARKER = 'cascade://chat-channel';
+export const VOICE_NOTE_MARKER = 'cascade://voice-channel';
+export function isVoiceChannel(content: string) {
+  return content.trim().split(/\s/, 1)[0] === VOICE_NOTE_MARKER;
+}
 const CHAT_MESSAGE_GROUP_WINDOW_MS = 90_000;
 
 export function createChatAgentRegistrationId() {
   return `reg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Preserve cached profiles when lean presence events omit that heavier map. */
+/** Preserve cached photos when realtime presence omits avatars or entire profiles. */
 export function mergeChatPresence(
   prior: ChatChannelPresence | undefined,
   incoming: Partial<ChatChannelPresence>,
 ): ChatChannelPresence {
-  const nextProfiles = incoming.profiles && Object.keys(incoming.profiles).length > 0
-    ? { ...(prior?.profiles || {}), ...incoming.profiles }
-    : (prior?.profiles || incoming.profiles || {});
+  const nextProfiles = { ...prior?.profiles };
+  for (const [username, profile] of Object.entries(incoming.profiles || {})) {
+    nextProfiles[username] = { ...nextProfiles[username], ...profile };
+  }
   return {
     participants: incoming.participants ?? prior?.participants ?? [],
     online: incoming.online ?? prior?.online ?? [],
@@ -34,7 +39,7 @@ type LocalUserProfile = {
 };
 
 /**
- * Presence snapshots omit avatarUrl on purpose (inline photos are huge).
+ * Realtime presence omits avatarUrl on purpose (inline photos are huge).
  * Paint the signed-in user's session photo onto every channel profile map.
  */
 export function applyLocalUserProfile(
@@ -58,11 +63,13 @@ export function applyLocalUserProfile(
 }
 
 /** Keep a burst compact, but never fold a later conversational turn into it. */
-export function canGroupChatMessages(a: ChatMessage, b: ChatMessage) {
-  if (a.author.trim() !== b.author.trim()) return false;
-  const aKey = a.registrationId ?? a.agentId ?? null;
-  const bKey = b.registrationId ?? b.agentId ?? null;
-  if (aKey !== bKey) return false;
+export function canGroupChatMessages(
+  a: ChatMessage,
+  b: ChatMessage,
+  identity = (message: ChatMessage) => `${message.registrationId ?? message.agentId ?? ''}:${message.author.trim()}`,
+) {
+  if (identity(a) !== identity(b)) return false;
+  if (new Date(a.createdAt).toDateString() !== new Date(b.createdAt).toDateString()) return false;
   const elapsed = Date.parse(b.createdAt) - Date.parse(a.createdAt);
   return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= CHAT_MESSAGE_GROUP_WINDOW_MS;
 }
@@ -77,7 +84,7 @@ export function canMergeChatMessages(a: ChatMessage, b: ChatMessage) {
   return true;
 }
 
-/** Remove hidden coordinator control markers from visible content checks. */
+/** Internal checkpoint metadata is never chat prose, including partial streamed markers. */
 export function stripChatControlMarkers(body: string): string {
   return body.replace(/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?(?:-->|$)/g, '').trim();
 }

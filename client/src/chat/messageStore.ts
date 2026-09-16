@@ -14,7 +14,7 @@
  * `useSyncExternalStore` bails out correctly.
  */
 
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { ChatMessage } from './types';
 import { api, ApiError } from '../api';
 import { isLiveAgentStatus, type ChatMessageSnapshotBaseline } from './runBlocks';
@@ -27,7 +27,7 @@ export async function fetchChatMessageSnapshot(
   signal?: AbortSignal,
 ): Promise<ChatMessage[]> {
   const path = `/api/vaults/${vaultId}/channels/${channelId}/messages`;
-  const { messages = [] } = await api<{ messages: ChatMessage[] }>(`${path}?detail=list&limit=120`, { signal });
+  const { messages = [], beforeSeq } = await api<{ messages: ChatMessage[]; beforeSeq?: number }>(`${path}?detail=list&limit=120`, { signal });
   signal?.throwIfAborted();
   const ids = new Set(messages.map((message) => message.id));
   const missing = [...baseline.ids.values()].filter((message) => (
@@ -44,17 +44,23 @@ export async function fetchChatMessageSnapshot(
     }
   }));
   signal?.throwIfAborted();
-  return [...confirmed.filter((message): message is ChatMessage => message != null), ...messages];
+  // The snapshot is authoritative only within its raw database window. Older
+  // loaded pages are not deletions; realtime still applies explicit removals.
+  const older = [...baseline.ids.values()].filter(message => (
+    beforeSeq != null && message.seq != null && message.seq < beforeSeq
+    && !isLiveAgentStatus(message.status) && !ids.has(message.id)
+  ));
+  return [...older, ...confirmed.filter((message): message is ChatMessage => message != null), ...messages];
 }
 
 const EMPTY: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[];
 
 type Listener = () => void;
 
-export type ChannelAgentActivity = 'running' | 'finished';
+export type ChannelAgentActivity = 'running' | 'queued' | 'finished';
 
 function isRunningAgent(message: ChatMessage): boolean {
-  return Boolean(message.agentId) && isLiveAgentStatus(message.status);
+  return Boolean(message.agentId) && message.status === 'running' && message.runId != null;
 }
 
 function isFinishedAgent(message: ChatMessage): boolean {
@@ -66,11 +72,39 @@ function isFinishedAgent(message: ChatMessage): boolean {
     && !/^Thinking(?:\.{3}|…)$/.test(message.body.trim());
 }
 
+// Checkpoint envelopes still reach the dispatcher; they are never conversation.
+function visibleMessages(messages: ChatMessage[]): ChatMessage[] {
+  const hidden = (message: ChatMessage) => message.id.startsWith('sys-next-')
+    || (Boolean(message.agentId) && !isLiveAgentStatus(message.status)
+      && ['', 'Thinking...'].includes(message.body.trim()));
+  return messages.some(hidden) ? messages.filter(message => !hidden(message)) : messages;
+}
+
 class ChatMessageStore {
+  private activityUserId: number | null = null;
   private channels = new Map<string, ChatMessage[]>();
   private listeners = new Map<string, Set<Listener>>();
   private agentActivity: Readonly<Record<string, ChannelAgentActivity>> = Object.freeze({});
   private agentActivityListeners = new Set<Listener>();
+
+  setActivityUserId(userId: number | null): void {
+    if (this.activityUserId === userId) return;
+    this.activityUserId = userId;
+    for (const channelId of Object.keys(this.agentActivity)) this.setAgentActivity(channelId, null);
+    for (const [channelId, messages] of this.channels) {
+      if (messages.some(this.isOwnRunningAgent)) this.setAgentActivity(channelId, 'running');
+      else if (messages.some(this.isOwnQueuedAgent)) this.setAgentActivity(channelId, 'queued');
+    }
+  }
+
+  private isOwnRunningAgent = (message: ChatMessage): boolean => (
+    this.activityUserId != null && message.actorUserId === this.activityUserId && isRunningAgent(message)
+  );
+
+  private isOwnQueuedAgent = (message: ChatMessage): boolean => (
+    this.activityUserId != null && message.actorUserId === this.activityUserId
+    && Boolean(message.agentId) && isLiveAgentStatus(message.status) && !isRunningAgent(message)
+  );
 
   /** Current messages for a channel; a shared frozen array when none are cached. */
   getChannel(channelId: string): ChatMessage[] {
@@ -91,7 +125,8 @@ class ChatMessageStore {
   update(channelId: string, updater: (prev: ChatMessage[]) => ChatMessage[]): void {
     const hadChannel = this.channels.has(channelId);
     const prev = this.getChannel(channelId);
-    const next = updater(prev);
+    const updated = updater(prev);
+    const next = visibleMessages(updated);
     if (next === prev) return;
     this.channels.set(channelId, next);
     this.reconcileAgentActivity(channelId, prev, next, hadChannel);
@@ -113,6 +148,7 @@ class ChatMessageStore {
 
   /** Set a channel's list outright (used by the load/reconcile path). */
   set(channelId: string, messages: ChatMessage[]): void {
+    messages = visibleMessages(messages);
     if (this.channels.get(channelId) === messages) return;
     const hadChannel = this.channels.has(channelId);
     const previous = this.getChannel(channelId);
@@ -170,20 +206,25 @@ class ChatMessageStore {
     next: ChatMessage[],
     hadChannel: boolean,
   ): void {
-    if (next.some(isRunningAgent)) {
+    if (next.some(this.isOwnRunningAgent)) {
       this.setAgentActivity(channelId, 'running');
       return;
     }
+    if (next.some(this.isOwnQueuedAgent)) {
+      this.setAgentActivity(channelId, 'queued');
+      return;
+    }
 
-    const previouslyRunning = previous.some(isRunningAgent)
+    const previouslyRunning = previous.some(this.isOwnRunningAgent)
       || this.agentActivity[channelId] === 'running';
+    if (this.agentActivity[channelId] === 'queued') this.setAgentActivity(channelId, null);
     const previousIds = new Set(previous.map((message) => message.id));
     const receivedFinishedAgent = hadChannel
       && next.some((message) => !previousIds.has(message.id) && isFinishedAgent(message));
     if (previouslyRunning || receivedFinishedAgent) {
-      const finishedTransition = previous.some((message) => isRunningAgent(message)
+      const finishedTransition = previous.some((message) => this.isOwnRunningAgent(message)
         && next.some((candidate) => candidate.id === message.id && isFinishedAgent(candidate)));
-      const failedTransition = previous.some((message) => isRunningAgent(message)
+      const failedTransition = previous.some((message) => this.isOwnRunningAgent(message)
         && next.some((candidate) => candidate.id === message.id
           && (candidate.status === 'failed' || candidate.status === 'canceled')));
       this.setAgentActivity(
@@ -218,7 +259,8 @@ export function useChannelMessages(channelId: string): ChatMessage[] {
 
 /** Subscribe the app shell to start/finish transitions without making it render
  * for the token stream itself. */
-export function useAgentActivity(): Readonly<Record<string, ChannelAgentActivity>> {
+export function useAgentActivity(userId: number | null): Readonly<Record<string, ChannelAgentActivity>> {
+  useEffect(() => { chatMessageStore.setActivityUserId(userId); }, [userId]);
   return useSyncExternalStore(
     (listener) => chatMessageStore.subscribeAgentActivity(listener),
     () => chatMessageStore.getAgentActivity(),

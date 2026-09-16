@@ -1,5 +1,19 @@
 # Agent runtime
 
+## Helper CLI errors
+
+`cascade-chat`, `cascade-note`, and `cascade-scratchpad` keep successful output
+unchanged. With `--json`, failures write one JSON object to stderr and retain
+their nonzero exit status: `{"error":{"command":"cascade-chat","code":"cli_error","message":"...","exitCode":1}}`.
+Without `--json`, errors retain the command prefix and readable message.
+
+HTTP errors additionally include `status`, `method`, `path`, and `details` (the
+complete server response, or `{ "raw": "..." }` for non-JSON responses).
+`code` uses the server error code when available, otherwise `http_error`;
+local failures use a system error code when available, otherwise `cli_error`.
+Revision conflicts retain `revision_conflict` and all recovery fields in
+`details`; callers must read and reconcile before trying another write.
+
 ## Supported adapters
 
 The shared agent adapter is `cli-agents/cli-agent.ts`. Current agent IDs include
@@ -74,50 +88,129 @@ membership setting, not a separate project-management surface:
   users' agents require an explicit opted-in @mention;
 - an explicit `@specialist` mention takes the direct zero-hop path instead;
 - the coordinator answers tiny Q&A and one-liner fixes itself;
-- for almost any non-trivial request it creates a **mission** — durable,
-  searchable task data projected on the chat transcript (subagents optional;
-  a solo mission the coordinator executes alone is normal);
-- for parallel or long work it may also delegate focused tasks to other
-  registered channel agents, or to anonymous subagents of a named agent
-  (including itself) via `mission delegate --anonymous`.
+- for non-trivial work it creates a **mission** with a linked brief. Mission
+  planning includes research as needed; within the explicit user request or accepted
+  scope, the coordinator assigns implementation, independent agent review, fixes,
+  integration, and verification tasks;
+- every assignment declares its purpose:
+  `research|implementation|review|fix|integration|verification`. By default omit
+  `--to` (API: omit `assignee`) to use the coordinator's own anonymous subagent.
+  The existing runner inherits the coordinator registration's provider, model,
+  Hermes profile and reasoning settings, with a fresh `mission:<task-id>` session.
+  `--effort` is an optional supported per-task override. Use `--to @agent` only
+  for an explicit human assignment override; missing/unavailable targets fail
+  rather than falling back to another agent. Existing tasks are not reassigned;
+- mission notes are shared milestone/feature records. Workers report findings
+  and outcomes through their task summaries; note edits never implicitly
+  dispatch work or approve a mission.
 
 The provider session remains the reasoning and execution environment. Cascade
 only supplies the durable coordination substrate through `cascade-chat`:
 
 ```text
 cascade-chat members
-cascade-chat mission start --title "..." --objective "..."
-cascade-chat mission delegate --mission <id> --to @agent --task "..." --message "..."
-cascade-chat mission delegate --mission <id> --to @agent --anonymous --effort high --task "..." --message "..."
+cascade-chat mission start --title "..." --message "Brief and acceptance request"
+cascade-chat mission note create --mission <id> --kind milestone --title "..." --content "..."
+cascade-chat mission note list --mission <id>
+cascade-chat mission delegate --mission <id> --task "Investigate ..." --purpose research --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --task "Implement ..." --purpose implementation --message "..." --brief-note <note-id>
+cascade-chat mission delegate --mission <id> --task "Review ..." --purpose review --message "..." --brief-note <note-id> --after <implementation-task-id>
+cascade-chat mission update --task <review-task-id> --status completed --review-outcome accepted --summary "..."
+cascade-chat mission delegate --mission <id> --task "Integrate ..." --purpose integration --message "..." --after <review-task-id>
+cascade-chat mission delegate --mission <id> --task "Verify ..." --purpose verification --message "..." --after <integration-task-id>
+cascade-chat mission update --task <verification-task-id> --status completed --verification-passed true --summary "Observed checks and artifact/live evidence"
 cascade-chat mission status --mission <id>
-cascade-chat mission list
 cascade-chat mission history --mission <id>
-cascade-chat mission retry --task <id> --summary "..."
-cascade-chat mission finish --mission <id> --summary "..." --verification "Observed checks and artifact/live revision evidence"
+cascade-chat mission finish --mission <id> --summary "Delivered" --verification "Observed checks and artifact/live revision evidence"
 ```
 
-Named assignees still get at most one active mission task at a time.
-`--anonymous` creates a parallel clone of that agent (isolated session, no
-extra channel membership) so a coordinator can fan out several sols at
-different effort levels without registering duplicate members. Workers inherit
-that agent's tools and authority, not its coordinator role: they execute one
-task and cannot start or delegate missions.
+Already authorized work needs no separate manual brief approval or repeated human
+review. Agents maintain the brief and own independent review and verification.
+Ask only when authority is missing or scope materially changes; preserve Stop.
+Historical missions with unresolved resumption decisions remain fenced.
+
+The optional human approval endpoint remains available for explicit decisions
+against current note revisions, including historical resumption:
+
+```text
+cascade-chat mission approve --mission <id> --expected-revisions '{"<note-id>":1}'
+```
+
+The server rejects approval from agent credentials. Anonymous review runs in a
+distinct task/provider session, even when it inherits the same coordinator model.
+A non-anonymous reviewer must be distinct from the implementation/fix assignee
+it reviews. Review acceptance and passed
+verification are explicit task outcomes; provider completion alone is not
+evidence of either.
+
+Named assignees still get at most one active mission task at a time. Workers
+inherit their assigned agent's tools and authority, not its coordinator role:
+they execute one task and cannot start missions or use coordinator delegation.
+A worker can create direct child tasks under its own task using its own agent
+identity and the existing runner concurrency limits. Children start isolated
+worktrees from the parent's committed workspace state. Commit prerequisites
+before creating a child; uncommitted edits are not inherited:
+
+```text
+cascade-chat mission child --task "Parser tests" --message "Implement only the parser regression tests"
+cascade-chat mission join
+```
+
+The parent keeps doing independent work, then ends its turn to join. Once its
+children settle, the same parent task resumes with each child's summary, branch,
+workspace and verification for integration. Failed or blocked children must be
+resolved before parent completion. Stopping a parent cancels unfinished children;
+steering the parent preserves them. Recovery retries unacknowledged stops for
+every canceled task, including parents, until the runner acknowledges
+cancellation. Children do not replace the mission's explicit review,
+integration, or verification path.
 
 `chat_missions` and `chat_mission_tasks` are authoritative, while
 `chat_mission_events` is an append-only timeline with no retention window. A compact mission
 projection is materialized on the root chat message so it arrives in the normal
 transcript, Socket.IO updates, linked multiplayer channels, and reloads without
 a second client-owned task store. Worker terminal events update their task. A
-failed or blocked task puts the still-open mission in `attention`; dependent
-tasks remain pending instead of being permanently blocked, and retrying keeps
-the task identity, workspace, and evidence. The coordinator reviews and
-integrates worker evidence, then explicitly finishes the mission; worker
-completion alone puts a mission in `reviewing`, not `completed`.
+failed or blocked task without qualifying completion evidence puts the still-open
+mission in `attention`; dependent tasks remain pending. A retry preserves task
+identity, workspace and history, but increments the attempt, clears the current
+run/dispatch binding and invalidates linked recovery evidence. Inspect completed
+artifacts and actual provider activity before retrying; a failed projection alone
+is not proof execution stopped. Stop or withdrawn authority must not be undone
+by a retry. Use `mission diagnose --task <id>` and mission history to inspect
+current evidence before choosing recovery.
+
+Mission phase starts as `planning` and becomes `executing` when the coordinator
+assigns work beyond research. Research can continue in either phase. Phase and
+approval metadata never grant user authority. The mission is `closed` only after
+accepted review, completed integration,
+and passed verification. A completed provider run never implies review
+acceptance or verification success. Failed or changes-requested work must
+follow the explicit fix/review path before downstream integration.
 
 Chat-to-agent intent is also an outbox (`chat_agent_dispatches`). Message and
-target survive renderer reloads and reconnects, and a unique run key ensures
-multiple clients recovering the same dispatch still launch only one provider
-process. Explicit mission delegation is the permission boundary that lets a
+target survive renderer reloads and reconnects. The server admits and starts
+ordinary chat, worker, and review turns without an open chat page. It preserves
+requester and owner identity and rechecks access before starting a run. A unique
+run key prevents duplicate starts. Bounded jobs serialize each agent session while
+other sessions continue through slow desktop acknowledgments. Offline owners'
+requests remain untouched until their runner reconnects, preserving maintenance
+cutover checks. Interrupted startups with no delegation lease settle as failed
+once they are at least 30 seconds old and the owner reconnects, so their tasks can
+be retried.
+
+Desktop delegation retains its original payload in `delegated_runs` until an
+owned native event confirms receipt. Unconfirmed deliveries replay the same run
+ID and payload at 15-second intervals while the owner is online, with at most five
+attempts before an explicit failure. They survive server restarts and wait without
+mutating offline work. Native running events and heartbeats update the stored run
+status; a recorded delegation alone is not proof that a worker started.
+
+Electron main retains terminal events separately from its bounded event history
+until the server acknowledges persisted settlement. Renderer reloads and unrelated
+worker output cannot evict an unacknowledged completion. Duplicate receipts preserve
+the first terminal status, including a prior Stop.
+
+Explicit mission delegation is the permission boundary that lets a
 coordinator call a worker which has disabled ordinary agent-to-agent mentions.
 Shared-channel users can only launch registrations whose owner enabled
 multiplayer pings.
@@ -143,17 +236,15 @@ before delegation.
 
 ## Durable authority and completion evidence
 
-Mission creation snapshots owner-authored messages in the root reply chain.
-Use `mission start --authority-messages <id,id>` to include earlier explicit
-instructions from the same channel. Agent-authored messages cannot be recorded
-as user grants. Saved instructions and the mission objective accompany worker
-and review dispatches. Existing missions have empty source records; recover their
-original user context when authority is unclear. Later user corrections and
-revocations take precedence over saved instructions.
+Mission creation stores a linked brief and shared mission notes. The brief and
+current note revisions accompany worker and review dispatches; later note
+changes are surfaced to the coordinator and workers. These records preserve
+context, not additional tool permissions, and note edits do not implicitly
+dispatch work or approve a mission.
 
-These records preserve context, not additional tool permissions. They do not
-constitute a general spend/deploy permission system. Coordinator completion
-requires `--verification` separately from the worker summary, alongside the
+The brief and note records preserve context, not additional tool permissions;
+they do not constitute a general spend/deploy permission system. Coordinator
+completion requires `--verification` separately from the worker summary,
 existing bound-run evidence checks. Record actual check results and inspectable
 artifacts or live revisions. The server checks presence and provenance of run
 records; the coordinator remains responsible for verifying external claims.
@@ -181,6 +272,45 @@ workspaces still require agents to preserve unrelated files or use isolated
 worktrees; the mission scheduler cannot lock arbitrary external side effects.
 Production deployment serialization remains owned by GitHub Actions.
 
+A coordinator can redirect its own worker with
+`cascade-chat mission steer --task <id> --message "<correction>"` (stdin also works).
+The helper pins the current task attempt and run. The server records the instruction
+in mission history, waits for provider stop acknowledgment, and resumes the saved
+provider session in the same task/work item and workspace. The correction replaces
+repeated task instructions in the continuation; existing context and file edits
+remain. Worker dispatches never interrupt the coordinator's foreground session.
+
+The acknowledgment distinguishes queued instructions from a dispatched worker run;
+dispatch is not proof that the agent acted on them. Queued steering replays through
+the existing server outbox, including after reconnect. Only one outstanding correction
+per task is accepted. Steering waits if no provider session has been saved, rejects
+finished or changed tasks, and is revoked by an explicit stop. Mission history records
+the request and outcome; the following task-start event identifies the continuation.
+Workers cannot steer peers, and steering another owner's worker is rejected.
+
+## Coordinator continuation recovery
+
+`cascade-chat continuation` reads the owning coordinator's unfinished responsibility
+and current revision. Save a disposition with `--status pending|waiting|completed|canceled`,
+`--revision <read revision>` and `--summary <remaining work or disposition>`.
+Mission workers use their assigned task lifecycle instead.
+
+`pending` requests another turn after the preceding turn settles and the same
+coordinator conversation is idle. `waiting` preserves responsibility without
+polling; meaningful worker evidence or an owner message can provide the next wake.
+`completed` means the recorded responsibility is handled; `canceled` requires
+owner cancellation. New owner messages take precedence over queued continuations.
+
+Since `dcf1083c` (2026-09-06), a failed continuation dispatch or run receives at most
+one automatic recovery attempt per responsibility revision through the existing
+outbox. Before that change, failed continuations could leave responsibility
+pending without a replacement dispatch. If recovery also fails, responsibility
+and the failure reason remain in `waiting`, with no automatic retries left.
+Inspect that failure and current artifacts before resuming authorized work; do
+not invent a resume condition or reset the revision just to obtain more retries.
+Stop cancels continuation recovery. This bounded mechanism does not establish
+sustained recurring-work reliability.
+
 ## Cancellation and recovery
 
 Cancellation is routed to the owning desktop and then persisted server-side.
@@ -189,4 +319,55 @@ is no longer connected.
 
 Brief runner disconnects receive a grace period. After a server restart, the
 desktop reports active run IDs so ownership can be reclaimed before orphaned
-runs are failed.
+runs are failed. Reclaim preserves a surviving provider process; it does not
+restart a process killed by quitting or restarting the desktop. A canceled task
+is also distinct from the runner acknowledging that its process stopped; task
+recovery retries cancellation while the bound run remains queued or running.
+
+Revision conflicts from app context, coordinator continuation, and mission
+interpretation return HTTP 409 with `code: "revision_conflict"`, `currentRevision`,
+and `changedFields`. The CLI preserves this JSON in its error output and exits
+unsuccessfully without retrying the write. `changedFieldsBasis: "submitted_values"`
+means the listed persisted fields differ from the values in this request; omitted
+fields and publication-only inputs are not compared. These records have no
+historical baseline (`changesSinceRevisionKnown: false`), so an empty list does
+not mean nothing changed. Re-read the existing detail endpoint and merge
+intentionally before saving with the current revision.
+
+## Change-driven wiki maintenance
+
+Wiki upkeep is opt-in per vault. With the owner's authorization, enable it using
+`cascade-note wiki enable --channel <local-channel-id> --registration <owner-agent-id>`.
+Use `cascade-note wiki status --json` for the pending references, last result and
+run ID; `cascade-note wiki disable` pauses it and cancels its outstanding pass.
+The corresponding owner-scoped endpoint is `GET/PUT /api/vaults/:id/wiki-maintenance`.
+Enabling it does not immediately rewrite a vault or establish permission for a
+one-time cleanup.
+
+Content changes and completed owner runs with substantive summaries (at least
+80 characters) mark the vault dirty. Two minutes of quiet coalesce the changes,
+with at least one hour between starts. The existing dispatch scheduler performs
+only queued maintenance; there is no idle model polling or additional timer.
+The owner's registered desktop runner must be online. Each pass uses a fresh
+conversation through the usual serialized agent dispatch queue, preserving its
+admission, Stop and recovery behavior.
+
+A pass is instructed to read at most twelve relevant records and propose at most
+three edits to existing canonical topics or navigation. The server enforces the
+three-page limit, a 30 KB content limit per page, vault ownership, content revision
+checks and private-block preservation. It saves `pre-ai` and `ai-edit` versions.
+Conflicting proposals reject the batch before writes. Recovery snapshots precede
+filesystem writes, so an I/O failure can leave partial work recoverable in history.
+Redundant generated text may become a linked pointer after its evidence has been
+consolidated; automatic creation, deletion and folder reorganization are outside
+this first maintenance pass. Original user writing and useful uncertainty remain
+part of the curator's preservation instructions, not facts that a text validator
+can infer.
+
+The change queue retains thirty references; overflow requests a current-vault
+review. Changes arriving during a pass remain queued for the next allowed pass.
+Curator writes, curator completion, chat-marker notes and `_agent` memory notes
+do not trigger another pass. Success/no-op settles without a generated report or
+suggestion. Invalid output, conflicts, failure or cancellation pauses upkeep and
+retains the reason in status. A ten-minute execution limit requests cancellation;
+resume explicitly after inspecting the result and rereading affected pages.

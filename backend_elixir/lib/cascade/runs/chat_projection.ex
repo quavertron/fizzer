@@ -50,6 +50,12 @@ defmodule Cascade.Runs.ChatProjection do
 
     target = target(run_id, owner_id) || restore_target(run_id, owner_id)
     projection = content(state, not is_nil(target) and target.final_reply_only)
+
+    projection =
+      if Cascade.WikiMaintenance.run?(run_id),
+        do: %{projection | body: "", blocks: [], harnessLog: ""},
+        else: projection
+
     persisted = cursor.persisted
     fingerprint = persist_fingerprint(projection)
 
@@ -290,7 +296,12 @@ defmodule Cascade.Runs.ChatProjection do
 
     %{
       body: if(final_reply_only and no_reply?(body), do: "", else: body),
-      blocks: if(final_reply_only, do: [], else: state.blocks),
+      blocks:
+        cond do
+          not final_reply_only -> state.blocks
+          done or no_reply?(text) -> []
+          true -> normalize_blocks(state.latest_assistant_text)
+        end,
       harnessLog: if(final_reply_only, do: "", else: state.harness_log),
       status: state.status,
       terminal_status: state.terminal_status,
@@ -439,7 +450,7 @@ defmodule Cascade.Runs.ChatProjection do
 
         emit_message(target, message, dispatches)
 
-        if projection.done and trim(projection.body) == "" do
+        if projection.done and Messages.terminal_shell?(message) do
           SQL.exec("DELETE FROM chat_messages WHERE id=? AND channel_id=?", [
             target.message_id,
             target.source_channel_id

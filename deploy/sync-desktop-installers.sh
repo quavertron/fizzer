@@ -21,15 +21,29 @@ trap cleanup EXIT
 
 fetch() {
   curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
-    --connect-timeout 10 --max-time 1800 "$RELEASE_URL/$1" -o "$staging/$1"
+    --connect-timeout 10 --max-time 1800 "$RELEASE_URL/$1?refresh=$refresh" -o "$staging/$1"
 }
 
-fetch SHA256SUMS
-for file in "${FILES[@]}"; do
-  fetch "$file"
-  test -s "$staging/$file"
+# The rolling release replaces assets independently, and redirects may still
+# point at the previous upload. Retry the entire set with fresh URLs; never
+# publish any of it until one complete set matches its manifest.
+for attempt in 1 2 3; do
+  refresh="$(date +%s%N)-$attempt"
+  fetch SHA256SUMS
+  for file in "${FILES[@]}"; do
+    fetch "$file"
+    test -s "$staging/$file"
+  done
+  if (cd "$staging" && sha256sum --check SHA256SUMS); then
+    break
+  fi
+  if [[ "$attempt" == 3 ]]; then
+    echo "Error: desktop installers failed checksum verification after $attempt complete downloads; existing installers preserved." >&2
+    exit 1
+  fi
+  echo "==> Rolling desktop release changed or returned stale assets; retrying the complete set ($attempt/3)." >&2
+  sleep 5
 done
-(cd "$staging" && sha256sum --check --status SHA256SUMS)
 
 # rename(2) keeps the existing installer available until each verified
 # replacement is complete; never copy a partial download into the live route.

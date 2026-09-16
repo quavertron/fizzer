@@ -116,10 +116,14 @@ defmodule Cascade.Accounts.VaultMembers do
         {:error, "Only the vault owner can remove members"}
 
       true ->
-        SQL.exec("DELETE FROM vault_members WHERE vault_id = ? AND user_id = ?", [
-          vault_id,
-          target_id
-        ])
+        SQL.transaction(fn ->
+          SQL.exec("DELETE FROM vault_members WHERE vault_id = ? AND user_id = ?", [
+            vault_id,
+            target_id
+          ])
+
+          Cascade.Chat.Agents.remove_departed_owners(vault_id)
+        end)
 
         :ok
     end

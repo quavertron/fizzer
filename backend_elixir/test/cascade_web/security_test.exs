@@ -67,6 +67,22 @@ defmodule CascadeWeb.SecurityTest do
     assert mobile.status == nil
     assert get_resp_header(mobile, "access-control-allow-origin") == ["capacitor://localhost"]
 
+    loopback_v4 =
+      conn(:options, "/api/session")
+      |> put_req_header("origin", "http://127.0.0.1:62076")
+      |> Security.call([])
+
+    assert loopback_v4.status == 204
+    assert get_resp_header(loopback_v4, "access-control-allow-origin") == ["http://127.0.0.1:62076"]
+
+    loopback_named =
+      conn(:get, "/api/session")
+      |> put_req_header("origin", "http://localhost:5173")
+      |> Security.call([])
+
+    assert loopback_named.status == nil
+    assert get_resp_header(loopback_named, "access-control-allow-origin") == ["http://localhost:5173"]
+
     rejected =
       conn(:get, "/api/session")
       |> put_req_header("origin", "https://attacker.example")

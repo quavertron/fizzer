@@ -8,10 +8,61 @@ import {
   databaseSnapshot,
   materializeSchemaFingerprint,
   compareSchemaFingerprints,
+  recognizeMissionWorkspaceMigration,
   parseArgs,
   readSchemaFingerprint,
   runComparison,
 } from './check-elixir-data-compat.mjs';
+
+test('new tables roll forward without a data audit while destructive schema changes fail', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec('CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES(1)');
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    db.exec(`CREATE TABLE app_context(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, content TEXT NOT NULL, revision TEXT NOT NULL);
+      CREATE INDEX app_context_revision ON app_context(revision)`);
+    const after = fingerprint();
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.deepEqual(db.prepare('SELECT * FROM users').all(), [{id: 1}]);
+    assert.deepEqual(compareSchemaFingerprints(after, before), ['database schema changed']);
+    db.exec('CREATE TRIGGER app_context_delete AFTER INSERT ON app_context BEGIN DELETE FROM users; END');
+    assert.deepEqual(compareSchemaFingerprints(after, fingerprint()), ['database schema changed']);
+    db.exec('DROP TRIGGER app_context_delete; ALTER TABLE users ADD COLUMN required TEXT NOT NULL DEFAULT "new constraint"');
+    assert.deepEqual(compareSchemaFingerprints(after, fingerprint()), ['database schema changed']);
+  } finally { db.close(); }
+});
+
+test('profile colors permit only the additive column and pinned ledger entry', () => {
+  const db = new Database(':memory:');
+  try {
+    for (const table of ['users', 'chat_agent_members', 'vault_agents']) {
+      db.exec(`CREATE TABLE ${table}(id INTEGER PRIMARY KEY, name TEXT NOT NULL, UNIQUE(name))`);
+      db.prepare(`INSERT INTO ${table}(name) VALUES (?)`).run('existing');
+    }
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    for (const table of ['users', 'chat_agent_members', 'vault_agents']) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN color TEXT NOT NULL DEFAULT 'FFFFFF'`);
+      assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(), [{ id: 1, name: 'existing', color: 'FFFFFF' }]);
+    }
+    const after = fingerprint();
+    after.migrations = [{ version: 3, name: 'profile_colors', checksum: 'd3e46239f158d82455643c652333e60247448736e49ff71251a494e3c9a43ac7' }];
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.notDeepEqual(compareSchemaFingerprints(after, before), []);
+    for (const mutate of [
+      x => { x.objects[0].sql = x.objects[0].sql.replace('FFFFFF', '000000'); },
+      x => { x.objects[0].sql = x.objects[0].sql.replace('name TEXT NOT NULL', 'name TEXT'); },
+      x => { x.migrations[0].checksum = 'unknown'; },
+      x => { x.migrations[0].name = 'unknown'; },
+      x => { x.migrations.push({ version: 4 }); },
+    ]) {
+      const changed = structuredClone(after);
+      mutate(changed);
+      assert.notDeepEqual(compareSchemaFingerprints(before, changed), []);
+    }
+  } finally { db.close(); }
+});
 
 test('rolling schema classification permits only the pinned agent flag transitions', () => {
   const base = { type: 'table', name: 'chat_agent_members', tableName: 'chat_agent_members', sql: "CREATE TABLE \"chat_agent_members\" ( id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, agent_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', mention TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '', priority_service_tier INTEGER NOT NULL DEFAULT 0, cwd TEXT NOT NULL DEFAULT '', context_prompt TEXT NOT NULL DEFAULT '', taggable_by_agents INTEGER NOT NULL DEFAULT 0, reply_to_every_message INTEGER NOT NULL DEFAULT 0, orchestrator INTEGER NOT NULL DEFAULT 0, pingable_by_others INTEGER NOT NULL DEFAULT 0, yolo INTEGER NOT NULL DEFAULT 0, conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT '' )" };
@@ -27,6 +78,16 @@ test('rolling schema classification permits only the pinned agent flag transitio
     { objects: [finalOnly], migrations: [] },
   ), []);
 
+  const suggestions = { ...finalOnly, sql: finalOnly.sql.replace("conversation_id TEXT", "next_step_suggestions INTEGER NOT NULL DEFAULT 0, conversation_id TEXT") };
+  assert.deepEqual(compareSchemaFingerprints(
+    { objects: [finalOnly], migrations: [] },
+    { objects: [suggestions], migrations: [] },
+  ), []);
+  assert.deepEqual(compareSchemaFingerprints(
+    { objects: [suggestions], migrations: [] },
+    { objects: [finalOnly], migrations: [] },
+  ), ['database schema changed']);
+
   const unknown = { ...finalOnly, sql: finalOnly.sql.replace('DEFAULT 0, yolo', 'DEFAULT 1, yolo') };
   assert.deepEqual(compareSchemaFingerprints(
     { objects: [ambient], migrations: [] },
@@ -36,6 +97,47 @@ test('rolling schema classification permits only the pinned agent flag transitio
     { objects: [ambient], migrations: [] },
     { objects: [base], migrations: [] },
   ), ['database schema changed']);
+});
+
+test('reviewed mission workspace migration requires drained mode and rejects unrelated drift', () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/mission-workspace-schema-transition.json', import.meta.url)));
+  for (const { before, after } of [fixture, fixture.production]) {
+    const compare = (left, right, allow = true) => runComparison({
+      schemaOnly: true, beforeFingerprint: left, afterFingerprint: right,
+      allowMissionWorkspaceMigration: allow,
+    });
+    assert.equal(recognizeMissionWorkspaceMigration(before, after), true);
+    assert.equal(compare(before, after, false).ok, false, 'mission fencing must never qualify for rolling');
+    assert.equal(compare(before, after).cutoverMode, 'drained');
+    assert.equal(compare(before, after).ok, true);
+    assert.equal(compare(after, after).ok, true, 'subsequent releases remain rolling');
+    assert.equal(compare(after, after).cutoverMode, undefined);
+    assert.equal(compare(after, before).ok, false, 'reverse migration is not authorized');
+
+    for (const mutate of [
+      x => { x.objects[0].sql += ' WHERE 1=1'; },
+      x => { x.objects.pop(); },
+      x => { x.objects.push({ type: 'table', name: 'unreviewed', tableName: 'unreviewed', sql: 'CREATE TABLE unreviewed(id INTEGER)' }); },
+      x => { x.migrations[0].checksum = 'changed-history'; },
+      x => { x.migrations[1].checksum = 'unreviewed'; },
+      x => { x.migrations[1].name = 'another-migration'; },
+      x => { x.migrations.push({ version: 3, name: 'unexpected', checksum: 'unknown' }); },
+      x => { x.migrations.pop(); },
+    ]) {
+      const changed = structuredClone(after);
+      mutate(changed);
+      assert.equal(recognizeMissionWorkspaceMigration(before, changed), false);
+      assert.equal(compare(before, changed).ok, false);
+    }
+    const existing = { type: 'table', name: 'other', tableName: 'other', sql: 'CREATE TABLE other(id INTEGER)' };
+    const extendedBefore = { ...before, objects: [...before.objects, existing] };
+    const extendedAfter = { ...after, objects: [...after.objects, existing] };
+    assert.equal(compare(extendedBefore, extendedAfter).ok, true);
+    extendedAfter.objects[extendedAfter.objects.length - 1] = { ...existing, sql: 'CREATE TABLE other(id TEXT)' };
+    assert.equal(compare(extendedBefore, extendedAfter).ok, false);
+    assert.throws(() => parseArgs(['--before', 'a', '--after', 'b', '--allow-mission-workspace-migration']), /requires --schema-only/);
+  }
+  assert.equal(recognizeMissionWorkspaceMigration(fixture.before, fixture.production.after), false, 'reviewed hashes are directional pairs, not interchangeable shapes');
 });
 
 function fixture() {
@@ -237,6 +339,52 @@ test('state-based recovery migration preserves failed history and rejects invent
   }
 });
 
+test('next-step checkpoint migration only permits the reviewed empty table', () => {
+  const files = fixture();
+  try {
+    const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/chat/schema.ex', import.meta.url), 'utf8');
+    const ddl = schema.match(/CREATE TABLE IF NOT EXISTS chat_next_step_checks \([\s\S]*?\n    \)/)[0];
+    const after = new Database(files.after);
+    after.exec(ddl);
+    after.close();
+    assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+    const changed = new Database(files.after);
+    changed.pragma('foreign_keys = OFF');
+    changed.exec("INSERT INTO chat_next_step_checks(channel_id,registration_id,source_id,kind) VALUES('note-1','r','s','enable')");
+    changed.close();
+    assert.equal(runComparison(files).ok, false);
+    const malformed = new Database(files.after);
+    malformed.exec('DELETE FROM chat_next_step_checks; ALTER TABLE chat_next_step_checks ADD COLUMN unreviewed TEXT');
+    malformed.close();
+    assert.equal(runComparison(files).ok, false);
+  } finally {
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
+
+test('app context migration only permits the reviewed empty table', () => {
+  const files = fixture();
+  try {
+    const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/accounts/schema.ex', import.meta.url), 'utf8');
+    const ddl = schema.match(/CREATE TABLE IF NOT EXISTS app_context \([\s\S]*?\n    \)/)[0];
+    const after = new Database(files.after);
+    after.exec(ddl);
+    after.close();
+    assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+    const changed = new Database(files.after);
+    changed.pragma('foreign_keys = OFF');
+    changed.exec("INSERT INTO app_context(user_id,content,revision) VALUES(1,'guidance','r')");
+    changed.close();
+    assert.equal(runComparison(files).ok, false);
+    const malformed = new Database(files.after);
+    malformed.exec('DELETE FROM app_context; ALTER TABLE app_context ADD COLUMN unreviewed TEXT');
+    malformed.close();
+    assert.equal(runComparison(files).ok, false);
+  } finally {
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
+
 function dispatchAdmissionFixture() {
   const files = chatBackfillFixture();
   normalizeChatMessages(files.before, 'mission_task_id');
@@ -319,6 +467,60 @@ test('dispatch admission migration rejects schema, default, backfill, and histor
     });
 
   }
+});
+
+function deliveryFixture() {
+  const files = fixture();
+  const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/runs/schema.ex', import.meta.url), 'utf8');
+  const ddl = schema.match(/CREATE TABLE IF NOT EXISTS delegated_runs \([\s\S]*?\n    \)/u)?.[0];
+  const additions = [...schema.matchAll(/SQL.ensure_column\("delegated_runs", "([^"]+)", "([^"]+)"\)/gu)]
+    .map(([, name, definition]) => `ALTER TABLE delegated_runs ADD COLUMN ${name} ${definition};`).join('\n');
+  assert.ok(ddl && additions);
+  const db = new Database(files.before);
+  db.exec(`CREATE TABLE runs (id INTEGER PRIMARY KEY,owner_user_id INTEGER); INSERT INTO runs VALUES (10,1),(12,2); ${ddl};
+    INSERT INTO delegated_runs(run_id,owner_user_id,started_at) VALUES (10,1,'2026-09-05 10:00:00'),(12,2,'2026-09-05 11:00:00');`);
+  db.close();
+  fs.copyFileSync(files.before, files.after);
+  return { ...files, additions };
+}
+
+test('delivery migration preserves historical leases and permits only empty default state', async t => {
+  const cases = {
+    historical: sql => sql,
+    materialized: sql => sql,
+    'wrong type': sql => sql.replace('delivery_sent_at TEXT', 'delivery_sent_at INTEGER'),
+    'wrong default': sql => sql.replace('DEFAULT 0', 'DEFAULT 1'),
+    'missing column': sql => sql.replace(/ALTER TABLE delegated_runs ADD COLUMN delivery_sent_at TEXT;/u, ''),
+    'extra column': sql => `${sql} ALTER TABLE delegated_runs ADD COLUMN unrelated TEXT;`,
+    'owner changed': sql => `${sql} UPDATE delegated_runs SET owner_user_id=7 WHERE run_id=10;`,
+    'timestamp changed': sql => `${sql} UPDATE delegated_runs SET started_at='changed' WHERE run_id=10;`,
+    'row removed': sql => `${sql} DELETE FROM delegated_runs WHERE run_id=10;`,
+    'payload backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_payload_json='{}' WHERE run_id=10;`,
+    'sent timestamp backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_sent_at='now' WHERE run_id=10;`,
+    'attempts backfilled': sql => `${sql} UPDATE delegated_runs SET delivery_attempts=1 WHERE run_id=10;`,
+  };
+  for (const [name, change] of Object.entries(cases)) await t.test(name, () => {
+    const files = deliveryFixture();
+    try {
+      if (name === 'materialized') {
+        materializeSchemaFingerprint(readSchemaFingerprint(files.before), files.before);
+        fs.copyFileSync(files.before, files.after);
+      }
+      const db = new Database(files.after);
+      db.exec(change(files.additions));
+      db.close();
+      const result = runComparison(files);
+      const valid = name === 'historical' || name === 'materialized';
+      assert.equal(result.ok, valid, result.failures.join('\n'));
+      if (valid) {
+        assert.equal(runComparison({ ...files, requireIdentical: true }).ok, false);
+        assert.deepEqual(runComparison({ ...files, schemaOnly: true }).failures, ['database schema changed']);
+        assert.equal(runComparison({ ...files, before: files.after }).ok, true);
+      }
+    } finally {
+      fs.rmSync(files.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 test('rolling eligibility requires exact data and corpus identity', () => {
@@ -824,3 +1026,80 @@ test('fails on row, schema, integrity, or vault-file drift', () => {
     fs.rmSync(files.directory, { recursive: true, force: true });
   }
 });
+
+test('child migration preserves existing tasks and starts with empty ownership and join state', () => {
+  const files = fixture();
+  try {
+    const before = new Database(files.before);
+    before.exec("CREATE TABLE chat_mission_tasks(id TEXT PRIMARY KEY,run_id INTEGER,status TEXT); INSERT INTO chat_mission_tasks VALUES('parent',9,'running')");
+    before.close();
+    fs.copyFileSync(files.before, files.after);
+    const after = new Database(files.after);
+    after.exec('ALTER TABLE chat_mission_tasks ADD COLUMN parent_task_id TEXT');
+    after.exec('ALTER TABLE chat_mission_tasks ADD COLUMN child_result_delivered INTEGER NOT NULL DEFAULT 0');
+    after.exec('ALTER TABLE chat_mission_tasks ADD COLUMN joining_children INTEGER NOT NULL DEFAULT 0');
+    after.exec('CREATE INDEX chat_mission_tasks_parent_idx ON chat_mission_tasks(parent_task_id)');
+    after.close();
+    assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+    for (const [column, value] of [['parent_task_id', 'invented'], ['joining_children', 1], ['child_result_delivered', 1], ['status', 'completed']]) {
+      const changed = new Database(files.after);
+      const original = changed.prepare(`SELECT ${column} AS value FROM chat_mission_tasks`).get().value;
+      changed.prepare(`UPDATE chat_mission_tasks SET ${column}=?`).run(value);
+      changed.close();
+      assert.equal(runComparison(files).ok, false, column);
+      const restore = new Database(files.after);
+      restore.prepare(`UPDATE chat_mission_tasks SET ${column}=?`).run(original);
+      restore.close();
+    }
+  } finally {
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
+
+test('schema fingerprint sees committed WAL DDL without allocating a database copy', () => {
+  const files = fixture();
+  const writer = new Database(files.before);
+  const previousScratch = process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR;
+  try {
+    writer.pragma('journal_mode = WAL');
+    writer.pragma('wal_autocheckpoint = 0');
+    writer.exec(`CREATE TABLE wal_schema (id INTEGER PRIMARY KEY);
+      CREATE TABLE cascade_elixir_schema_migrations (version INTEGER, name TEXT, checksum TEXT);
+      INSERT INTO cascade_elixir_schema_migrations VALUES (42, 'wal_migration', 'checksum');`);
+    assert.ok(fs.statSync(`${files.before}-wal`).size > 0);
+    // A full-copy implementation cannot succeed with no usable scratch path.
+    process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR = files.before;
+    const fingerprint = readSchemaFingerprint(files.before);
+    assert.ok(fingerprint.objects.some(object => object.name === 'wal_schema'));
+    assert.deepEqual(fingerprint.migrations, [{ version: 42, name: 'wal_migration', checksum: 'checksum' }]);
+    assert.equal(writer.prepare('SELECT COUNT(*) FROM notes').pluck().get(), 1);
+  } finally {
+    if (previousScratch === undefined) delete process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR;
+    else process.env.CASCADE_SQLITE_SNAPSHOT_TMPDIR = previousScratch;
+    writer.close();
+    fs.rmSync(files.directory, { recursive: true, force: true });
+  }
+});
+
+for (const table of ['chat_mission_interpretations', 'chat_coordinator_continuations']) {
+  test(`${table} migration permits only its reviewed empty schema`, () => {
+    const files = fixture();
+    try {
+      const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/missions/schema.ex', import.meta.url), 'utf8');
+      const ddl = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n    \\)`))[0];
+      const after = new Database(files.after);
+      after.exec(ddl);
+      if (table === 'chat_mission_interpretations') {
+        after.exec(schema.match(/CREATE UNIQUE INDEX IF NOT EXISTS chat_mission_interpretations_dispatch_idx[^"\n]+/)[0]);
+      }
+      after.close();
+      assert.equal(runComparison(files).ok, true, runComparison(files).failures.join('\n'));
+      const malformed = new Database(files.after);
+      malformed.exec(`ALTER TABLE ${table} ADD COLUMN unreviewed TEXT`);
+      malformed.close();
+      assert.equal(runComparison(files).ok, false);
+    } finally {
+      fs.rmSync(files.directory, { recursive: true, force: true });
+    }
+  });
+}

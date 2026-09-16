@@ -1,4 +1,10 @@
-import { WorkspaceStore } from './workspace';
+import { useVoiceSession, VoiceContext, VoiceControls, VoiceChannelView } from './components/VoiceRoom';
+import { VOICE_NOTE_MARKER, isVoiceChannel } from './chat/shared';
+import { LoadingIndicator } from './components/LoadingIndicator';
+import { StartupPending } from './components/StartupPending';
+import { hydrateNote } from './noteHydration';
+import { WorkspaceStore, reconcileWorkspaceNoteContent, type WorkspaceNote } from './workspace';
+import { findEmbeddedNote } from './docEmbeds';
 import { useEffect, useSyncExternalStore, useState, useCallback, useRef, useMemo, lazy, Suspense, type CSSProperties, type ReactNode } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { type Tab } from './components/TabBar';
@@ -12,6 +18,9 @@ import {
 // CodeMirror (editor core plus every language mode via @codemirror/language-data)
 // is the heaviest dependency in the app and is only needed once a note tab is
 // actually open — keep it out of the initial chunk.
+// Keep run controls available when a deploy replaces unloaded menu chunks.
+import { SessionManager } from './components/SessionManager';
+import { useCodexImports } from './components/CodexSessionImport';
 const NoteEditor = lazy(() =>
   import('./components/NoteEditor').then((m) => ({ default: m.NoteEditor })),
 );
@@ -26,9 +35,6 @@ const CommandPalette = lazy(() =>
 );
 const AdminPanel = lazy(() =>
   import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })),
-);
-const SessionManager = lazy(() =>
-  import('./components/SessionManager').then((m) => ({ default: m.SessionManager })),
 );
 const SuperkanbanView = lazy(() =>
   import('./components/SuperkanbanView').then((m) => ({ default: m.SuperkanbanView })),
@@ -75,7 +81,7 @@ import type { DiscoveryTab } from './components/DiscoveryDmsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
-import { api, ApiError, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
+import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import { connectVaultSocket } from './socket';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
@@ -107,6 +113,8 @@ import {
 import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './chat/messageStore';
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
+
+import { useDesktopStartup, rememberDesktopSession, acceptAndOpenRemoteInvite } from './desktopStartup';
 
 /**
  * @file App.tsx — Root component for Cascade
@@ -157,11 +165,17 @@ export default function App() {
   // Auth state. `user` starts null, so we must not treat "not yet checked"
   // as logged out or the desktop shell flashes the login form on every boot.
   const [authReady, setAuthReady] = useState(false);
+  const [authRetry, setAuthRetry] = useState(0);
+  const [authPendingError, setAuthPendingError] = useState(false);
+  const [noteLoadErrors, setNoteLoadErrors] = useState<Record<string, boolean>>({});
   const [user, setUser] = useState<User | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [documentationAssistantOpen, setDocumentationAssistantOpen] = useState(false);
+  const [managedVaultId, setManagedVaultId] = useState<string | null>(null);
+  const [vaultListLoading, setVaultListLoading] = useState(true);
+  const [vaultListError, setVaultListError] = useState('');
   const [accountInitialSection, setAccountInitialSection] = useState<'profile' | 'vault'>('profile');
   const [discoveryDmsOpen, setDiscoveryDmsOpen] = useState<DiscoveryTab | null>(null);
   const [updatesOpen, setUpdatesOpen] = useState(false);
@@ -174,18 +188,24 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
 
+
+
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
+  const requestedVaultRef = useRef(new URLSearchParams(window.location.search).get('vault'));
   const [workspaceStore] = useState(() => new WorkspaceStore(persistedSessionRef.current));
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
   const activeVaultId = workspaceStore.activeVaultId;
+  const codexImports = useCodexImports(user ? String(user.id) : null);
+
   const initialVaultListing = persistedSessionRef.current.activeVaultId
     ? persistedSessionRef.current.vaultListingsByVault[persistedSessionRef.current.activeVaultId]
     : undefined;
   const [folders, setFolders] = useState<Folder[]>(initialVaultListing?.folders ?? []);
   const [notes, setNotes] = useState<NoteSummary[]>(initialVaultListing?.notes ?? []);
   const [chatState, setChatState] = useState<ChatState>(loadChatState);
+  const voice = useVoiceSession(activeVaultId, user?.id);
   const [loadingChatChannels, setLoadingChatChannels] = useState<Record<string, boolean>>({});
   const [chatPresenceByChannel, setChatPresenceByChannel] = useState<Record<string, ChatChannelPresence>>({});
   const [channelVaultIds, setChannelVaultIds] = useState<Record<string, string>>({});
@@ -193,7 +213,7 @@ export default function App() {
   const [communityUpdatesLoading, setCommunityUpdatesLoading] = useState(false);
   const [communityUpdatesError, setCommunityUpdatesError] = useState('');
   const [showAgentMemory, setShowAgentMemory] = useState(() => localStorage.getItem('cascade_show_agent_memory') === '1');
-  const agentActivity = useAgentActivity();
+  const agentActivity = useAgentActivity(user?.id ?? null);
 
   const { openTabs, layout, focusedPaneId, noteContents } = workspaceStore.active;
   const setOpenTabs = useCallback((value: React.SetStateAction<Tab[]>) => workspaceStore.set('openTabs', value), [workspaceStore]);
@@ -279,13 +299,24 @@ export default function App() {
   }, [workspaceStore]);
 
   const switchVaultWorkspace = useCallback((nextVaultId: string | null) => {
-    if (workspaceStore.activeVaultId === nextVaultId) return;
+    // Point non-vault-scoped requests (notes/assets) at the open vault's origin.
+    const entry = nextVaultId ? getVaultOrigin(nextVaultId) : undefined;
+    setActiveVaultOrigin(entry?.origin, entry?.token);
+    if (workspaceStore.activeVaultId === nextVaultId) {
+      ensureDesktopRunnerHost();
+      return;
+    }
     workspaceStore.switchVault(nextVaultId);
     clearWorkspacePanels();
+    ensureDesktopRunnerHost();
   }, [workspaceStore, clearWorkspacePanels]);
 
-  const resetVaultWorkspaces = useCallback(() => {
+  const desktopStartup = useDesktopStartup(Boolean((window as unknown as { electronAPI?: unknown }).electronAPI), user ? String(user.id) : null, activeVaultId, vaults, !vaultListLoading && !vaultListError, switchVaultWorkspace);
+
+  const resetVaultWorkspaces = useCallback((preserveDesktopSelection = false) => {
+    desktopStartup.reset(preserveDesktopSelection);
     workspaceStore.reset();
+    setNoteLoadErrors({});
     loadVaultDataInflight.clear();
     vaultListingsRef.current = {};
     clearWorkspacePanels();
@@ -401,24 +432,44 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   const loadVaults = useCallback(async () => {
+    setVaultListLoading(true);
+    setVaultListError('');
     const epoch = workspaceStore.epoch;
     try {
       const data = await api<{ vaults: Vault[] }>('/api/vaults');
-      if (workspaceStore.epoch !== epoch) return;
-      let nextVaults = data.vaults;
-      if (nextVaults.length === 0) {
-        const created = await api<{ vault: Vault }>('/api/vaults', {
-          method: 'POST',
-          body: JSON.stringify({ name: 'My Vault' }),
-        });
-        if (workspaceStore.epoch !== epoch) return;
-        nextVaults = [created.vault];
+      const localVaults = data.vaults || [];
+
+      const remoteRecords = await getRemoteVaults();
+      const remoteVaults: Vault[] = remoteRecords.map((rv) => ({
+        id: rv.id,
+        name: rv.name,
+        root_path: '',
+        created_at: new Date().toISOString(),
+        role: rv.role,
+        origin: rv.origin,
+        token: rv.token,
+      }));
+
+      for (const rv of remoteVaults) {
+        if (rv.origin) registerVaultOrigin(rv.id, rv.origin, rv.token);
       }
+
+      const mergedMap = new Map<string, Vault>();
+      for (const lv of localVaults) mergedMap.set(lv.id, lv);
+      for (const rv of remoteVaults) mergedMap.set(rv.id, rv);
+      const nextVaults = Array.from(mergedMap.values());
+
+      if (workspaceStore.epoch !== epoch) return;
       setVaults(nextVaults);
+      const requestedVaultId = requestedVaultRef.current;
+      if (requestedVaultId && nextVaults.some(vault => vault.id === requestedVaultId)) {
+        switchVaultWorkspace(requestedVaultId);
+        requestedVaultRef.current = null;
+      }
       const restoredVaultId = activeVaultIdRef.current;
       const restoredVaultValid = restoredVaultId && nextVaults.some((vault) => vault.id === restoredVaultId);
       if (!restoredVaultValid) {
-        switchVaultWorkspace(nextVaults[0].id);
+        switchVaultWorkspace(nextVaults[0]?.id ?? null);
       }
 
       // Drop workspaces the signed-in account can no longer access. This also
@@ -426,7 +477,9 @@ export default function App() {
       const accessibleIds = new Set(nextVaults.map((vault) => vault.id));
       workspaceStore.retain(accessibleIds);
     } catch (error) {
-      console.error('Error loading vaults:', error);
+      if (workspaceStore.epoch === epoch) setVaultListError(error instanceof Error ? error.message : 'Could not load vaults');
+    } finally {
+      if (workspaceStore.epoch === epoch) setVaultListLoading(false);
     }
   }, [switchVaultWorkspace]);
 
@@ -558,13 +611,15 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let succeeded = false;
+    const epoch = workspaceStore.epoch;
+    setAuthPendingError(false);
     let unauthorized = false;
     let attempt = 0;
     let timer: number | null = null;
     const tryAuth = () => {
       api<{ authenticated: boolean; user?: User; owner?: boolean }>('/api/session')
         .then((data) => {
-          if (cancelled) return;
+          if (cancelled || workspaceStore.epoch !== epoch) return;
           if (!data.authenticated || !data.user) {
             unauthorized = true;
             stopDesktopRunnerHost();
@@ -578,7 +633,7 @@ export default function App() {
           void loadVaults();
         })
         .catch((error) => {
-          if (cancelled) return;
+          if (cancelled || workspaceStore.epoch !== epoch) return;
           // A real 401 means no session. Transient network/deploy failures keep
           // retrying so an HttpOnly cookie is not mistaken for a logout.
           if (error instanceof ApiError && error.status === 401) {
@@ -588,6 +643,7 @@ export default function App() {
             return;
           }
           attempt += 1;
+          setAuthPendingError(true);
           if (attempt > 6) return;
           timer = window.setTimeout(tryAuth, Math.min(1000 * 2 ** (attempt - 1), 15000));
         });
@@ -607,7 +663,7 @@ export default function App() {
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener('online', onReconnect);
     };
-  }, [loadVaults]);
+  }, [loadVaults, authRetry]);
 
   useEffect(() => {
     if (user) {
@@ -1007,7 +1063,6 @@ export default function App() {
     })();
 
     loadVaultDataInflight.set(inflightKey, run);
-    return run;
   }, [loadChatMessages, loadChatAgentMembers, loadChatPresence, loadVaultAgents, openChatTabIds, persistWorkspaceSession]);
 
   // The vault rail is navigation, so selecting any visible vault should feel
@@ -1201,12 +1256,35 @@ export default function App() {
     ensureChatChannelLoaded(channelId);
   }, [ensureChatChannelLoaded, workspaceStore]);
 
-  const acceptVaultInvite = useCallback(async (token: string): Promise<boolean> => {
+  const acceptVaultInvite = useCallback(async (token: string, origin?: string): Promise<boolean> => {
     try {
-      const data = await api<{ vaultId: string; name: string; role: string; alreadyMember?: boolean }>(
-        `/api/vault-invites/${encodeURIComponent(token)}/accept`,
-        { method: 'POST' },
-      );
+      let data: { vaultId: string; name: string; role: string; alreadyMember?: boolean };
+      const electronAPI = (window as unknown as {
+        electronAPI?: {
+          acceptRemoteInvite?: (input: { inviteUrl: string }) => Promise<{ success: boolean; vault?: Vault; error?: string }>;
+          openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
+        };
+      }).electronAPI;
+
+      if (origin && origin !== window.location.origin && electronAPI?.acceptRemoteInvite) {
+        const fullUrl = `${origin.replace(/\/+$/, '')}/vault-invite/${encodeURIComponent(token)}`;
+        await acceptAndOpenRemoteInvite(electronAPI, fullUrl);
+        return true;
+      } else {
+        data = await api<{ vaultId: string; name: string; role: string; alreadyMember?: boolean }>(
+          `/api/vault-invites/${encodeURIComponent(token)}/accept`,
+          { method: 'POST', origin },
+        );
+        if (origin && origin !== window.location.origin) {
+          await saveRemoteVault({
+            id: data.vaultId,
+            name: data.name,
+            origin,
+            token: '',
+            role: (data.role as any) || 'member',
+          });
+        }
+      }
       await loadVaults();
       switchVaultWorkspace(data.vaultId);
       await loadVaultData(data.vaultId);
@@ -1225,7 +1303,9 @@ export default function App() {
       const parsed = new URL(inviteLink, window.location.origin);
       const match = parsed.pathname.match(/^\/vault-invite\/([^/]+)$/);
       if (!match) throw new Error('Paste a valid vault invite link');
-      return await acceptVaultInvite(decodeURIComponent(match[1]));
+      const token = decodeURIComponent(match[1]);
+      const isRemote = parsed.origin !== window.location.origin;
+      return await acceptVaultInvite(token, isRemote ? parsed.origin : undefined);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Paste a valid vault invite link');
       return false;
@@ -1246,17 +1326,17 @@ export default function App() {
     })();
   }, [acceptVaultInvite, user]);
 
-  const handleCreateChannel = useCallback(async (folderId: string | null = null) => {
+  const handleCreateChannel = useCallback(async (folderId: string | null = null, type: 'text' | 'voice' = 'text', name = 'new-channel') => {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return undefined;
     try {
       const data = await api<{ note: Note }>(`/api/vaults/${vaultId}/notes`, {
         method: 'POST',
-        body: JSON.stringify({ title: 'new-channel', content: CHAT_NOTE_MARKER, folder_id: folderId ?? undefined }),
+        body: JSON.stringify({ title: name, content: type === 'voice' ? VOICE_NOTE_MARKER : CHAT_NOTE_MARKER, folder_id: folderId ?? undefined }),
       });
       await loadVaultData(vaultId);
       if (activeVaultIdRef.current !== vaultId) return undefined;
-      openChatChannel(data.note.id, data.note.title);
+      if (type === 'text') openChatChannel(data.note.id, data.note.title);
       return { id: data.note.id, title: data.note.title };
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not create channel');
@@ -1381,7 +1461,8 @@ export default function App() {
       }
       return { ...prev, registeredAgentsByChannel: next };
     });
-  }, []);
+    void loadVaultAgents(vaultId);
+  }, [loadVaultAgents]);
 
   const handleDeleteAgentProfile = useCallback(async (vaultAgentId: string) => {
     const vaultId = activeVaultIdRef.current;
@@ -1489,15 +1570,17 @@ export default function App() {
   // NOTE CONTENT
   // ═══════════════════════════════════════════════════════════════
 
-  /** Fetch a note body into `noteContents` (no layout change). Self-heals stale tabs. */
+  /** Preserve restored tabs on transient failures; close only definitively unavailable notes. */
   const loadNoteContent = useCallback(async (noteId: string) => {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return;
     const epoch = workspaceStore.epoch;
-    try {
-      const data = await api<{ note: Note }>(`/api/notes/${noteId}`);
-      if (workspaceStore.epoch !== epoch || activeVaultIdRef.current !== vaultId
-        || !workspaceStore.active.openTabs.some((tab) => tab.id === noteId)) return;
+    setNoteLoadErrors((prev) => ({ ...prev, [noteId]: false }));
+    await hydrateNote({
+      fetchNote: () => api<{ note: WorkspaceNote }>(`/api/notes/${noteId}`),
+      isCurrent: () => workspaceStore.epoch === epoch && activeVaultIdRef.current === vaultId
+        && workspaceStore.active.openTabs.some((tab) => tab.id === noteId),
+      apply: (data) => {
 
       // Shortcut URL check
       const content = data.note.content.trim();
@@ -1507,19 +1590,19 @@ export default function App() {
         return;
       }
 
-      setNoteContents((prev) => {
-        const existing = prev[noteId];
-        const isDirty = existing ? existing.draft !== existing.note.content : false;
-        return { ...prev, [noteId]: { note: data.note, draft: isDirty ? existing!.draft : data.note.content } };
-      });
+      setNoteContents((prev) => ({
+        ...prev,
+        [noteId]: reconcileWorkspaceNoteContent(prev[noteId], data.note),
+      }));
       setOpenTabs((prev) => prev.map((t) => (t.id === noteId ? { ...t, title: data.note.title, type: 'note' } : t)));
-    } catch (error) {
-      if (workspaceStore.epoch !== epoch || activeVaultIdRef.current !== vaultId) return;
-      console.error('Error loading note:', error);
-      workspaceStore.closeTabs([noteId]);
-      setNotice('That note could not be opened — it may have been moved or deleted. Refreshing the list.');
-      if (activeVaultIdRef.current) void loadVaultData(activeVaultIdRef.current);
-    }
+      },
+      terminal: (status) => {
+        workspaceStore.closeTabs([noteId]);
+        setNotice(status === 403 ? 'Access to that note was denied.' : 'That note no longer exists.');
+        if (activeVaultIdRef.current) void loadVaultData(activeVaultIdRef.current);
+      },
+      retry: () => setNoteLoadErrors((prev) => ({ ...prev, [noteId]: true })),
+    });
   }, [loadVaultData, closeTab, openChatChannel]);
 
   /** Fetch every board body + live mission/work items for the aggregate tab. */
@@ -1574,6 +1657,10 @@ export default function App() {
     const summary = notesRef.current.find((n) => n.id === noteId);
     if (summary) {
       const preview = summary.content_preview.trim();
+      if (isVoiceChannel(preview)) {
+        workspaceStore.openTab({ id: noteId, title: summary.title, type: 'note', dirty: false }, mode);
+        return;
+      }
       if (preview.startsWith(CHAT_NOTE_MARKER)) {
         openChatChannel(noteId, summary.title, mode);
         return;
@@ -1638,20 +1725,27 @@ export default function App() {
     const entry = workspaceStore.active.noteContents[tabId];
     if (!vaultId || !entry) return;
     const epoch = workspaceStore.epoch;
+    const draft = entry.draft;
+    const expectedRevision = entry.baseRevision ?? entry.note.revision;
     try {
-      const data = await api<{ note: Note }>(`/api/notes/${tabId}`, {
+      const data = await api<{ note: WorkspaceNote }>(`/api/notes/${tabId}`, {
         method: 'PUT',
-        body: JSON.stringify({ content: entry.draft }),
+        body: JSON.stringify({
+          content: draft,
+          ...(expectedRevision === undefined ? {} : { expectedRevision }),
+        }),
       });
-      workspaceStore.completeSave(vaultId, tabId, entry.draft, data.note, epoch);
+      workspaceStore.completeSave(vaultId, tabId, draft, data.note, epoch);
       if (workspaceStore.epoch === epoch && workspaceStore.activeVaultId === vaultId) void loadVaultData(vaultId);
       return data.note;
     } catch (error) {
+      if (error instanceof ApiError && (error.status === 409 || error.status === 428)) {
+        setNotice('This note changed elsewhere. Your draft was kept; refresh before saving again.');
+      }
       console.error('Error saving note:', error);
       throw error;
     }
   }, [loadVaultData]);
-
   /** Save whichever note is in the focused pane (Ctrl+S, AI panel). */
   const handleSaveActiveNote = useCallback(() => {
     const tabId = workspaceStore.focusedPane.activeTabId;
@@ -1666,20 +1760,25 @@ export default function App() {
       return { ...prev, [tabId]: { ...entry, draft: newContent } };
     });
   }, []);
-
   /** Rename a note tab (title + on-disk file + wikilink references). */
   const renameNoteTab = useCallback(async (tabId: string, title: string) => {
     const vaultId = workspaceStore.activeVaultId;
     const epoch = workspaceStore.epoch;
     if (!vaultId) return;
     try {
-      const data = await api<{ note: Note }>(`/api/notes/${tabId}/rename`, {
+      const data = await api<{ note: WorkspaceNote }>(`/api/notes/${tabId}/rename`, {
         method: 'POST',
         body: JSON.stringify({ title }),
       });
       if (workspaceStore.epoch !== epoch) return;
-      workspaceStore.update((workspace) => ({ ...workspace,
-        noteContents: workspace.noteContents[tabId] ? { ...workspace.noteContents, [tabId]: { ...workspace.noteContents[tabId], note: data.note } } : workspace.noteContents,
+      workspaceStore.update((workspace) => ({
+        ...workspace,
+        noteContents: workspace.noteContents[tabId]
+          ? {
+              ...workspace.noteContents,
+              [tabId]: reconcileWorkspaceNoteContent(workspace.noteContents[tabId], data.note),
+            }
+          : workspace.noteContents,
         openTabs: workspace.openTabs.map((tab) => tab.id === tabId ? { ...tab, title: data.note.title } : tab),
       }), vaultId);
       if (workspaceStore.activeVaultId === vaultId) void loadVaultData(vaultId);
@@ -1724,7 +1823,7 @@ export default function App() {
   }, [renameNoteTab]);
 
   const handleOpenWikilink = useCallback((title: string) => {
-    const target = notesRef.current.find((n) => n.title.toLowerCase() === title.toLowerCase());
+    const target = findEmbeddedNote(notesRef.current, title);
     if (target) openNote(target.id);
   }, [openNote]);
 
@@ -1733,22 +1832,25 @@ export default function App() {
     return tabIds.filter((tabId) => openTabs.some((tab) => tab.id === tabId && tab.type === 'chat'));
   }, [layout, openTabs]);
 
+  const visibleChatChannelIdsRef = useRef(visibleChatChannelIds);
+  visibleChatChannelIdsRef.current = visibleChatChannelIds;
+
   const syncChatPresenceRooms = useCallback((socket: ReturnType<typeof connectVaultSocket>) => {
     const joined = joinedChatChannelsRef.current;
-    const visible = new Set(visibleChatChannelIds);
+    const visible = new Set(visibleChatChannelIdsRef.current);
     for (const channelId of [...joined]) {
       if (!visible.has(channelId)) {
         socket.emit('leaveChatChannel', channelId);
         joined.delete(channelId);
       }
     }
-    for (const channelId of visibleChatChannelIds) {
+    for (const channelId of visible) {
       if (!joined.has(channelId)) {
         socket.emit('joinChatChannel', channelId);
         joined.add(channelId);
       }
     }
-  }, [visibleChatChannelIds]);
+  }, []);
 
   // ═══════════════════════════════════════════════════════════════
   // SOCKET SETUP
@@ -1756,8 +1858,9 @@ export default function App() {
 
   useEffect(() => {
     if (!activeVaultId || !user) return;
+    const activeVault = vaults.find((v) => v.id === activeVaultId);
     const controller = new AbortController();
-    const socket = connectVaultSocket();
+    const socket = connectVaultSocket(activeVault?.origin, activeVault?.token);
     vaultSocketRef.current = socket;
     const joinActiveVault = () => {
       socket.emit('joinVault', activeVaultId);
@@ -1765,6 +1868,7 @@ export default function App() {
     };
     const handleConnect = () => {
       joinActiveVault();
+      void loadVaultData(activeVaultId, { soft: true });
       scheduleCommunityRefresh(150);
       // Socket.IO rooms do not replay events emitted while this renderer was
       // disconnected. Reconcile every open transcript after a successful
@@ -1778,7 +1882,7 @@ export default function App() {
             channelIds,
             signal: controller.signal,
           }),
-          loadChatAgentMembers(activeVaultId, notesRef.current, { channelIds }),
+          loadChatPresence(activeVaultId, notesRef.current, { channelIds }),
         ]);
       }
     };
@@ -1904,7 +2008,16 @@ export default function App() {
       ])));
     };
 
-    const handleCommunityChanged = () => scheduleCommunityRefresh();
+    const handleVaultMembersChanged = (data: { vaultId: string }) => {
+      if (data.vaultId !== activeVaultId) return;
+      void loadVaultAgents(activeVaultId);
+      void loadChatAgentMembers(activeVaultId, [], { channelIds: openChatTabIds() });
+    };
+
+    const handleCommunityChanged = () => {
+      scheduleCommunityRefresh();
+      if (activeVaultId) void loadVaultData(activeVaultId, { soft: true });
+    };
 
     // Another member renamed the vault we are in; update the label in place.
     const handleVaultRenamed = (payload: { vaultId: string; name: string }) => {
@@ -1916,6 +2029,7 @@ export default function App() {
 
     socket.on('community:changed', handleCommunityChanged);
     socket.on('vault:renamed', handleVaultRenamed);
+    socket.on('vault:membersChanged', handleVaultMembersChanged);
     socket.on('vault:noteChanged', handleNoteChanged);
     socket.on('vault:noteCreated', handleNoteCreated);
     socket.on('vault:noteDeleted', handleNoteDeleted);
@@ -1943,6 +2057,7 @@ export default function App() {
       vaultSocketRef.current = null;
       socket.off('community:changed', handleCommunityChanged);
       socket.off('vault:renamed', handleVaultRenamed);
+      socket.off('vault:membersChanged', handleVaultMembersChanged);
       socket.off('vault:noteChanged', handleNoteChanged);
       socket.off('vault:noteCreated', handleNoteCreated);
       socket.off('vault:noteDeleted', handleNoteDeleted);
@@ -1957,13 +2072,13 @@ export default function App() {
       socket.off('vault:userProfileUpdated', handleUserProfileUpdated);
       socket.disconnect();
     };
-  }, [activeVaultId, user?.id, authEpoch, loadVaultData, loadNoteContent, loadChatAgentMembers, loadChatMessages, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
+  }, [activeVaultId, vaults, user?.id, authEpoch, loadVaultData, loadNoteContent, loadVaultAgents, loadChatAgentMembers, loadChatMessages, loadChatPresence, openChatTabIds, openNote, syncChatPresenceRooms, scheduleCommunityRefresh]);
 
   useEffect(() => {
     const socket = vaultSocketRef.current;
     if (!socket?.connected || !activeVaultId) return;
     syncChatPresenceRooms(socket);
-  }, [activeVaultId, syncChatPresenceRooms]);
+  }, [activeVaultId, visibleChatChannelIds, syncChatPresenceRooms]);
 
   // Vault events are not replayed; this also runs if the socket never connects.
   useEffect(() => {
@@ -1999,7 +2114,7 @@ export default function App() {
     const vaultId = activeVaultIdRef.current;
     if (!vaultId) return;
     try {
-      const data = await api<{ note: Note }>(`/api/vaults/${vaultId}/notes`, {
+      const data = await api<{ note: WorkspaceNote }>(`/api/vaults/${vaultId}/notes`, {
         method: 'POST',
         body: JSON.stringify({ title: 'Untitled Note', content: '', folder_id: folderId ?? undefined }),
       });
@@ -2007,7 +2122,10 @@ export default function App() {
       if (activeVaultIdRef.current !== vaultId) return data.note;
       const targetPane = paneId ?? workspaceStore.focusedPane.id;
       const tab: Tab = { id: data.note.id, title: data.note.title, type: 'note', dirty: false };
-      setNoteContents((prev) => ({ ...prev, [data.note.id]: { note: data.note, draft: data.note.content } }));
+      setNoteContents((prev) => ({
+        ...prev,
+        [data.note.id]: reconcileWorkspaceNoteContent(undefined, data.note),
+      }));
       workspaceStore.openTab(tab, 'open', targetPane);
       return data.note;
     } catch (error) {
@@ -2253,11 +2371,11 @@ export default function App() {
   // After login/reload and every vault switch, hydrate the visible note tabs in
   // that vault's restored workspace.
   useEffect(() => {
-    if (!activeVaultId) return;
+    if (!user || !authReady || !activeVaultId) return;
     Layout.getActiveTabIds(workspaceStore.active.layout).forEach((id) => {
       if (workspaceStore.active.openTabs.find((t) => t.id === id)?.type === 'note') void loadNoteContent(id);
     });
-  }, [activeVaultId, loadNoteContent]);
+  }, [user?.id, authReady, activeVaultId, loadNoteContent]);
 
   // ═══════════════════════════════════════════════════════════════
   // AUTH
@@ -2288,13 +2406,16 @@ export default function App() {
       }
       const inviteMatch = window.location.pathname.match(/^\/(?:invite|vault-invite)\/([^/]+)$/);
       const inviteToken = inviteMatch ? decodeURIComponent(inviteMatch[1]) : '';
-      const data = await api<{ user: User; owner?: boolean }>(`/api/auth/${authMode}`, {
+      const data = await api<{ user: User; owner?: boolean; token?: string }>(`/api/auth/${authMode}`, {
         method: 'POST',
         body: JSON.stringify({ username, password, ...(authMode === 'register' && inviteToken ? { inviteToken } : {}) }),
       });
+      await rememberDesktopSession((window as unknown as { electronAPI?: { rememberServerSession?: () => Promise<void> } })
+        .electronAPI?.rememberServerSession);
       // Account switch: never restore another user's activeVaultId / open tabs.
       localStorage.removeItem(SESSION_STORAGE_KEY);
-      resetVaultWorkspaces();
+      // Keep only owner/origin-bound navigation; the startup resolver rechecks access.
+      resetVaultWorkspaces(true);
       localStorage.removeItem('docs_token');
       setUser(data.user);
       setIsOwner(Boolean(data.owner));
@@ -2388,6 +2509,8 @@ export default function App() {
         </Suspense>
       );
     }
+    const voiceNote = notes.find(note => note.id === tab.id && isVoiceChannel(note.content_preview));
+    if (voiceNote) return <VoiceChannelView channel={{ id: voiceNote.id, title: voiceNote.title }} />;
     if (tab.type === 'chat') {
       const channel = notes.find((note) => note.id === tab.id && note.content_preview.trim().startsWith(CHAT_NOTE_MARKER));
       const channelGone = notes.length > 0 && !channel && !loadingChatChannels[tab.id];
@@ -2395,12 +2518,13 @@ export default function App() {
         return <div className="pane-empty">Channel not found</div>;
       }
       return (
-        <Suspense fallback={<div className="pane-empty chat-loading-empty"><strong>Loading chat…</strong></div>}>
+        <Suspense fallback={<div className="pane-empty chat-loading-empty"><LoadingIndicator label="Loading chat" /></div>}>
           <ChatView
             channelId={tab.id}
             channelName={channel?.title || tab.title}
             isLoadingMessages={loadingChatChannels[tab.id] === true}
             currentUser={currentUsername}
+            currentUserId={user?.id}
             presence={applyLocalUserProfile(chatPresenceByChannel[tab.id] ?? EMPTY_CHAT_PRESENCE, user)}
             availableAgents={AVAILABLE_CHAT_AGENTS}
             registeredAgents={chatState.registeredAgentsByChannel[tab.id] ?? EMPTY_CHAT_AGENTS}
@@ -2434,6 +2558,7 @@ export default function App() {
       );
     }
     const entry = noteContents[tab.id];
+    if (!entry) return <StartupPending kind="note" failed={Boolean(noteLoadErrors[tab.id])} onRetry={() => void loadNoteContent(tab.id)} />;
     return (
       <ErrorBoundary label="Note">
         <Suspense fallback={<div className="editor-loading" />}>
@@ -2451,9 +2576,9 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     );
-  }, [chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled]);
+  }, [noteLoadErrors, loadNoteContent, chatState.registeredAgentsByChannel, chatPresenceByChannel, currentUsername, user, loadingChatChannels, runnerHealth, vaultAgents, handleCancelChatRun, handleInviteChatUser, handleRemoveChatParticipant, handleLeaveChatChannel, handleRegisterChatAgent, handleRemoveChatAgent, handleUpsertVaultAgent, handleDeleteVaultAgent, handleDeleteAgentProfile, handleAddVaultAgentToChannel, handleSendChatMessage, handleForwardChatMessage, noteContents, notes, getNoteChangeHandler, getNoteSaveHandler, getNoteRenameHandler, handleExecuteDirective, handleOpenWikilink, openNote, chatMembersOpen, activeVaultId, handleHydrateChatMessage, handleOpenSharedChatNote, superkanbanNotes, superkanbanLiveWork, superkanbanLoading, superkanbanError, chatJumpTarget, handleChatJumpHandled, loadVaultData]);
 
-  if (!authReady) return <main className="auth-shell" id="auth-pending" />;
+  if (!authReady) return <main className="auth-shell" id="auth-pending"><StartupPending kind="auth" failed={authPendingError} onRetry={() => setAuthRetry((value) => value + 1)} /></main>;
 
   if (!user) {
     const hasInvite = /^\/invite\/[^/]+$/.test(window.location.pathname);
@@ -2468,8 +2593,8 @@ export default function App() {
           <div className="auth-decal" aria-hidden="true" />
           <div className="auth-intro">
             <span className="surface-kicker">Shared intelligence</span>
-            <strong>{authMode === 'register' ? 'Create your workspace' : authMode === 'reset' ? 'Recover your account' : 'Welcome back'}</strong>
-            <p>One calm place for your team, notes, and local agents.</p>
+            <strong>{inDesktopApp ? (['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) ? 'Connect to local server' : 'Connect to remote server') : authMode === 'register' ? 'Create your workspace' : authMode === 'reset' ? 'Recover your account' : 'Welcome back'}</strong>
+            <p>{inDesktopApp ? `Your account applies to vaults on ${window.location.host}.` : 'One calm place for your team, notes, and local agents.'}</p>
           </div>
           {authMode === 'reset' ? (
             <>
@@ -2497,10 +2622,11 @@ export default function App() {
           )}
           <p className="auth-desktop-note">
             {inDesktopApp
-              ? 'This desktop app can run your local agents after you sign in.'
+              ? 'Sign in or create an account on this server to access its vaults.'
               : 'Fizzer agents run on your own desktop app. You can join this invite here, then open it in Fizzer desktop to run agents.'}
             {!inDesktopApp && <> <a href="/download">Get Fizzer desktop</a></>}
           </p>
+
           {authNotice && <div className="auth-notice">{authNotice}</div>}
           {authError && <div className="error">{authError}</div>}
           <button id="auth-submit" type="submit">
@@ -2527,7 +2653,13 @@ export default function App() {
   const inDesktopApp = Boolean((window as unknown as { electronAPI?: unknown }).electronAPI);
   const showDesktopDownload = !inDesktopApp && runnerHealth != null && !runnerHealth.online;
 
+  if (desktopStartup.pending) {
+    return <main className="auth-shell" id="desktop-startup-pending"><StartupPending kind="vault" failed={Boolean(vaultListError)} onRetry={() => void loadVaults()} /></main>;
+  }
+
+
   return (
+    <VoiceContext.Provider value={voice}>
     <main
       className={`app-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}
       style={{
@@ -2573,16 +2705,49 @@ export default function App() {
           agentActivity={agentActivity}
           channelVaultIds={channelVaultIds}
           showAgentMemory={showAgentMemory}
-          onSelectVault={switchVaultWorkspace}
+          vaultListLoading={vaultListLoading}
+          vaultListError={vaultListError}
+          onRetryVaults={() => void loadVaults()}
+          onSelectVault={(id) => {
+            desktopStartup.remember(id);
+            switchVaultWorkspace(id);
+            if (isMobileViewport()) setSidebarOpen(false);
+          }}
           onCreateVault={handleCreateVault}
-          onRenameVault={handleRenameVault}
-          onDeleteVault={handleDeleteVault}
           onManageVault={(vaultId) => {
-            switchVaultWorkspace(vaultId);
+            setManagedVaultId(vaultId);
             setAccountInitialSection('vault');
             setAccountOpen(true);
           }}
           onJoinVault={handleJoinVault}
+          onConnectRemoteServer={async (origin, username, password) => {
+            const electronAPI = (window as unknown as { electronAPI?: {
+              connectRemoteInstance?: (input: { origin: string; username: string; password: string }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[]; error?: string }>;
+              openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
+            } }).electronAPI;
+            const result = await electronAPI?.connectRemoteInstance?.({ origin, username, password });
+            if (!result?.success || !result.origin) {
+              console.error('[Fizzer] Remote server connection failed', {
+                origin,
+                error: result?.error || 'No origin returned',
+              });
+              return false;
+            }
+            const firstVault = result.vaults?.[0];
+            if (firstVault && electronAPI?.openConnection) {
+              const opened = await electronAPI.openConnection({ id: firstVault.id, origin: result.origin });
+              if (!opened.success) {
+                console.error('[Fizzer] Remote vault open failed', {
+                  origin: result.origin,
+                  vaultId: firstVault.id,
+                  error: opened.error || 'Open connection failed',
+                });
+                return false;
+              }
+            }
+            await loadVaults();
+            return true;
+          }}
           onOpenPublicVaults={() => setDiscoveryDmsOpen('public')}
           onOpenDirectMessages={() => setDiscoveryDmsOpen('dms')}
           onSelectNote={(id) => {
@@ -2597,9 +2762,9 @@ export default function App() {
             void handleCreateNote();
             if (isMobileViewport()) setSidebarOpen(false);
           }}
-          onCreateChannel={async (folderId) => {
-            const channel = await handleCreateChannel(folderId);
-            if (isMobileViewport()) setSidebarOpen(false);
+          onCreateChannel={async (folderId, type, name) => {
+            const channel = await handleCreateChannel(folderId, type, name);
+            if (type !== 'voice' && isMobileViewport()) setSidebarOpen(false);
             return channel;
           }}
           onNewNoteInFolder={(folderId) => {
@@ -2610,6 +2775,7 @@ export default function App() {
           onCollapse={() => setSidebarOpen(false)}
           onLogout={handleLogout}
           onOpenAccount={() => {
+            setManagedVaultId(null);
             setAccountInitialSection('profile');
             setAccountOpen(true);
           }}
@@ -2637,8 +2803,11 @@ export default function App() {
         <Suspense fallback={null}>
           <AccountSettings
             user={user}
-            vaultId={activeVaultId}
-            vaultName={vaults.find((vault) => vault.id === activeVaultId)?.name}
+            key={managedVaultId ?? activeVaultId ?? 'account'}
+            vaultId={managedVaultId ?? activeVaultId}
+            vaultName={vaults.find((vault) => vault.id === (managedVaultId ?? activeVaultId))?.name}
+            onRenameVault={handleRenameVault}
+            onDeleteVault={handleDeleteVault}
             initialSection={accountInitialSection}
             showAgentMemory={showAgentMemory}
             onShowAgentMemoryChange={updateShowAgentMemory}
@@ -2687,6 +2856,7 @@ export default function App() {
               </button>
             )}
             <NewsTicker />
+
             {showDesktopDownload && (
               <a
                 className="workspace-desktop-action"
@@ -2800,6 +2970,7 @@ export default function App() {
                 channelId={vaultSidebarChannel}
                 channelName={notes.find((note) => note.id === vaultSidebarChannel)?.title || 'Vault'}
                 currentUser={currentUsername}
+                currentUserId={user?.id}
                 presence={applyLocalUserProfile(chatPresenceByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_PRESENCE, user)}
                 availableAgents={AVAILABLE_CHAT_AGENTS}
                 registeredAgents={chatState.registeredAgentsByChannel[vaultSidebarChannel] ?? EMPTY_CHAT_AGENTS}
@@ -2828,31 +2999,31 @@ export default function App() {
         </div>
       </div>
       {sessionManagerOpen && (
-        <Suspense fallback={null}>
-          <SessionManager
-            open
-            runnerOnline={Boolean(runnerHealth?.online)}
-            focusSessionId={focusSessionId}
-            onFocusHandled={() => setFocusSessionId(null)}
-            onClose={() => { setFocusSessionId(null); setSessionManagerOpen(false); }}
-            onOpenChat={async (vaultId, channelId, channelTitle) => {
-              if (activeVaultIdRef.current !== vaultId) {
-                switchVaultWorkspace(vaultId);
-                await loadVaultData(vaultId);
-              }
-              openChatChannel(channelId, channelTitle);
-              setSessionManagerOpen(false);
-            }}
-            onCancel={handleCancelChatRun}
-            onInterrogate={async (vaultId, channelId, message) => {
-              if (activeVaultIdRef.current !== vaultId) {
-                switchVaultWorkspace(vaultId);
-                await loadVaultData(vaultId);
-              }
-              await handleSendChatMessage(channelId, message);
-            }}
-          />
-        </Suspense>
+        <SessionManager
+          open
+          vaultId={activeVaultId}
+          onImportCodex={codexImports.importSession}
+          runnerOnline={Boolean(runnerHealth?.online)}
+          focusSessionId={focusSessionId}
+          onFocusHandled={() => setFocusSessionId(null)}
+          onClose={() => { setFocusSessionId(null); setSessionManagerOpen(false); }}
+          onOpenChat={async (vaultId, channelId, channelTitle) => {
+            if (activeVaultIdRef.current !== vaultId) {
+              switchVaultWorkspace(vaultId);
+            }
+            await loadVaultData(vaultId);
+            openChatChannel(channelId, channelTitle);
+            setSessionManagerOpen(false);
+          }}
+          onCancel={handleCancelChatRun}
+          onInterrogate={async (vaultId, channelId, message) => {
+            if (activeVaultIdRef.current !== vaultId) {
+              switchVaultWorkspace(vaultId);
+              await loadVaultData(vaultId);
+            }
+            await handleSendChatMessage(channelId, message);
+          }}
+        />
       )}
 
       {searchOpen && (
@@ -2912,7 +3083,9 @@ export default function App() {
       )}
       <Suspense fallback={null}><AndroidUpdatePrompt /></Suspense>
 
+      <VoiceControls />
       {notice && <div className="toast" role="status">{notice}</div>}
     </main>
+    </VoiceContext.Provider>
   );
 }

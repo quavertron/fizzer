@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -264,8 +265,7 @@ function SuperkanbanViewInner({
   if (loading && !hasSources) {
     return (
       <div className="superkanban-empty is-loading" role="status">
-        <Loader2 className="is-spinning" size={24} aria-hidden="true" />
-        <strong>Loading boards</strong>
+        <LoadingIndicator label="Loading boards" />
       </div>
     );
   }

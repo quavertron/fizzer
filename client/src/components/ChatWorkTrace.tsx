@@ -6,7 +6,7 @@ import { isLiveAgentStatus } from '../chat/runBlocks';
  * Intentionally avoids importing runtime values from ChatView (circular).
  */
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,7 +16,6 @@ import {
   workTracePeek,
   isSteeringContinuationMessage,
   workTraceStatusLabel,
-  workTraceSummary,
 } from '../chat/workTrace';
 import { hasRunActivity } from '../chat/harnessActivity';
 import { CascadeRunPanel } from './CascadeRunPanel';
@@ -24,6 +23,7 @@ import { shouldRenderRunPanel } from './ChatGroupRow';
 import { ChatQuoteRefs } from './ChatQuoteRefs';
 import { SafeMarkdownImage } from './ChatMarkdown';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { missionAccent, type MissionMessageIdentity } from '../chat/missionIdentity';
 import { SwipeToReply } from './SwipeToReply';
 import type { ChatMessage } from '../chat/types';
 
@@ -41,7 +41,7 @@ function formatTime(value: string) {
 function statusMark(message: ChatMessage): { mark: string; className: string; live?: boolean } {
   if (message.status === 'failed') return { mark: '✗', className: 'err' };
   if (isSteeringContinuationMessage(message)) return { mark: '↪', className: 'steer' };
-  if (message.status === 'canceled') return { mark: '✗', className: 'err' };
+  if (message.status === 'canceled') return { mark: '·', className: 'ok' };
   if (isLiveAgentStatus(message.status)) return { mark: '…', className: 'run', live: true };
   if (message.missionTaskId) return { mark: '›', className: 'task' };
   if (String(message.id || '').startsWith('sys-mission-') || message.author === 'Cascade') {
@@ -154,6 +154,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   runningMessageState,
   /** Nested in a mission card: no outer chrome; stream is the mission body. */
   embedded = false,
+  missionIdentity,
   /** When true, skip the local collapse toggle and always show the stream. */
   forceOpen = false,
 }: {
@@ -166,17 +167,19 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   onHydrateMessage?: (message: ChatMessage) => void;
   runningMessageState: ReadonlyMap<string, { latestId: string; count: number }>;
   embedded?: boolean;
+  missionIdentity?: MissionMessageIdentity;
   forceOpen?: boolean;
 }) {
   const live = trace.some((m) => isLiveAgentStatus(m.status));
-  // Current work and failures remain visible; only settled history folds.
+  // Keep the current activity visible; expand the transcript on request.
   const [open, setOpen] = useState(forceOpen);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const pinBottomRef = useRef(true);
-  const summary = useMemo(() => workTraceSummary(trace), [trace]);
   const peek = useMemo(() => workTracePeek(trace), [trace]);
   const currentPhase = peek?.phase || 'working';
+  const label = peek?.label && peek.label !== '(empty)'
+    ? peek.label : live ? 'Working…' : 'Finished';
   const streamOpen = forceOpen || open;
   const latestUpdate = live ? [...trace].reverse().find((message) =>
     !message.missionTaskId && !message.status && message.body.trim()) : undefined;
@@ -230,12 +233,17 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
       <div
         className={[
           'chat-work-trace',
+          !embedded && missionIdentity ? 'has-mission-accent' : '',
           `phase-${currentPhase}`,
           streamOpen ? 'is-open' : '',
           live ? 'is-live' : '',
           embedded ? 'is-embedded' : '',
           forceOpen ? 'is-forced-open' : '',
         ].filter(Boolean).join(' ')}
+        style={!embedded && missionIdentity ? { '--mission-accent': missionAccent(missionIdentity.id) } as CSSProperties : undefined}
+        title={!embedded && missionIdentity ? `${missionIdentity.title} · ${missionIdentity.role}` : undefined}
+        aria-label={!embedded && missionIdentity ? `${missionIdentity.title} · ${missionIdentity.role}` : undefined}
+        role={!embedded && missionIdentity ? 'group' : undefined}
       >
         {!forceOpen && (
           <button
@@ -245,10 +253,9 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
             aria-expanded={streamOpen}
           >
             {live && <ThinkingSpinner className="chat-work-trace-spinner" title="Working" />}
-            <span className="chat-work-trace-summary" title={summary}>
-              {live ? peek?.label || 'Working…' : currentPhase === 'blocked' ? 'Needs attention' : 'Completed activity'}
+            <span className="chat-work-trace-summary" title={label}>
+              {label}
             </span>
-            <span className="chat-work-trace-count">{streamOpen ? 'Hide history' : 'Show history'}</span>
             <ChevronRight size={13} className={`chat-work-trace-chevron${streamOpen ? ' open' : ''}`} />
           </button>
         )}

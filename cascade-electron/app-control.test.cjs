@@ -74,7 +74,8 @@ test('schema, sanitized identity, explicit shared viewer reads, inaccessible IDs
   const f = await fixture(t);
   const cap = await f.call({ op: 'appCapabilities' });
   assert.equal(cap.contract, 'fizzer_app_control_v1');
-  assert.equal(cap.operations.filter(x => x.implemented).length, Object.keys(reads).length + Object.keys(writes).length);
+  const tasks = require('./task-control.cjs');
+  assert.equal(cap.operations.filter(x => x.implemented).length, Object.keys(reads).length + Object.keys(writes).length + Object.keys(tasks.reads).length + Object.keys(tasks.writes).length);
   assert.equal((await f.call({ op: 'appRead', action: 'identity', args: {} })).user.avatarUrl, undefined);
   assert.equal((await f.call({ op: 'appRead', action: 'navigation', args: { vaultId: f.other } })).role, 'viewer');
   assert.equal((await f.call({ op: 'appRead', action: 'note', args: { vaultId: f.other, noteId: randomUUID() } })).error, 'note_out_of_scope');

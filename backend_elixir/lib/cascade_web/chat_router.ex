@@ -21,6 +21,106 @@ defmodule CascadeWeb.ChatRouter do
 
   plug :dispatch
 
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/join" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.join(user, vault_id, channel_id) do
+        {:ok, session} -> JSON.send(put_resp_header(conn, "cache-control", "no-store"), 200, session)
+        {:error, :unavailable} -> JSON.send(conn, 503, %{error: "Voice service is not available"})
+        _ -> JSON.send(conn, 403, %{error: "Channel access required"})
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/voice/participants" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.participants(user, vault_id, channel_id) do
+        {:ok, result} ->
+          JSON.send(put_resp_header(conn, "cache-control", "no-store"), 200, result)
+
+        {:error, :unavailable} ->
+          JSON.send(conn, 503, %{error: "Voice service is not available"})
+
+        _ ->
+          JSON.send(conn, 403, %{error: "Channel access required"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/deafen" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.deafen(
+             user,
+             vault_id,
+             channel_id,
+             conn.body_params["identity"],
+             conn.body_params["deafened"]
+           ) do
+        {:ok, _} -> JSON.send(conn, 200, %{ok: true})
+        _ -> JSON.send(conn, 403, %{error: "Unable to update voice participant"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/voice/leave" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      case Cascade.Chat.Voice.leave(user, vault_id, channel_id, conn.body_params["identity"]) do
+        {:ok, _} -> JSON.send(conn, 200, %{left: true})
+        _ -> JSON.send(conn, 403, %{error: "Unable to remove voice participant"})
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/html-assets-v1" do
+    authenticated(conn, :any, :vault, fn conn, user ->
+      with {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+           "text/html" <- conn.body_params["media_type"],
+           true <- is_binary(conn.body_params["data"]),
+           true <- is_binary(conn.body_params["filename"] || "preview.html") do
+        try do
+          asset = Cascade.Content.Assets.upload(channel_id, user.id, conn.body_params)
+          JSON.send(conn, 201, Map.merge(asset, %{media_type: "text/html", name: String.slice(to_string(conn.body_params["filename"] || "preview.html"), 0, 200), data: ""}))
+        rescue
+          e in ArgumentError -> JSON.send(conn, 400, %{error: Exception.message(e)})
+        end
+      else
+        _ -> JSON.send(conn, 403, %{error: "Writable channel and text/html required"})
+      end
+    end)
+  end
+
+  get "/api/app-context" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      JSON.send(conn, 200, Cascade.Runs.AppContext.get(user.id))
+    end)
+  end
+
+  post "/api/vaults/:vault_id/import-codex-session" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      respond(conn, Cascade.Chat.SessionImport.import(user, vault_id, conn.body_params), :imported)
+    end)
+  end
+
+  put "/api/app-context" do
+    authenticated(conn, :any, :account, fn conn, user ->
+      case Cascade.Runs.AppContext.put(
+             user.id,
+             conn.body_params["content"],
+             conn.body_params["revision"]
+           ) do
+        {:ok, document} ->
+          JSON.send(conn, 200, document)
+
+        {:error, %{code: "revision_conflict"} = conflict} ->
+          JSON.send(conn, 409, conflict)
+
+        {:error, :invalid} ->
+          JSON.send(conn, 400, %{
+            error: "Provide UTF-8 content up to 12000 bytes and the current revision"
+          })
+      end
+    end)
+  end
+
   get "/api/vaults/:vault_id/vault-agents" do
     authenticated(conn, :any, nil, fn conn, user ->
       respond(conn, Agents.list_vault(user.id, vault_id), :agents)
@@ -76,11 +176,15 @@ defmodule CascadeWeb.ChatRouter do
       detail = if query(conn, "detail") == "full", do: :full, else: :list
       limit = parse_number(query(conn, "limit"))
 
-      respond(
-        conn,
-        Messages.list(channel_id, user.id, detail: detail, limit: limit || 120),
-        :messages
-      )
+      case Messages.list(channel_id, user.id,
+             detail: detail,
+             limit: limit || 120,
+             before_seq: parse_number(query(conn, "beforeSeq")),
+             page: true
+           ) do
+        {:ok, page} -> JSON.send(conn, 200, page)
+        error -> domain_error(conn, error)
+      end
     end)
   end
 
@@ -93,6 +197,7 @@ defmodule CascadeWeb.ChatRouter do
            {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id) do
         JSON.send(conn, 200, %{
           contract: "messages_no_invoke_v1",
+          mediaContract: "channel_png_assets_v1",
           actorUserId: user.id,
           vaultId: vault_id,
           channelId: channel_id
@@ -109,11 +214,19 @@ defmodule CascadeWeb.ChatRouter do
              conn,
              fn ->
                Cascade.Accounts.SQL.transaction(fn ->
-                 with :ok <- no_invoke_owner(user, vault_id) do
+                 with :ok <- no_invoke_owner(user, vault_id),
+                      {:ok, _} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+                      {:ok, images} <-
+                        Cascade.Chat.NoInvokeMedia.validate(conn.body_params, channel_id) do
                    input =
                      conn.body_params
                      |> Map.take(["body", "author", "agentId", "registrationId"])
-                     |> Map.merge(%{"status" => "completed", "replyTo" => nil, "runId" => nil})
+                     |> Map.merge(%{
+                       "status" => "completed",
+                       "replyTo" => nil,
+                       "runId" => nil,
+                       "images" => images
+                     })
 
                    Messages.create(user, vault_id, channel_id, input, access: :agent)
                  end
@@ -399,7 +512,11 @@ defmodule CascadeWeb.ChatRouter do
                  message_id,
                  conn.body_params,
                  access: access(conn),
-                 dispatch: callback(conn, :dispatch)
+                 dispatch:
+                   callback(conn, :dispatch) ||
+                     fn %{message: message, targetRegistrationId: target} ->
+                       Dispatches.create(user.id, channel_id, message, target)
+                     end
                )
              end,
              fn result ->
@@ -417,6 +534,55 @@ defmodule CascadeWeb.ChatRouter do
 
         error ->
           domain_error(conn, error)
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/execution-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      case Cascade.Chat.RegistrationSettings.execution(user.id, vault_id, channel_id, registration_id) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.get(user.id, vault_id, channel_id, registration_id, conn.query_params) do
+        {:ok, settings} -> JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  patch "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id/settings-v1" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      case Cascade.Chat.RegistrationSettings.update(user.id, vault_id, channel_id, registration_id, conn.query_params, conn.body_params) do
+        {:ok, settings} ->
+          JSON.send(conn, 200, settings)
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
+      end
+    end)
+  end
+
+  # Exact registration, or the named /agents/resolve?vaultAgentId=...&hermesProfile=...
+  # query. Both require existing owner-bound membership and never materialize it.
+  get "/api/vaults/:vault_id/channels/:channel_id/agents/:registration_id" do
+    authenticated(conn, :any, nil, fn conn, user ->
+      conn = Plug.Conn.fetch_query_params(conn)
+
+      case Cascade.Chat.RegistrationLookup.get(
+             user.id,
+             vault_id,
+             channel_id,
+             registration_id,
+             conn.query_params
+           ) do
+        {:ok, registration} -> JSON.send(conn, 200, %{registration: registration})
+        {:error, status, message} -> JSON.send(conn, status, %{error: message})
       end
     end)
   end
@@ -722,6 +888,8 @@ defmodule CascadeWeb.ChatRouter do
   defp registration(conn, mutation, vault_id, channel_id, status)
        when is_function(mutation, 0) do
     case serialized_mutation_and_emit(conn, mutation, fn value ->
+           Cascade.Chat.NextSteps.announce_pending(value.id, callback(conn, :events))
+
            %{
              event: "vault:chatAgentMemberUpserted",
              vaultId: vault_id,

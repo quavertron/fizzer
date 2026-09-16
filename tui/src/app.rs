@@ -1,0 +1,2205 @@
+use crate::api::{AgentItem, CascadeClient, ChannelItem, ChatMessage, NoteSummary, Vault, VaultMember};
+use ratatui::text::Line;
+use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
+use unicode_width::UnicodeWidthChar;
+
+pub const HEADER_HEIGHT: u16 = 1;
+
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct InlineSvgBlock {
+    pub start_line: usize,
+    pub rows: u16,
+    pub image_id: u32,
+    pub svg: String,
+}
+
+/// Cached layout and pre-rendered lines for the chat messages stream.
+/// Avoids re-parsing, re-wrapping, and re-allocating thousands of chat lines on every frame.
+#[derive(Default, Debug, Clone)]
+pub struct ChatRenderCache {
+    pub channel_id: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    pub agents: Vec<AgentItem>,
+    pub users: Vec<VaultMember>,
+    pub author: String,
+    pub author_color: String,
+    pub wrap_width: usize,
+    pub lines: Vec<Line<'static>>,
+    pub message_markers: Vec<(usize, usize)>,
+    pub line_offsets: Vec<(usize, usize)>,
+    pub chat_text: String,
+    pub char_count: usize,
+    pub inline_svgs: Vec<InlineSvgBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ActivePane {
+    ChatSelector,
+    ChatMessages,
+    ChatInput,
+    Agents,
+    Users,
+    Notes,
+    Awatch,
+    Vaults,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSettingsField {
+    DisplayName,
+    Mention,
+    Model,
+    ReasoningEffort,
+    PriorityServiceTier,
+    ColorR,
+    ColorG,
+    ColorB,
+    ColorH,
+    ColorS,
+    ColorV,
+    Orchestrator,
+    ReplyToEveryMessage,
+    TaggableByAgents,
+    PingableByOthers,
+    Yolo,
+    Save,
+    Cancel,
+}
+
+impl AgentSettingsField {
+    pub fn is_color_slider(&self) -> bool {
+        matches!(
+            self,
+            Self::ColorR
+                | Self::ColorG
+                | Self::ColorB
+                | Self::ColorH
+                | Self::ColorS
+                | Self::ColorV
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+pub fn agent_model_presets(agent_id: &str) -> &'static [ModelPreset] {
+    match agent_id {
+        "claude-code" => &[
+            ModelPreset { id: "claude-fable-5", label: "Claude Fable 5" },
+            ModelPreset { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+            ModelPreset { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+            ModelPreset { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+        ],
+        "codex" => &[
+            ModelPreset { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+            ModelPreset { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+            ModelPreset { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+            ModelPreset { id: "gpt-5.5", label: "GPT-5.5" },
+            ModelPreset { id: "gpt-5.4", label: "GPT-5.4" },
+            ModelPreset { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+        ],
+        "grok" => &[
+            ModelPreset { id: "grok-4.5", label: "Grok 4.5" },
+            ModelPreset { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast" },
+        ],
+        "antigravity" => &[
+            ModelPreset { id: "flash_lite", label: "Gemini Flash Lite (tier)" },
+            ModelPreset { id: "flash", label: "Gemini Flash (tier)" },
+            ModelPreset { id: "pro", label: "Gemini Pro (tier)" },
+            ModelPreset { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+            ModelPreset { id: "gemini-3.5-flash-extra-low", label: "Gemini 3.5 Flash (Low)" },
+            ModelPreset { id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (Medium)" },
+            ModelPreset { id: "gemini-3-flash-agent", label: "Gemini 3.5 Flash (High)" },
+            ModelPreset { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+            ModelPreset { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+            ModelPreset { id: "gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image" },
+            ModelPreset { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+            ModelPreset { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+            ModelPreset { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+            ModelPreset { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+            ModelPreset { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+            ModelPreset { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
+        ],
+        "copilot" => &[
+            ModelPreset { id: "auto", label: "Auto" },
+            ModelPreset { id: "claude-haiku-4.5", label: "Claude Haiku 4.5" },
+            ModelPreset { id: "gpt-5.2", label: "GPT-5.2" },
+        ],
+        "hermes" => &[
+            ModelPreset { id: "z-ai/glm-5.2", label: "GLM 5.2 (Hermes default)" },
+            ModelPreset { id: "deepseek/deepseek-v4-flash-0731", label: "DeepSeek V4 Flash 0731" },
+            ModelPreset { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+            ModelPreset { id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8" },
+            ModelPreset { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5" },
+            ModelPreset { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol" },
+            ModelPreset { id: "openai/gpt-5.5", label: "GPT-5.5" },
+            ModelPreset { id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
+            ModelPreset { id: "x-ai/grok-4.5", label: "Grok 4.5" },
+            ModelPreset { id: "moonshotai/kimi-k3", label: "Kimi K3" },
+            ModelPreset { id: "qwen/qwen3.8-max", label: "Qwen 3.8 Max" },
+        ],
+        "omp" => &[
+            ModelPreset { id: "openai-codex/gpt-5.6-sol", label: "Codex · GPT-5.6 Sol" },
+            ModelPreset { id: "openai-codex/gpt-5.6-terra", label: "Codex · GPT-5.6 Terra" },
+            ModelPreset { id: "openai-codex/gpt-5.6-luna", label: "Codex · GPT-5.6 Luna" },
+            ModelPreset { id: "openai-codex/gpt-5.5", label: "Codex · GPT-5.5" },
+            ModelPreset { id: "openai-codex/gpt-5.4", label: "Codex · GPT-5.4" },
+            ModelPreset { id: "anthropic/claude-sonnet-5", label: "Claude Code · Sonnet 5" },
+            ModelPreset { id: "anthropic/claude-opus-4-8", label: "Claude Code · Opus 4.8" },
+        ],
+        _ => &[],
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSettingsState {
+    pub agent_idx: usize,
+    pub agent: AgentItem,
+    pub is_new: bool,
+    pub selected_field: AgentSettingsField,
+    pub editing_name: bool,
+    pub name_input: String,
+    pub editing_handle: bool,
+    pub handle_input: String,
+    pub model_choice_idx: usize,
+    pub editing_custom_model: bool,
+    pub custom_model_input: String,
+    pub color_r: u8,
+    pub color_g: u8,
+    pub color_b: u8,
+    pub color_h: u16,
+    pub color_s: u8,
+    pub color_v: u8,
+    pub error_message: Option<String>,
+}
+
+/// Normalize a typed @handle: drop a leading '@', collapse whitespace to
+/// hyphens, and keep it lowercase so mentions stay well-formed.
+pub fn sanitize_handle(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches('@')
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_lowercase()
+}
+
+pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let s = hex.trim().trim_start_matches('#');
+    if !s.is_ascii() {
+        return None;
+    }
+    if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some((r, g, b))
+    } else if s.len() == 3 {
+        let r = u8::from_str_radix(&s[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&s[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&s[2..3], 16).ok()?;
+        Some((r * 17, g * 17, b * 17))
+    } else {
+        None
+    }
+}
+
+pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (u16, u8, u8) {
+    let rf = r as f64 / 255.0;
+    let gf = g as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+
+    let cmax = rf.max(gf).max(bf);
+    let cmin = rf.min(gf).min(bf);
+    let delta = cmax - cmin;
+
+    let h = if delta < 1e-6 {
+        0.0
+    } else if (cmax - rf).abs() < 1e-6 {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if (cmax - gf).abs() < 1e-6 {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let h = if h < 0.0 { h + 360.0 } else { h };
+
+    let s = if cmax < 1e-6 { 0.0 } else { (delta / cmax) * 100.0 };
+    let v = cmax * 100.0;
+
+    (
+        h.round().clamp(0.0, 360.0) as u16 % 360,
+        s.round().clamp(0.0, 100.0) as u8,
+        v.round().clamp(0.0, 100.0) as u8,
+    )
+}
+
+pub fn hsv_to_rgb(h: u16, s: u8, v: u8) -> (u8, u8, u8) {
+    let hf = (h % 360) as f64;
+    let sf = (s.min(100) as f64) / 100.0;
+    let vf = (v.min(100) as f64) / 100.0;
+
+    let c = vf * sf;
+    let x = c * (1.0 - ((hf / 60.0) % 2.0 - 1.0).abs());
+    let m = vf - c;
+
+    let (r1, g1, b1) = if hf < 60.0 {
+        (c, x, 0.0)
+    } else if hf < 120.0 {
+        (x, c, 0.0)
+    } else if hf < 180.0 {
+        (0.0, c, x)
+    } else if hf < 240.0 {
+        (0.0, x, c)
+    } else if hf < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    (
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+impl AgentSettingsState {
+    pub fn new(agent_idx: usize, mut agent: AgentItem) -> Self {
+        let presets = agent_model_presets(&agent.agent_id);
+        let cur_model = agent.model.trim();
+
+        let (model_choice_idx, custom_model_input) = if cur_model.is_empty() {
+            (0, String::new())
+        } else if let Some(pos) = presets.iter().position(|p| p.id == cur_model) {
+            (1 + pos, String::new())
+        } else {
+            (1 + presets.len(), cur_model.to_string())
+        };
+
+        let (r, g, b) = if let Some(ref c) = agent.color {
+            parse_hex_color(c).unwrap_or_else(|| match agent.agent_id.as_str() {
+                "claude-code" => (217, 119, 87),
+                "codex" => (16, 163, 127),
+                "antigravity" => (66, 133, 244),
+                "hermes" => (168, 85, 247),
+                _ => (100, 180, 240),
+            })
+        } else {
+            match agent.agent_id.as_str() {
+                "claude-code" => (217, 119, 87),
+                "codex" => (16, 163, 127),
+                "antigravity" => (66, 133, 244),
+                "hermes" => (168, 85, 247),
+                _ => (100, 180, 240),
+            }
+        };
+        let (h, s, v) = rgb_to_hsv(r, g, b);
+        if agent.color.is_none() {
+            agent.color = Some(format!("{:02X}{:02X}{:02X}", r, g, b));
+        }
+
+        let name_input = agent.display_name.clone();
+        let handle_input = agent.mention.clone();
+
+        Self {
+            agent_idx,
+            agent,
+            is_new: false,
+            selected_field: AgentSettingsField::Model,
+            editing_name: false,
+            name_input,
+            editing_handle: false,
+            handle_input,
+            model_choice_idx,
+            editing_custom_model: false,
+            custom_model_input,
+            color_r: r,
+            color_g: g,
+            color_b: b,
+            color_h: h,
+            color_s: s,
+            color_v: v,
+            error_message: None,
+        }
+    }
+
+    pub fn new_agent(agent_idx: usize, agent: AgentItem) -> Self {
+        let mut state = Self::new(agent_idx, agent);
+        state.is_new = true;
+        state
+    }
+
+    pub fn is_custom_selected(&self) -> bool {
+        let presets = agent_model_presets(&self.agent.agent_id);
+        self.model_choice_idx == 1 + presets.len()
+    }
+
+    pub fn sync_model_from_choice(&mut self) {
+        let presets = agent_model_presets(&self.agent.agent_id);
+        if self.model_choice_idx == 0 {
+            self.agent.model.clear();
+        } else if self.model_choice_idx <= presets.len() {
+            self.agent.model = presets[self.model_choice_idx - 1].id.to_string();
+        } else {
+            self.agent.model = self.custom_model_input.trim().to_string();
+        }
+    }
+
+    pub fn cycle_model(&mut self, forward: bool) {
+        let presets = agent_model_presets(&self.agent.agent_id);
+        let total_choices = 1 + presets.len() + 1;
+
+        if forward {
+            self.model_choice_idx = (self.model_choice_idx + 1) % total_choices;
+        } else if self.model_choice_idx == 0 {
+            self.model_choice_idx = total_choices - 1;
+        } else {
+            self.model_choice_idx -= 1;
+        }
+
+        self.editing_custom_model = false;
+        self.sync_model_from_choice();
+    }
+
+    pub fn current_model_display(&self) -> (String, &'static str) {
+        let presets = agent_model_presets(&self.agent.agent_id);
+        if self.model_choice_idx == 0 {
+            ("Default (CLI)".to_string(), "Default CLI model")
+        } else if self.model_choice_idx <= presets.len() {
+            let p = &presets[self.model_choice_idx - 1];
+            (format!("{} [{}]", p.label, p.id), p.id)
+        } else if self.editing_custom_model {
+            (format!("Custom: {}▌", self.custom_model_input), "Custom model ID")
+        } else if self.custom_model_input.is_empty() {
+            ("Custom model ID...".to_string(), "Custom model ID")
+        } else {
+            (format!("Custom: {}", self.custom_model_input), "Custom model ID")
+        }
+    }
+
+    pub fn sync_color_to_agent(&mut self) {
+        self.agent.color = Some(format!("{:02X}{:02X}{:02X}", self.color_r, self.color_g, self.color_b));
+    }
+
+    pub fn adjust_slider(&mut self, field: AgentSettingsField, delta: i32) {
+        match field {
+            AgentSettingsField::ColorR => {
+                self.color_r = (self.color_r as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorG => {
+                self.color_g = (self.color_g as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorB => {
+                self.color_b = (self.color_b as i32 + delta).clamp(0, 255) as u8;
+                let (h, s, v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+                self.color_h = h;
+                self.color_s = s;
+                self.color_v = v;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorH => {
+                let mut new_h = self.color_h as i32 + delta;
+                while new_h < 0 {
+                    new_h += 360;
+                }
+                self.color_h = (new_h % 360) as u16;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorS => {
+                self.color_s = (self.color_s as i32 + delta).clamp(0, 100) as u8;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            AgentSettingsField::ColorV => {
+                self.color_v = (self.color_v as i32 + delta).clamp(0, 100) as u8;
+                let (r, g, b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+                self.color_r = r;
+                self.color_g = g;
+                self.color_b = b;
+                self.sync_color_to_agent();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn fields(&self) -> Vec<AgentSettingsField> {
+        let is_codex = self.agent.agent_id == "codex";
+        let is_claude = self.agent.agent_id == "claude-code";
+        let mut list = vec![
+            AgentSettingsField::DisplayName,
+            AgentSettingsField::Mention,
+            AgentSettingsField::Model,
+        ];
+        if is_codex || is_claude {
+            list.push(AgentSettingsField::ReasoningEffort);
+        }
+        if is_codex {
+            list.push(AgentSettingsField::PriorityServiceTier);
+        }
+        list.push(AgentSettingsField::ColorR);
+        list.push(AgentSettingsField::ColorG);
+        list.push(AgentSettingsField::ColorB);
+        list.push(AgentSettingsField::ColorH);
+        list.push(AgentSettingsField::ColorS);
+        list.push(AgentSettingsField::ColorV);
+        list.push(AgentSettingsField::Orchestrator);
+        list.push(AgentSettingsField::ReplyToEveryMessage);
+        list.push(AgentSettingsField::TaggableByAgents);
+        list.push(AgentSettingsField::PingableByOthers);
+        list.push(AgentSettingsField::Yolo);
+        list.push(AgentSettingsField::Save);
+        list.push(AgentSettingsField::Cancel);
+        list
+    }
+
+    pub fn next_field(&mut self) {
+        if self.editing_custom_model || self.editing_name || self.editing_handle {
+            return;
+        }
+        let fields = self.fields();
+        if let Some(pos) = fields.iter().position(|f| *f == self.selected_field) {
+            self.selected_field = fields[(pos + 1) % fields.len()];
+        }
+    }
+
+    pub fn prev_field(&mut self) {
+        if self.editing_custom_model || self.editing_name || self.editing_handle {
+            return;
+        }
+        let fields = self.fields();
+        if let Some(pos) = fields.iter().position(|f| *f == self.selected_field) {
+            if pos == 0 {
+                self.selected_field = fields[fields.len() - 1];
+            } else {
+                self.selected_field = fields[pos - 1];
+            }
+        }
+    }
+
+    pub fn toggle_or_action(&mut self) -> Option<bool> {
+        match self.selected_field {
+            AgentSettingsField::DisplayName => {
+                self.editing_name = !self.editing_name;
+                if !self.editing_name {
+                    self.agent.display_name = self.name_input.trim().to_string();
+                }
+                None
+            }
+            AgentSettingsField::Mention => {
+                self.editing_handle = !self.editing_handle;
+                if !self.editing_handle {
+                    self.agent.mention = sanitize_handle(&self.handle_input);
+                }
+                None
+            }
+            AgentSettingsField::Model => {
+                if self.is_custom_selected() {
+                    self.editing_custom_model = !self.editing_custom_model;
+                    if !self.editing_custom_model {
+                        self.sync_model_from_choice();
+                    }
+                } else {
+                    self.cycle_model(true);
+                }
+                None
+            }
+            AgentSettingsField::ReasoningEffort => {
+                self.cycle_reasoning(true);
+                None
+            }
+            AgentSettingsField::PriorityServiceTier => {
+                self.agent.priority_service_tier = !self.agent.priority_service_tier;
+                None
+            }
+            AgentSettingsField::ColorR
+            | AgentSettingsField::ColorG
+            | AgentSettingsField::ColorB
+            | AgentSettingsField::ColorH
+            | AgentSettingsField::ColorS
+            | AgentSettingsField::ColorV => None,
+            AgentSettingsField::Orchestrator => {
+                self.agent.orchestrator = !self.agent.orchestrator;
+                if self.agent.orchestrator {
+                    self.agent.reply_to_every_message = true;
+                }
+                None
+            }
+            AgentSettingsField::ReplyToEveryMessage => {
+                if !self.agent.orchestrator {
+                    self.agent.reply_to_every_message = !self.agent.reply_to_every_message;
+                }
+                None
+            }
+            AgentSettingsField::TaggableByAgents => {
+                self.agent.taggable_by_agents = !self.agent.taggable_by_agents;
+                None
+            }
+            AgentSettingsField::PingableByOthers => {
+                self.agent.pingable_by_others = !self.agent.pingable_by_others;
+                None
+            }
+            AgentSettingsField::Yolo => {
+                self.agent.yolo = !self.agent.yolo;
+                None
+            }
+            AgentSettingsField::Save => Some(true),
+            AgentSettingsField::Cancel => Some(false),
+        }
+    }
+
+    pub fn cycle_reasoning(&mut self, forward: bool) {
+        let is_codex = self.agent.agent_id == "codex";
+        let options: &[&str] = if is_codex {
+            &["", "low", "medium", "high", "xhigh", "max", "ultra"]
+        } else {
+            &["", "low", "medium", "high", "xhigh", "max"]
+        };
+        let cur = self.agent.reasoning_effort.as_str();
+        let idx = options.iter().position(|&o| o == cur).unwrap_or(0);
+        let next_idx = if forward {
+            (idx + 1) % options.len()
+        } else if idx == 0 {
+            options.len() - 1
+        } else {
+            idx - 1
+        };
+        self.agent.reasoning_effort = options[next_idx].to_string();
+    }
+
+    pub fn click_row(&mut self, row: usize, col_in_modal: u16, modal_width: u16) -> Option<bool> {
+        let is_codex = self.agent.agent_id == "codex";
+        let is_claude = self.agent.agent_id == "claude-code";
+
+        // Clicking anywhere on a color slider row sets that channel to the
+        // clicked position (mouse support for the RGB/HSV sliders).
+        if let Some(field) = self.color_slider_at_row(row) {
+            self.set_slider_from_col(field, col_in_modal, modal_width);
+            return None;
+        }
+
+        // Row 3: Name, Row 4: Handle
+        if row == 3 {
+            self.selected_field = AgentSettingsField::DisplayName;
+            return self.toggle_or_action();
+        }
+        if row == 4 {
+            self.selected_field = AgentSettingsField::Mention;
+            return self.toggle_or_action();
+        }
+
+        // Row 5: Model
+        if row == 5 {
+            self.selected_field = AgentSettingsField::Model;
+            return self.toggle_or_action();
+        }
+
+        let mut cur_row = 6;
+        if is_codex || is_claude {
+            if row == cur_row {
+                self.selected_field = AgentSettingsField::ReasoningEffort;
+                return self.toggle_or_action();
+            }
+            cur_row += 1;
+        }
+
+        if is_codex {
+            if row == cur_row {
+                self.selected_field = AgentSettingsField::PriorityServiceTier;
+                return self.toggle_or_action();
+            }
+            cur_row += 1;
+        }
+
+        // Color section: header + preview + 6 sliders (slider clicks handled above)
+        cur_row += 8;
+
+        // Divider: Replies
+        cur_row += 1;
+
+        // Orchestrator
+        if row == cur_row {
+            self.selected_field = AgentSettingsField::Orchestrator;
+            return self.toggle_or_action();
+        }
+        cur_row += 1;
+
+        // Reply to every
+        if row == cur_row {
+            self.selected_field = AgentSettingsField::ReplyToEveryMessage;
+            return self.toggle_or_action();
+        }
+        cur_row += 1;
+
+        // Divider: Mentions
+        cur_row += 1;
+
+        // Taggable
+        if row == cur_row {
+            self.selected_field = AgentSettingsField::TaggableByAgents;
+            return self.toggle_or_action();
+        }
+        cur_row += 1;
+
+        // Pingable
+        if row == cur_row {
+            self.selected_field = AgentSettingsField::PingableByOthers;
+            return self.toggle_or_action();
+        }
+        cur_row += 1;
+
+        // Divider: Execution
+        cur_row += 1;
+
+        // Yolo
+        if row == cur_row {
+            self.selected_field = AgentSettingsField::Yolo;
+            return self.toggle_or_action();
+        }
+        cur_row += 1;
+
+        // Blank
+        cur_row += 1;
+
+        // Buttons
+        if row == cur_row {
+            if col_in_modal <= 39 {
+                self.selected_field = AgentSettingsField::Save;
+                return Some(true);
+            } else {
+                self.selected_field = AgentSettingsField::Cancel;
+                return Some(false);
+            }
+        }
+
+        None
+    }
+
+    /// Which color slider (if any) is rendered at the given modal content row.
+    /// Mirrors the row order in `render_agent_settings_modal`.
+    pub fn color_slider_at_row(&self, row: usize) -> Option<AgentSettingsField> {
+        let is_codex = self.agent.agent_id == "codex";
+        let is_claude = self.agent.agent_id == "claude-code";
+
+        let mut r_row = 6; // first row after Model (row 5)
+        if is_codex || is_claude {
+            r_row += 1; // reasoning effort
+        }
+        if is_codex {
+            r_row += 1; // fast mode
+        }
+        r_row += 2; // color header + preview
+
+        let fields = [
+            AgentSettingsField::ColorR,
+            AgentSettingsField::ColorG,
+            AgentSettingsField::ColorB,
+            AgentSettingsField::ColorH,
+            AgentSettingsField::ColorS,
+            AgentSettingsField::ColorV,
+        ];
+        if row >= r_row && row < r_row + fields.len() {
+            Some(fields[row - r_row])
+        } else {
+            None
+        }
+    }
+
+    /// Set a color slider to the position clicked/dragged within the modal.
+    /// `col_in_modal` is relative to the modal's left border; `modal_width` is
+    /// its total width. Track geometry mirrors `render_slider_line`.
+    pub fn set_slider_from_col(&mut self, field: AgentSettingsField, col_in_modal: u16, modal_width: u16) {
+        // `used` is the byte length of the "  X: " prefix (5) plus the value
+        // suffix, matching render exactly (the "°" in the hue suffix is 2 bytes).
+        let (max, used) = match field {
+            AgentSettingsField::ColorR | AgentSettingsField::ColorG | AgentSettingsField::ColorB => {
+                (255i32, 10usize)
+            }
+            AgentSettingsField::ColorH => (360, 12),
+            AgentSettingsField::ColorS | AgentSettingsField::ColorV => (100, 11),
+            _ => return,
+        };
+
+        self.selected_field = field;
+
+        let slider_width = (modal_width as usize).saturating_sub(3);
+        let track_width = slider_width.saturating_sub(used).max(10);
+        // Content is inset by the left border, and the label prefix is 5 columns.
+        let char_index = (col_in_modal as usize).saturating_sub(1);
+        if char_index < 5 {
+            return; // clicked the label, just focus the field
+        }
+        let pos = (char_index - 5).min(track_width - 1);
+        let ratio = pos as f64 / (track_width - 1).max(1) as f64;
+        let target = (ratio * max as f64).round() as i32;
+
+        let current = match field {
+            AgentSettingsField::ColorR => self.color_r as i32,
+            AgentSettingsField::ColorG => self.color_g as i32,
+            AgentSettingsField::ColorB => self.color_b as i32,
+            AgentSettingsField::ColorH => self.color_h as i32,
+            AgentSettingsField::ColorS => self.color_s as i32,
+            AgentSettingsField::ColorV => self.color_v as i32,
+            _ => 0,
+        };
+        self.adjust_slider(field, target - current);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserSettingsField {
+    DisplayName,
+    ColorR,
+    ColorG,
+    ColorB,
+    ColorH,
+    ColorS,
+    ColorV,
+    Save,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultActionField {
+    NameOrOrigin,
+    Username,
+    Password,
+}
+
+#[derive(Debug, Clone)]
+pub enum VaultActionState {
+    CreateLocal { name: String },
+    ConnectRemote {
+        origin: String,
+        username: String,
+        password: String,
+        field: VaultActionField,
+    },
+}
+
+impl VaultActionState {
+    pub fn active_input(&mut self) -> &mut String {
+        match self {
+            Self::CreateLocal { name } => name,
+            Self::ConnectRemote { origin, username, password, field } => match field {
+                VaultActionField::NameOrOrigin => origin,
+                VaultActionField::Username => username,
+                VaultActionField::Password => password,
+            },
+        }
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        self.active_input().extend(text.chars().filter(|c| !c.is_control()));
+    }
+}
+
+impl UserSettingsField {
+    pub fn is_color_slider(self) -> bool {
+        matches!(self, Self::ColorR | Self::ColorG | Self::ColorB | Self::ColorH | Self::ColorS | Self::ColorV)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserSettingsState {
+    pub user_idx: usize,
+    pub user: VaultMember,
+    pub selected_field: UserSettingsField,
+    pub editing_display_name: bool,
+    pub display_name_input: String,
+    pub color_r: u8,
+    pub color_g: u8,
+    pub color_b: u8,
+    pub color_h: u16,
+    pub color_s: u8,
+    pub color_v: u8,
+    pub error_message: Option<String>,
+}
+
+impl UserSettingsState {
+    pub fn new(user_idx: usize, mut user: VaultMember) -> Self {
+        let (r, g, b) = user
+            .color
+            .as_deref()
+            .and_then(parse_hex_color)
+            .unwrap_or((255, 255, 255));
+        let (h, s, v) = rgb_to_hsv(r, g, b);
+        let display_name = if user.display_name.trim().is_empty() {
+            user.username.clone()
+        } else {
+            user.display_name.clone()
+        };
+        user.display_name = display_name.clone();
+        user.color = Some(format!("{:02X}{:02X}{:02X}", r, g, b));
+        Self {
+            user_idx,
+            user,
+            selected_field: UserSettingsField::DisplayName,
+            editing_display_name: false,
+            display_name_input: display_name,
+            color_r: r,
+            color_g: g,
+            color_b: b,
+            color_h: h,
+            color_s: s,
+            color_v: v,
+            error_message: None,
+        }
+    }
+
+    pub fn fields() -> [UserSettingsField; 9] {
+        [
+            UserSettingsField::DisplayName,
+            UserSettingsField::ColorR,
+            UserSettingsField::ColorG,
+            UserSettingsField::ColorB,
+            UserSettingsField::ColorH,
+            UserSettingsField::ColorS,
+            UserSettingsField::ColorV,
+            UserSettingsField::Save,
+            UserSettingsField::Cancel,
+        ]
+    }
+
+    pub fn next_field(&mut self) {
+        if self.editing_display_name { return; }
+        let fields = Self::fields();
+        let pos = fields.iter().position(|field| *field == self.selected_field).unwrap_or(0);
+        self.selected_field = fields[(pos + 1) % fields.len()];
+    }
+
+    pub fn prev_field(&mut self) {
+        if self.editing_display_name { return; }
+        let fields = Self::fields();
+        let pos = fields.iter().position(|field| *field == self.selected_field).unwrap_or(0);
+        self.selected_field = fields[(pos + fields.len() - 1) % fields.len()];
+    }
+
+    fn sync_color(&mut self) {
+        self.user.color = Some(format!("{:02X}{:02X}{:02X}", self.color_r, self.color_g, self.color_b));
+    }
+
+    pub fn adjust_slider(&mut self, field: UserSettingsField, delta: i32) {
+        match field {
+            UserSettingsField::ColorR => self.color_r = (self.color_r as i32 + delta).clamp(0, 255) as u8,
+            UserSettingsField::ColorG => self.color_g = (self.color_g as i32 + delta).clamp(0, 255) as u8,
+            UserSettingsField::ColorB => self.color_b = (self.color_b as i32 + delta).clamp(0, 255) as u8,
+            UserSettingsField::ColorH => self.color_h = ((self.color_h as i32 + delta).rem_euclid(360)) as u16,
+            UserSettingsField::ColorS => self.color_s = (self.color_s as i32 + delta).clamp(0, 100) as u8,
+            UserSettingsField::ColorV => self.color_v = (self.color_v as i32 + delta).clamp(0, 100) as u8,
+            _ => return,
+        }
+        if matches!(field, UserSettingsField::ColorR | UserSettingsField::ColorG | UserSettingsField::ColorB) {
+            (self.color_h, self.color_s, self.color_v) = rgb_to_hsv(self.color_r, self.color_g, self.color_b);
+        } else {
+            (self.color_r, self.color_g, self.color_b) = hsv_to_rgb(self.color_h, self.color_s, self.color_v);
+        }
+        self.sync_color();
+    }
+
+    pub fn toggle_or_action(&mut self) -> Option<bool> {
+        match self.selected_field {
+            UserSettingsField::DisplayName => {
+                self.editing_display_name = !self.editing_display_name;
+                if !self.editing_display_name {
+                    self.user.display_name = self.display_name_input.trim().to_string();
+                }
+                None
+            }
+            UserSettingsField::Save => Some(true),
+            UserSettingsField::Cancel => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn color_slider_at_row(&self, row: usize) -> Option<UserSettingsField> {
+        let fields = [
+            UserSettingsField::ColorR,
+            UserSettingsField::ColorG,
+            UserSettingsField::ColorB,
+            UserSettingsField::ColorH,
+            UserSettingsField::ColorS,
+            UserSettingsField::ColorV,
+        ];
+        (6..12).contains(&row).then(|| fields[row - 6])
+    }
+
+    pub fn set_slider_from_col(&mut self, field: UserSettingsField, col: u16, width: u16) {
+        self.selected_field = field;
+        let max = match field {
+            UserSettingsField::ColorR | UserSettingsField::ColorG | UserSettingsField::ColorB => 255,
+            UserSettingsField::ColorH => 360,
+            UserSettingsField::ColorS | UserSettingsField::ColorV => 100,
+            _ => return,
+        };
+        let track = (width as usize).saturating_sub(13).max(10);
+        let pos = (col as usize).saturating_sub(6).min(track - 1);
+        let target = (pos as f64 / (track - 1).max(1) as f64 * max as f64).round() as i32;
+        let current = match field {
+            UserSettingsField::ColorR => self.color_r as i32,
+            UserSettingsField::ColorG => self.color_g as i32,
+            UserSettingsField::ColorB => self.color_b as i32,
+            UserSettingsField::ColorH => self.color_h as i32,
+            UserSettingsField::ColorS => self.color_s as i32,
+            UserSettingsField::ColorV => self.color_v as i32,
+            _ => 0,
+        };
+        self.adjust_slider(field, target - current);
+    }
+
+    pub fn click_row(&mut self, row: usize, col: u16) -> Option<bool> {
+        if let Some(field) = self.color_slider_at_row(row) {
+            self.set_slider_from_col(field, col, 60);
+            return None;
+        }
+        if row == 3 {
+            self.selected_field = UserSettingsField::DisplayName;
+            return self.toggle_or_action();
+        }
+        if row == 13 {
+            self.selected_field = if col < 40 { UserSettingsField::Save } else { UserSettingsField::Cancel };
+            return self.toggle_or_action();
+        }
+        None
+    }
+}
+
+// The active buffer is moved into App for the existing editing/rendering code.
+// Inactive buffers retain their data; changing windows never copies chat history.
+macro_rules! channel_buffer {
+    ($($field:ident: $ty:ty),* $(,)?) => {
+        #[derive(Default)]
+        pub struct ChannelBuffer { $(pub $field: $ty,)* }
+        impl ChannelBuffer {
+            fn take(app: &mut App) -> Self {
+                Self { $($field: std::mem::take(&mut app.$field),)* }
+            }
+            fn restore(self, app: &mut App) { $(app.$field = self.$field;)* }
+        }
+    };
+}
+channel_buffer! {
+    messages: Vec<ChatMessage>, agents: Vec<AgentItem>, input: String,
+    pending_images: Vec<String>, send_in_flight: bool,
+    receiving_messages: Option<String>, history_channel: Option<String>,
+    history_before: Option<i64>, history_has_more: bool, history_loading: bool,
+    message_load_error: Option<String>, active_agent_ids: HashSet<String>,
+    agent_run_seeds: HashMap<String, u64>,
+}
+
+pub struct App {
+    pub awatch: crate::awatch::Awatch,
+    pub channel_buffers: HashMap<String, ChannelBuffer>,
+    pub window_states: HashMap<ratatui_hypertile::PaneId, crate::panes::WindowState>,
+    pub loaded_window: Option<ratatui_hypertile::PaneId>,
+    pub panes: std::cell::RefCell<crate::panes::Panes>,
+    pub default_client: CascadeClient,
+    pub client: CascadeClient,
+    pub active_pane: ActivePane,
+    pub vault_id: Option<String>,
+    pub vault_name: String,
+    pub vaults: Vec<Vault>,
+    pub selected_vault_idx: usize,
+    pub vault_action: Option<VaultActionState>,
+    pub codex_import: Option<crate::codex_sessions::Picker>,
+    pub channels: Vec<ChannelItem>,
+    pub selected_channel_idx: usize,
+    pub active_channel_id: Option<String>,
+    pub messages: Vec<ChatMessage>,
+    /// Message currently selected while the chat log pane has focus.
+    pub selected_message_idx: usize,
+    pub agents: Vec<AgentItem>,
+    pub users: Vec<VaultMember>,
+    pub selected_user_idx: usize,
+    /// Agent registration or provider IDs with a queued/running session.
+    pub active_agent_ids: HashSet<String>,
+    pub active_sessions: Vec<crate::api::ActiveSession>,
+    /// Monotonic animation frame used by the agents panel termimations.
+    pub animation_tick: u64,
+    pub ticker_seed: u64,
+    /// Per-run spinner pattern seed, keyed by agent id. Assigned when an agent
+    /// becomes active so one pattern is held for the whole run, then dropped.
+    pub agent_run_seeds: HashMap<String, u64>,
+    /// Bumped each time a new run seed is minted so consecutive runs differ.
+    pub run_seed_counter: u64,
+    pub selected_agent_idx: usize,
+    pub agent_settings_modal: Option<AgentSettingsState>,
+    pub user_settings_modal: Option<UserSettingsState>,
+    pub show_vaults: bool,
+    pub notes: Vec<NoteSummary>,
+    pub selected_note_idx: usize,
+    pub input: String,
+    pub cursor_pos: usize,
+    pub input_scroll_offset: usize,
+    pub status_message: String,
+    pub is_loading: bool,
+    pub receiving_messages: Option<String>,
+    pub history_channel: Option<String>,
+    pub history_before: Option<i64>,
+    pub history_has_more: bool,
+    pub history_loading: bool,
+    pub message_load_error: Option<String>,
+    pub send_in_flight: bool,
+    pub author: String,
+    pub author_color: String,
+    pub scroll_offset: usize,
+    /// Character offset in the flattened chat log. `None` initializes at EOF.
+    pub chat_cursor: Option<usize>,
+    /// Anchor for a keyboard text selection in the flattened chat log.
+    pub chat_selection_anchor: Option<usize>,
+    pub should_quit: bool,
+    /// Layout captured at the previous exit, applied after the first vault is opened.
+    pub saved_panes: Option<crate::panes::SavedPanes>,
+    pub window_config_favorites: HashMap<String, crate::panes::SavedPanes>,
+    pub window_config_registers: HashMap<char, crate::panes::SavedPanes>,
+    /// Whether the last backend request reached the server. When false the
+    /// header shows a `BACKEND DOWN` badge; the app never fabricates data.
+    pub backend_online: bool,
+    pub local_authenticated: bool,
+    pub server_session_expired: bool,
+    /// Best-effort local check for the desktop runner daemon (the process that
+    /// answers @mentions). Only meaningful when the runner runs on this machine.
+    pub runner_online: bool,
+    /// When `Some`, the channels panel is capturing a name for a new channel.
+    pub new_channel_name: Option<String>,
+    /// Selected channel index while the inline name editor is renaming it.
+    pub renaming_channel_idx: Option<usize>,
+    /// Base64 data-URL images staged from clipboard paste, sent with the next message.
+    pub pending_images: Vec<String>,
+    pub chat_cache: RwLock<ChatRenderCache>,
+}
+
+impl App {
+    pub fn new(client: CascadeClient) -> Self {
+        let author = std::env::var("CASCADE_CHAT_AUTHOR")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "user".to_string());
+
+        Self {
+            channel_buffers: HashMap::new(),
+            window_states: HashMap::new(),
+            loaded_window: None,
+            default_client: client.clone(),
+            client,
+            active_pane: ActivePane::ChatInput,
+            vault_id: None,
+            vault_name: "Default Vault".to_string(),
+            vaults: Vec::new(),
+            selected_vault_idx: 0,
+            vault_action: None,
+            codex_import: None,
+            channels: Vec::new(),
+            selected_channel_idx: 0,
+            active_channel_id: None,
+            messages: Vec::new(),
+            selected_message_idx: 0,
+            agents: Vec::new(),
+            users: Vec::new(),
+            selected_user_idx: 0,
+            active_agent_ids: HashSet::new(),
+            active_sessions: Vec::new(),
+            animation_tick: 0,
+            ticker_seed: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15),
+            agent_run_seeds: HashMap::new(),
+            run_seed_counter: 0,
+            selected_agent_idx: 0,
+            agent_settings_modal: None,
+            user_settings_modal: None,
+            panes: std::cell::RefCell::new(crate::panes::Panes::default()),
+            awatch: crate::awatch::Awatch::default(),
+            show_vaults: false,
+            notes: Vec::new(),
+            selected_note_idx: 0,
+            input: String::new(),
+            cursor_pos: 0,
+            input_scroll_offset: 0,
+            status_message: "Initializing Fizzer...".to_string(),
+            is_loading: false,
+            receiving_messages: None,
+            history_channel: None,
+            history_before: None,
+            history_has_more: false,
+            history_loading: false,
+            message_load_error: None,
+            send_in_flight: false,
+            author,
+            author_color: "FFFFFF".to_string(),
+            scroll_offset: 0,
+            chat_cursor: None,
+            chat_selection_anchor: None,
+            should_quit: false,
+            saved_panes: None,
+            window_config_favorites: HashMap::new(),
+            window_config_registers: HashMap::new(),
+            backend_online: true,
+            local_authenticated: false,
+            server_session_expired: false,
+            runner_online: false,
+            new_channel_name: None,
+            renaming_channel_idx: None,
+            pending_images: Vec::new(),
+            chat_cache: RwLock::new(ChatRenderCache::default()),
+        }
+    }
+
+    pub fn open_agent_settings(&mut self) {
+        if let Some(agent) = self.agents.get(self.selected_agent_idx).cloned() {
+            self.agent_settings_modal = Some(AgentSettingsState::new(self.selected_agent_idx, agent));
+        }
+    }
+
+    pub fn load_channel_buffer(&mut self, channel: Option<String>) {
+        if self.active_channel_id == channel { return; }
+        let previous = ChannelBuffer::take(self);
+        let mut buffer = channel.as_ref().and_then(|id| self.channel_buffers.remove(id)).unwrap_or_default();
+        if let Some(id) = self.active_channel_id.take() {
+            self.channel_buffers.insert(id, previous);
+        } else if buffer.input.is_empty() && buffer.pending_images.is_empty() {
+            // Preserve a draft typed while initial channel discovery was pending.
+            buffer.input = previous.input;
+            buffer.pending_images = previous.pending_images;
+        }
+        buffer.restore(self);
+        self.active_channel_id = channel;
+        self.apply_active_sessions(self.active_sessions.clone());
+    }
+
+    /// Route asynchronous work to its originating buffer without stealing focus.
+    pub fn with_channel_buffer<R>(&mut self, channel: String, f: impl FnOnce(&mut App) -> R) -> R {
+        if self.active_channel_id.as_ref() == Some(&channel) { return f(self); }
+        let previous = self.active_channel_id.clone();
+        let window = crate::panes::WindowState::take(self);
+        let status = self.status_message.clone();
+        self.load_channel_buffer(Some(channel));
+        let result = f(self);
+        self.load_channel_buffer(previous);
+        window.restore(self);
+        self.status_message = status;
+        result
+    }
+
+    pub fn open_new_agent_settings(&mut self) {
+        let agent_id = self
+            .agents
+            .get(self.selected_agent_idx)
+            .map(|agent| agent.agent_id.clone())
+            .unwrap_or_else(|| "codex".to_string());
+        let mut suffix = self.agents.len() + 1;
+        let mention = loop {
+            let candidate = format!("new-agent-{}", suffix);
+            if !self.agents.iter().all(|agent| agent.mention != candidate) {
+                suffix += 1;
+            } else {
+                break candidate;
+            }
+        };
+        let agent = AgentItem {
+            id: format!("tui-new-agent-{}", suffix),
+            display_name: format!("New Agent {}", suffix),
+            mention,
+            agent_id,
+            model: String::new(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: String::new(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+            color: None,
+        };
+        self.agent_settings_modal = Some(AgentSettingsState::new_agent(self.agents.len(), agent));
+    }
+
+    /// Fold a fresh active-sessions snapshot into the active set (keyed on the
+    /// per-profile registration id and mention) and reassign spinner seeds.
+    pub fn apply_active_sessions(&mut self, sessions: Vec<crate::api::ActiveSession>) {
+        self.active_sessions = sessions.clone();
+        self.active_agent_ids.clear();
+        for session in sessions {
+            if session.channel_id.as_deref() == self.active_channel_id.as_deref() {
+                if let Some(registration_id) = session.registration_id {
+                    self.active_agent_ids.insert(registration_id);
+                }
+                if !session.mention.is_empty() {
+                    self.active_agent_ids.insert(session.mention);
+                }
+                if !session.author.is_empty() {
+                    self.active_agent_ids.insert(normalize_agent_name(&session.author));
+                }
+            }
+        }
+        self.refresh_run_seeds();
+    }
+
+    /// Reconcile per-run spinner seeds against the current active set: mint a
+    /// fresh seed for each newly-active agent (so it picks one pattern for the
+    /// whole run) and drop seeds for agents whose run ended.
+    pub fn refresh_run_seeds(&mut self) {
+        let active_ids: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|ag| self.is_agent_active(ag))
+            .map(|ag| ag.id.clone())
+            .collect();
+        self.agent_run_seeds.retain(|id, _| active_ids.contains(id));
+        for id in active_ids {
+            if !self.agent_run_seeds.contains_key(&id) {
+                self.run_seed_counter = self.run_seed_counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                self.agent_run_seeds.insert(id, self.run_seed_counter);
+            }
+        }
+    }
+
+    /// Stable spinner-pattern seed for an agent's current run (falls back to a
+    /// hash of the agent id when no run is active).
+    pub fn agent_run_seed(&self, ag: &AgentItem) -> u64 {
+        if let Some(seed) = self.agent_run_seeds.get(&ag.id) {
+            return *seed;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ag.id.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn is_agent_active(&self, ag: &AgentItem) -> bool {
+        // Match only on per-profile identifiers. `ag.agent_id` is the shared
+        // provider (e.g. claude-code) and would mark every profile of that
+        // provider active when only one was tagged.
+        self.active_agent_ids.contains(&ag.id)
+            || (!ag.mention.is_empty() && self.active_agent_ids.contains(&ag.mention))
+            || (!ag.display_name.is_empty() && self.active_agent_ids.contains(&ag.display_name))
+            || (!ag.display_name.is_empty()
+                && self.active_agent_ids.contains(&normalize_agent_name(&ag.display_name)))
+            || ag.vault_agent_id.as_deref().map_or(false, |id| self.active_agent_ids.contains(id))
+    }
+
+    pub fn close_agent_settings(&mut self) {
+        self.agent_settings_modal = None;
+    }
+
+    pub fn open_user_settings(&mut self) {
+        let Some(user) = self.users.get(self.selected_user_idx).cloned() else { return; };
+        if user.username != self.author {
+            self.status_message = "Only your own profile can be edited here".to_string();
+            return;
+        }
+        self.user_settings_modal = Some(UserSettingsState::new(self.selected_user_idx, user));
+    }
+
+    pub fn close_user_settings(&mut self) {
+        self.user_settings_modal = None;
+    }
+
+    pub fn next_channel(&mut self) {
+        if !self.channels.is_empty() {
+            self.selected_channel_idx = (self.selected_channel_idx + 1) % self.channels.len();
+        }
+    }
+
+    pub fn prev_channel(&mut self) {
+        if !self.channels.is_empty() {
+            if self.selected_channel_idx == 0 {
+                self.selected_channel_idx = self.channels.len() - 1;
+            } else {
+                self.selected_channel_idx -= 1;
+            }
+        }
+    }
+
+    pub fn next_vault(&mut self) {
+        self.selected_vault_idx = (self.selected_vault_idx + 1) % (self.vaults.len() + 2);
+    }
+
+    pub fn next_user(&mut self) {
+        if !self.users.is_empty() {
+            self.selected_user_idx = (self.selected_user_idx + 1) % self.users.len();
+        }
+    }
+
+    pub fn prev_user(&mut self) {
+        if !self.users.is_empty() {
+            self.selected_user_idx = if self.selected_user_idx == 0 {
+                self.users.len() - 1
+            } else {
+                self.selected_user_idx - 1
+            };
+        }
+    }
+
+    pub fn prev_vault(&mut self) {
+        let count = self.vaults.len() + 2;
+        if self.selected_vault_idx == 0 {
+            self.selected_vault_idx = count - 1;
+        } else {
+            self.selected_vault_idx -= 1;
+        }
+    }
+
+    pub fn clamp_vault_selection(&mut self) {
+        self.selected_vault_idx = self.selected_vault_idx.min(self.vaults.len() + 1);
+    }
+
+    pub fn activate_selected_vault(&mut self) -> bool {
+        let Some(vault) = self.vaults.get(self.selected_vault_idx) else { return false; };
+        let changed = self.vault_id.as_deref() != Some(vault.id.as_str())
+            || self.client.base_url != vault.origin.as_deref().unwrap_or(&self.default_client.base_url);
+        self.vault_id = Some(vault.id.clone());
+        self.vault_name = if vault.name.is_empty() { vault.id.clone() } else { vault.name.clone() };
+        if let Some(origin) = &vault.origin {
+            let token = crate::server_sessions().get(&crate::server_session_key(origin)).cloned().or(vault.token.clone());
+            self.client = CascadeClient::new(origin.clone(), token);
+        } else {
+            self.client = self.default_client.clone();
+        }
+        self.author.clear();
+        self.author_color.clear();
+        if changed {
+            self.channel_buffers.clear();
+            self.window_states.clear();
+            self.loaded_window = None;
+            *self.panes.borrow_mut() = crate::panes::Panes::default();
+            ChannelBuffer::take(self);
+            crate::panes::WindowState::take(self);
+            self.active_channel_id = None;
+            self.channels.clear();
+            self.messages.clear();
+            self.agents.clear();
+            self.notes.clear();
+            self.reset_agent_activity();
+            self.scroll_offset = 0;
+        }
+        self.show_vaults = false;
+        if let Some(saved) = self.saved_panes.take() {
+            if self.panes.borrow_mut().restore_config(&saved) {
+                self.active_pane = self.panes.borrow().focused();
+            } else {
+                self.active_pane = ActivePane::ChatInput;
+            }
+        } else {
+            self.active_pane = ActivePane::ChatInput;
+        }
+        self.status_message = format!("Switched to vault {}", self.vault_name);
+        changed
+    }
+
+    pub fn activate_selected_channel(&mut self) {
+        if let Some(ch) = self.channels.get(self.selected_channel_idx) {
+            let channel_id = ch.id.clone();
+            let channel_title = ch.title.clone();
+            crate::panes::show_channel(self, channel_id);
+            self.status_message = format!("Switched to #{}", channel_title);
+        }
+    }
+
+    /// Drop the previous channel's animation state before its replacement is
+    /// fetched, so stale termimations never finish on the new channel.
+    pub fn reset_agent_activity(&mut self) {
+        self.active_agent_ids.clear();
+        self.agent_run_seeds.clear();
+        self.active_sessions.clear();
+        self.animation_tick = 0;
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_up_by(1);
+    }
+
+    pub fn scroll_up_by(&mut self, delta: usize) {
+        let max_lines = self.chat_cache.read().map(|c| c.lines.len()).unwrap_or(0);
+        if max_lines > 0 {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta).min(max_lines);
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta);
+        }
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_down_by(1);
+    }
+
+    pub fn scroll_down_by(&mut self, delta: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(delta);
+    }
+
+    pub fn scroll_chat_view(&mut self, up: bool, rows: usize, visible: usize) {
+        let max_scroll = self.chat_cache.read().unwrap().lines.len().saturating_sub(visible);
+        let offset = self.scroll_offset.min(max_scroll);
+        self.scroll_offset = if up {
+            offset.saturating_add(rows).min(max_scroll)
+        } else {
+            offset.saturating_sub(rows)
+        };
+        self.chat_cursor = None;
+        self.chat_selection_anchor = None;
+    }
+
+    fn chat_offset(&self, text: &str) -> usize {
+        self.chat_cursor.unwrap_or_else(|| text.chars().count()).min(text.chars().count())
+    }
+
+    fn set_chat_offset(&mut self, offset: usize, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        if extend {
+            self.chat_selection_anchor.get_or_insert(current);
+        } else {
+            self.chat_selection_anchor = None;
+        }
+        self.chat_cursor = Some(offset.min(text.chars().count()));
+        self.scroll_offset = 0;
+    }
+
+    pub fn move_chat_cursor_horizontal(&mut self, text: &str, delta: isize, extend: bool) {
+        let current = self.chat_offset(text);
+        let next = if delta.is_negative() {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize).min(text.chars().count())
+        };
+        self.set_chat_offset(next, text, extend);
+    }
+
+    pub fn move_chat_cursor_vertical(&mut self, text: &str, delta: isize, extend: bool) {
+        let target_offset = {
+            let cache = self.chat_cache.read().ok();
+            if let Some(cache) = cache.as_ref().filter(|c| c.chat_text == text && !c.line_offsets.is_empty()) {
+                let current = self.chat_offset(text);
+                let (cur_line, col) = crate::ui::chat_line_column_from_offsets(&cache.line_offsets, current);
+                if delta.is_negative() {
+                    if cur_line == 0 {
+                        return;
+                    }
+                    let target_line = cur_line.saturating_sub(delta.unsigned_abs());
+                    let (target_start, target_len) = cache.line_offsets[target_line];
+                    Some(target_start + col.min(target_len))
+                } else {
+                    if cur_line + 1 >= cache.line_offsets.len() {
+                        return;
+                    }
+                    let target_line = (cur_line + delta as usize).min(cache.line_offsets.len() - 1);
+                    let (target_start, target_len) = cache.line_offsets[target_line];
+                    Some(target_start + col.min(target_len))
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(target) = target_offset {
+            self.set_chat_offset(target, text, extend);
+            return;
+        }
+
+        let chars: Vec<char> = text.chars().collect();
+        let current = self.chat_offset(text);
+        let line_start = chars[..current].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
+        let column = current - line_start;
+        let line_end = chars[current..].iter().position(|c| *c == '\n').map_or(chars.len(), |i| current + i);
+        let target_start = if delta.is_negative() {
+            if line_start == 0 { return; }
+            let previous_end = line_start - 1;
+            chars[..previous_end].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1)
+        } else {
+            if line_end == chars.len() { return; }
+            line_end + 1
+        };
+        let target_end = chars[target_start..].iter().position(|c| *c == '\n').map_or(chars.len(), |i| target_start + i);
+        self.set_chat_offset(target_start + column.min(target_end - target_start), text, extend);
+    }
+
+    pub fn move_chat_cursor_home(&mut self, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        let start = text[..text.char_indices().nth(current).map_or(text.len(), |(i, _)| i)]
+            .rfind('\n').map_or(0, |i| i + 1);
+        self.set_chat_offset(text[..start].chars().count(), text, extend);
+    }
+
+    pub fn move_chat_cursor_end(&mut self, text: &str, extend: bool) {
+        let current = self.chat_offset(text);
+        let byte = text.char_indices().nth(current).map_or(text.len(), |(i, _)| i);
+        let end = text[byte..].find('\n').map_or(text.len(), |i| byte + i);
+        self.set_chat_offset(text[..end].chars().count(), text, extend);
+    }
+
+    pub fn chat_selection_bounds(&self, text: &str) -> Option<(usize, usize)> {
+        let cursor = self.chat_offset(text);
+        let anchor = self.chat_selection_anchor?;
+        (anchor != cursor).then_some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    pub fn selected_chat_text(&self, text: &str) -> Option<String> {
+        let (start, end) = self.chat_selection_bounds(text)?;
+        Some(text.chars().skip(start).take(end - start).collect())
+    }
+
+    pub fn select_all_chat(&mut self, text: &str) {
+        self.chat_selection_anchor = Some(0);
+        self.chat_cursor = Some(text.chars().count());
+        self.scroll_offset = 0;
+    }
+
+    #[allow(dead_code)]
+    pub fn select_previous_message(&mut self) {
+        if !self.messages.is_empty() {
+            self.selected_message_idx = self.selected_message_idx.saturating_sub(1);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn select_next_message(&mut self) {
+        if !self.messages.is_empty() {
+            self.selected_message_idx = (self.selected_message_idx + 1).min(self.messages.len() - 1);
+        }
+    }
+
+    pub fn clamp_message_selection(&mut self) {
+        self.selected_message_idx = self
+            .selected_message_idx
+            .min(self.messages.len().saturating_sub(1));
+    }
+
+    pub fn next_note(&mut self) {
+        if !self.notes.is_empty() {
+            self.selected_note_idx = (self.selected_note_idx + 1).min(self.notes.len() - 1);
+        }
+    }
+
+    pub fn prev_note(&mut self) {
+        self.selected_note_idx = self.selected_note_idx.saturating_sub(1);
+    }
+
+    pub fn clamp_note_selection(&mut self) {
+        self.selected_note_idx = self.selected_note_idx.min(self.notes.len().saturating_sub(1));
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        let byte_pos = self.byte_index();
+        self.input.insert(byte_pos, c);
+        self.cursor_pos += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor_pos > 0 {
+            let current_pos = self.cursor_pos;
+            self.cursor_pos -= 1;
+            let byte_pos = self.byte_index();
+            let _ = current_pos;
+            if byte_pos < self.input.len() {
+                self.input.remove(byte_pos);
+            }
+        }
+    }
+
+    pub fn delete(&mut self) {
+        let byte_pos = self.byte_index();
+        if byte_pos < self.input.len() {
+            self.input.remove(byte_pos);
+        }
+    }
+
+    pub fn clear_line(&mut self) {
+        if self.input.is_empty() {
+            self.cursor_pos = 0;
+            return;
+        }
+
+        if !self.input.contains('\n') {
+            if self.cursor_pos == 0 {
+                self.input.clear();
+            } else {
+                let chars: Vec<char> = self.input.chars().collect();
+                let remaining: String = chars[self.cursor_pos.min(chars.len())..].iter().collect();
+                self.input = remaining;
+                self.cursor_pos = 0;
+            }
+            self.input_scroll_offset = 0;
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let cur_pos = self.cursor_pos.min(chars.len());
+
+        let mut line_start = 0;
+        for i in (0..cur_pos).rev() {
+            if chars[i] == '\n' {
+                line_start = i + 1;
+                break;
+            }
+        }
+
+        let mut line_end = chars.len();
+        for i in cur_pos..chars.len() {
+            if chars[i] == '\n' {
+                line_end = i;
+                break;
+            }
+        }
+
+        if cur_pos > line_start {
+            let mut new_chars = chars[..line_start].to_vec();
+            new_chars.extend_from_slice(&chars[cur_pos..]);
+            self.input = new_chars.into_iter().collect();
+            self.cursor_pos = line_start;
+        } else if line_end > line_start {
+            let mut new_chars = chars[..line_start].to_vec();
+            new_chars.extend_from_slice(&chars[line_end..]);
+            self.input = new_chars.into_iter().collect();
+            self.cursor_pos = line_start;
+        } else if line_start > 0 {
+            let mut new_chars = chars[..line_start - 1].to_vec();
+            new_chars.extend_from_slice(&chars[line_start..]);
+            self.input = new_chars.into_iter().collect();
+            self.cursor_pos = line_start - 1;
+        } else {
+            self.input.clear();
+            self.cursor_pos = 0;
+        }
+    }
+
+    pub fn delete_word(&mut self) {
+        if self.cursor_pos == 0 || self.input.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let cur = self.cursor_pos.min(chars.len());
+        let mut target = cur;
+
+        while target > 0 && chars[target - 1].is_whitespace() && chars[target - 1] != '\n' {
+            target -= 1;
+        }
+        while target > 0 && !chars[target - 1].is_whitespace() {
+            target -= 1;
+        }
+
+        if target < cur {
+            let mut new_chars = chars[..target].to_vec();
+            new_chars.extend_from_slice(&chars[cur..]);
+            self.input = new_chars.into_iter().collect();
+            self.cursor_pos = target;
+        }
+    }
+
+    pub fn clear_to_end_of_line(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let cur = self.cursor_pos.min(chars.len());
+        let mut line_end = chars.len();
+        for i in cur..chars.len() {
+            if chars[i] == '\n' {
+                line_end = i;
+                break;
+            }
+        }
+        if line_end > cur {
+            let mut new_chars = chars[..cur].to_vec();
+            new_chars.extend_from_slice(&chars[line_end..]);
+            self.input = new_chars.into_iter().collect();
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        let char_count = self.input.chars().count();
+        if self.cursor_pos < char_count {
+            self.cursor_pos += 1;
+        }
+    }
+
+    pub fn move_cursor_word_left(&mut self) {
+        if self.cursor_pos == 0 || self.input.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut target = self.cursor_pos.min(chars.len());
+
+        while target > 0 && chars[target - 1].is_whitespace() && chars[target - 1] != '\n' {
+            target -= 1;
+        }
+        while target > 0 && !chars[target - 1].is_whitespace() {
+            target -= 1;
+        }
+        self.cursor_pos = target;
+    }
+
+    pub fn move_cursor_word_right(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        let mut target = self.cursor_pos.min(len);
+
+        while target < len && chars[target].is_whitespace() && chars[target] != '\n' {
+            target += 1;
+        }
+        while target < len && !chars[target].is_whitespace() {
+            target += 1;
+        }
+        self.cursor_pos = target;
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        if self.cursor_pos >= len || self.input.is_empty() {
+            return;
+        }
+        let cur = self.cursor_pos;
+        let mut target = cur;
+
+        while target < len && chars[target].is_whitespace() && chars[target] != '\n' {
+            target += 1;
+        }
+        while target < len && !chars[target].is_whitespace() {
+            target += 1;
+        }
+
+        if target > cur {
+            let mut new_chars = chars[..cur].to_vec();
+            new_chars.extend_from_slice(&chars[target..]);
+            self.input = new_chars.into_iter().collect();
+        }
+    }
+
+    pub fn move_cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        self.cursor_pos = self.input.chars().count();
+    }
+
+    pub fn cursor_line_col(&self) -> (usize, usize) {
+        let mut line = 0;
+        let mut col = 0;
+        for (i, c) in self.input.chars().enumerate() {
+            if i == self.cursor_pos {
+                return (line, col);
+            }
+            if c == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    pub fn move_cursor_up_line(&mut self) {
+        let (cur_line, cur_col) = self.cursor_line_col();
+        if cur_line == 0 {
+            self.input_scroll_offset = self.input_scroll_offset.saturating_sub(1);
+            return;
+        }
+        let lines: Vec<&str> = self.input.split('\n').collect();
+        let target_line_len = lines[cur_line - 1].chars().count();
+        let target_col = cur_col.min(target_line_len);
+
+        let mut idx = 0;
+        for l in 0..(cur_line - 1) {
+            idx += lines[l].chars().count() + 1;
+        }
+        idx += target_col;
+        self.cursor_pos = idx;
+
+        if cur_line - 1 < self.input_scroll_offset {
+            self.input_scroll_offset = cur_line - 1;
+        }
+    }
+
+    pub fn move_cursor_down_line(&mut self) {
+        let (cur_line, cur_col) = self.cursor_line_col();
+        let lines: Vec<&str> = self.input.split('\n').collect();
+        if cur_line + 1 >= lines.len() {
+            self.input_scroll_offset = (self.input_scroll_offset + 1).min(lines.len().saturating_sub(1));
+            return;
+        }
+        let target_line_len = lines[cur_line + 1].chars().count();
+        let target_col = cur_col.min(target_line_len);
+
+        let mut idx = 0;
+        for l in 0..=cur_line {
+            idx += lines[l].chars().count() + 1;
+        }
+        idx += target_col;
+        self.cursor_pos = idx.min(self.input.chars().count());
+    }
+
+    pub fn ensure_cursor_visible(&mut self, inner_height: usize) {
+        if inner_height == 0 {
+            return;
+        }
+        let (cur_line, _) = self.cursor_line_col();
+        if cur_line < self.input_scroll_offset {
+            self.input_scroll_offset = cur_line;
+        } else if cur_line >= self.input_scroll_offset + inner_height {
+            self.input_scroll_offset = cur_line.saturating_sub(inner_height.saturating_sub(1));
+        }
+    }
+
+    pub fn input_scroll_up(&mut self) {
+        self.input_scroll_offset = self.input_scroll_offset.saturating_sub(1);
+    }
+
+    pub fn input_scroll_down(&mut self) {
+        let total_lines = self.input.split('\n').count();
+        if total_lines > 1 {
+            self.input_scroll_offset = (self.input_scroll_offset + 1).min(total_lines.saturating_sub(1));
+        }
+    }
+
+    pub fn input_box_height_for_width(&self, total_height: u16, total_width: u16) -> u16 {
+        let available_for_chat_modality = total_height.saturating_sub(HEADER_HEIGHT);
+        let max_height = available_for_chat_modality.saturating_sub(5).max(3);
+
+        let text_width = total_width.saturating_sub(4).max(1) as usize;
+        let line_count = self.visual_input_line_count(text_width).max(1) as u16;
+        let desired = line_count + 2;
+        desired.min(max_height).max(3)
+    }
+
+    pub fn visual_input_line_count(&self, width: usize) -> usize {
+        let width = width.max(1);
+        self.input
+            .split('\n')
+            .map(|line| {
+                let mut lines = 1;
+                let mut column = 0;
+                for c in line.chars() {
+                    let char_width = c.width().unwrap_or(0);
+                    if char_width > 0 && column + char_width > width {
+                        lines += 1;
+                        column = 0;
+                    }
+                    column += char_width;
+                }
+                lines
+            })
+            .sum::<usize>()
+            .max(1)
+    }
+
+    fn byte_index(&self) -> usize {
+        self.input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.cursor_pos)
+            .unwrap_or(self.input.len())
+    }
+
+    pub fn active_channel_title(&self) -> &str {
+        if let Some(active_id) = &self.active_channel_id {
+            if let Some(ch) = self.channels.iter().find(|c| &c.id == active_id) {
+                return &ch.title;
+            }
+        }
+        "No channel selected"
+    }
+
+    pub fn next_agent(&mut self) {
+        if !self.agents.is_empty() {
+            self.selected_agent_idx = (self.selected_agent_idx + 1) % self.agents.len();
+        }
+    }
+
+    pub fn prev_agent(&mut self) {
+        if !self.agents.is_empty() {
+            if self.selected_agent_idx == 0 {
+                self.selected_agent_idx = self.agents.len() - 1;
+            } else {
+                self.selected_agent_idx -= 1;
+            }
+        }
+    }
+
+    pub fn insert_agent_mention(&mut self) {
+        if let Some(agent) = self.agents.get(self.selected_agent_idx) {
+            let mention = if !agent.mention.is_empty() {
+                format!("@{} ", agent.mention)
+            } else {
+                format!("@{} ", agent.display_name.to_lowercase())
+            };
+            self.input.push_str(&mention);
+            self.cursor_pos = self.input.chars().count();
+            self.active_pane = ActivePane::ChatInput;
+            self.status_message = format!("Mentioned {}", agent.display_name);
+        }
+    }
+
+    pub fn mark_offline(&mut self, message: impl Into<String>) {
+        self.backend_online = false;
+        self.status_message = message.into();
+    }
+}
+
+fn normalize_agent_name(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('@')
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wheel_scroll_clamps_to_viewport_and_releases_cursor() {
+        let mut app = super::App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.chat_cache.write().unwrap().lines = vec![ratatui::text::Line::raw("row"); 30];
+        app.scroll_offset = 100;
+        app.chat_cursor = Some(0);
+        app.scroll_chat_view(false, 3, 10);
+        assert_eq!(app.scroll_offset, 17);
+        assert_eq!(app.chat_cursor, None);
+        app.scroll_chat_view(true, 100, 10);
+        assert_eq!(app.scroll_offset, 20);
+        app.scroll_chat_view(false, 100, 10);
+        assert_eq!(app.scroll_offset, 0);
+        app.scroll_chat_view(true, 3, 40);
+        assert_eq!(app.scroll_offset, 0);
+    }
+    use super::*;
+
+    fn make_app() -> App {
+        App::new(crate::api::CascadeClient::new("http://127.0.0.1:1".into(), None))
+    }
+
+    #[test]
+    fn test_word_cursor_movement() {
+        let mut app = make_app();
+        app.input = "foo   bar  baz".into();
+        app.cursor_pos = 0;
+
+        // Move word right
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 3); // after "foo"
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 9); // after "bar"
+
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 14); // after "baz"
+
+        // Move past end stays at end
+        app.move_cursor_word_right();
+        assert_eq!(app.cursor_pos, 14);
+
+        // Move word left
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 11); // start of "baz"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 6); // start of "bar"
+
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0); // start of "foo"
+
+        // Move past start stays at start
+        app.move_cursor_word_left();
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_delete_word_forward() {
+        let mut app = make_app();
+        app.input = "one   two three".into();
+        app.cursor_pos = 0;
+
+        app.delete_word_forward();
+        assert_eq!(app.input, "   two three");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_forward();
+        assert_eq!(app.input, " three");
+        assert_eq!(app.cursor_pos, 0);
+
+        app.delete_word_forward();
+        assert_eq!(app.input, "");
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[test]
+    fn test_is_agent_active() {
+        let mut app = make_app();
+        let agent = AgentItem {
+            id: "reg-123".into(),
+            display_name: "Claude".into(),
+            mention: "claude".into(),
+            agent_id: "claude-code".into(),
+            model: "claude-sonnet-5".into(),
+            orchestrator: false,
+            vault_agent_id: Some("va-456".into()),
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+            color: None,
+        };
+
+        assert!(!app.is_agent_active(&agent));
+
+        // Active by registration ID
+        app.active_agent_ids.insert("reg-123".into());
+        assert!(app.is_agent_active(&agent));
+
+        // NOT active by shared provider ID — that would light up every profile
+        // of the provider when only one was tagged.
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("claude-code".into());
+        assert!(!app.is_agent_active(&agent));
+
+        // Active by mention
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("claude".into());
+        assert!(app.is_agent_active(&agent));
+
+        // Active by vault agent ID
+        app.active_agent_ids.clear();
+        app.active_agent_ids.insert("va-456".into());
+        assert!(app.is_agent_active(&agent));
+
+        // Active-session author names are normalized; the display name, not a
+        // provider-shared ID, is the final fallback for the right-panel spinner.
+        app.active_channel_id = Some("channel-1".into());
+        app.apply_active_sessions(vec![crate::api::ActiveSession {
+            agent: "claude-code".into(),
+            author: "Claude!".into(),
+            mention: String::new(),
+            registration_id: None,
+            channel_id: Some("channel-1".into()),
+        }]);
+        assert!(app.is_agent_active(&agent));
+    }
+
+    #[test]
+    fn test_color_hex_parsing() {
+        assert_eq!(parse_hex_color("#FF0000"), Some((255, 0, 0)));
+        assert_eq!(parse_hex_color("00FF00"), Some((0, 255, 0)));
+        assert_eq!(parse_hex_color("#0000FF"), Some((0, 0, 255)));
+        assert_eq!(parse_hex_color("#FFF"), Some((255, 255, 255)));
+        assert_eq!(parse_hex_color("invalid"), None);
+        assert_eq!(parse_hex_color("aéabc"), None);
+        assert_eq!(parse_hex_color("€"), None);
+    }
+
+    #[test]
+    fn test_rgb_hsv_conversions() {
+        // Red
+        let (h, s, v) = rgb_to_hsv(255, 0, 0);
+        assert_eq!((h, s, v), (0, 100, 100));
+        let (r, g, b) = hsv_to_rgb(0, 100, 100);
+        assert_eq!((r, g, b), (255, 0, 0));
+
+        // Green
+        let (h, s, v) = rgb_to_hsv(0, 255, 0);
+        assert_eq!((h, s, v), (120, 100, 100));
+        let (r, g, b) = hsv_to_rgb(120, 100, 100);
+        assert_eq!((r, g, b), (0, 255, 0));
+
+        // Blue
+        let (h, s, v) = rgb_to_hsv(0, 0, 255);
+        assert_eq!((h, s, v), (240, 100, 100));
+        let (r, g, b) = hsv_to_rgb(240, 100, 100);
+        assert_eq!((r, g, b), (0, 0, 255));
+    }
+
+    #[test]
+    fn test_color_slider_adjustments() {
+        let agent = AgentItem {
+            id: "test-agent".into(),
+            display_name: "Test".into(),
+            mention: "test".into(),
+            agent_id: "codex".into(),
+            model: "".into(),
+            orchestrator: false,
+            vault_agent_id: None,
+            owner_user_id: None,
+            reasoning_effort: "".into(),
+            priority_service_tier: false,
+            reply_to_every_message: false,
+            taggable_by_agents: false,
+            pingable_by_others: false,
+            yolo: false,
+            conversation_id: None,
+            color: Some("#FF0000".to_string()),
+        };
+
+        let mut modal = AgentSettingsState::new(0, agent);
+        assert_eq!(modal.color_r, 255);
+        assert_eq!(modal.color_g, 0);
+        assert_eq!(modal.color_b, 0);
+
+        // Adjust Red down by 55
+        modal.adjust_slider(AgentSettingsField::ColorR, -55);
+        assert_eq!(modal.color_r, 200);
+        assert_eq!(modal.agent.color.as_deref(), Some("C80000"));
+
+        // Adjust Hue to 120 (Green)
+        modal.adjust_slider(AgentSettingsField::ColorH, 120);
+        assert_eq!(modal.color_h, 120);
+        let (r, g, b) = (modal.color_r, modal.color_g, modal.color_b);
+        assert_eq!(g > r, true);
+        assert_eq!(g > b, true);
+    }
+
+    #[test]
+    fn test_mark_offline_preserves_loaded_data() {
+        let mut app = make_app();
+        app.backend_online = true;
+        app.channels = vec![crate::api::ChannelItem { id: "c1".into(), title: "general".into() }];
+        app.active_channel_id = Some("c1".into());
+        app.messages = vec![crate::api::ChatMessage {
+            id: "m1".into(), author: "me".into(), body: "hello".into(),
+            created_at: "".into(), agent_id: None, images: vec![], image_count: 0, has_images: false,
+        }];
+        app.mark_offline("Backend unreachable: 429 Too Many Requests");
+        assert!(!app.backend_online);
+        assert_eq!(app.channels.len(), 1);
+        assert_eq!(app.active_channel_id.as_deref(), Some("c1"));
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.status_message, "Backend unreachable: 429 Too Many Requests");
+    }
+}

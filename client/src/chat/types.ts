@@ -37,6 +37,7 @@ export interface ChatMessage {
   status?: 'queued' | 'sending' | 'running' | 'failed' | 'canceled';
   agentId?: string;
   registrationId?: string;
+  actorUserId?: number;
   runId?: number;
   blocks?: ChatBlock[];
   /** Full harness terminal transcript (raw process I/O / provider stream). */
@@ -45,7 +46,8 @@ export interface ChatMessage {
   hasHarness?: boolean;
   /** List API stripped heavy data-URL images — hydrate full message to show them. */
   hasImages?: boolean;
-  images?: string[];
+  /** Human uploads use URLs; no-invoke agent publication retains asset metadata. */
+  images?: Array<string | ChatMediaAttachment>;
   attachments?: Array<{ name: string; media_type: string; url: string }>;
   replyTo?: ChatReplyRef;
   forwardedFrom?: ChatForwardRef;
@@ -82,6 +84,8 @@ export interface ChatMessage {
 export type ChatMissionTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'canceled';
 
 export interface ChatMissionTask {
+  parentTaskId?: string | null;
+  joiningChildren?: boolean;
   id: string;
   title: string;
   assignee: string;
@@ -121,6 +125,7 @@ export interface ChatMission {
   objective: string;
   status: 'active' | 'reviewing' | 'attention' | 'blocked' | 'completed' | 'canceled';
   coordinator: string;
+  coordinatorRegistrationId?: string;
   coordinatorMention: string;
   tasks: ChatMissionTask[];
   summary: string;
@@ -210,6 +215,8 @@ export interface ChatAgentRegistration {
   /** Keep live reasoning, tools, and progress out of chat; publish only the settled reply. */
   finalReplyOnly?: boolean;
   orchestrator: boolean;
+  /** Opt-in suggestions by this owner’s coordinator in this channel. */
+  nextStepSuggestions?: boolean;
   /** Allow users other than the owner to @mention/trigger this agent in a
    * shared channel. The run still executes on the owner's desktop runner. */
   pingableByOthers: boolean;

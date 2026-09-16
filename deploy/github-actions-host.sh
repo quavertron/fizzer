@@ -81,3 +81,7 @@ fi
 echo "==> Running snapshot-safe immutable-image cutover"
 CASCADE_DEPLOY_DOMAIN="$DOMAIN" bash deploy/remote-update.sh
 verify_revision
+
+# Operator-installed scoped retention survives exact-revision checkout/reset.
+# Run only after successful cutover/healthy exact-revision retry, under this lock.
+python3 /usr/local/lib/fizzer/prune-release-images.py --apply --lock-fd "$DEPLOY_LOCK_FD"

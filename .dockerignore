@@ -25,6 +25,7 @@ backend_elixir/deps
 .env.*
 !deploy/.env.example
 docs
+!docs/user-guide.md
 scripts/*
 !scripts/copy-cli-agent-wrappers.cjs
 !scripts/check-elixir-data-compat.mjs
@@ -32,3 +33,7 @@ scripts/*
 # build (32MB+ blobs break SSH deploys mid-npm-ci).
 **/*.apk
 client/public/cascade-android.apk
+
+# Tests are not runtime inputs.
+backend_elixir/test
+**/*.test.*

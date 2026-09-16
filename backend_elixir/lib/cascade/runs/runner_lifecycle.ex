@@ -2,8 +2,6 @@ defmodule Cascade.Runs.RunnerLifecycle do
   @moduledoc "Durable desktop-runner presence, reclaim, delegation, and ACK lifecycle."
   use GenServer
 
-  @behaviour Cascade.Realtime.RunnerCallbacks
-
   alias Cascade.Realtime.Hub
   alias Cascade.Runs.Store
 
@@ -44,15 +42,59 @@ defmodule Cascade.Runs.RunnerLifecycle do
   def delegate(owner_id, payload) when is_map(payload) do
     with {:ok, %{sid: sid}} <- Hub.runner(owner_id),
          {:ok, _pid} <- Cascade.Realtime.lookup(sid),
-         run_id when is_integer(run_id) <- field(payload, :runId) do
-      Store.record_delegated(run_id, owner_id)
-      Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
-      true
+         run_id when is_integer(run_id) <- field(payload, :runId),
+         true <- delivery_allowed?(run_id, owner_id) do
+      if Store.record_delegated(run_id, owner_id, payload) == :ok do
+        Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
+        true
+      else
+        false
+      end
     else
       _ -> false
     end
   rescue
     _ -> false
+  end
+
+  # A delivery is revocable until transport handoff. Do not use for_execution/1:
+  # a claimed dispatch already has a run and must not be admitted a second time.
+  def delivery_allowed?(run_id, owner_id) when is_integer(run_id) and is_integer(owner_id) do
+    case Cascade.Accounts.SQL.one(
+           "SELECT chat_dispatch_id,owner_user_id FROM runs WHERE id=? AND status IN ('queued','running')",
+           [run_id]
+         ) do
+      [dispatch, owner] when owner in [nil, owner_id] ->
+        Cascade.Missions.ExecutionAdmission.run_allowed?(run_id, owner_id) and
+          (dispatch in [nil, ""] or
+            Cascade.Missions.Dispatches.delivery_allowed?(dispatch, run_id, owner_id))
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  end
+
+  def delivery_allowed?(_, _), do: false
+
+  def replay_delivery(run_id, owner_id) do
+    if online?(owner_id) and delivery_allowed?(run_id, owner_id) do
+      case Store.pending_delivery(run_id, owner_id) do
+        [_payload, attempts] when attempts >= 5 ->
+          summary =
+            "Desktop did not confirm run delivery after five attempts; no worker startup was observed."
+
+          Store.finish(run_id, "failed", summary)
+          Store.publish(run_id, "status", %{status: "failed", summary: summary})
+
+        [payload, _] ->
+          delegate(owner_id, Jason.decode!(payload))
+
+        nil ->
+          :ok
+      end
+    end
   end
 
   def cancel(owner_id, run_id, timeout \\ 15_000) do
@@ -107,7 +149,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
              timeout
            ),
          response when is_map(response) <- List.first(replies),
-         true <- field(response, :ok) == true,
+         :ok <- workspace_ok(response),
          {:ok, prepared} <- complete_workspace(response) do
       {:ok, prepared}
     else
@@ -118,14 +160,6 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   def accept_event?(run_id, owner_id), do: Store.delegated_owner(run_id) == owner_id
 
-  @impl true
-  # DomainAdapter owns registration because its reclaimed IDs are part of the
-  # runner:registered response. Hub owns transport replacement and invokes this
-  # callback only after that domain action has already committed.
-  def registered(_owner_id, _sid, _metadata, _previous),
-    do: Cascade.Missions.DispatchReannouncer.wake()
-
-  @impl true
   def disconnected(owner_id, sid, _metadata, reason) do
     if Process.whereis(__MODULE__),
       do: GenServer.cast(__MODULE__, {:disconnected, owner_id, sid, reason}),
@@ -345,6 +379,9 @@ defmodule Cascade.Runs.RunnerLifecycle do
         |> List.wrap()
         |> Enum.member?(row.run_id)
     end)
+    |> Enum.reject(fn row ->
+      not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))
+    end)
     |> Enum.each(fn row ->
       Store.finish(row.run_id, "failed", summary)
       Store.publish(row.run_id, "status", %{status: "failed", summary: summary})
@@ -371,8 +408,10 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   defp fail_runs(run_ids, reason) do
     Enum.each(run_ids, fn run_id ->
-      Store.finish(run_id, "failed", reason)
-      Store.publish(run_id, "status", %{status: "failed", summary: reason})
+      if is_nil(Store.pending_delivery(run_id, Store.delegated_owner(run_id))) do
+        Store.finish(run_id, "failed", reason)
+        Store.publish(run_id, "status", %{status: "failed", summary: reason})
+      end
     end)
   end
 
@@ -476,6 +515,17 @@ defmodule Cascade.Runs.RunnerLifecycle do
     else
       {:error, "Desktop returned an incomplete workspace binding"}
     end
+  end
+
+  defp workspace_error(response) do
+    case field(response, :error) do
+      error when is_binary(error) and error != "" -> {:error, String.slice(error, 0, 500)}
+      _ -> {:error, "Desktop workspace preparation failed"}
+    end
+  end
+
+  defp workspace_ok(response) do
+    if field(response, :ok) == true, do: :ok, else: workspace_error(response)
   end
 
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))

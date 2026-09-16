@@ -93,6 +93,15 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
       File.rm_rf!(guest_vault.root_path)
     end)
 
+    for {user, content} <- [{owner, "Owner app guidance."}, {guest, "Guest private guidance."}] do
+      {:ok, _} =
+        Cascade.Runs.AppContext.put(
+          user.id,
+          content,
+          Cascade.Runs.AppContext.get(user.id).revision
+        )
+    end
+
     {:ok, dispatch} =
       Dispatches.create(guest.id, guest_channel.id, source_message, registration.id,
         reasoning_effort: "max"
@@ -113,6 +122,9 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
 
   test "coordinator reviews are claimed without a chat page and repeated claims reuse the run",
        ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
     SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
 
     {:ok, root} =
@@ -127,13 +139,16 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         coordinatorRegistrationId: ctx.registration.id,
         title: "Review without UI"
       })
+    approve_mission(ctx, mission)
+
 
     {:ok, added} =
       Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
         coordinatorRegistrationId: ctx.registration.id,
         assignee: ctx.registration.id,
         anonymous: true,
-        title: "Worker"
+        title: "Worker",
+        purpose: "implementation"
       })
 
     {:ok, _} =
@@ -142,21 +157,41 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
         summary: "Needs review"
       })
 
-    Cascade.Missions.DispatchReannouncer.recover_missions()
+    Cascade.Missions.Scheduler.schedule(mission.mission.id)
 
     [dispatch_id, _run_id] =
       SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id LIKE ?", [
         "sys-mission-#{mission.mission.id}-%"
       ])
 
-    assert {:ok, started} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
-    run = Store.get(started.id)
+    # A conversational follow-up must not erase the durable review before
+    # the headless runner claims it.
+    {:ok, followup} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        body: "@#{ctx.registration.mention} is it running?"
+      })
+
+    assert {:ok, [human]} =
+             Dispatches.create_for_message(ctx.owner.id, ctx.owner_channel.id, followup)
+
+    assert {:deferred, _} = Dispatches.for_execution(dispatch_id)
+    register_runner!(ctx.sid)
+    owner_turn = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(human.id).id == owner_turn["runId"]
+    refute Store.find_by_chat_dispatch(dispatch_id)
+    assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+
+    # Answering the human without acknowledging the batch must retain review.
+    Store.finish(owner_turn["runId"], "completed", "Answered only the human")
+    review_turn = event!(ctx.sid, "run:delegate")
+    run = Store.get(review_turn["runId"])
+    assert run.chat_dispatch_id == dispatch_id
 
     assert {:ok, duplicate} =
              CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
 
     assert duplicate.id == run.id
-    assert Store.get(run.id).prompt =~ "Finish with --verification"
+    assert Store.get(run.id).prompt =~ "cascade-chat mission interpret"
 
     assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch_id]) == [
              1
@@ -165,6 +200,75 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [
              mission.mission.id
            ]) == [1]
+  end
+
+  test "wiki change reaches the runner once and persists guarded proposals without a chat report",
+       ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    alias Cascade.WikiMaintenance, as: Wiki
+
+    assert {:ok, _} =
+             Wiki.configure(ctx.owner.id, ctx.owner_vault.id, %{
+               "enabled" => true,
+               "channelId" => ctx.owner_channel.id,
+               "registrationId" => ctx.registration.id
+             })
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        title: "Canonical topic",
+        content: "Earlier evidence"
+      })
+
+    # Advance only the debounce clock; the actual scheduler admits and delegates.
+    SQL.exec("UPDATE wiki_maintenance SET due_at=1 WHERE vault_id=?", [ctx.owner_vault.id])
+    Wiki.tick(ctx.owner_vault.id)
+    delegated = event!(ctx.sid, "run:delegate")
+    assert delegated["prompt"] =~ "one bounded wiki maintenance pass"
+    refute delegated["prompt"] =~ "channel control plane"
+    refute delegated["prompt"] =~ "offer exactly one new bounded"
+    run_id = delegated["runId"]
+    %{dispatchId: dispatch_id} = Wiki.status(ctx.owner.id, ctx.owner_vault.id)
+    assert Store.get(run_id).conversation_id != ctx.registration.conversationId
+    assert {:ok, same} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+    assert same.id == run_id
+
+    summary =
+      Jason.encode!(%{
+        updates: [
+          %{
+            noteId: note.id,
+            revision: Wiki.revision(note.content),
+            content: "Current evidence; see [[Source]]"
+          }
+        ]
+      })
+
+    send_socket!(
+      ctx.sid,
+      SocketIO.event("/runners", "runner:runEvent", [
+        %{
+          "runId" => run_id,
+          "type" => "status",
+          "payload" => %{status: "completed", summary: summary}
+        }
+      ])
+    )
+
+    eventually(fn -> assert Store.get(run_id).status == "completed" end)
+    Wiki.tick(ctx.owner_vault.id)
+
+    eventually(fn ->
+      assert ContentStore.get_note(note.id).content == "Current evidence; see [[Source]]"
+    end)
+
+    assert %{enabled: true, pending: [], dispatchId: nil} =
+             Wiki.status(ctx.owner.id, ctx.owner_vault.id)
+
+    Wiki.tick(ctx.owner_vault.id)
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch_id]) == [1]
+    assert SQL.one("SELECT body FROM chat_messages WHERE run_id=?", [run_id]) in [nil, [""]]
   end
 
   test "headless admission starts on the owner's projection; HTTP cannot override or duplicate",
@@ -180,6 +284,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     refute delegate["yolo"]
     assert delegate["prompt"] =~ "finish the owner-side work"
     assert delegate["prompt"] =~ "Shared room state"
+    assert delegate["prompt"] =~ "Owner app guidance."
+    refute delegate["prompt"] =~ "Guest private guidance."
 
     response =
       request(ctx, %{
@@ -202,6 +308,46 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert message.runId == run.id
     assert message.author == "Sol"
     assert message.status == "running"
+  end
+
+  test "a deferred next-step checkpoint does not block later human turns", ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1,next_step_suggestions=1 WHERE id=?", [
+      ctx.registration.id
+    ])
+
+    {:ok, _} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: ctx.dispatch.messageId,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Existing work keeps the checkpoint deferred"
+      })
+
+    source = "sys-next-enable-#{ctx.registration.id}"
+
+    assert nil ==
+             Cascade.Chat.NextSteps.enqueue(
+               ctx.owner_channel.id,
+               ctx.registration.id,
+               source,
+               "enable",
+               "Consider next work"
+             )
+
+    [checkpoint] = SQL.one("SELECT id FROM chat_agent_dispatches WHERE message_id=?", [source])
+    human = admit(ctx, "Please answer this instead of waiting for proactive work")
+    register_runner!(ctx.sid)
+    delegated = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(human.id).id == delegated["runId"]
+    refute Store.find_by_chat_dispatch(checkpoint)
+
+    assert [nil, nil] ==
+             SQL.one("SELECT run_id,failed_at FROM chat_agent_dispatches WHERE id=?", [checkpoint])
+
+    Store.finish(delegated["runId"], "completed", "Answered")
   end
 
   test "peer input queues and terminal events wake it without browser ownership", ctx do
@@ -238,6 +384,70 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     Store.finish(delegated["runId"], "completed", "done")
     delegated = event!(ctx.sid, "run:delegate")
     assert Store.find_by_chat_dispatch(peer.id).id == delegated["runId"]
+  end
+
+  for kind <- [:human, :peer] do
+    @startup_kind kind
+    test "#{kind} arrival preserves a coordinator before delegation is bound", ctx do
+      initial = event!(ctx.sid, "run:delegate")
+      Store.finish(initial["runId"], "completed", "done")
+      SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+
+      ctx = %{
+        ctx
+        | guest: ctx.owner,
+          guest_vault: ctx.owner_vault,
+          guest_channel: ctx.owner_channel
+      }
+
+      original = admit(ctx, "finish the original responsibility")
+      first = event!(ctx.sid, "run:delegate")
+      run_id = first["runId"]
+      # Recreate the persisted startup boundary before the desktop owner is bound.
+      Store.clear_delegated(run_id)
+      opts = if @startup_kind == :peer, do: [registrationId: ctx.registration.id], else: []
+      next = admit(ctx, "competing input", opts)
+
+      for _ <- 1..2 do
+        assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+        assert Store.get(run_id).status == "queued"
+        assert Store.find_by_chat_dispatch(original.id).id == run_id
+        refute Store.find_by_chat_dispatch(next.id)
+
+        assert [nil, nil] ==
+                 SQL.one(
+                   "SELECT run_id,failed_at FROM chat_agent_dispatches WHERE id=?",
+                   [next.id]
+                 )
+      end
+
+      assert :ok = Store.record_delegated(run_id, ctx.owner.id)
+      Cascade.Missions.DispatchReannouncer.wake()
+
+      if @startup_kind == :human do
+        cancel = packet!(ctx.sid, "run:cancel")
+        assert Store.get(run_id).status == "queued"
+        refute Store.find_by_chat_dispatch(next.id)
+        send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+      else
+        assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+        Store.finish(run_id, "completed", "original responsibility handled")
+      end
+
+      delegated = event!(ctx.sid, "run:delegate")
+      assert Store.find_by_chat_dispatch(next.id).id == delegated["runId"]
+      assert {:ok, reused} = CascadeWeb.OrchestrationController.execute_dispatch(next.id)
+      assert reused.id == delegated["runId"]
+      assert [1] == SQL.one("SELECT count(*) FROM runs WHERE chat_dispatch_id=?", [next.id])
+
+      if @startup_kind == :human do
+        assert Store.get(run_id).status == "canceled"
+        assert delegated["prompt"] =~ "finish the original responsibility"
+        assert delegated["prompt"] =~ "Durable unfinished coordinator responsibility"
+      else
+        assert Store.get(run_id).status == "completed"
+      end
+    end
   end
 
   test "settings changed during a delayed stop ACK are authoritative", ctx do
@@ -297,11 +507,31 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
   end
 
   test "human steering waits for the actual desktop stop ACK and preserves the session", ctx do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+    guest = event!(ctx.sid, "run:delegate")
+    Store.finish(guest["runId"], "completed", "Guest request handled")
+
+    ctx = %{
+      ctx
+      | guest: ctx.owner,
+        guest_vault: ctx.owner_vault,
+        guest_channel: ctx.owner_channel
+    }
+
+    owned = admit(ctx, "finish the owner-side work")
     first = event!(ctx.sid, "run:delegate")
     Store.persist_session(first["runId"], "provider-session")
+    Store.publish(first["runId"], "harness", %{data: "Investigating the deployment timing"})
+    Cascade.Runs.ChatProjection.sync(first["runId"])
     next = admit(ctx, "human steering")
     cancel = packet!(ctx.sid, "run:cancel")
     assert Store.get(first["runId"]).status == "queued"
+
+    assert SQL.one(
+             "SELECT status,after_dispatch_id FROM chat_coordinator_continuations WHERE registration_id=?",
+             [ctx.registration.id]
+           ) == ["pending", next.id]
+
     refute Store.find_by_chat_dispatch(next.id)
     send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: false}]))
     Process.sleep(40)
@@ -313,6 +543,38 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     delegated = event!(ctx.sid, "run:delegate")
     assert Store.get(first["runId"]).status == "canceled"
     assert Store.get(delegated["runId"]).session_id == "provider-session"
+    assert delegated["prompt"] =~ "Earlier requests interrupted by follow-ups (still unanswered)"
+    assert delegated["prompt"] =~ "finish the owner-side work"
+    assert delegated["prompt"] =~ "human steering"
+    assert delegated["prompt"] =~ "Durable unfinished coordinator responsibility"
+    Cascade.Runs.ChatProjection.sync(first["runId"])
+
+    {:ok, prior} =
+      Messages.get(ctx.owner_channel.id, ctx.owner.id, "agent-dispatch-#{owned.id}")
+
+    assert prior.harnessLog =~ "Investigating the deployment timing"
+    assert prior.body =~ "Steered into the continuation below."
+
+    latest = admit(ctx, "And why was the build slow?")
+    cancel = packet!(ctx.sid, "run:cancel")
+    send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+    continued = event!(ctx.sid, "run:delegate")
+    assert Store.find_by_chat_dispatch(latest.id).id == continued["runId"]
+    assert continued["prompt"] =~ "finish the owner-side work"
+    assert continued["prompt"] =~ "human steering"
+    assert continued["prompt"] =~ "And why was the build slow?"
+  end
+
+  test "explicit Stop does not carry canceled requests into a later question", ctx do
+    first = event!(ctx.sid, "run:delegate")
+    stop = Task.async(fn -> Store.cancel(first["runId"]) end)
+    cancel = packet!(ctx.sid, "run:cancel")
+    send_socket!(ctx.sid, SocketIO.ack("/runners", cancel.id, [%{success: true}]))
+    assert Task.await(stop)
+    admit(ctx, "Why did deployment take ten minutes?")
+    next = event!(ctx.sid, "run:delegate")
+    refute next["prompt"] =~ "Earlier requests interrupted by follow-ups (still unanswered)"
+    assert Store.get(first["runId"]).summary == "Run canceled by user."
   end
 
   test "offline admission retains provenance and generation across clear and reconnect", ctx do
@@ -358,7 +620,30 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
 
     assert before_clear.requesterUserId == ctx.guest.id
     assert before_clear.requesterChannelId == ctx.guest_channel.id
+
+    before_rows =
+      SQL.all(
+        "SELECT id,error,failed_at,run_id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id",
+        [ctx.owner_channel.id]
+      )
+
+    before_messages =
+      SQL.all("SELECT id,body,status FROM chat_messages WHERE channel_id=? ORDER BY id", [
+        ctx.owner_channel.id
+      ])
+
+    Cascade.Missions.DispatchReannouncer.wake()
     Process.sleep(60)
+
+    assert SQL.all(
+             "SELECT id,error,failed_at,run_id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id",
+             [ctx.owner_channel.id]
+           ) == before_rows
+
+    assert SQL.all("SELECT id,body,status FROM chat_messages WHERE channel_id=? ORDER BY id", [
+             ctx.owner_channel.id
+           ]) == before_messages
+
     refute Store.find_by_chat_dispatch(before_clear.id)
 
     assert [nil] ==
@@ -468,6 +753,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     Store.finish(first["runId"], "completed", "done")
     Hub.unregister_runner(ctx.owner.id, ctx.sid)
     dispatch = admit(ctx, "must not run")
+    # Preserve coverage for a queued shell created by an earlier server.
+    CascadeWeb.OrchestrationController.prepare_dispatch(dispatch.id)
 
     eventually(fn ->
       assert {:ok, %{status: "queued"}} =
@@ -505,6 +792,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     Store.finish(first["runId"], "completed", "done")
     Hub.unregister_runner(ctx.owner.id, ctx.sid)
     dispatch = admit(ctx, "interrupted startup")
+    # Preserve coverage for a queued shell created by an earlier server.
+    CascadeWeb.OrchestrationController.prepare_dispatch(dispatch.id)
 
     eventually(fn ->
       assert {:ok, %{status: "queued"}} =
@@ -518,6 +807,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
       )
 
     SQL.exec("UPDATE runs SET started_at=datetime('now','-1 minute') WHERE id=?", [run.id])
+    register_runner!(ctx.sid)
     Cascade.Missions.DispatchReannouncer.wake()
 
     eventually(fn ->
@@ -567,18 +857,36 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     mission_id = Ecto.UUID.generate()
     task_id = Ecto.UUID.generate()
 
+    brief_content = "Approved mission brief."
+    brief =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: "mission-brief-#{mission_id}",
+        title: "Mission brief",
+        content: brief_content,
+        is_listed: true
+      })
+
+    brief_revision = Cascade.Content.Privacy.note_revision(brief)
+
     worker =
       SQL.transaction(fn ->
         SQL.exec(
-          "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,created_by) VALUES(?,?,?,?,?,'Mission',?)",
+          "INSERT INTO chat_missions(id,vault_id,channel_id,root_message_id,coordinator_registration_id,title,created_by,phase,approved_at,approved_by,approved_revisions_json) VALUES(?,?,?,?,?,'Mission',?,'executing',datetime('now'),?,?)",
           [
             mission_id,
             ctx.owner_vault.id,
             ctx.owner_channel.id,
             ctx.dispatch.messageId,
             ctx.registration.id,
-            ctx.owner.id
+            ctx.owner.id,
+            ctx.owner.id,
+            Jason.encode!(%{brief.id => brief_revision})
           ]
+        )
+
+        SQL.exec(
+          "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+          [mission_id, brief.id, brief_revision]
         )
 
         worker =
@@ -588,7 +896,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
           )
 
         SQL.exec(
-          "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,dispatch_id) VALUES(?,?,'Worker',?,?)",
+          "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,dispatch_id,purpose) VALUES(?,?,'Worker',?,?, 'implementation')",
           [task_id, mission_id, ctx.registration.id, worker.id]
         )
 
@@ -598,7 +906,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     delegated = event!(ctx.sid, "run:delegate")
     assert Store.get(coordinator["runId"]).status == "queued"
     assert Store.find_by_chat_dispatch(worker.id).conversation_id == "mission:#{task_id}"
-    assert delegated["prompt"] =~ "mission worker"
+    assert delegated["prompt"] =~ "Owner app guidance."
+    refute delegated["prompt"] =~ "Guest private guidance."
 
     assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(worker.id)
     assert run.id == delegated["runId"]
@@ -642,6 +951,201 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     assert event!(ctx.sid, "run:delegate")["runId"] != first["runId"]
   end
 
+  test "an attached mission startup without a desktop lease settles during periodic replay",
+       ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    worker = Process.whereis(Cascade.Missions.DispatchReannouncer)
+    :sys.suspend(worker)
+
+    {run, task} =
+      try do
+        {mission, task} = mission_task(ctx, "Crash boundary")
+        [item] = Cascade.Missions.Scheduler.schedule(mission.mission.id).dispatches
+
+        {:ok, run} =
+          Store.start(ctx.owner_vault.id, nil, "Worker", "codex",
+            owner_user_id: ctx.owner.id,
+            chat_dispatch_id: item.dispatch.id
+          )
+
+        :ok = Dispatches.attach_run(item.dispatch.id, run.id)
+        {:ok, _} = Cascade.Missions.Store.attach_run(item.dispatch.id, run.id)
+        SQL.exec("UPDATE runs SET started_at=datetime('now','-10 minutes') WHERE id=?", [run.id])
+        {run, task}
+      after
+        :sys.resume(worker)
+      end
+
+    Cascade.Missions.DispatchReannouncer.wake()
+
+    eventually(fn ->
+      assert Store.get(run.id).status == "failed"
+      assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [task.id]) == ["failed"]
+    end)
+
+    assert is_nil(Store.delegated_owner(run.id))
+  end
+
+  test "child preparation uses its parent's workspace while another session bypasses a slow ACK",
+       ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    {mission, _parent} = mission_task(ctx, "Parent", "isolated")
+    Cascade.Missions.Scheduler.schedule(mission.mission.id)
+    preparation = packet!(ctx.sid, "workspace:prepare")
+    assert Enum.at(preparation.data, 1)["dir"] == "/owner/channel"
+
+    {:ok, identity} =
+      Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
+        agentId: "codex",
+        displayName: "Independent",
+        mention: "independent"
+      })
+
+    {:ok, other} =
+      Agents.add_to_channel(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, identity.id)
+
+    {:ok, message} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        id: Ecto.UUID.generate(),
+        body: "Independent work"
+      })
+
+    {:ok, independent} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, other.id)
+    delegated = event_for_dispatch!(ctx.sid, "run:delegate", independent.id)
+    assert Store.find_by_chat_dispatch(independent.id).id == delegated["runId"]
+
+    prepared!(ctx.sid, preparation, "/parent/task", "parent-base")
+    parent_run = event!(ctx.sid, "run:delegate")
+    assert parent_run["cwd"] == "/parent/task"
+
+    {:ok, added} =
+      Cascade.Missions.Children.add(
+        ctx.owner.id,
+        ctx.owner_channel.id,
+        mission.mission.id,
+        %{title: "Child", prompt: "Use parent work"},
+        parent_run["runId"]
+      )
+
+    Cascade.Missions.Scheduler.schedule(mission.mission.id)
+    preparation = packet!(ctx.sid, "workspace:prepare")
+    assert Enum.at(preparation.data, 1)["dir"] == "/parent/task"
+    prepared!(ctx.sid, preparation, "/child/task", "parent-tip")
+    child_run = event!(ctx.sid, "run:delegate")
+    assert child_run["cwd"] == "/child/task"
+    assert child_run["prompt"] =~ "bounded child worker"
+    assert child_run["prompt"] =~ "Owner app guidance."
+    refute child_run["prompt"] =~ "Guest private guidance."
+    assert {:ok, child_item} = Cascade.WorkItems.get(ctx.owner.id, added.task.workItemId)
+    assert child_item.baseCommit == "parent-tip"
+  end
+
+  test "workspace preparation preserves the bounded desktop ACK error", ctx do
+    for {reported, expected} <- [
+          {"Not a git repository", "Not a git repository"},
+          {String.duplicate("x", 501), String.duplicate("x", 500)}
+        ] do
+      started =
+        Task.async(fn ->
+          Cascade.Runs.RunnerLifecycle.prepare_workspace(
+            ctx.owner.id,
+            %{workItemId: "missing-repository", dir: "/not-a-repository"},
+            5_000
+          )
+        end)
+
+      preparation = packet!(ctx.sid, "workspace:prepare")
+
+      send_socket!(
+        ctx.sid,
+        SocketIO.ack("/runners", preparation.id, [%{ok: false, error: reported}])
+      )
+
+      assert Task.await(started, 5_000) == {:error, expected}
+    end
+  end
+
+  defp mission_task(ctx, title, mode \\ "shared") do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+
+    {:ok, root} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        id: Ecto.UUID.generate(),
+        body: title
+      })
+
+    {:ok, mission} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: root.id,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: title
+      })
+
+    approve_mission(ctx, mission)
+
+
+    {:ok, added} =
+      Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: ctx.registration.id,
+        assignee: ctx.registration.id,
+        anonymous: true,
+        workspaceMode: mode,
+        title: title,
+        purpose: "implementation",
+        prompt: "Do work"
+      })
+
+    {mission, added.task}
+  end
+  defp approve_mission(ctx, mission) do
+    content = "Approved mission brief."
+    note_id = "mission-brief-#{mission.mission.id}"
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: note_id,
+        title: "Mission brief",
+        content: content,
+        is_listed: true
+      })
+
+    revision = Cascade.Content.Privacy.note_revision(note)
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+      [mission.mission.id, note.id, revision]
+    )
+
+    assert {:ok, _} =
+             Cascade.Missions.Store.approve_workspace(
+               ctx.owner.id,
+               ctx.owner_vault.id,
+               mission.mission.id,
+               %{note.id => revision}
+             )
+  end
+
+
+  defp prepared!(sid, packet, path, base) do
+    input = Enum.at(packet.data, 1)
+
+    send_socket!(
+      sid,
+      SocketIO.ack("/runners", packet.id, [
+        %{
+          ok: true,
+          path: path,
+          repository: "/repo",
+          branch: input["branch"],
+          baseBranch: "master",
+          baseCommit: base
+        }
+      ])
+    )
+  end
+
   defp admit(ctx, body, opts \\ []) do
     peer? = Keyword.has_key?(opts, :registrationId)
     user = if peer?, do: ctx.owner, else: ctx.guest
@@ -665,6 +1169,38 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
   end
 
   defp event!(sid, name), do: packet!(sid, name).data |> Enum.at(1)
+
+  defp event_for_dispatch!(sid, name, dispatch_id, remaining \\ 12) do
+    assert remaining > 0
+    {:ok, payload} = Session.poll(sid, 1_000)
+
+    packets =
+      payload
+      |> EngineIO.decode_payload()
+      |> elem(1)
+      |> Enum.flat_map(fn
+        %{type: :message, data: data} ->
+          case SocketIO.decode(data) do
+            {:ok, packet} -> [packet]
+            _ -> []
+          end
+
+        _ ->
+          []
+      end)
+
+    expected_message_id = "agent-dispatch-#{dispatch_id}"
+
+    case Enum.find(packets, fn packet ->
+           data = Map.get(packet, :data, [])
+
+           List.first(data) == name and
+             match?(%{"chatMessageId" => ^expected_message_id}, Enum.at(data, 1))
+         end) do
+      nil -> event_for_dispatch!(sid, name, dispatch_id, remaining - 1)
+      packet -> Enum.at(packet.data, 1)
+    end
+  end
 
   defp packet!(sid, name, remaining \\ 12) do
     assert remaining > 0

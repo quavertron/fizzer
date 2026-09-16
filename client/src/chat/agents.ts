@@ -3,7 +3,43 @@
  * Keep in sync with server AgentId / CLI agent lists where applicable.
  */
 
-import type { ChatAgentRegistration } from './types';
+import type { CSSProperties } from 'react';
+import type { ChatAgentRegistration, VaultAgent } from './types';
+
+export type AgentOwnership = 'owned' | 'other' | 'unknown';
+
+/** Ownership is presentation metadata, never permission to invoke an agent. */
+export function agentOwnership(
+  owner: { ownerUserId?: number; ownerUsername?: string } | undefined,
+  currentUser: string,
+  currentUserId?: number,
+): AgentOwnership {
+  if (owner?.ownerUserId && currentUserId) return owner.ownerUserId === currentUserId ? 'owned' : 'other';
+  if (owner?.ownerUsername && currentUser) return owner.ownerUsername === currentUser ? 'owned' : 'other';
+  return 'unknown';
+}
+
+/** Space the vault's owners evenly around the hue wheel, independent of viewer and row order. */
+export function agentOwnerStyle(ownerUsername?: string, ownerNames: string[] = []): CSSProperties | undefined {
+  if (!ownerUsername) return undefined;
+  const owners = [...new Set([...ownerNames, ownerUsername].filter(Boolean))].sort();
+  const hue = (48 + owners.indexOf(ownerUsername) * 360 / owners.length) % 360;
+  return { '--agent-tint': `hsl(${hue} 48% 62%)` } as CSSProperties;
+}
+
+export function eligibleAgentProfiles(
+  profiles: VaultAgent[],
+  registrations: ChatAgentRegistration[],
+  currentUser: string,
+  currentUserId?: number,
+  vaultChannelIds: string[] = [],
+): VaultAgent[] {
+  const added = new Set(registrations.map((registration) => registration.vaultAgentId));
+  const channels = new Set(vaultChannelIds);
+  return profiles.filter((profile) => agentOwnership(profile, currentUser, currentUserId) === 'owned'
+    && !added.has(profile.id)
+    && !profile.channelIds?.some((id) => channels.has(id)));
+}
 
 export type AgentId = 'claude-code' | 'codex' | 'grok' | 'antigravity' | 'copilot' | 'hermes' | 'akron-grok' | 'omp' | 'pi';
 
@@ -65,6 +101,7 @@ export const CHAT_AGENT_MODEL_PRESETS: Record<AgentId, { id: string; label: stri
     { id: 'flash_lite', label: 'Gemini Flash Lite (tier)' },
     { id: 'flash', label: 'Gemini Flash (tier)' },
     { id: 'pro', label: 'Gemini Pro (tier)' },
+    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
     { id: 'gemini-3.5-flash-extra-low', label: 'Gemini 3.5 Flash (Low)' },
     { id: 'gemini-3.5-flash-low', label: 'Gemini 3.5 Flash (Medium)' },
     { id: 'gemini-3-flash-agent', label: 'Gemini 3.5 Flash (High)' },

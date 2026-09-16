@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import { ChevronRight, X } from 'lucide-react';
 import { formatChatTime } from '../chat/time';
 import { createChatAgentRegistrationId } from '../chat/shared';
-import { vaultAgentMembershipPayload } from '../chat/agents';
+import { agentOwnerStyle, agentOwnership, eligibleAgentProfiles, vaultAgentMembershipPayload } from '../chat/agents';
 import { normalizeMention } from '../chat/mentions';
 import type {
   ChatAgentOption,
@@ -168,6 +168,8 @@ export type ChatAgentRow = ChatAgentOption & { registration: ChatAgentRegistrati
 export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   channelId: string;
   currentUser: string;
+  currentUserId?: number;
+  vaultChannelIds?: string[];
   availableAgents: ChatAgentOption[];
   registeredAgents: ChatAgentRegistration[];
   registeredAgentRows: ChatAgentRow[];
@@ -191,6 +193,8 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
 }>(function ChatAgentPanel({
   channelId,
   currentUser,
+  currentUserId,
+  vaultChannelIds,
   availableAgents,
   registeredAgents,
   registeredAgentRows,
@@ -208,6 +212,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
   onChromeChange,
   children,
 }, ref) {
+  const ownerNames = useMemo(() => vaultAgents.map((agent) => agent.ownerUsername).filter(Boolean), [vaultAgents]);
   const [agentPanelMode, setAgentPanelMode] = useState<'picker' | 'create' | 'edit-member' | 'edit-identity'>('picker');
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -237,6 +242,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       ambientGroupChat: false,
       finalReplyOnly: false,
       orchestrator: false,
+      nextStepSuggestions: false,
       pingableByOthers: false,
       yolo: false,
       hermesProfile: '',
@@ -260,6 +266,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     ambientGroupChat: false,
     finalReplyOnly: false,
     orchestrator: false,
+    nextStepSuggestions: false,
     pingableByOthers: false,
     yolo: false,
     hermesProfile: '',
@@ -267,9 +274,9 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     conversationId: '',
   }));
   const activeFormAgent = availableAgents.find((agent) => agent.id === agentForm.agentId);
-  const channelVaultAgentIds = useMemo(
-    () => new Set(registeredAgents.map((r) => r.vaultAgentId).filter(Boolean) as string[]),
-    [registeredAgents],
+  const eligibleProfiles = useMemo(
+    () => eligibleAgentProfiles(vaultAgents, registeredAgents, currentUser, currentUserId, vaultChannelIds),
+    [vaultAgents, registeredAgents, currentUser, currentUserId, vaultChannelIds],
   );
 
   useEffect(() => {
@@ -326,7 +333,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
       setAgentPanelMode('picker');
       return;
     }
-    setAgentPanelMode(vaultAgents.length > 0 || onAddVaultAgentToChannel ? 'picker' : 'create');
+    setAgentPanelMode('picker');
     openAgentEditor();
   }
 
@@ -361,31 +368,6 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
     const identity = vaultAgents.find((agent) => agent.id === registration.vaultAgentId);
     setIdentityScope(identity?.identityScope === 'session' ? 'session' : 'vault');
     if (identity?.expiresAt) {
-      const remaining = (Date.parse(identity.expiresAt) - Date.now()) / 60_000;
-      setSessionLeaseMinutes(remaining > 1440 ? 10080 : remaining > 60 ? 1440 : 60);
-    }
-    setAgentPanelMode('edit-identity');
-    openAgentEditor(registration);
-  }
-
-  function openVaultIdentity(event: React.MouseEvent, identity: VaultAgent) {
-    event.stopPropagation();
-    const member = registeredAgents.find((registration) => registration.vaultAgentId === identity.id);
-    const registration: ChatAgentRegistration = {
-      ...(member || createDefaultAgentForm()),
-      vaultAgentId: identity.id,
-      agentId: identity.agentId,
-      displayName: identity.displayName,
-      avatarUrl: identity.avatarUrl,
-      mention: identity.mention,
-      model: identity.model,
-      cwd: identity.cwd,
-      contextPrompt: identity.contextPrompt,
-      hermesProfile: identity.hermesProfile || '',
-      hermesSafeMode: identity.hermesSafeMode === true,
-    };
-    setIdentityScope(identity.identityScope === 'session' ? 'session' : 'vault');
-    if (identity.expiresAt) {
       const remaining = (Date.parse(identity.expiresAt) - Date.now()) / 60_000;
       setSessionLeaseMinutes(remaining > 1440 ? 10080 : remaining > 60 ? 1440 : 60);
     }
@@ -433,6 +415,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           ambientGroupChat: false,
           finalReplyOnly: false,
           orchestrator: false,
+          nextStepSuggestions: false,
           pingableByOthers: false,
           yolo: false,
           hermesProfile: va.hermesProfile || '',
@@ -619,6 +602,10 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
             <div className="chat-runs-empty">No agents in this vault yet</div>
           )}
           {registeredAgentRows.map((agent) => {
+            const identity = vaultAgents.find((profile) => profile.id === agent.registration.vaultAgentId);
+            const ownership = agentOwnership(identity || agent.registration, currentUser, currentUserId);
+            return { agent, ownership, ownerLabel: identity?.ownerUsername || (ownership === 'owned' ? currentUser : '') };
+          }).sort((a, b) => Number(b.ownership === 'owned') - Number(a.ownership === 'owned')).map(({ agent, ownership, ownerLabel }) => {
           const selectedModel = agent.registration.model || agent.models[0]?.id || '';
           const isEditing = editingRegistrationId === agent.registration.id && agentMenuOpen;
           const canManage = canManageRegistration(agent.registration);
@@ -628,6 +615,8 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           return (
             <div
               className={`chat-user chat-agent-user${agent.registration.orchestrator ? ' is-supervisor' : ''}${isEditing ? ' is-editing' : ''}`}
+              data-agent-ownership={ownership}
+              style={agentOwnerStyle(ownerLabel, ownerNames)}
               key={agent.registration.id}
             >
               <button
@@ -637,7 +626,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 onClick={canManage ? (event) => editRegisteredAgent(event, agent.registration) : undefined}
                 title={canManage ? 'Channel settings for this agent' : 'Only the agent owner can edit its settings'}
               >
-                <ChatAvatar name={agent.registration.displayName || agent.label} kind="agent" avatarUrl={agent.registration.avatarUrl} size="sm" />
+                <ChatAvatar name={agent.registration.displayName || agent.label} kind="agent" ownership={ownership} ownerLabel={ownerLabel} ownerNames={ownerNames} avatarUrl={agent.registration.avatarUrl} size="sm" />
                 {/* Supervisor reads as a hairline ring on the avatar (see .is-supervisor);
                     the rank still needs a name for screen readers. */}
                 {agent.registration.orchestrator && <span className="sr-only">Channel supervisor</span>}
@@ -648,6 +637,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                   </div>
                   <span className="chat-user-handle">@{agent.registration.mention || agent.id}</span>
                   <span className="chat-user-role">{selectedModel || 'no model'}</span>
+                  <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>
                 </div>
               </button>
               {canManage && <button
@@ -668,67 +658,26 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
 
           {agentMenuOpen && agentPanelMode === 'picker' && (
           <div className="chat-agent-menu" onClick={(event) => event.stopPropagation()}>
-            <div className="chat-agent-menu-heading">Vault agents</div>
-            {vaultAgents.length === 0 ? (
-              <div className="chat-runs-empty">No vault agents yet</div>
+            <div className="chat-agent-menu-heading">My Agents</div>
+            {eligibleProfiles.length === 0 ? (
+              <div className="chat-runs-empty">No more agents to add</div>
             ) : (
-              <div className="chat-agent-picker-list">{vaultAgents.map((va) => {
-                const inChannel = channelVaultAgentIds.has(va.id);
-                const canManage = va.ownerUsername === currentUser;
-                return (
-                  <div key={va.id} className={`chat-vault-pick-row${inChannel ? ' is-in-channel' : ''}`}>
-                    <button
-                      type="button"
-                      className="chat-vault-pick-btn"
-                      disabled={inChannel || !canManage}
-                      onClick={() => {
-                        if (!inChannel) void addVaultAgentFromPicker(va.id);
-                      }}
-                      title={inChannel ? 'Already in this vault' : canManage ? 'Add to this vault' : 'Only the agent owner can add it'}
-                    >
-                      <ChatAvatar name={va.displayName || va.mention} kind="agent" avatarUrl={va.avatarUrl} size="sm" />
-                      <span className="chat-user-copy">
-                        <strong>{va.displayName || va.mention}</strong>
-                        <span>
-                          @{va.mention} · {va.model || va.agentId} · {va.identityScope === 'session'
-                            ? 'temporary agent'
-                            : 'vault agent'}
-                          {va.identityScope === 'network' && va.ownerUsername
-                            ? ` · legacy identity ${va.mention}~${va.ownerUsername}`
-                            : ''}
-                          {va.ownerUsername ? ` · ${va.ownerUsername}'s agent` : ''}
-                          {inChannel ? ' · in vault' : ''}
-                        </span>
-                      </span>
-                    </button>
-                    {canManage && (
-                      <button
-                        type="button"
-                        className="chat-vault-edit-agent"
-                        title={`Edit @${va.mention} vault identity`}
-                        onClick={(event) => openVaultIdentity(event, va)}
-                      >
-                        Edit identity
-                      </button>
-                    )}
-                    {onDeleteAgentProfile && canManage && (
-                      <button
-                        type="button"
-                        className="chat-remove-agent"
-                        title="Permanently delete agent profile"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (window.confirm(`Permanently delete @${va.mention} from your agent profiles and every vault?`)) {
-                            void onDeleteAgentProfile(va.id);
-                          }
-                        }}
-                      >
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}</div>
+              <div className="chat-agent-picker-list">{eligibleProfiles.map((profile) => (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className="chat-vault-pick-btn"
+                  data-agent-ownership="owned"
+                  onClick={() => void addVaultAgentFromPicker(profile.id)}
+                  title={`Add @${profile.mention} to this vault · ${profile.ownerUsername || currentUser}’s agent`}
+                >
+                  <ChatAvatar name={profile.displayName || profile.mention} kind="agent" ownership="owned" ownerLabel={profile.ownerUsername || currentUser} ownerNames={ownerNames} avatarUrl={profile.avatarUrl} size="sm" />
+                  <span className="chat-user-copy">
+                    <strong>{profile.displayName || profile.mention}</strong>
+                    <span>@{profile.mention} · {profile.model || profile.agentId}</span>
+                  </span>
+                </button>
+              ))}</div>
             )}
             {agentFormError && <div className="chat-agent-form-error">{agentFormError}</div>}
             <div className="chat-agent-menu-actions">
@@ -959,11 +908,20 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 onChange={(event) => setAgentForm((value) => ({
                   ...value,
                   orchestrator: event.target.checked,
+                  nextStepSuggestions: event.target.checked && value.nextStepSuggestions,
                   replyToEveryMessage: event.target.checked,
                 }))}
                 name="Coordinate this channel"
                 hint="Reads every human message and can delegate durable work."
               />
+              {agentForm.orchestrator && (
+                <ChatAgentToggle
+                  checked={agentForm.nextStepSuggestions === true}
+                  onChange={(event) => setAgentForm((value) => ({ ...value, nextStepSuggestions: event.target.checked }))}
+                  name="Suggest what to work on next"
+                  hint="Considers a useful next step after work finishes and when you return. Off by default. Work starts only when you accept."
+                />
+              )}
               <ChatAgentToggle
                 stateClass={agentForm.orchestrator ? ' is-locked' : ''}
                 checked={agentForm.replyToEveryMessage}
@@ -1065,6 +1023,22 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               >
                 Cancel
               </button>
+              {agentPanelMode === 'edit-identity' && agentForm.vaultAgentId && onDeleteAgentProfile && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!window.confirm(`Permanently delete @${agentForm.mention} from your agent profiles and every vault?`)) return;
+                    try {
+                      await onDeleteAgentProfile(agentForm.vaultAgentId!);
+                      closeChrome();
+                    } catch (error) {
+                      setAgentFormError(error instanceof Error ? error.message : 'Could not delete agent profile');
+                    }
+                  }}
+                >
+                  Delete profile
+                </button>
+              )}
               <button type="submit">
                 {agentPanelMode === 'create' ? 'Create & add' : 'Save'}
               </button>

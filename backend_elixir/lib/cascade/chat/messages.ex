@@ -17,33 +17,75 @@ defmodule Cascade.Chat.Messages do
       columns = if detail == :full, do: @full_columns, else: @list_columns
 
       {cutoff, params} =
-        case Keyword.get(opts, :through_message_id) do
-          nil ->
+        case {Keyword.get(opts, :before_seq), Keyword.get(opts, :through_message_id)} do
+          {seq, _} when is_integer(seq) and seq > 0 ->
+            {" AND rowid < ?", [route.sourceChannelId, seq, limit]}
+
+          {_, nil} ->
             {"", [route.sourceChannelId, limit]}
 
-          id ->
+          {_, id} ->
             {" AND rowid <= (SELECT rowid FROM chat_messages WHERE id=? AND channel_id=?)",
              [route.sourceChannelId, id, route.sourceChannelId, limit]}
         end
 
       messages =
         SQL.all(
-          "SELECT #{columns} FROM chat_messages WHERE channel_id=?#{cutoff} ORDER BY rowid DESC LIMIT ?",
+          "SELECT #{columns} FROM chat_messages WHERE channel_id=? AND id NOT LIKE 'sys-next-%'#{cutoff} ORDER BY rowid DESC LIMIT ?",
           params
         )
         |> Enum.reverse()
         |> Enum.map(&row_to_message(&1, detail, route.localChannelId))
-        |> Enum.reject(&terminal_shell?/1)
+        |> Enum.map(&project_superseded_queue/1)
 
-      {:ok, messages}
+      visible = Enum.reject(messages, &terminal_shell?/1)
+
+      if Keyword.get(opts, :page, false) do
+        cursor =
+          case messages do
+            [first | _] -> first.seq
+            _ -> nil
+          end
+
+        has_more =
+          cursor != nil and
+            SQL.one(
+              "SELECT 1 FROM chat_messages WHERE channel_id=? AND id NOT LIKE 'sys-next-%' AND rowid < ? LIMIT 1",
+              [route.sourceChannelId, cursor]
+            ) != nil
+
+        {:ok, %{messages: visible, beforeSeq: cursor, hasMore: has_more}}
+      else
+        {:ok, visible}
+      end
     end
   end
 
   def get(channel_id, user_id, message_id) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
-      fetch(route, message_id)
+      case fetch(route, message_id) do
+        {:ok, message} -> {:ok, project_superseded_queue(message)}
+        error -> error
+      end
     end
   end
+
+  # Retrying a task can remove its old dispatch without removing its reply shell.
+  # Project that shell honestly, without rewriting history or authorizing a retry.
+  # Check runs too: insertion can precede attachment to the message/dispatch.
+  defp project_superseded_queue(%{id: "agent-dispatch-" <> id, status: "queued"} = message) do
+    if message[:agentId] && is_nil(message[:runId]) &&
+         is_nil(SQL.one("SELECT 1 FROM chat_agent_dispatches WHERE id=? UNION ALL SELECT 1 FROM runs WHERE chat_dispatch_id=? LIMIT 1", [id, id])) do
+      body = if message.body in ["Queued...", "Thinking...", ""],
+        do: "Superseded before execution; this dispatch is no longer queued.",
+        else: message.body
+      %{message | status: "canceled", body: body}
+    else
+      message
+    end
+  end
+
+  defp project_superseded_queue(message), do: message
 
   def create(user, vault_id, channel_id, input, opts \\ []) do
     access = Keyword.get(opts, :access, :user)
@@ -55,7 +97,8 @@ defmodule Cascade.Chat.Messages do
       message = normalized_message(input, route.sourceChannelId, attribution, user.id)
 
       SQL.transaction(fn ->
-        with :ok <- authorize_repost(user, route, message, access) do
+        with :ok <- authorize_repost(user, route, message, access),
+             :ok <- validate_content(message) do
           insert_message(route, message)
           refresh_note_grants(user.id, vault_id, route.sourceChannelId, message)
           index_backlinks(route, message)
@@ -389,7 +432,15 @@ defmodule Cascade.Chat.Messages do
     :ok
   end
 
+  # Policy runs before activity accounting and persistence on both write paths.
+  # Missing wiring or policy failures must never bypass validation.
+  defp prepare_for_persistence(message, channel_id) do
+    prepare = Application.fetch_env!(:cascade_elixir, :chat_message_preparer)
+    prepare.(message, channel_id)
+  end
+
   defp insert_message(route, message) do
+    message = prepare_for_persistence(message, route.sourceChannelId)
     activity = if countable?(message), do: now(), else: nil
 
     SQL.exec(
@@ -412,6 +463,7 @@ defmodule Cascade.Chat.Messages do
   end
 
   defp persist(route, message) do
+    message = prepare_for_persistence(message, route.sourceChannelId)
     activity = if countable?(message), do: now(), else: nil
 
     rows =
@@ -526,7 +578,7 @@ defmodule Cascade.Chat.Messages do
 
     if registration_id == "" do
       author = input |> map_value("author", "") |> to_string() |> String.trim()
-      agent_id = input |> map_value("agentId") |> nilable()
+      agent_id = input |> map_value("agentId") |> nilable() || "agent"
 
       if author == "" do
         {:error, "Author is required"}
@@ -654,11 +706,14 @@ defmodule Cascade.Chat.Messages do
         else: {:error, "You can only edit your own messages"}
       )
 
-  defp cancel_pending_reply(%{id: "agent-dispatch-" <> id, status: "queued"}) do
+  defp cancel_pending_reply(%{id: "agent-dispatch-" <> id, status: "queued"} = message) do
     if SQL.changes(
          "UPDATE chat_agent_dispatches SET failed_at=datetime('now'),error='Canceled before startup.' WHERE id=? AND run_id IS NULL AND NOT EXISTS (SELECT 1 FROM runs WHERE chat_dispatch_id=chat_agent_dispatches.id)",
          [id]
-       ) > 0,
+       ) > 0 or
+         (is_nil(message[:runId]) and
+            is_nil(SQL.one("SELECT 1 FROM chat_agent_dispatches WHERE id=?", [id])) and
+            is_nil(SQL.one("SELECT 1 FROM runs WHERE chat_dispatch_id=?", [id]))),
        do: :ok,
        else: {:error, "Run already started; use Stop run."}
   end
@@ -880,6 +935,7 @@ defmodule Cascade.Chat.Messages do
   defp put_images(message, images, :full), do: Map.put(message, :images, images)
 
   defp put_images(message, images, :list) do
+    message = Map.put(message, :imageCount, length(images))
     light =
       Enum.filter(images, fn image ->
         is_binary(image) and not String.starts_with?(image, "data:") and byte_size(image) < 2_048
@@ -1011,7 +1067,8 @@ defmodule Cascade.Chat.Messages do
           id: note.id,
           title: note.title,
           content: note.content || "",
-          content_preview: note.content_preview || ""
+          content_preview: note.content_preview || "",
+          revision_counter: note.revision_counter
         }
     end
   end
@@ -1097,14 +1154,43 @@ defmodule Cascade.Chat.Messages do
 
   defp countable?(message),
     do:
-      is_nil(message[:agentId]) or
-        (message[:status] not in ["sending", "running"] and
-           String.trim(message.body || "") not in ["", "Thinking..."])
+      not String.starts_with?(message.id, "sys-next-") and
+        (is_nil(message[:agentId]) or
+           (message[:status] not in ["sending", "running"] and
+              String.trim(message.body || "") not in ["", "Thinking..."]))
 
-  defp terminal_shell?(message),
-    do:
-      message[:agentId] && message[:status] != "running" &&
-        String.trim(message.body || "") in ["", "Thinking..."]
+  @doc false
+  def terminal_shell?(message) do
+    body =
+      message
+      |> map_value("body", "")
+      |> to_string()
+      |> String.replace(~r/<!--\s*fizzer-next(?:-none|-feedback)?:[^<>]*?(?:-->|$)/, "")
+      |> String.trim()
+
+    agent? =
+      Enum.any?(~w(agentId registrationId runId), &(map_value(message, &1) not in [nil, ""]))
+
+    map_value(message, "status") not in ~w(queued sending running failed) and
+      (body == "" or (agent? and body in ["Thinking...", "Thinking…", "Queued..."])) and
+      not Enum.any?(
+        ~w(mission clarification changeRequest images attachments hasImages hasHarness),
+        &(map_value(message, &1) not in [nil, false, [], %{}])
+      ) and
+      String.trim(to_string(map_value(message, "harnessLog", ""))) == "" and
+      not Enum.any?(List.wrap(map_value(message, "blocks")), fn block ->
+        map_value(block, "type") in ~w(tool_use tool_result) or
+          map_value(block, "redacted") == true or
+          String.trim(to_string(map_value(block, "text", ""))) != ""
+      end)
+  end
+
+  defp validate_content(message) do
+    # Internal carriers retain identity for linked system work; they are not prose.
+    if terminal_shell?(message) and not String.starts_with?(message.id, ["sys-", "agent-trace-"]),
+      do: {:error, "Message must contain text, media or a card"},
+      else: :ok
+  end
 
   defp forwardable?(message),
     do:

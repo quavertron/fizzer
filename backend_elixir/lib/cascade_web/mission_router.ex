@@ -28,6 +28,103 @@ defmodule CascadeWeb.MissionRouter do
     end)
   end
 
+  get "/api/vaults/:vault_id/missions" do
+    authenticated(conn, nil, fn conn, user ->
+      case Store.list_workspace(user.id, vault_id) do
+        {:ok, missions} ->
+          JSON.send(conn, 200, %{missions: Enum.map(missions, &workspace_projection/1)})
+
+        error ->
+          route_error(conn, 404, error, "Missions not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        id: string_body(conn, "id"),
+        channelId: string_body(conn, "channelId"),
+        rootMessageId: string_body(conn, "rootMessageId"),
+        coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
+        title: string_body(conn, "title"),
+        coordinatorIdentityId: string_body(conn, "coordinatorIdentityId"),
+        briefContent: string_body(conn, "briefContent")
+      }
+
+      opts =
+        [agent: conn.assigns.auth_access == "agent"] ++
+          case run_id(conn) do
+            nil -> []
+            id -> [current_run_id: id]
+          end
+
+      case Store.create_workspace(user.id, vault_id, input, opts) do
+        {:ok, mission} -> JSON.send(conn, 201, %{mission: workspace_projection(mission)})
+        error -> route_error(conn, 400, error, "Could not create mission")
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/missions/:mission_id" do
+    authenticated(conn, nil, fn conn, user ->
+      case Store.get_workspace(user.id, vault_id, mission_id) do
+        {:ok, mission} -> JSON.send(conn, 200, %{mission: workspace_projection(mission)})
+        error -> route_error(conn, 404, error, "Mission not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions/:mission_id/notes" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        id: string_body(conn, "id"),
+        kind: string_body(conn, "kind"),
+        parentNoteId: body(conn, "parentNoteId", nil),
+        title: string_body(conn, "title"),
+        content: string_body(conn, "content")
+      }
+
+      case Store.create_workspace_note(user.id, vault_id, mission_id, input) do
+        {:ok, %{mission: mission}} ->
+          JSON.send(conn, 201, %{mission: workspace_projection(mission)})
+
+        error ->
+          route_error(conn, 400, error, "Could not create mission note")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/missions/:mission_id/approve" do
+    human_authenticated(conn, :vault, fn conn, user ->
+      expected_revisions = body(conn, "expectedRevisions", %{})
+
+      opts =
+        case run_id(conn) do
+          nil -> []
+          id -> [current_run_id: id]
+        end
+
+      with {:ok, mission} <-
+             Store.approve_workspace(
+               user.id,
+               vault_id,
+               mission_id,
+               expected_revisions,
+               opts
+             ),
+           {:ok, _scheduled} <- safe_schedule(mission_id, conn) do
+        JSON.send(conn, 200, %{mission: mission})
+      else
+        {:error, {:revision_conflict, _revisions}} ->
+          workspace_revision_conflict(conn, user.id, vault_id, mission_id)
+
+        error ->
+          route_error(conn, 400, error, "Could not approve mission")
+      end
+    end)
+  end
+
   post "/api/vaults/:vault_id/channels/:channel_id/missions" do
     authenticated(conn, :vault, fn conn, user ->
       input = %{
@@ -36,35 +133,55 @@ defmodule CascadeWeb.MissionRouter do
         title: string_body(conn, "title"),
         objective: string_body(conn, "objective"),
         authorityMessageIds: body(conn, "authorityMessageIds", []),
+        reviewRequested: js_truthy?(body(conn, "reviewRequested", false)),
         controlPlane: js_truthy?(body(conn, "controlPlane", false))
       }
-
-      opts =
-        [
-          agent: conn.assigns.auth_access == "agent",
-          control_plane: input.controlPlane
-        ] ++
-          case run_id(conn) do
-            nil -> []
-            id -> [current_run_id: id]
-          end
-
+      opts = [agent: conn.assigns.auth_access == "agent", control_plane: input.controlPlane] ++
+        case run_id(conn) do
+          nil -> []
+          id -> [current_run_id: id]
+        end
       case Store.create(user.id, vault_id, channel_id, input, opts) do
         {:ok, update} ->
           Scheduler.emit_projection(update, callback(conn, :events))
           JSON.send(conn, 201, %{mission: update.mission})
-
-        error ->
-          route_error(conn, 400, error, "Could not create mission")
+        error -> route_error(conn, 400, error, "Could not create mission")
       end
     end)
   end
 
   get "/api/vaults/:vault_id/channels/:channel_id/missions" do
     authenticated(conn, nil, fn conn, user ->
-      case Store.list(user.id, channel_id, query(conn, "coordinator")) do
-        {:ok, missions} -> JSON.send(conn, 200, %{missions: missions})
-        error -> route_error(conn, 404, error, "Missions not found")
+      current = current_run_mission(conn, user, channel_id)
+
+      result =
+        if query(conn, "view") == "compact" do
+          Store.list_compact(user.id, channel_id,
+            coordinator: if(current, do: nil, else: query(conn, "coordinator")),
+            mission_id: current,
+            status: query(conn, "status"),
+            task_status: query(conn, "taskStatus")
+          )
+        else
+          case current do
+            nil ->
+              Store.list(user.id, channel_id, query(conn, "coordinator"))
+
+            id ->
+              with {:ok, update} <- Store.get(user.id, channel_id, id),
+                   do: {:ok, [update.mission]}
+          end
+        end
+
+      case result do
+        {:ok, missions} ->
+          JSON.send(conn, 200, %{missions: missions})
+
+        {:error, :invalid_list_status} ->
+          JSON.send(conn, 400, %{error: "Invalid mission or task status filter"})
+
+        error ->
+          route_error(conn, 404, error, "Missions not found")
       end
     end)
   end
@@ -80,9 +197,71 @@ defmodule CascadeWeb.MissionRouter do
 
   get "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id" do
     authenticated(conn, nil, fn conn, user ->
-      case Store.get(user.id, channel_id, mission_id, query(conn, "coordinator")) do
+      mission_ref =
+        if mission_id == "current",
+          do: current_run_mission(conn, user, channel_id) || mission_id,
+          else: mission_id
+
+      case Store.get(user.id, channel_id, mission_ref, query(conn, "coordinator")) do
         {:ok, update} -> JSON.send(conn, 200, %{mission: update.mission})
         error -> route_error(conn, 404, error, "Mission not found")
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/continuation" do
+    authenticated(conn, nil, fn conn, user ->
+      case Cascade.Chat.Continuations.get(user.id, channel_id, run_id(conn)) do
+        {:ok, result} -> JSON.send(conn, 200, result)
+        error -> route_error(conn, 404, error, "Continuation not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/continuation" do
+    authenticated(conn, :vault, fn conn, user ->
+      case Cascade.Chat.Continuations.record(user.id, channel_id, run_id(conn), conn.body_params) do
+        {:ok, result} ->
+          Cascade.Missions.DispatchReannouncer.wake()
+          JSON.send(conn, 200, result)
+
+        error ->
+          route_error(conn, 409, error, "Could not record continuation")
+      end
+    end)
+  end
+
+  get "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation" do
+    authenticated(conn, nil, fn conn, user ->
+      case Cascade.Missions.Interpretation.get(
+             user.id,
+             channel_id,
+             mission_id,
+             query(conn, "coordinator")
+           ) do
+        {:ok, result} -> JSON.send(conn, 200, result)
+        error -> route_error(conn, 404, error, "Interpretation not found")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/interpretation" do
+    authenticated(conn, :vault, fn conn, user ->
+      case Cascade.Missions.Interpretation.record(
+             user,
+             channel_id,
+             mission_id,
+             string_body(conn, "coordinatorRegistrationId"),
+             conn.body_params,
+             run_id(conn),
+             callback(conn, :events)
+           ) do
+        {:ok, result} ->
+          Cascade.Missions.DispatchReannouncer.wake()
+          JSON.send(conn, 200, result)
+
+        error ->
+          route_error(conn, 409, error, "Could not record interpretation")
       end
     end)
   end
@@ -94,6 +273,9 @@ defmodule CascadeWeb.MissionRouter do
         title: string_body(conn, "title"),
         assignee: string_body(conn, "assignee"),
         prompt: string_body(conn, "prompt"),
+        purpose: string_body(conn, "purpose", "implementation"),
+        briefNoteId: body(conn, "briefNoteId", nil),
+        briefRevisions: body(conn, "briefRevisions", nil),
         dependsOn: string_list(body(conn, "dependsOn", [])),
         priority: numeric_body(conn, "priority"),
         reasoningEffort: string_body(conn, "reasoningEffort"),
@@ -125,14 +307,79 @@ defmodule CascadeWeb.MissionRouter do
     end)
   end
 
+  post "/api/vaults/:vault_id/channels/:channel_id/missions/:mission_id/children" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        title: string_body(conn, "title"),
+        prompt: string_body(conn, "prompt"),
+        purpose: string_body(conn, "purpose", "implementation"),
+        briefNoteId: body(conn, "briefNoteId", nil),
+        briefRevisions: body(conn, "briefRevisions", nil),
+        reasoningEffort: string_body(conn, "reasoningEffort")
+      }
+
+      with {:ok, added} <-
+             Cascade.Missions.Children.add(user.id, channel_id, mission_id, input, run_id(conn)),
+           {:ok, _} <- safe_schedule(added.update.mission.id, conn),
+           {:ok, latest} <- Store.get(user.id, channel_id, added.update.mission.id) do
+        JSON.send(conn, 201, %{
+          mission: latest.mission,
+          task: Enum.find(latest.mission.tasks, &(&1.id == added.task.id))
+        })
+      else
+        error -> route_error(conn, 400, error, "Could not create child task")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/missions/children/join" do
+    authenticated(conn, :vault, fn conn, user ->
+      case Cascade.Missions.Children.join(user.id, channel_id, run_id(conn)) do
+        {:ok, result} -> JSON.send(conn, 200, result)
+        error -> route_error(conn, 400, error, "Could not join children")
+      end
+    end)
+  end
+
+  post "/api/vaults/:vault_id/channels/:channel_id/missions/tasks/:task_id/steer" do
+    authenticated(conn, :vault, fn conn, user ->
+      input = %{
+        coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
+        message: string_body(conn, "message"),
+        attempt: body(conn, "attempt", nil),
+        runId: body(conn, "runId", nil)
+      }
+
+      opts = if run_id(conn), do: [current_run_id: run_id(conn)], else: []
+
+      case Store.request_steering(user.id, channel_id, task_id, input, opts) do
+        {:ok, id} ->
+          result = Cascade.Missions.Steering.deliver(id)
+          JSON.send(conn, 202, %{steering: result})
+
+        error ->
+          route_error(conn, 409, error, "Could not steer mission task")
+      end
+    end)
+  end
+
   patch "/api/vaults/:vault_id/channels/:channel_id/missions/tasks/:task_id" do
     authenticated(conn, :vault, fn conn, user ->
       input = %{
         status: string_body(conn, "status"),
-        summary: string_body(conn, "summary")
+        summary: string_body(conn, "summary"),
+        finding: conn.body_params["finding"] == true,
+        reviewOutcome: body(conn, "reviewOutcome", nil),
+        verificationPassed: body(conn, "verificationPassed", nil)
       }
-
-      with {:ok, update} <- Store.update_task(user.id, channel_id, task_id, input),
+      with :ok <-
+             Cascade.Missions.Children.authorize_update(
+               user.id,
+               channel_id,
+               task_id,
+               run_id(conn)
+             ),
+           {:ok, update} <- Store.update_task(user.id, channel_id, task_id, input),
            :ok <- cancel_runs(conn, Map.get(update, :canceledTaskRunIds, []), []),
            {:ok, _scheduled} <- safe_schedule(update.mission.id, conn),
            {:ok, latest} <- Store.get(user.id, channel_id, update.mission.id) do
@@ -237,6 +484,20 @@ defmodule CascadeWeb.MissionRouter do
     end
   end
 
+  defp human_authenticated(conn, gate, fun) do
+    options =
+      [access: :user] ++
+        if(gate == :vault,
+          do: [mutation_gate: &Cascade.Accounts.VaultMembers.mutation_gate/2],
+          else: []
+        )
+
+    case Auth.require(conn, options) do
+      {:ok, authorized} -> fun.(authorized, authorized.assigns.current_user)
+      {:error, rejected} -> rejected
+    end
+  end
+
   defp safe_schedule(mission_id, conn) do
     scheduled = Scheduler.schedule(mission_id, events: callback(conn, :events))
 
@@ -261,16 +522,46 @@ defmodule CascadeWeb.MissionRouter do
     :ok
   end
 
+  defp route_error(conn, _status, {:error, %{"code" => code} = conflict}, _fallback)
+       when code in [:conflict, :revision_conflict, "conflict", "revision_conflict"],
+       do: JSON.send(conn, 409, conflict)
+  defp route_error(conn, _status, {:error, %{code: code} = conflict}, _fallback)
+       when code in [:conflict, :revision_conflict, "conflict", "revision_conflict"],
+       do: JSON.send(conn, 409, conflict)
+
+  defp route_error(conn, _status, {:error, :revision_conflict}, _fallback),
+    do: JSON.send(conn, 409, %{code: "revision_conflict", error: "Revision conflict"})
+
+  defp route_error(conn, _status, {:error, :not_found}, fallback),
+    do: JSON.send(conn, 404, %{error: fallback})
+
   defp route_error(conn, status, {:error, message}, fallback),
     do: JSON.send(conn, status, %{error: if(is_binary(message), do: message, else: fallback)})
 
   defp route_error(conn, status, _error, fallback),
     do: JSON.send(conn, status, %{error: fallback})
 
+  defp workspace_revision_conflict(conn, user_id, vault_id, mission_id) do
+    case Store.get_workspace(user_id, vault_id, mission_id) do
+      {:ok, mission} ->
+        JSON.send(conn, 409, %{
+          error: "revision_conflict",
+          code: "revision_conflict",
+          mission: workspace_projection(mission)
+        })
+
+      _ ->
+        JSON.send(conn, 409, %{error: "revision_conflict", code: "revision_conflict"})
+    end
+  end
+
   defp callback(conn, :events),
     do: Keyword.get(conn.assigns.domain_options, :events) || Cascade.Chat.Events.Noop
 
   defp callback(conn, key), do: Keyword.get(conn.assigns.domain_options, key)
+
+  defp workspace_projection(%{mission: mission}), do: mission
+  defp workspace_projection(mission), do: mission
 
   defp put_domain_options(%{assigns: %{domain_options: _}} = conn, _compiled), do: conn
   defp put_domain_options(conn, options), do: assign(conn, :domain_options, options)
@@ -301,6 +592,25 @@ defmodule CascadeWeb.MissionRouter do
   defp query(conn, key) do
     conn = fetch_query_params(conn)
     Map.get(conn.query_params, key)
+  end
+
+  defp current_run_mission(conn, user, channel_id) do
+    with {:ok, route} <- Cascade.Chat.Channel.assert_channel(channel_id, user.id),
+         [id] <-
+           Cascade.Accounts.SQL.one(
+             """
+             SELECT m.id FROM chat_mission_tasks t
+             JOIN chat_missions m ON m.id=t.mission_id
+             JOIN runs r ON r.id=t.run_id
+             WHERE t.run_id=? AND r.owner_user_id=? AND m.created_by=? AND m.channel_id=?
+             LIMIT 1
+             """,
+             [run_id(conn), user.id, user.id, route.sourceChannelId]
+           ) do
+      id
+    else
+      _ -> nil
+    end
   end
 
   defp run_id(conn) do

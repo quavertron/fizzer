@@ -78,7 +78,7 @@ defmodule Cascade.Search.QMD do
     chats =
       if table_exists?("chat_messages") do
         Query.maps(
-          "SELECT id, channel_id, author, body, created_at FROM chat_messages WHERE vault_id = ? AND body != '' AND status IS NULL",
+          "SELECT id, channel_id, author, body, created_at FROM chat_messages WHERE vault_id = ? AND body != '' AND status IS NULL AND id NOT LIKE 'sys-next-%'",
           [vault_id],
           [:id, :channel_id, :author, :body, :created_at]
         )
@@ -183,15 +183,14 @@ defmodule Cascade.Search.QMD do
 
   defp snippet(text, query, max \\ 240) do
     clean = text |> String.replace(~r/\s+/u, " ") |> String.trim()
-    lower = String.downcase(clean)
 
     at =
       query
       |> tokens()
       |> Enum.map(fn term ->
-        case :binary.match(lower, term) do
-          :nomatch -> nil
-          {index, _length} -> index
+        case Regex.run(Regex.compile!(Regex.escape(term), "iu"), clean, return: :index) do
+          nil -> nil
+          [{index, _length}] -> String.length(binary_part(clean, 0, index))
         end
       end)
       |> Enum.reject(&is_nil/1)
@@ -222,7 +221,7 @@ defmodule Cascade.Search.QMD do
   end
 
   defp root_dir,
-    do: System.get_env("CASCADE_QMD_DIR") || Path.join([System.user_home!(), ".cascade", "qmd"])
+    do: System.get_env("CASCADE_QMD_DIR") || Cascade.Config.dotdir("qmd")
 
   defp safe_segment(value), do: value |> to_string() |> Base.url_encode64(padding: false)
 

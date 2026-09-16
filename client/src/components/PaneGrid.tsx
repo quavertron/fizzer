@@ -195,13 +195,15 @@ function PaneTabStrip({
   };
 
   const closeMenu = () => setContextMenu(null);
-
   const handleDragStart = (event: DragEvent, tabId: string) => {
     const payload: TabDragPayload = { tabId, fromPaneId: pane.id };
     event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-    // Let the sidebar accept an open (including unlisted/implicit) note tab as
-    // a note drop. Its move endpoint also promotes unlisted notes to listed.
-    event.dataTransfer.setData(NOTE_DND_TYPE, tabId);
+    // Only note/chat tabs map to the sidebar's note drop protocol. Mission
+    // tabs have their own namespaced identity and must never become notes.
+    const tab = openTabs.find((item) => item.id === tabId);
+    if (tab?.type === 'note' || tab?.type === 'chat') {
+      event.dataTransfer.setData(NOTE_DND_TYPE, tabId);
+    }
     event.dataTransfer.effectAllowed = 'move';
   };
 

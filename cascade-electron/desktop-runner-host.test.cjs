@@ -1,0 +1,45 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes private IPC on account disconnect', async t => {
+  const directory = fs.mkdtempSync(path.join(os.homedir(), '.setup-host-'));
+  fs.mkdirSync(path.join(directory, '.cascade'), { mode: 0o700 });
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const realHome = os.homedir;
+  const load = Module._load;
+  const previous = process.env.FIZZER_LOCAL_AGENT_SETUP;
+  let headers;
+  os.homedir = () => directory;
+  Module._load = function (name, ...args) {
+    if (name === 'electron') return { net: { fetch: async (_url, init) => {
+      headers = init.headers; return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    } } };
+    if (name === './agent-runner.cjs') return { setNoteApiConfig() {} };
+    return load.call(this, name, ...args);
+  };
+  t.after(() => { Module._load = load; os.homedir = realHome;
+    if (previous === undefined) delete process.env.FIZZER_LOCAL_AGENT_SETUP; else process.env.FIZZER_LOCAL_AGENT_SETUP = previous; });
+  const host = require('./desktop-runner-host.cjs');
+  t.after(() => host.disconnectDesktopRunner());
+  const endpoint = path.join(directory, '.cascade', 'agent-setup', 'setup.sock');
+  delete process.env.FIZZER_LOCAL_AGENT_SETUP;
+  await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
+  assert.equal(fs.existsSync(endpoint), false);
+  process.env.FIZZER_LOCAL_AGENT_SETUP = '1';
+  await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
+  assert.equal(fs.statSync(endpoint).mode & 0o777, 0o600);
+  const response = await fetch(host.getHelperProxyUrl() + '/api/me', { headers: { 'X-Cascade-Browser': '1', Origin: 'https://evil.invalid' } });
+  assert.equal(response.status, 200);
+  assert.equal(headers['x-cascade-browser'], undefined);
+  assert.equal(headers.origin, undefined);
+  await host.connectDesktopRunner('fixture-only', 'http://127.0.0.1:9999');
+  assert.equal(fs.existsSync(endpoint), false);
+  await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
+  assert.equal(fs.existsSync(endpoint), true);
+  await host.disconnectDesktopRunner();
+  assert.equal(fs.existsSync(endpoint), false);
+});

@@ -131,6 +131,14 @@ Push the intended commit to `master` in `grm4871/fizzer`, then watch the
 the host checkout, immutable image label and ID, internal health, and public
 health all match that exact revision.
 
+Successful desktop builds also trigger installer refresh for the current master
+revision. Older desktop completions are skipped so they cannot roll production
+back. When the exact immutable image is already healthy and traffic is ungated,
+the update refreshes verified installers without repeating preflight, snapshots
+or container cutover. Failed health or mismatched image identity follows the
+normal deployment path. Installer failures still fail the workflow and can be
+retried; exact live and public health verification still run afterward.
+
 The protected `production` environment contains only these host credentials:
 `PRODUCTION_DEPLOY_HOST`, `PRODUCTION_DEPLOY_PORT`,
 `PRODUCTION_DEPLOY_USER`, `PRODUCTION_DEPLOY_SSH_KEY`, and
@@ -173,6 +181,57 @@ writes accepted during the rolling handoff are preserved rather than rewound.
 The Actions run is green only after the host and public checks pass. A pushed
 commit or a healthy endpoint without matching revision evidence is not a
 successful release.
+
+## Deployment storage
+
+Schema-identical rolling releases use a schema-only disposable database, not
+full production copies. They require the 1 GiB free-space floor, and preserve
+live writes on rollback. Full-copy capacity is checked only when startup changes
+schema, before cloning data and again before closing the maintenance gate.
+
+Migration capacity conservatively budgets `4 * (database + WAL) + 3 * corpus +
+1 GiB` on the data filesystem; the snapshot filesystem must also have room for
+`database + WAL + corpus + 1 GiB`. Corpus includes both vault files and QMD.
+Reflink savings are never assumed. Disposable preflight clones are deleted after
+the protocol check, before snapshot creation. The allowance includes checker
+scratch, SQLite journals, the rollback copy, and post-start verification; rapid
+concurrent growth or a larger migration can still exhaust the reserve and fail
+closed. Deployment is not a substitute for provisioning space for growing data.
+
+Unused Docker build cache is pruned toward 1 GB before the capacity checks and
+after successful deployment, without an age delay. Active cache can exceed that
+target. Images, active volumes, and recovery snapshots are not part of this prune.
+
+Cutover snapshots contain a checkpointed, SHA-256-checked `docs.db` plus the
+vault/QMD corpus. Automatic rollback restores the database only, while traffic is
+gated and the candidate stopped; the corpus is used by compatibility verification.
+These local snapshots are not a complete off-host disaster-recovery backup.
+After successful cutover and installer verification, retention keeps the two
+newest verified recovery points. It runs under the shared deployment/restore
+lock and refuses cleanup while a running container mounts the snapshot tree.
+Verification checks the recorded database SHA-256, SQLite quick/foreign-key
+checks, recovery revision, and readable vault/QMD files. New snapshots record
+corpus checksums and the previous image ID; legacy corpus bytes have no original
+checksum to compare against. Tagged rollback images are preserved.
+
+Only strictly named cutover directories older than both good recovery points
+expire. The current cutover snapshot, unknown names, unsafe trees, and newer
+incomplete/corrupt attempts are preserved. Fewer than two good points means no
+pruning. Failed deployments never trigger retention. An exact-revision retry
+runs retention again after checking live health and refreshing installers.
+Standalone database restoration also acquires the deploy lock.
+
+The normal retained count is two, with one additional snapshot during cutover.
+Protected or failed attempts can exceed this count and require investigation;
+retention never sacrifices the safety checks to hit a size target. The byte
+limit scales with live database/corpus size. Historical recovery dates older
+than the retained pair are intentionally retired. Deployment snapshots remain
+local rollback points, not an archival backup policy.
+
+The host retention helper uses Python 3.11+ with its standard SQLite library.
+`python3 deploy/prune-cutover-snapshots.py /var/backups/cascade` produces a
+read-only plan; normal application of that plan is part of the successful
+GitHub Actions deployment lifecycle.
 
 ## Infrastructure security boundary
 

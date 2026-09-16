@@ -1,11 +1,11 @@
 defmodule Cascade.Chat.Channel do
   @moduledoc "Authorization, local/source projection, participants, presence, settings, and channel membership."
 
-  alias Cascade.Accounts.SQL
+  alias Cascade.Accounts.{SQL, VaultMembers}
   alias Cascade.Chat.Events
   alias Cascade.Content.{Assets, Store}
 
-  @marker "cascade://chat-channel"
+  @markers ["cascade://chat-channel", "cascade://voice-channel"]
   def assert_channel(channel_id, user_id) do
     row =
       SQL.one(
@@ -148,7 +148,11 @@ defmodule Cascade.Chat.Channel do
     participant_snapshot(source_vault_id, source_channel_id).participants
   end
 
-  def participant_snapshot(source_vault_id, source_channel_id) do
+  def participant_snapshot(source_vault_id, source_channel_id, opts \\ []) do
+    # Inline photos belong in the HTTP response, never in realtime presence events.
+    include_avatars = Keyword.get(opts, :include_avatars, false)
+    avatar_column = if include_avatars, do: "u.avatar_url", else: "NULL"
+
     rows =
       SQL.all(
         """
@@ -174,7 +178,7 @@ defmodule Cascade.Chat.Channel do
               )
         )
         SELECT u.id,n.username,u.username,
-          COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username
+          COALESCE(NULLIF(u.display_name,''),u.username),s.owner_username,#{avatar_column}
         FROM participant_names n CROSS JOIN source s
         LEFT JOIN users u ON u.username=n.username
         WHERE n.username IS NOT NULL AND n.username != ''
@@ -190,7 +194,7 @@ defmodule Cascade.Chat.Channel do
 
     users =
       Enum.flat_map(rows, fn
-        [id, participant_username, username, display_name, _owner]
+        [id, participant_username, username, display_name, _owner, avatar_url]
         when is_integer(id) and is_binary(username) ->
           [
             %{
@@ -199,6 +203,7 @@ defmodule Cascade.Chat.Channel do
               username: username,
               displayName: display_name || username
             }
+            |> then(&if(include_avatars, do: Map.put(&1, :avatarUrl, avatar_url || ""), else: &1))
           ]
 
         _ ->
@@ -210,12 +215,7 @@ defmodule Cascade.Chat.Channel do
       owner: rows |> List.first() |> then(&if(&1, do: Enum.at(&1, 4), else: "")),
       profiles:
         Map.new(users, fn user ->
-          {user.username,
-           %{
-             id: user.id,
-             username: user.username,
-             displayName: user.displayName
-           }}
+          {user.username, Map.drop(user, [:participantUsername])}
         end),
       users: users
     }
@@ -225,7 +225,8 @@ defmodule Cascade.Chat.Channel do
 
   def presence(channel_id, user_id, callback \\ Cascade.Chat.Events.Noop) do
     with {:ok, route} <- assert_channel(channel_id, user_id) do
-      snapshot = participant_snapshot(route.sourceVaultId, route.sourceChannelId)
+      snapshot =
+        participant_snapshot(route.sourceVaultId, route.sourceChannelId, include_avatars: true)
 
       online =
         Events.online(callback, snapshot.participants)
@@ -303,28 +304,44 @@ defmodule Cascade.Chat.Channel do
            SQL.one("SELECT id FROM users WHERE username=? COLLATE NOCASE", [
              String.trim(to_string(username))
            ]),
-         true <- target_id != actor_id,
-         [local_channel_id, local_vault_id] <-
-           SQL.one(
-             """
-               SELECT l.local_channel_id,l.local_vault_id FROM chat_channel_links l
-               JOIN vaults v ON v.id=l.local_vault_id
-               WHERE l.source_channel_id=? AND v.created_by=? ORDER BY l.created_at LIMIT 1
-             """,
-             [route.sourceChannelId, target_id]
-           ) do
-      Assets.delete_all(local_channel_id)
-      Store.delete_note(local_channel_id)
+         true <- target_id != actor_id do
+      member? = not is_nil(VaultMembers.role(route.sourceVaultId, target_id))
 
-      {:ok,
-       %{
-         username: username,
-         channelId: local_channel_id,
-         userId: target_id,
-         localVaultId: local_vault_id,
-         sourceVaultId: route.sourceVaultId,
-         sourceChannelId: route.sourceChannelId
-       }}
+      links =
+        SQL.all(
+          """
+          SELECT l.local_channel_id,l.local_vault_id FROM chat_channel_links l
+          JOIN vaults v ON v.id=l.local_vault_id
+          WHERE l.source_channel_id=? AND v.created_by=? AND l.local_channel_id != ?
+          """,
+          [route.sourceChannelId, target_id, route.sourceChannelId]
+        )
+
+      with true <- member? or links != [],
+           :ok <-
+             if(member?,
+               do: VaultMembers.remove(route.sourceVaultId, actor_id, target_id),
+               else: :ok
+             ) do
+        for [local_channel_id, _local_vault_id] <- links do
+          Assets.delete_all(local_channel_id)
+          Store.delete_note(local_channel_id)
+        end
+
+        {:ok,
+         %{
+           username: username,
+           userId: target_id,
+           membershipRemoved: member?,
+           removedLinks:
+             Enum.map(links, fn [channel, vault] -> %{channelId: channel, localVaultId: vault} end),
+           sourceVaultId: route.sourceVaultId,
+           sourceChannelId: route.sourceChannelId
+         }}
+      else
+        false -> {:error, "Participant not found"}
+        error -> error
+      end
     else
       _ -> {:error, "Participant not found"}
     end
@@ -341,7 +358,11 @@ defmodule Cascade.Chat.Channel do
   end
 
   defp chat_note?(content, preview),
-    do: String.starts_with?(String.trim(to_string(content || preview || "")), @marker)
+    do:
+      Enum.any?(
+        @markers,
+        &String.starts_with?(String.trim(to_string(content || preview || "")), &1)
+      )
 
   defp live_kanban_id(""), do: ""
   defp live_kanban_id(nil), do: ""

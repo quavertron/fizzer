@@ -34,7 +34,7 @@
  *   --folder <id>    folder id/name (create / move)
  *   --url <base>     API base      (default $CASCADE_NOTE_URL, else cscd.online)
  *   --token <jwt>    bearer token  (default $CASCADE_NOTE_TOKEN)
- *   --json           machine-readable output
+ *   --json           machine-readable output; errors are JSON on stderr
  *
  * Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
  *      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT
@@ -42,6 +42,7 @@
 
 'use strict';
 
+import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,9 +52,13 @@ const DEFAULT_URL = 'https://cscd.online';
 const USAGE = `cascade-note — note CRUD against a live Cascade instance
 
 Usage:
+  cascade-note wiki status|enable|disable  upkeep settings (enable: --channel ID --registration ID)
+  cascade-note vault list                list vault IDs and names
+  cascade-note vault delete <id> --confirm-name <name> --authority-message <id>
+                                        delete an inactive vault under an owner mission
   cascade-note list                      vaults, or notes with --vault
   cascade-note search <query>            search notes in a vault
-  cascade-note get <id|title>            print a note's content
+  cascade-note get|read <id|title>       print a note's content
   cascade-note create --title T [--listed] body via stdin (recommended) / --content-file / --content
   cascade-note edit <id|title>           replace body (stdin / --content-file / --content)
   cascade-note append <id|title>         append body  (stdin / --content-file / --content)
@@ -91,41 +96,14 @@ Options:
   --allow-empty    permit an empty body (otherwise empty is rejected)
   --url <base>     API base   (default $CASCADE_NOTE_URL, else cscd.online)
   --token <jwt>    bearer token (default $CASCADE_NOTE_TOKEN)
-  --json           machine-readable output
+  --json           machine-readable output; errors are JSON on stderr
 
 Prefer stdin or --content-file; --content is unsafe for backticks/markdown.
 
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_USER,
      CASCADE_NOTE_PASS, CASCADE_NOTE_VAULT, CASCADE_HELPER_CONFIG`;
 
-function parseArgs(argv) {
-  const args = { _: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--json') args.json = true;
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) args[key] = true;
-      else { args[key] = next; i++; }
-    } else {
-      args._.push(a);
-    }
-  }
-  return args;
-}
-
-function fail(msg, code = 1) {
-  process.stderr.write(`cascade-note: ${msg}\n`);
-  process.exit(code);
-}
-
-function errorMessage(err) {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause instanceof Error ? ` (${err.cause.message})` : '';
-  return `${err.message}${cause}`;
-}
+const { args, fail } = createCli('cascade-note', {});
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -135,27 +113,6 @@ function readStdin() {
     process.stdin.on('data', (chunk) => { data += chunk; });
     process.stdin.on('end', () => resolve(data));
   });
-}
-
-function helperConfigPath() {
-  // Prefer agent-runner's explicit per-run path over CASCADE_RUN_ID alone.
-  const fromEnv = String(process.env.CASCADE_HELPER_CONFIG || '').trim();
-  if (fromEnv) return fromEnv;
-  const runId = String(process.env.CASCADE_RUN_ID || '').trim();
-  if (runId) {
-    return path.join(os.homedir(), '.cascade', 'run-contexts', `${runId}.json`);
-  }
-  return path.join(os.homedir(), '.cascade', 'agent-helper-context.json');
-}
-
-function readHelperConfig() {
-  try {
-    const raw = fs.readFileSync(helperConfigPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 function configString(config, key) {
@@ -168,7 +125,7 @@ function baseUrl(args, config) {
 }
 
 async function getToken(url, args, config) {
-  const explicit = String(args.token || configString(config, 'token') || process.env.CASCADE_NOTE_TOKEN || '').trim();
+  const explicit = resolveToken(args.token, configString(config, 'token'));
   if (explicit) return explicit;
   const user = String(process.env.CASCADE_NOTE_USER || '').trim();
   const pass = String(process.env.CASCADE_NOTE_PASS || '');
@@ -180,17 +137,21 @@ async function getToken(url, args, config) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: user, password: pass }),
   });
-  if (!res.ok) fail(`login failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    fail(httpError('POST', '/api/auth/login', res.status, text, `login failed (${res.status}): ${text}`));
+  }
   const body = await res.json();
   if (!body.token) fail('login response had no token');
   return body.token;
 }
 
-async function api(url, token, method, path, body) {
+async function api(url, token, method, path, body, extraHeaders = {}) {
   const res = await fetch(`${url}${path}`, {
     method,
     headers: {
       authorization: `Bearer ${token}`,
+      ...extraHeaders,
       ...(body ? { 'content-type': 'application/json' } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -198,7 +159,7 @@ async function api(url, token, method, path, body) {
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${path} → ${res.status}: ${json.error || text}`);
+  if (!res.ok) fail(httpError(method, path, res.status, text, undefined, '→'));
   return json;
 }
 
@@ -229,6 +190,31 @@ async function resolveNote(url, token, vaultId, ref) {
   const partial = partialRows.filter((n) => n.title.toLowerCase().includes(needle));
   if (partial.length === 1) return partial[0].id;
   if (partial.length > 1) fail(`"${ref}" matches ${partial.length} notes; pass the note id.`);
+  if (needle.length >= 2) {
+    try {
+      const { notes: allNotes = [] } = await api(url, token, 'GET', `/api/vaults/${vaultId}/notes`);
+      const fuzzy = allNotes.filter((n) => {
+        const words = String(n.title || '').toLowerCase().split(/[\s\-_/\\.:,;+&]+/);
+        return words.some((w) => {
+          if (w.startsWith(needle) || needle.startsWith(w)) return true;
+          if (w.length >= needle.length && needle.length >= 3) {
+            const prefix = w.slice(0, needle.length);
+            let diff = 0;
+            for (let i = 0; i < needle.length; i++) {
+              if (prefix[i] !== needle[i]) diff++;
+            }
+            if (diff <= 1) return true;
+          }
+          return false;
+        });
+      });
+      if (fuzzy.length === 1) return fuzzy[0].id;
+      if (fuzzy.length > 1) {
+        const list = fuzzy.map((n) => `  ${n.id}  ${n.title}`).join('\n');
+        fail(`"${ref}" matches multiple notes; pass the note id:\n${list}`);
+      }
+    } catch { /* fallback to default failure */ }
+  }
   fail(`no note matching "${ref}" in vault ${vaultId}.`);
 }
 
@@ -313,9 +299,9 @@ function out(args, human, obj) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
 
+  if (!cmd && !args.help && args.json) fail('missing command. Run with --help.');
   if (!cmd || args.help) {
     process.stdout.write(USAGE + '\n');
     process.exit(cmd ? 0 : 1);
@@ -326,6 +312,47 @@ async function main() {
   const token = await getToken(url, args, config);
 
   switch (cmd) {
+    case 'vault': {
+      if (args._[1] === 'list') {
+        const { vaults = [] } = await api(url, token, 'GET', '/api/vaults');
+        out(args, vaults.map((v) => `${v.id}  ${v.name}`).join('\n') || '(no vaults)', vaults);
+        break;
+      }
+      const id = args._[2];
+      const name = args['confirm-name'];
+      const source = args['authority-message'];
+      const runId = String(process.env.CASCADE_RUN_ID || '').trim();
+      if (args._[1] !== 'delete' || !id || typeof name !== 'string' || typeof source !== 'string' || !runId) {
+        fail('use vault delete <full-id> --confirm-name <exact-name> --authority-message <owner-message-id> from an active mission run');
+      }
+      if (id === (configString(config, 'vaultId') || process.env.CASCADE_NOTE_VAULT)) fail('cannot delete the current vault');
+      const { vaults = [] } = await api(url, token, 'GET', '/api/vaults');
+      if (!vaults.some((v) => v.id === id && v.name === name)) fail('target ID and exact name do not match a visible vault');
+      const result = await api(url, token, 'DELETE', `/api/vaults/${encodeURIComponent(id)}`, {
+        expectedName: name, authorityMessageId: source,
+      }, { 'x-cascade-run-id': runId });
+      const remaining = await api(url, token, 'GET', '/api/vaults');
+      if (remaining.vaults.some((v) => v.id === id)) fail('deletion returned success but target is still present');
+      out(args, `Deleted vault ${name} (${id}); verified absent.`, { ...result, id, name, verifiedAbsent: true });
+      break;
+    }
+    case 'wiki': {
+      const vaultId = await resolveVault(url, token, args, config);
+      const action = args._[1] || 'status';
+      if (!['status', 'enable', 'disable'].includes(action)) fail('wiki needs status|enable|disable');
+      const endpoint = `/api/vaults/${vaultId}/wiki-maintenance`;
+      let data;
+      if (action === 'status') data = await api(url, token, 'GET', endpoint);
+      else if (action === 'disable') data = await api(url, token, 'PUT', endpoint, { enabled: false });
+      else {
+        const channelId = args.channel || configString(config, 'chatChannelId') || process.env.CASCADE_CHAT_CHANNEL;
+        const registrationId = args.registration || configString(config, 'chatRegistrationId');
+        if (!channelId || !registrationId) fail('wiki enable needs --channel ID --registration ID');
+        data = await api(url, token, 'PUT', endpoint, { enabled: action === 'enable', channelId, registrationId });
+      }
+      out(args, JSON.stringify(data), data);
+      break;
+    }
     case 'list': {
       const v = String(args.vault || configString(config, 'vaultId') || process.env.CASCADE_NOTE_VAULT || '').trim();
       if (!v) {
@@ -415,7 +442,11 @@ async function main() {
         if (!ref) fail('memory update needs an id or title.');
         const selected = await resolveMemoryNote(url, token, vaultId, args, config, ref);
         const content = await bodyContent(args);
-        const { note } = await api(url, token, 'PUT', `/api/notes/${selected.id}`, { content });
+        const { note: existing } = await api(url, token, 'GET', `/api/notes/${selected.id}`);
+        const { note } = await api(url, token, 'PUT', `/api/notes/${selected.id}`, {
+          content,
+          ...(existing.revision ? { expectedRevision: existing.revision } : {}),
+        });
         out(args, `updated ${note.id}  ${note.title}`, note);
       } else if (sub === 'delete') {
         const ref = args._[2];
@@ -429,9 +460,13 @@ async function main() {
       }
       break;
     }
-    case 'get': {
+    case 'get':
+    case 'read':
+    case 'show':
+    case 'view':
+    case 'cat': {
       const ref = args._[1];
-      if (!ref) fail('get needs a note id or title.');
+      if (!ref) fail(`${cmd} needs a note id or title.`);
       const vaultId = await resolveVault(url, token, args, config);
       const id = await resolveNote(url, token, vaultId, ref);
       const { note } = await api(url, token, 'GET', `/api/notes/${id}`);
@@ -520,15 +555,18 @@ async function main() {
       if (!ref) fail(`${cmd} needs a note id or title.`);
       const vaultId = await resolveVault(url, token, args, config);
       const id = await resolveNote(url, token, vaultId, ref);
+      const { note: existing } = await api(url, token, 'GET', `/api/notes/${id}`);
       const incoming = await bodyContent(args);
       let content = incoming;
       if (cmd === 'append') {
-        const { note: existing } = await api(url, token, 'GET', `/api/notes/${id}`);
         const sep = existing.content.endsWith('\n') ? '' : '\n';
         content = existing.content + sep + incoming;
       }
       const normalizedContent = content.replace(/\\+`/g, '`');
-      const { note } = await api(url, token, 'PUT', `/api/notes/${id}`, { content: normalizedContent });
+      const { note } = await api(url, token, 'PUT', `/api/notes/${id}`, {
+        content: normalizedContent,
+        ...(existing.revision ? { expectedRevision: existing.revision } : {}),
+      });
       out(args, `${cmd === 'append' ? 'appended to' : 'updated'} ${note.id}  ${note.title}`, note);
       break;
     }
@@ -559,4 +597,4 @@ async function main() {
   }
 }
 
-main().catch((err) => fail(errorMessage(err)));
+main().catch(fail);

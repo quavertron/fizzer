@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { LoadingIndicator } from './LoadingIndicator';
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode, type CSSProperties } from 'react';
 import { ChevronRight, History, Loader2, Square } from 'lucide-react';
 import { api } from '../api';
 import { reportWorkItemGitState, workspaceBridge } from '../chat/workspaces';
@@ -7,6 +8,7 @@ import type { ChatMessage, ChatMission, ChatMissionEvent, ChatMissionTask } from
 import { ChatTaskReview } from './ChatTaskReview';
 import { SwipeToReply } from './SwipeToReply';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { missionAccent } from '../chat/missionIdentity';
 
 function missionTaskChangeChips(task: ChatMissionTask, fileCount?: number): Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> {
   const chips: Array<{ label: string; tone?: 'ok' | 'warn' | 'idle'; title?: string; href?: string }> = [];
@@ -17,14 +19,14 @@ function missionTaskChangeChips(task: ChatMissionTask, fileCount?: number): Arra
   const reportedFiles = task.gitState?.changedFiles;
   const files = fileCount ?? reportedFiles;
   if (files != null) chips.push({ label: `${files} file${files === 1 ? '' : 's'}`, tone: files ? 'idle' : 'ok' });
-  if (task.verification) chips.push({ label: 'verified', tone: 'ok', title: task.verification });
+  if (task.verification) chips.push({ label: 'evidence recorded', tone: 'ok', title: task.verification });
   else if (task.workItemStatus === 'review' || task.workItemStatus === 'done') chips.push({ label: 'unverified', tone: 'warn' });
   if (task.reviewState === 'in_review') chips.push({ label: task.prState ? `PR ${task.prState}` : 'in review', tone: 'ok', href: task.prUrl });
   else if (task.reviewState === 'requested') chips.push({ label: 'review requested', tone: 'warn' });
   else if (task.reviewState === 'ready') chips.push({ label: 'reviewed', tone: 'ok' });
   if (task.workItemStatus === 'review' || task.workItemStatus === 'done') {
     chips.push(task.reviewReady
-      ? { label: 'review ready', tone: 'ok' }
+      ? { label: 'ready for feedback', tone: 'ok', title: 'Workspace review is ready. Deployment requires separate live revision verification.' }
       : { label: 'review blocked', tone: 'warn', title: task.reviewBlockers?.join('\n') });
   }
   return chips;
@@ -115,29 +117,29 @@ export function ChatMissionCard({
   const done = mission.tasks.filter((task) => task.status === 'completed' || task.status === 'canceled').length;
   const total = mission.tasks.length;
   const terminal = mission.status === 'completed' || mission.status === 'canceled';
-  const live = !terminal && (
-    mission.status === 'active'
-      || mission.status === 'reviewing'
-      || mission.tasks.some((task) => task.status === 'running' || task.status === 'pending')
-      || Boolean(tracePeek?.live)
-  );
-  const statusLabel = mission.status === 'active'
-    ? (total ? `${done}/${total} tasks` : 'planning')
-    : needsAttention ? 'needs review' : mission.status;
-  const lead = mission.coordinatorMention || mission.coordinator;
   const runningTask = mission.tasks.find((task) => task.status === 'running');
-  const peekLive = Boolean(tracePeek?.live || (live && mission.status === 'active'));
+  const pendingTask = mission.tasks.find((task) => task.status === 'pending');
+  const attentionTask = mission.tasks.find((task) => task.status === 'failed' || task.status === 'blocked');
+  const live = !terminal && (Boolean(runningTask) || Boolean(!needsAttention && !attentionTask && tracePeek?.live && tracePeek.phase !== 'routing'));
+  const statusLabel = terminal ? mission.status
+    : needsAttention || attentionTask ? 'needs attention'
+      : live ? 'working'
+        : pendingTask ? 'queued'
+          : mission.status === 'reviewing' ? 'awaiting review' : 'starting';
+  const lead = mission.coordinatorMention || mission.coordinator;
   const peekAuthor = tracePeek?.author
     || (runningTask ? (runningTask.assigneeMention || runningTask.assignee) : '')
     || '';
   const peekLabel = (terminal ? mission.summary : '')
-    || tracePeek?.label
+    || (!terminal && attentionTask ? attentionTask.summary || attentionTask.title : '')
+    || (!terminal && tracePeek?.live ? tracePeek.label : '')
     || (runningTask ? runningTask.title : '')
-    || (mission.status === 'active' && total === 0 ? 'deciding approach…' : '')
-    || (mission.status === 'active' ? `${done}/${total} tasks in flight` : '');
+    || (pendingTask ? `Queued · ${pendingTask.title}` : '')
+    || (!terminal ? tracePeek?.label : '')
+    || (!terminal ? 'Waiting for an agent update' : '');
   // Peek is collapsed-only activity exposure. When open, the stream/tasks are the UI.
   // Settled missions without useful activity text skip the second rail entirely.
-  const showPeek = !open && Boolean(peekLabel) && (terminal || peekLive || Boolean(tracePeek || runningTask));
+  const showPeek = !open && Boolean(peekLabel) && (terminal || live || Boolean(tracePeek || runningTask || pendingTask || attentionTask));
   async function toggleTimeline() {
     const next = !timelineOpen;
     setTimelineOpen(next);
@@ -153,14 +155,14 @@ export function ChatMissionCard({
     }
   }
   async function stopMission() {
-    if (!vaultId || !channelId || stopping) return;
+    if (!vaultId || !channelId || stopping || !mission.coordinatorRegistrationId) return;
     setStopping(true);
     setHistoryError('');
     try {
       await api(`/api/vaults/${vaultId}/channels/${channelId}/missions/${mission.id}/finish`, {
         method: 'POST',
         body: JSON.stringify({
-          coordinatorRegistrationId: mission.coordinatorMention || mission.coordinator,
+          coordinatorRegistrationId: mission.coordinatorRegistrationId,
           status: 'canceled',
           summary: 'Stopped by user.',
         }),
@@ -180,6 +182,8 @@ export function ChatMissionCard({
   const card = (
     <div
       className={`chat-mission-card is-${mission.status}${live ? ' is-live' : ''}${open ? ' is-open' : ''}`}
+      data-mission-id={mission.id}
+      style={{ '--mission-accent': missionAccent(mission.id) } as CSSProperties}
       data-open={open ? 'true' : 'false'}
       data-message-id={replyMessage?.id}
       role="button"
@@ -209,7 +213,7 @@ export function ChatMissionCard({
           <span className="chat-mission-status">{statusLabel}</span>
           <ChevronRight size={13} className={`chat-mission-chevron${open ? ' open' : ''}`} aria-hidden="true" />
         </button>
-        {live && vaultId && channelId && (
+        {!terminal && vaultId && channelId && (
           <button
             type="button"
             className="chat-mission-stop"
@@ -229,7 +233,7 @@ export function ChatMissionCard({
         {showPeek && (
           <button
             type="button"
-            className={`chat-mission-peek${peekLive ? ' is-live' : ''}`}
+            className={`chat-mission-peek${live ? ' is-live' : ''}`}
             tabIndex={-1}
             onClick={() => setOpen((value) => !value)}
             onContextMenu={openMissionContextMenu}
@@ -238,7 +242,10 @@ export function ChatMissionCard({
             {/* Empty gutter matches the status-dot column; header owns the spinner. */}
             <span className="chat-mission-peek-gutter" aria-hidden="true" />
             {peekAuthor && <span className="chat-mission-peek-author">{peekAuthor}</span>}
-            <span className="chat-mission-peek-label">{peekLabel}</span>
+            <span className="chat-mission-peek-copy">
+              {runningTask && tracePeek?.live && <span className="chat-mission-peek-task">{runningTask.title}</span>}
+              <span className="chat-mission-peek-label">{peekLabel}</span>
+            </span>
           </button>
         )}
       </div>
@@ -292,7 +299,8 @@ export function ChatMissionCard({
                         <strong>{task.title}</strong>
                         <span>
                           @{task.assigneeMention || task.assignee} · {task.status}
-                          {task.anonymous ? ' · subagent' : ''}
+                          {task.parentTaskId ? ` · child of ${mission.tasks.find((parent) => parent.id === task.parentTaskId)?.title || task.parentTaskId}` : task.anonymous ? ' · subagent' : ''}
+                          {task.joiningChildren ? ' · joining children' : ''}
                           {task.attempt > 0 ? ` · attempt ${task.attempt + 1}` : ''}
                           {task.queueReason === 'dependency' ? ` · waiting for ${task.waitingFor.length}` : ''}
                           {task.queueReason === 'dependency-attention' ? ' · waiting on review' : ''}
@@ -338,7 +346,7 @@ export function ChatMissionCard({
               </button>
               {timelineOpen && (
                 <div className="chat-mission-timeline">
-                  {events === null && !historyError && <span>Loading history…</span>}
+                  {events === null && !historyError && <LoadingIndicator label="Loading history" />}
                   {historyError && <span className="is-error">{historyError}</span>}
                   {events?.length === 0 && <span>No recorded events.</span>}
                   {events?.map((event) => (

@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
 
+# Test/build script edits do not change the installed dependency tree.
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS dependency-manifests
+WORKDIR /manifests
+COPY package.json ./
+COPY client/package.json ./client/
+RUN node -e 'const fs = require("fs"); for (const file of ["package.json", "client/package.json"]) { const manifest = JSON.parse(fs.readFileSync(file)); delete manifest.scripts; fs.writeFileSync(file, JSON.stringify(manifest)); }'
+
 # Client bundle: isolated install keeps Electron and Playwright out of the server image.
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS client-build
 WORKDIR /client
-COPY client/package.json client/package-lock.json ./
+COPY --from=dependency-manifests /manifests/client/package.json ./
+COPY client/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY client/ ./
 COPY docs/user-guide.md /docs/user-guide.md
@@ -16,8 +24,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends python3 make g++
 WORKDIR /app
-COPY package.json package-lock.json ./
-COPY client/package.json ./client/
+COPY --from=dependency-manifests /manifests/package.json ./
+COPY --from=dependency-manifests /manifests/client/package.json ./client/
+COPY package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 
 # Compile an OTP release with ERTS included so the runtime image does not need
@@ -51,10 +60,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       ca-certificates libstdc++6 libssl3 libncurses6 lksctp-tools
 
 WORKDIR /app
-ARG CASCADE_REVISION=uncommitted
-LABEL org.opencontainers.image.revision="${CASCADE_REVISION}" \
-      io.cascade.backend="elixir" \
-      io.cascade.release-policy="verify-then-promote"
 ENV NODE_ENV=production \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -66,7 +71,6 @@ ENV NODE_ENV=production \
     HOME=/data \
     RELEASE_DISTRIBUTION=none
 
-COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node --from=qmd-deps /app/node_modules ./node_modules
 COPY --chown=node:node --from=elixir-build /build/release-artifact ./release
 COPY --chown=node:node --from=client-build /client/dist ./client/dist
@@ -77,7 +81,15 @@ COPY --chown=node:node deploy/authenticated-live-smoke.mjs ./deploy/authenticate
 COPY --chown=node:node deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+COPY --chown=node:node package.json package-lock.json ./
+
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["start"]
+
+# Revision metadata must not invalidate dependency and artifact layers.
+ARG CASCADE_REVISION=uncommitted
+LABEL org.opencontainers.image.revision="${CASCADE_REVISION}" \
+      io.cascade.backend="elixir" \
+      io.cascade.release-policy="verify-then-promote"

@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 import { useEffect, useRef, useState } from 'react';
 import { Ban, Bot, Camera, Flag, Globe2, KeyRound, Link as LinkIcon, LogOut, SlidersHorizontal, Trash2, Users, X } from 'lucide-react';
 import { api, type User, type VaultMember, type VaultRole } from '../api';
@@ -10,6 +11,8 @@ import {
 } from '../androidLocalCodex';
 import { ensureDesktopRunnerHost, stopDesktopRunnerHost } from '../desktopRunnerHost';
 import { ModalShell } from './ModalShell';
+
+type AgentSetupBridge = { showAgentAccountSetup?: () => Promise<void> };
 
 type AssignableRole = Exclude<VaultRole, 'owner'>;
 export type AccountSettingsSection = 'profile' | 'preferences' | 'security' | 'local-agent' | 'vault';
@@ -50,24 +53,45 @@ type VaultReport = {
   createdAt: string;
 };
 
+function AgentAccountSetup() {
+  const bridge = (window as unknown as { electronAPI?: AgentSetupBridge }).electronAPI;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (!bridge?.showAgentAccountSetup) return null;
+  return <div className="account-settings-actions">
+    <div>
+      <button type="button" disabled={busy} onClick={async () => {
+        setBusy(true); setError('');
+        try { await bridge.showAgentAccountSetup?.(); }
+        catch { setError('Could not open setup. Try again.'); }
+        finally { setBusy(false); }
+      }}>Agent file-write coordination (alock)</button>
+      <p className="account-settings-hint">Optional advanced setup. View or copy a terminal command; nothing is installed or enabled here.</p>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  </div>;
+}
+
 const ROLE_HELP: Record<VaultRole, string> = {
   owner: 'Owns the vault. Cannot be removed or demoted here.',
   editor: 'Can read and write notes, folders, and chats.',
   viewer: 'Read-only access.',
 };
 
-export function AccountSettings({ user, vaultId, vaultName, initialSection = 'profile', showAgentMemory, onShowAgentMemoryChange, onClose, onUserChanged, onSessionChanged, onMembershipChanged }: {
+export function AccountSettings({ user, vaultId, vaultName, initialSection = 'profile', showAgentMemory, onShowAgentMemoryChange, onClose, onUserChanged, onSessionChanged, onMembershipChanged, onRenameVault, onDeleteVault }: {
   user: User;
   vaultId?: string | null;
   vaultName?: string;
   initialSection?: AccountSettingsSection;
+  onRenameVault?: (id: string, name: string) => Promise<boolean>;
+  onDeleteVault?: (id: string) => Promise<boolean>;
   /** Whether agent memory folders are shown in the sidebar and updates feed. */
   showAgentMemory: boolean;
   onShowAgentMemoryChange: (show: boolean) => void;
   onClose: () => void;
   onUserChanged: (user: User) => void;
   onSessionChanged: () => void;
-  /** Lets the app refresh the vault list so the switcher's shared badge stays accurate. */
+  /** Lets the app refresh the vault list so the sidebar's vault details stay accurate. */
   onMembershipChanged?: () => void;
 }) {
   const [activeSection, setActiveSection] = useState<AccountSettingsSection>(initialSection);
@@ -126,6 +150,12 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
     }
   };
 
+  const [membersLoading, setMembersLoading] = useState(true);
+  const [membersError, setMembersError] = useState('');
+  const [renameName, setRenameName] = useState(vaultName || '');
+  const [vaultAction, setVaultAction] = useState<'rename' | 'delete' | null>(null);
+  const vaultActionBusy = vaultAction !== null;
+  const [vaultActionStatus, setVaultActionStatus] = useState<{ action: 'rename' | 'delete'; message: string } | null>(null);
   const [members, setMembers] = useState<VaultMember[]>([]);
   const [myRole, setMyRole] = useState<VaultRole | null>(null);
   const [memberUsername, setMemberUsername] = useState('');
@@ -168,6 +198,8 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
       setVaultReports([]);
       return;
     }
+    setMembersLoading(true);
+    setMembersError('');
     try {
       const [result, visibility] = await Promise.all([
         api<{ members: VaultMember[]; role: VaultRole | null }>(`/api/vaults/${vaultId}/members`),
@@ -199,7 +231,9 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
         setVaultReports([]);
       }
     } catch (error) {
-      setMemberState(error instanceof Error ? error.message : 'Could not load vault members');
+      setMembersError(error instanceof Error ? error.message : 'Could not load vault settings');
+    } finally {
+      setMembersLoading(false);
     }
   };
 
@@ -207,12 +241,12 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
     void loadMembers();
   }, [vaultId]);
 
-  const canManageMembers = myRole === 'owner';
+  const canManageMembers = !membersLoading && !membersError && myRole === 'owner';
   const canManage = (member: VaultMember) => canManageMembers
     && member.role !== 'owner'
     && member.userId !== user.id;
   const assignableRoles: AssignableRole[] = ['editor', 'viewer'];
-  const canLeave = Boolean(myRole) && myRole !== 'owner';
+  const canLeave = !membersLoading && !membersError && Boolean(myRole) && myRole !== 'owner';
 
   const saveProfile = async () => {
     setBusy(true);
@@ -426,7 +460,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
       : `${report.targetType} ${report.targetId}`
   );
 
-  // Any non-owner member may remove themselves; the vault disappears from their switcher.
+  // Any non-owner member may remove themselves; the vault disappears from their sidebar.
   const leaveVault = async () => {
     if (!vaultId || !canLeave) return;
     if (!window.confirm(`Leave ${vaultName || 'this vault'}? You lose access until someone invites you back.`)) return;
@@ -453,7 +487,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
           <div>
             <span className="surface-kicker">Personal workspace</span>
             <h2 id="account-settings-title">Settings</h2>
-            <p>Manage your identity, preferences, security, and current vault.</p>
+            <p>Manage your identity, preferences, security, and vault settings.</p>
           </div>
           <button type="button" className="btn-icon" onClick={onClose} aria-label="Close account settings"><X size={17} /></button>
         </header>
@@ -472,7 +506,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
             <Bot size={15} /><span><strong>Local Codex</strong><small>Run on this phone</small></span>
           </button>}
           {vaultId && <button type="button" role="tab" aria-selected={activeSection === 'vault'} aria-controls="account-vault" onClick={() => setActiveSection('vault')}>
-            <Users size={15} /><span><strong>Current vault</strong><small>{vaultName || 'Sharing'}</small></span>
+            <Users size={15} /><span><strong>Manage vault</strong><small>{vaultName || 'Sharing'}</small></span>
           </button>}
         </nav>
 
@@ -506,6 +540,7 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
 
         <div className="account-settings-section" id="account-preferences" role="tabpanel" hidden={activeSection !== 'preferences'}>
           <div className="account-section-title"><SlidersHorizontal size={15} /><strong>Preferences</strong></div>
+          <AgentAccountSetup />
           <label className="account-settings-check">
             <input
               type="checkbox"
@@ -569,14 +604,25 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
 
         {vaultId && (
           <div className="account-settings-section" id="account-vault" role="tabpanel" hidden={activeSection !== 'vault'}>
-            <div className="account-section-title"><Users size={15} /><strong>Vault sharing</strong></div>
-            <p className="account-settings-lede">
-              <strong>{vaultName || 'This vault'}</strong> ·{' '}
-              {members.length > 1
-                ? `shared with ${members.length - 1} other ${members.length === 2 ? 'person' : 'people'}`
-                : 'private to you'}
-              {' · you are '}<strong>{myRole || 'a member'}</strong>
-            </p>
+            <div className="account-section-title"><Users size={15} /><strong>Manage vault</strong></div>
+            <p className="account-settings-lede"><strong>{vaultName || 'This vault'}</strong></p>
+            {membersLoading ? <LoadingIndicator label="Loading vault settings" /> : membersError ? <p role="alert">{membersError} <button type="button" onClick={() => void loadMembers()}>Retry</button></p> : (
+              <p>{vaultVisibility === 'public' ? 'Public' : 'Private'} · {members.length} {members.length === 1 ? 'member' : 'members'} · {myRole || 'Role unknown'}</p>
+            )}
+            {canManageMembers && onRenameVault && <form onSubmit={async (event) => {
+              event.preventDefault();
+              if (vaultActionBusy || !renameName.trim()) return;
+              setVaultActionStatus(null);
+              setVaultAction('rename');
+              try {
+                const saved = await onRenameVault(vaultId, renameName);
+                setVaultActionStatus({ action: 'rename', message: saved ? 'Vault renamed.' : 'Could not rename vault. Try again.' });
+              } finally { setVaultAction(null); }
+            }}>
+              <label>Vault name<input value={renameName} maxLength={80} disabled={vaultActionBusy} onChange={(event) => setRenameName(event.target.value)} /></label>
+              <div className="account-settings-actions"><button type="submit" disabled={vaultActionBusy || !renameName.trim()}>{vaultAction === 'rename' ? 'Saving…' : 'Rename vault'}</button></div>
+              {vaultActionStatus?.action === 'rename' && <p role="status">{vaultActionStatus.message}</p>}
+            </form>}
             {canManageMembers && (
               <div className="account-public-discovery">
                 <div className="account-vault-visibility">
@@ -733,6 +779,18 @@ export function AccountSettings({ user, vaultId, vaultName, initialSection = 'pr
                 </button>
               </div>
             )}
+            {canManageMembers && onDeleteVault && <div className="account-settings-actions">
+              <button type="button" disabled={vaultActionBusy || memberBusy} onClick={async () => {
+                if (vaultActionBusy || !window.confirm(`Permanently delete “${vaultName}” and all its notes and chats? This cannot be undone. If this is your last vault, you can create or join another.`)) return;
+                setVaultActionStatus(null);
+                setVaultAction('delete');
+                try {
+                  if (await onDeleteVault(vaultId)) onClose();
+                  else setVaultActionStatus({ action: 'delete', message: 'Could not delete vault. Try again.' });
+                } finally { setVaultAction(null); }
+              }}>{vaultAction === 'delete' ? 'Working…' : 'Delete vault permanently'}</button>
+              {vaultActionStatus?.action === 'delete' && <p role="alert">{vaultActionStatus.message}</p>}
+            </div>}
             {canLeave && (
               <div className="account-settings-actions">
                 <button type="button" className="account-vault-leave" disabled={memberBusy} onClick={() => void leaveVault()}>

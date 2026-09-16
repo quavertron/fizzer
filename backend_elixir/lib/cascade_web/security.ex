@@ -119,31 +119,48 @@ defmodule CascadeWeb.Security do
   end
 
   defp enforce_api_rate_limits(conn) do
-    key = peer_key(conn)
+    if bypass_rate_limit?(conn) do
+      conn
+    else
+      key = peer_key(conn)
 
-    limits =
-      if String.starts_with?(conn.request_path, "/api/auth") do
-        [{:api, 1_200, 60_000}, {:auth, 30, 15 * 60_000}]
-      else
-        [{:api, 1_200, 60_000}]
+      limits =
+        if String.starts_with?(conn.request_path, "/api/auth") do
+          [{:api, 1_200, 60_000}, {:auth, 30, 15 * 60_000}]
+        else
+          [{:api, 1_200, 60_000}]
+        end
+
+      case Enum.find_value(limits, fn {bucket, max, window} ->
+             case RateLimiter.check(bucket, key, max, window) do
+               :ok -> false
+               {:error, retry_after} -> retry_after
+             end
+           end) do
+        nil ->
+          conn
+
+        retry_after ->
+          conn
+          |> put_resp_header("retry-after", Integer.to_string(retry_after))
+          |> JSON.send(429, %{error: "Too many requests. Please try again shortly."})
+          |> halt()
       end
-
-    case Enum.find_value(limits, fn {bucket, max, window} ->
-           case RateLimiter.check(bucket, key, max, window) do
-             :ok -> false
-             {:error, retry_after} -> retry_after
-           end
-         end) do
-      nil ->
-        conn
-
-      retry_after ->
-        conn
-        |> put_resp_header("retry-after", Integer.to_string(retry_after))
-        |> JSON.send(429, %{error: "Too many requests. Please try again shortly."})
-        |> halt()
     end
   end
+
+  # Loopback requests are this host's own clients (TUI, runner, agents, web) all
+  # sharing one IP-keyed bucket, so rate-limiting them against each other just
+  # causes spurious 429s. Skip it for loopback — but only when we're not behind a
+  # trusted proxy, since a same-host reverse proxy would make every remote client
+  # appear as loopback and disable limiting entirely.
+  defp bypass_rate_limit?(%Plug.Conn{remote_ip: ip}) do
+    Application.fetch_env!(:cascade_elixir, :trust_proxy_hops) == 0 and loopback_ip?(ip)
+  end
+
+  defp loopback_ip?({127, _, _, _}), do: true
+  defp loopback_ip?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_ip?(_), do: false
 
   defp enforce_cookie_csrf(%Plug.Conn{halted: true} = conn), do: conn
 
@@ -167,8 +184,22 @@ defmodule CascadeWeb.Security do
   defp origin_allowed?(origin) do
     not Cascade.Config.network_mode?() or
       origin in ["https://localhost", "capacitor://localhost", "ionic://localhost"] or
+      loopback_origin?(origin) or
       origin in Application.fetch_env!(:cascade_elixir, :allowed_origins)
   end
+
+  defp loopback_origin?(origin) when is_binary(origin) do
+    case URI.parse(origin) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and host in ["localhost", "127.0.0.1", "::1", "[::1]"] ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp loopback_origin?(_), do: false
 
   @doc false
   def peer_key(%Plug.Conn{remote_ip: remote_ip} = conn) do

@@ -1,10 +1,11 @@
+import { LoadingIndicator } from './LoadingIndicator';
 /**
  * @file Sidebar.tsx — Folder tree navigation and vault controls
  *
  * Renders the left sidebar panel containing:
  * - Inset vault rail beside the folder/channel tree
  * - Quick-action buttons (new note, new folder, search)
- * - Vault management dialog for create/join/rename controls
+ * - Vault management dialog for create/join and selected-vault management
  * - Recursive folder tree with expandable folders and note items
  * - User info footer with logout
  *
@@ -18,7 +19,7 @@
  */
 
 import { memo, useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { canRenameVault, isSharedVault, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
+import { vaultDetailsLabel, vaultOriginBadge, type CommunityUpdates, type Vault, type Folder, type NoteSummary, type User } from '../api';
 import { NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
 import {
@@ -27,19 +28,17 @@ import {
   type YouTubeEmbedControlDetail,
   type YouTubeEmbedStateDetail,
 } from '../mediaLinks';
-import { CHAT_NOTE_MARKER } from '../chat/shared';
+import { useVoice, VoiceParticipants } from './VoiceRoom';
+import { CHAT_NOTE_MARKER, isVoiceChannel } from '../chat/shared';
 import type { ChannelAgentActivity } from '../chat/messageStore';
 import {
   Folder as FolderIcon, FolderOpen, FileText, Pin, Edit2, FolderPlus,
   Search, ChevronRight, Check, PanelLeftClose, LogOut, Trash2, FilePlus, FolderInput, Pencil, RefreshCw,
-  Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
+  Volume2, Hash, Unlink, ShieldCheck, SkipBack, Play, Pause, SkipForward, Music2, Plus, LogIn, Compass, Mail, Settings, X,
 } from 'lucide-react';
-import { FizzerMark } from './FizzerMark';
 
-/** Switcher label: "Team notes · shared · 3" so shared vaults are obvious. */
 export function vaultOptionLabel(vault: Vault): string {
-  if (!isSharedVault(vault)) return vault.name;
-  return `${vault.name} · shared · ${vault.memberCount}`;
+  return `${vault.name} · ${vaultDetailsLabel(vault)}`;
 }
 
 const FOLDER_DND_TYPE = 'application/x-cascade-folder';
@@ -58,16 +57,18 @@ interface SidebarProps {
   showAgentMemory: boolean;
   onSelectVault: (id: string) => void;
   onCreateVault: (name: string) => Promise<boolean>;
-  onRenameVault: (id: string, name: string) => Promise<boolean>;
-  onDeleteVault: (id: string) => Promise<boolean>;
+  vaultListLoading?: boolean;
+  vaultListError?: string;
+  onRetryVaults?: () => void;
   onManageVault: (id: string) => void;
   onJoinVault: (inviteLink: string) => Promise<boolean>;
+  onConnectRemoteServer: (origin: string, username: string, password: string) => Promise<boolean>;
   onOpenPublicVaults: () => void;
   onOpenDirectMessages: () => void;
   onSelectNote: (id: string) => void;
   onOpenNoteInNewTab: (id: string) => void;
   onNewNote: () => void;
-  onCreateChannel: (folderId?: string | null) => Promise<{ id: string; title: string } | undefined>;
+  onCreateChannel: (folderId?: string | null, type?: 'text' | 'voice', name?: string) => Promise<{ id: string; title: string } | undefined>;
   onNewNoteInFolder: (folderId: string | null) => void;
   onSearch: () => void;
   onCollapse: () => void;
@@ -88,6 +89,7 @@ interface SidebarProps {
 type ContextMenu =
   | { x: number; y: number; kind: 'note'; id: string }
   | { x: number; y: number; kind: 'folder'; id: string }
+  | { x: number; y: number; kind: 'vault'; id: string }
   | { x: number; y: number; kind: 'root' };
 
 type ElectronUpdateAPI = {
@@ -118,6 +120,23 @@ export function sortSidebarNotes(notes: NoteSummary[]) {
   );
 }
 
+export function vaultSelectionTargetId(
+  note: Pick<NoteSummary, 'id' | 'folder_id' | 'content_preview'>,
+  folders: ReadonlyArray<Pick<Folder, 'id' | 'parent_id'>>,
+  expandedFolders: ReadonlySet<string>,
+) {
+  let target = `note-${note.id}`;
+  let folder = folders.find((candidate) => candidate.id === note.folder_id);
+  const visited = new Set<string>();
+  while (folder && !visited.has(folder.id)) {
+    visited.add(folder.id);
+    // The outermost collapsed ancestor is the selected note's visible row.
+    if (!expandedFolders.has(folder.id)) target = `folder-${folder.id}`;
+    folder = folders.find((candidate) => candidate.id === folder!.parent_id);
+  }
+  return target;
+}
+
 type ConnectorBox = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>;
 
 export function vaultSelectionConnectorPath(
@@ -127,13 +146,20 @@ export function vaultSelectionConnectorPath(
 ) {
   const startX = vaultBox.right - sidebarBox.left;
   const endX = noteBox.left - sidebarBox.left;
-  const bendX = startX + (endX - startX) / 2;
   const startTop = vaultBox.top - sidebarBox.top;
   const startBottom = vaultBox.bottom - sidebarBox.top;
   const endTop = noteBox.top - sidebarBox.top;
   const endBottom = noteBox.bottom - sidebarBox.top;
-  return `M ${startX} ${startTop} C ${bendX} ${startTop}, ${bendX} ${endTop}, ${endX} ${endTop} `
-    + `L ${endX} ${endBottom} C ${bendX} ${endBottom}, ${bendX} ${startBottom}, ${startX} ${startBottom} Z`;
+  const horizontalRun = Math.max(endX - startX, 0);
+  const verticalRun = Math.abs((endTop + endBottom - startTop - startBottom) / 2);
+  // Keep both cubic controls inside the horizontal attachment interval. A
+  // control beyond the landing can reverse x at steep offsets and fold the ribbon.
+  const outerControlX = startX + Math.min(horizontalRun, 64, Math.max(horizontalRun / 2, verticalRun * 0.35));
+  const landingControlX = endX - Math.min(horizontalRun / 2, 16);
+  // Underpaint the rail: its narrow layout clips 1.5px from the measured button.
+  // Another 1.5px overlaps the button paint at fractional raster scales.
+  return `M ${startX - 3} ${startTop} L ${startX} ${startTop} C ${outerControlX} ${startTop}, ${landingControlX} ${endTop}, ${endX} ${endTop} `
+    + `L ${endX} ${endBottom} C ${landingControlX} ${endBottom}, ${outerControlX} ${startBottom}, ${startX} ${startBottom} L ${startX - 3} ${startBottom} Z`;
 }
 
 export function isMp3Link(label: string, href: string) {
@@ -161,10 +187,12 @@ export const Sidebar = memo(function Sidebar({
   showAgentMemory,
   onSelectVault,
   onCreateVault,
-  onRenameVault,
-  onDeleteVault,
+  vaultListLoading,
+  vaultListError,
+  onRetryVaults,
   onManageVault,
   onJoinVault,
+  onConnectRemoteServer,
   onOpenPublicVaults,
   onOpenDirectMessages,
   onSelectNote,
@@ -187,6 +215,14 @@ export const Sidebar = memo(function Sidebar({
   onRenameNote,
   onDeleteFolder,
 }: SidebarProps) {
+  const voice = useVoice();
+  const [createParent, setCreateParent] = useState<string | null | undefined>(undefined);
+  const [channelType, setChannelType] = useState<'text' | 'voice'>('text');
+  const [channelName, setChannelName] = useState('');
+  const [creatingChannel, setCreatingChannel] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const createDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (createParent !== undefined) createDialog.current?.showModal(); }, [createParent]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   // When the context menu shows the "Move to…" folder picker for a note.
@@ -201,17 +237,21 @@ export const Sidebar = memo(function Sidebar({
   const [creatingVault, setCreatingVault] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
   const [creatingVaultBusy, setCreatingVaultBusy] = useState(false);
-  const [renamingVaultId, setRenamingVaultId] = useState<string | null>(null);
-  const [renameVaultName, setRenameVaultName] = useState('');
-  const [renameVaultBusy, setRenameVaultBusy] = useState(false);
+  const [vaultFormError, setVaultFormError] = useState('');
   const [joiningVault, setJoiningVault] = useState(false);
   const [vaultInviteLink, setVaultInviteLink] = useState('');
   const [joiningVaultBusy, setJoiningVaultBusy] = useState(false);
+  const [connectingRemote, setConnectingRemote] = useState(false);
+  const [remoteOrigin, setRemoteOrigin] = useState('');
+  const [remoteUsername, setRemoteUsername] = useState('');
+  const [remotePassword, setRemotePassword] = useState('');
+  const [remoteBusy, setRemoteBusy] = useState(false);
   const [audioTracks, setAudioTracks] = useState<MediaTrack[]>([]);
   const [audioTrackIndex, setAudioTrackIndex] = useState(0);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const vaultManagerRef = useRef<HTMLDivElement>(null);
   const [selectionConnector, setSelectionConnector] = useState('');
   const autoplayAudioRef = useRef(false);
   // Drop target highlight: a folder id, or ROOT_DROP_ID for the root area.
@@ -220,11 +260,21 @@ export const Sidebar = memo(function Sidebar({
 
   useEffect(() => {
     if (!vaultMenuOpen) return;
+    const dialog = vaultManagerRef.current;
+    const previous = document.activeElement as HTMLElement | null;
+    dialog?.querySelector<HTMLElement>('input, button')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && dialog) {
+        const items = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)'));
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
       if (event.key === 'Escape') setVaultMenuOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); if (previous?.isConnected) previous.focus(); };
   }, [vaultMenuOpen]);
 
   const activeVault = useMemo(
@@ -238,7 +288,8 @@ export const Sidebar = memo(function Sidebar({
       const vaultId = channelVaultIds[channelId]
         ?? (notes.some((note) => note.id === channelId) ? activeVaultId : null);
       if (!vaultId) continue;
-      if (status === 'running' || !grouped[vaultId]) grouped[vaultId] = status;
+      if (status === 'running' || !grouped[vaultId]
+        || (status === 'queued' && grouped[vaultId] === 'finished')) grouped[vaultId] = status;
     }
     return grouped;
   }, [activeVaultId, agentActivity, channelVaultIds, notes]);
@@ -246,6 +297,8 @@ export const Sidebar = memo(function Sidebar({
   const activityKind = (agentStatus: ChannelAgentActivity | undefined, hasHumanUpdates: boolean) => (
     agentStatus === 'running'
       ? 'agent-running'
+      : agentStatus === 'queued'
+        ? 'agent-queued'
       : agentStatus === 'finished'
         ? 'agent-finished'
         : hasHumanUpdates
@@ -256,6 +309,8 @@ export const Sidebar = memo(function Sidebar({
   const activityLabel = (kind: ReturnType<typeof activityKind>) => (
     kind === 'agent-running'
       ? 'Agent work in progress'
+      : kind === 'agent-queued'
+        ? 'Agent work queued — not running'
       : kind === 'agent-finished'
         ? 'Finished agent work'
         : 'New human updates'
@@ -274,6 +329,11 @@ export const Sidebar = memo(function Sidebar({
     (updateCounts.byTarget[note.id] || 0) > 0,
   ) !== null);
 
+  const activeNote = notes.find((note) => note.id === activeNoteId);
+  const selectionTargetId = activeNote
+    ? vaultSelectionTargetId(activeNote, folders, expandedFolders)
+    : `note-${activeNoteId}`;
+
   useLayoutEffect(() => {
     const sidebar = sidebarRef.current;
     if (!sidebar || !activeVaultId || !activeNoteId) {
@@ -285,15 +345,15 @@ export const Sidebar = memo(function Sidebar({
     let disposed = false;
     const updateConnector = () => {
       const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-      const noteButton = document.getElementById(`note-${activeNoteId}`);
-      if (!vaultButton || !noteButton || !sidebar.contains(noteButton)) {
+      const targetButton = document.getElementById(selectionTargetId);
+      if (!vaultButton || !targetButton || !sidebar.contains(targetButton)) {
         setSelectionConnector((current) => current === '' ? current : '');
         return;
       }
       const next = vaultSelectionConnectorPath(
         sidebar.getBoundingClientRect(),
         vaultButton.getBoundingClientRect(),
-        noteButton.getBoundingClientRect(),
+        targetButton.getBoundingClientRect(),
       );
       setSelectionConnector((current) => current === next ? current : next);
     };
@@ -315,9 +375,9 @@ export const Sidebar = memo(function Sidebar({
     const observer = new ResizeObserver(scheduleConnectorUpdate);
     observer.observe(sidebar);
     const vaultButton = sidebar.querySelector<HTMLElement>(`[data-vault-id="${activeVaultId}"]`);
-    const noteButton = document.getElementById(`note-${activeNoteId}`);
+    const targetButton = document.getElementById(selectionTargetId);
     if (vaultButton) observer.observe(vaultButton);
-    if (noteButton && sidebar.contains(noteButton)) observer.observe(noteButton);
+    if (targetButton && sidebar.contains(targetButton)) observer.observe(targetButton);
     void document.fonts?.ready.then(scheduleConnectorUpdate);
     sidebar.addEventListener('scroll', scheduleConnectorUpdate, true);
     window.addEventListener('resize', scheduleConnectorUpdate);
@@ -328,7 +388,7 @@ export const Sidebar = memo(function Sidebar({
       sidebar.removeEventListener('scroll', scheduleConnectorUpdate, true);
       window.removeEventListener('resize', scheduleConnectorUpdate);
     };
-  }, [activeNoteId, activeVaultId, expandedFolders, folders, notes, vaults]);
+  }, [activeNoteId, activeVaultId, selectionTargetId, expandedFolders, folders, notes, vaults, showAgentMemory, editingFolderId, editingNoteId]);
 
   const visibleFolders = useMemo(() => {
     if (showAgentMemory) return folders;
@@ -395,7 +455,13 @@ export const Sidebar = memo(function Sidebar({
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => { setContextMenu(null); setMoveMenu(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (contextMenu.kind === 'vault') {
+        sidebarRef.current?.querySelector<HTMLElement>(`[data-vault-id="${contextMenu.id}"]`)?.focus();
+      }
+      close();
+    };
     window.addEventListener('click', close);
     window.addEventListener('keydown', onKey);
     return () => {
@@ -542,14 +608,29 @@ export const Sidebar = memo(function Sidebar({
     if (folder) startRename(folder);
   }
 
-  async function createChannel(parentId: string | null) {
+  function createChannel(parentId: string | null) {
     setContextMenu(null);
-    if (parentId) expandFolder(parentId);
-    const channel = await onCreateChannel(parentId);
-    if (channel) {
-      setEditingValue(channel.title);
-      setEditingNoteId(channel.id);
-    }
+    setChannelType('text'); setChannelName(''); setCreateError(''); setCreateParent(parentId);
+  }
+
+  function closeCreateChannel() {
+    createDialog.current?.close();
+    setCreateParent(undefined);
+  }
+
+  async function submitChannel(e: React.FormEvent) {
+    e.preventDefault();
+    if (creatingChannel || !channelName.trim()) return;
+    setCreatingChannel(true); setCreateError('');
+    try {
+      const channel = await onCreateChannel(createParent, channelType, channelName.trim());
+      if (channel) {
+        if (createParent) expandFolder(createParent);
+        closeCreateChannel();
+      } else {
+        setCreateError('Could not create channel. Check your access and try again.');
+      }
+    } finally { setCreatingChannel(false); }
   }
 
   // ─── Drag and drop ──────────────────────────────────────
@@ -774,7 +855,7 @@ export const Sidebar = memo(function Sidebar({
         ) : (
           <button
             id={`folder-${folder.id}`}
-            className={`tree-item is-folder${dragOverId === folder.id ? ' drag-over' : ''}${dropClass(folder.id)}`}
+            className={`tree-item is-folder${selectionTargetId === `folder-${folder.id}` ? ' active' : ''}${dragOverId === folder.id ? ' drag-over' : ''}${dropClass(folder.id)}`}
             style={{ paddingLeft }}
             onClick={() => toggleFolder(folder.id)}
             onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'folder', id: folder.id })}
@@ -800,28 +881,30 @@ export const Sidebar = memo(function Sidebar({
   /** Render a single note item in the sidebar tree. */
   function renderNote(note: NoteSummary, depth: number) {
     const paddingLeft = 12 + depth * 14 + 16;
-    const isChatChannel = note.content_preview.trim().startsWith(CHAT_NOTE_MARKER);
+    const isVoice = isVoiceChannel(note.content_preview);
+    const isChatChannel = isVoice || note.content_preview.trim().startsWith(CHAT_NOTE_MARKER);
     const noteActivity = activityKind(agentActivity[note.id], (updateCounts.byTarget[note.id] || 0) > 0);
     if (editingNoteId === note.id) {
       return (
         <div key={note.id} className="tree-item tree-editing" style={{ paddingLeft }}>
-          <span className="tree-icon">{isChatChannel ? <Hash size={16} /> : <FileText size={16} />}</span>
+          <span className="tree-icon">{isVoice ? <Volume2 size={16} /> : isChatChannel ? <Hash size={16} /> : <FileText size={16} />}</span>
           {renameInput(() => setEditingNoteId(null))}
         </div>
       );
     }
     return (
+      <div key={note.id}>
       <button
-        key={note.id}
         id={`note-${note.id}`}
-        className={`tree-item${isChatChannel ? ' is-channel' : ' is-note'}${note.id === activeNoteId ? ' active' : ''}${dropClass(note.id)}`}
+        aria-label={isVoice ? `Join ${note.title} voice channel` : undefined}
+        className={`tree-item${isVoice && voice?.channel?.id === note.id ? ' is-voice-connected' : ''}${isChatChannel ? ' is-channel' : ' is-note'}${selectionTargetId === `note-${note.id}` ? ' active' : ''}${dropClass(note.id)}`}
         style={{ paddingLeft }}
-        onClick={(e) => (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
+        onClick={(e) => isVoice ? void voice?.join({ id: note.id, title: note.title }) : (e.metaKey || e.ctrlKey ? onOpenNoteInNewTab(note.id) : onSelectNote(note.id))}
         onContextMenu={(e) => openMenu(e, { x: 0, y: 0, kind: 'note', id: note.id })}
         {...noteDragProps(note.id)}
         {...noteDropProps(note, notesByFolder.get(note.folder_id) ?? [])}
       >
-        <span className="tree-icon">{isChatChannel ? <Hash size={15} /> : <FileText size={15} />}</span>
+        <span className="tree-icon">{isVoice ? <Volume2 size={15} /> : isChatChannel ? <Hash size={15} /> : <FileText size={15} />}</span>
         <span className="tree-label">{note.title || 'Untitled'}</span>
         {activityDot(noteActivity)}
         {note.is_pinned ? <span className="pin-icon"><Pin size={11} fill="currentColor" /></span> : null}
@@ -833,6 +916,8 @@ export const Sidebar = memo(function Sidebar({
           </span>
         )}
       </button>
+      {isVoice && <VoiceParticipants channelId={note.id} />}
+      </div>
     );
   }
 
@@ -842,6 +927,8 @@ export const Sidebar = memo(function Sidebar({
     { id: 'new-channel', title: 'New channel', icon: <Hash size={15} />, onClick: () => { void createChannel(null); } },
     { id: 'search', title: 'Search', icon: <Search size={15} />, onClick: onSearch },
   ];
+
+
   const actionButtons = (location: string) => quickActions.map((action) => (
     <button key={action.id} id={`${action.id}-btn-${location}`} className="btn-icon" onClick={action.onClick} title={action.title}>{action.icon}</button>
   ));
@@ -852,32 +939,11 @@ export const Sidebar = memo(function Sidebar({
     setCreatingVaultBusy(true);
     const created = await onCreateVault(name);
     setCreatingVaultBusy(false);
-    if (!created) return;
+    if (!created) { setVaultFormError('Could not create vault. Check the name and try again.'); return; }
+    setVaultFormError('');
     setNewVaultName('');
     setCreatingVault(false);
     setVaultMenuOpen(false);
-  };
-
-  const startRenameVault = (vault: Vault) => {
-    setCreatingVault(false);
-    setJoiningVault(false);
-    setRenamingVaultId(vault.id);
-    setRenameVaultName(vault.name);
-  };
-
-  const cancelRenameVault = () => {
-    setRenamingVaultId(null);
-    setRenameVaultName('');
-  };
-
-  const submitRenameVault = async () => {
-    const name = renameVaultName.trim();
-    if (!renamingVaultId || !name || renameVaultBusy) return;
-    setRenameVaultBusy(true);
-    const renamed = await onRenameVault(renamingVaultId, name);
-    setRenameVaultBusy(false);
-    if (!renamed) return;
-    cancelRenameVault();
   };
 
   const submitJoinVault = async () => {
@@ -886,15 +952,50 @@ export const Sidebar = memo(function Sidebar({
     setJoiningVaultBusy(true);
     const joined = await onJoinVault(inviteLink);
     setJoiningVaultBusy(false);
-    if (!joined) return;
+    if (!joined) { setVaultFormError('Could not join vault. Check the invite link and try again.'); return; }
+    setVaultFormError('');
     setVaultInviteLink('');
     setJoiningVault(false);
     setVaultMenuOpen(false);
   };
 
+  const submitConnectRemote = async () => {
+    const origin = remoteOrigin.trim();
+    const username = remoteUsername.trim();
+    if (!origin || !username || !remotePassword || remoteBusy) return;
+    setRemoteBusy(true);
+    setVaultFormError('');
+    const connected = await onConnectRemoteServer(origin, username, remotePassword);
+    setRemoteBusy(false);
+    if (!connected) {
+      setVaultFormError('Could not connect to the remote server. Check the address and credentials.');
+      return;
+    }
+    setRemoteOrigin('');
+    setRemoteUsername('');
+    setRemotePassword('');
+    setConnectingRemote(false);
+    setVaultMenuOpen(false);
+  };
+
   return (
     <aside ref={sidebarRef} className="sidebar" id="sidebar" style={{ gridColumn: 1 }}>
+      {createParent !== undefined && <dialog ref={createDialog} className="voice-create" aria-labelledby="create-channel-title" onCancel={event => { event.preventDefault(); if (!creatingChannel) closeCreateChannel(); }}>
+        <form onSubmit={e => void submitChannel(e)}>
+          <h2 id="create-channel-title">Create channel</h2>
+          <label><input type="radio" name="channel-type" value="text" checked={channelType === 'text'} onChange={() => setChannelType('text')} /><Hash size={18} />Text channel</label>
+          <label><input type="radio" name="channel-type" value="voice" checked={channelType === 'voice'} onChange={() => setChannelType('voice')} /><Volume2 size={18} />Voice channel</label>
+          <label>Channel name<input type="text" autoFocus required maxLength={100} value={channelName} onChange={e => setChannelName(e.target.value)} placeholder={channelType === 'voice' ? 'Lounge' : 'general'} /></label>
+          {createError && <p role="alert">{createError}</p>}
+          <footer><button type="button" disabled={creatingChannel} onClick={closeCreateChannel}>Cancel</button><button type="submit" disabled={creatingChannel || !channelName.trim()}>{creatingChannel ? 'Creating…' : 'Create channel'}</button></footer>
+        </form>
+      </dialog>}
       <nav className="vault-rail" aria-label="Vaults">
+        <button type="button" className="vault-rail-action" aria-label="Manage vaults" title="Manage vaults"
+          aria-haspopup="dialog" aria-expanded={vaultMenuOpen}
+          onClick={() => { setCreatingVault(false); setJoiningVault(false); setVaultMenuOpen(true); }}>
+          <Settings size={18} aria-hidden="true" />
+        </button>
         <div className="vault-rail-list">
           {vaults.map((vault) => {
             const vaultActivity = vault.id === activeVaultId && activeVaultHasTargetActivity
@@ -912,11 +1013,18 @@ export const Sidebar = memo(function Sidebar({
               .toUpperCase() || 'V';
             return (
               <button
-                key={vault.id}
                 type="button"
+                key={vault.id}
                 className={`vault-rail-button${vault.id === activeVaultId ? ' is-active' : ''}`}
                 data-vault-id={vault.id}
                 onClick={() => onSelectVault(vault.id)}
+                onContextMenu={(event) => openMenu(event, { x: 0, y: 0, kind: 'vault', id: vault.id })}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+                  event.preventDefault();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setContextMenu({ x: rect.right, y: rect.top, kind: 'vault', id: vault.id });
+                }}
                 aria-label={`Open vault ${vault.name}`}
                 aria-current={vault.id === activeVaultId ? 'page' : undefined}
                 title={vaultOptionLabel(vault)}
@@ -931,7 +1039,7 @@ export const Sidebar = memo(function Sidebar({
           <button type="button" className="vault-rail-action" onClick={onOpenPublicVaults} aria-label="Browse public vaults" title="Browse public vaults">
             <Compass size={18} aria-hidden="true" />
           </button>
-          <button type="button" className="vault-rail-action" onClick={() => setVaultMenuOpen(true)} aria-label="Manage vaults" title="Manage vaults">
+          <button type="button" className="vault-rail-action" onClick={() => { setCreatingVault(true); setJoiningVault(false); setVaultMenuOpen(true); }} aria-label="Create vault" title="Create vault">
             <Plus size={19} aria-hidden="true" />
           </button>
         </div>
@@ -950,11 +1058,7 @@ export const Sidebar = memo(function Sidebar({
           <span className="vault-name-copy">
             <span className="vault-name-text">{activeVault?.name || 'Fizzer'}</span>
             <span className="vault-name-meta">
-              {activeVault
-                ? isSharedVault(activeVault)
-                  ? `${activeVault.memberCount} members · ${activeVault.role || 'member'}`
-                  : 'Private · only you'
-                : 'Your workspace'}
+              {activeVault ? vaultDetailsLabel(activeVault) : 'Create or join a vault'}
               </span>
           </span>
         </div>
@@ -962,121 +1066,52 @@ export const Sidebar = memo(function Sidebar({
         <button className="btn-icon sidebar-mobile-collapse" onClick={onCollapse} title="Collapse sidebar"><PanelLeftClose size={16} /></button>
       </div>
 
+      {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry vaults</button></p>}
       {vaultMenuOpen && (
-        <div className="vault-switcher-menu" role="dialog" aria-modal="true" aria-label="Vault workspace">
-          <div className="vault-switcher-shell">
-            <div className="vault-switcher-heading">
-              <div><span>Vault workspace</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
-              <button type="button" className="vault-switcher-close" onClick={() => setVaultMenuOpen(false)} aria-label="Close vault workspace"><X size={18} /></button>
+        <div ref={vaultManagerRef} className="vault-manager-menu" role="dialog" aria-modal="true" aria-label="Vault workspace">
+          <div className="vault-manager-shell">
+            <div className="vault-manager-heading">
+              <div><span>Manage vaults</span><small>{vaults.length} {vaults.length === 1 ? 'vault' : 'vaults'}</small></div>
+              <button type="button" className="vault-manager-close" onClick={() => setVaultMenuOpen(false)} aria-label="Close vault workspace"><X size={18} /></button>
             </div>
 
-            <section className="vault-switcher-section" aria-labelledby="vault-switcher-your-vaults">
-              <h2 className="vault-switcher-section-title" id="vault-switcher-your-vaults">Your vaults</h2>
-              <div className="vault-switcher-grid" role="menu" aria-label="Your vaults">
+            <section className="vault-manager-section" aria-labelledby="vault-manager-your-vaults">
+              <h2 className="vault-manager-section-title" id="vault-manager-your-vaults">Your vaults</h2>
+              {vaultListLoading ? <LoadingIndicator label="Loading vaults" /> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
+              {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry</button></p>}
+              <div className="vault-manager-grid" aria-label="Your vaults">
                 {vaults.map((vault) => (
-                  renamingVaultId === vault.id ? (
-                    <div className="vault-switcher-create-form vault-switcher-rename-form" key={vault.id}>
-                      <strong>Rename {vault.name}</strong>
-                      <input
-                        autoFocus
-                        value={renameVaultName}
-                        placeholder="Vault name"
-                        aria-label={`Rename ${vault.name}`}
-                        maxLength={80}
-                        disabled={renameVaultBusy}
-                        onChange={(event) => setRenameVaultName(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') void submitRenameVault();
-                          if (event.key === 'Escape') cancelRenameVault();
-                        }}
-                      />
-                      <div className="vault-switcher-form-actions">
-                        <button type="button" onClick={cancelRenameVault}>Cancel</button>
-                        <button type="button" disabled={!renameVaultName.trim() || renameVaultBusy} onClick={() => void submitRenameVault()}>
-                          {renameVaultBusy ? 'Saving' : 'Save'}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="vault-switcher-row" key={vault.id}>
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={vault.id === activeVaultId}
-                        className={vault.id === activeVaultId ? 'is-active' : ''}
-                        onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}
-                      >
-                        <span className="vault-switcher-art" aria-hidden="true">
-                          <span className="vault-switcher-icon"><FizzerMark size={38} /></span>
+                  <div className="vault-manager-row" key={vault.id}>
+                    <button type="button" aria-label={`Open ${vault.name}`} aria-current={vault.id === activeVaultId ? 'page' : undefined}
+                      className={vault.id === activeVaultId ? 'is-active' : ''}
+                      onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
+                      <span className="vault-manager-copy">
+                        <span className="vault-manager-title-line">
+                          <strong>{vault.name}</strong>
+                          <span style={{ opacity: 0.75, fontSize: '0.8em', marginLeft: 6, fontWeight: 500 }}>{vaultOriginBadge(vault)}</span>
+                          {vault.id === activeVaultId && <Check size={16} aria-label="Active workspace" />}
                         </span>
-                        <span className="vault-switcher-copy">
-                          <span className="vault-switcher-title-line">
-                            <strong>{vault.name}</strong>
-                            {vault.id === activeVaultId && <Check className="vault-switcher-check" size={16} aria-hidden="true" />}
-                          </span>
-                          <small>
-                            {isSharedVault(vault)
-                              ? `${vault.memberCount} members · ${vault.role || 'member'}`
-                              : 'Private · only you'}
-                          </small>
-                        </span>
-                      </button>
-                      {canRenameVault(vault) && (
-                        <button
-                          type="button"
-                          className="vault-switcher-rename"
-                          title={`Rename ${vault.name}`}
-                          aria-label={`Rename ${vault.name}`}
-                          onClick={(event) => { event.stopPropagation(); startRenameVault(vault); }}
-                        >
-                          <Pencil size={14} aria-hidden="true" />
-                        </button>
-                      )}
-                      {canRenameVault(vault) && (
-                        <button
-                          type="button"
-                          className="vault-switcher-delete"
-                          title={`Delete ${vault.name}`}
-                          aria-label={`Delete ${vault.name}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (!window.confirm(`Permanently delete “${vault.name}” and all of its notes? This cannot be undone.`)) return;
-                            void onDeleteVault(vault.id).then((deleted) => {
-                              if (deleted) setVaultMenuOpen(false);
-                            });
-                          }}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="vault-switcher-manage"
-                        title={`Manage ${vault.name}`}
-                        aria-label={`Manage ${vault.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setVaultMenuOpen(false);
-                          onManageVault(vault.id);
-                        }}
-                      >
-                        <Settings size={14} aria-hidden="true" />
-                      </button>
-                    </div>
-                  )
+                        <small>{vaultDetailsLabel(vault)}</small>
+                      </span>
+                      <span>Open</span>
+                    </button>
+                    <button type="button" className="vault-manager-manage" aria-label={`Manage ${vault.name}`}
+                      onClick={() => { setVaultMenuOpen(false); onManageVault(vault.id); }}>Manage</button>
+                  </div>
                 ))}
               </div>
             </section>
 
-            <section className="vault-switcher-section" aria-labelledby="vault-switcher-manage">
-              <h2 className="vault-switcher-section-title" id="vault-switcher-manage">Explore and manage vaults</h2>
-              <div className="vault-switcher-action-grid" role="menu" aria-label="Explore and manage vaults">
-                <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-discover" onClick={() => { setVaultMenuOpen(false); onOpenPublicVaults(); }}>
-                  <span className="vault-switcher-action-icon" aria-hidden="true"><Compass size={28} /></span>
-                  <span className="vault-switcher-copy"><strong>Browse public vaults</strong><small>Find open communities</small></span>
+            {vaultFormError && <p role="alert">{vaultFormError}</p>}
+            <section className="vault-manager-section" aria-labelledby="vault-manager-manage">
+              <h2 className="vault-manager-section-title" id="vault-manager-manage">Create or join a vault</h2>
+              <div className="vault-manager-action-grid" aria-label="Create or join a vault">
+                <button type="button" className="vault-manager-action vault-manager-discover" onClick={() => { setVaultMenuOpen(false); onOpenPublicVaults(); }}>
+                  <span className="vault-manager-action-icon" aria-hidden="true"><Compass size={28} /></span>
+                  <span className="vault-manager-copy"><strong>Browse public vaults</strong><small>Find open communities</small></span>
                 </button>
                 {creatingVault ? (
-                  <div className="vault-switcher-create-form vault-switcher-action-form">
+                  <div className="vault-manager-create-form vault-manager-action-form">
                     <strong>New vault</strong>
                     <input
                       autoFocus
@@ -1093,7 +1128,7 @@ export const Sidebar = memo(function Sidebar({
                         }
                       }}
                     />
-                    <div className="vault-switcher-form-actions">
+                    <div className="vault-manager-form-actions">
                       <button type="button" onClick={() => { setCreatingVault(false); setNewVaultName(''); }}>Cancel</button>
                       <button type="button" disabled={!newVaultName.trim() || creatingVaultBusy} onClick={() => void submitNewVault()}>
                         {creatingVaultBusy ? 'Creating' : 'Create'}
@@ -1101,13 +1136,13 @@ export const Sidebar = memo(function Sidebar({
                     </div>
                   </div>
                 ) : (
-                  <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-create" onClick={() => { setJoiningVault(false); setCreatingVault(true); }}>
-                    <span className="vault-switcher-action-icon" aria-hidden="true"><Plus size={28} /></span>
-                    <span className="vault-switcher-copy"><strong>New vault</strong><small>Start a private workspace</small></span>
+                  <button type="button" className="vault-manager-action vault-manager-create" onClick={() => { setJoiningVault(false); setCreatingVault(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><Plus size={28} /></span>
+                    <span className="vault-manager-copy"><strong>New vault</strong><small>Start a private workspace</small></span>
                   </button>
                 )}
                 {joiningVault ? (
-                  <div className="vault-switcher-create-form vault-switcher-action-form">
+                  <div className="vault-manager-create-form vault-manager-action-form">
                     <strong>Join vault</strong>
                     <input
                       autoFocus
@@ -1124,7 +1159,7 @@ export const Sidebar = memo(function Sidebar({
                         }
                       }}
                     />
-                    <div className="vault-switcher-form-actions">
+                    <div className="vault-manager-form-actions">
                       <button type="button" onClick={() => { setJoiningVault(false); setVaultInviteLink(''); }}>Cancel</button>
                       <button type="button" disabled={!vaultInviteLink.trim() || joiningVaultBusy} onClick={() => void submitJoinVault()}>
                         {joiningVaultBusy ? 'Joining' : 'Join'}
@@ -1132,9 +1167,26 @@ export const Sidebar = memo(function Sidebar({
                     </div>
                   </div>
                 ) : (
-                  <button type="button" role="menuitem" className="vault-switcher-action vault-switcher-join" onClick={() => { setCreatingVault(false); setJoiningVault(true); }}>
-                    <span className="vault-switcher-action-icon" aria-hidden="true"><LogIn size={28} /></span>
-                    <span className="vault-switcher-copy"><strong>Join vault</strong><small>Use an invite link</small></span>
+                  <button type="button" className="vault-manager-action vault-manager-join" onClick={() => { setCreatingVault(false); setJoiningVault(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><LogIn size={28} /></span>
+                    <span className="vault-manager-copy"><strong>Join vault</strong><small>Use an invite link</small></span>
+                  </button>
+                )}
+                {connectingRemote ? (
+                  <div className="vault-manager-create-form vault-manager-action-form">
+                    <strong>Connect to remote server</strong>
+                    <input autoFocus value={remoteOrigin} placeholder="IP:port or https://server" aria-label="Remote server address" disabled={remoteBusy} onChange={(event) => setRemoteOrigin(event.target.value)} />
+                    <input value={remoteUsername} placeholder="Username" aria-label="Remote server username" autoComplete="username" disabled={remoteBusy} onChange={(event) => setRemoteUsername(event.target.value)} />
+                    <input value={remotePassword} placeholder="Password" aria-label="Remote server password" type="password" autoComplete="current-password" disabled={remoteBusy} onChange={(event) => setRemotePassword(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void submitConnectRemote(); }} />
+                    <div className="vault-manager-form-actions">
+                      <button type="button" disabled={remoteBusy} onClick={() => { setConnectingRemote(false); setRemoteOrigin(''); setRemoteUsername(''); setRemotePassword(''); }}>Cancel</button>
+                      <button type="button" disabled={!remoteOrigin.trim() || !remoteUsername.trim() || !remotePassword || remoteBusy} onClick={() => void submitConnectRemote()}>{remoteBusy ? 'Connecting' : 'Connect'}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="vault-manager-action" onClick={() => { setCreatingVault(false); setJoiningVault(false); setConnectingRemote(true); }}>
+                    <span className="vault-manager-action-icon" aria-hidden="true"><LogIn size={28} /></span>
+                    <span className="vault-manager-copy"><strong>Connect remote server</strong><small>Use an IP, port, and account</small></span>
                   </button>
                 )}
               </div>
@@ -1144,6 +1196,7 @@ export const Sidebar = memo(function Sidebar({
       )}
 
       <div className="sidebar-actions sidebar-actions-mobile">{actionButtons('mobile')}</div>
+
 
       {/* Folder tree. The "Notes" header doubles as the move-to-root drop target. */}
       <div
@@ -1273,17 +1326,31 @@ export const Sidebar = memo(function Sidebar({
           className="tree-context-menu"
           role="menu"
           aria-label={
-            contextMenu.kind === 'folder'
-              ? 'Folder options'
-              : contextMenu.kind === 'root'
-                ? 'Sidebar options'
-                : moveMenu
-                  ? 'Move note to folder'
-                  : 'Note options'
+            contextMenu.kind === 'vault'
+              ? 'Vault options'
+              : contextMenu.kind === 'folder'
+                ? 'Folder options'
+                : contextMenu.kind === 'root'
+                  ? 'Sidebar options'
+                  : moveMenu
+                    ? 'Move note to folder'
+                    : 'Note options'
           }
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
+          {contextMenu.kind === 'vault' && (() => {
+            const vault = vaults.find((item) => item.id === contextMenu.id);
+            if (!vault) return null;
+            return <>
+              <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onSelectVault(vault.id); }}>
+                <ChevronRight size={14} /> Open {vault.name}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onManageVault(vault.id); }}>
+                <Settings size={14} /> Manage {vault.name}
+              </button>
+            </>;
+          })()}
           {contextMenu.kind === 'note' && !moveMenu && (
             <>
               {(() => {

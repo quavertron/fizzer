@@ -12,24 +12,38 @@ defmodule Cascade.Missions.Dispatches do
     if String.starts_with?(to_string(field(message, :id, "")), "sys-") do
       {:ok, []}
     else
-      with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
+      with {:ok, _route} <- Channel.assert_channel(channel_id, user_id),
            {:ok, members} <- Agents.list_members(channel_id, user_id) do
         targets =
           if clear_targets(field(message, :body, ""), members),
             do: [],
             else: resolve_targets(user_id, channel_id, message, members)
 
-        remove_stale_coordinator_wakes(route.sourceChannelId, message, targets)
+        # Sender attribution is not an invocation target. Unregistered external
+        # agents are valid authors; only an actual leading mention names a target.
+        requested = leading_mention(field(message, :body, ""))
 
-        Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
-          case create(user_id, channel_id, message, registration.id) do
-            {:ok, dispatch} -> {:cont, {:ok, dispatches ++ [dispatch]}}
-            {:error, _} = error -> {:halt, error}
-          end
-        end)
+        cond do
+          present?(requested) and
+              not Enum.any?(members, fn registration ->
+                String.downcase(Schema.normalize_mention(registration.mention, registration.agentId)) ==
+                  String.downcase(requested)
+              end) ->
+            {:error, "Agent not found: #{requested}"}
+
+          true ->
+            Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
+              case create(user_id, channel_id, message, registration.id) do
+                {:ok, dispatch} -> {:cont, {:ok, dispatches ++ [dispatch]}}
+                {:error, _} = error -> {:halt, error}
+              end
+            end)
+        end
       end
     end
   end
+
+  defdelegate retract_pending_reply(dispatch_id), to: Cascade.Chat.PendingReply, as: :retract
 
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
@@ -37,6 +51,8 @@ defmodule Cascade.Missions.Dispatches do
          registration when not is_nil(registration) <-
            Enum.find(members, &(&1.id == registration_id)),
          true <- allowed?(user_id, registration, message) do
+      Cascade.Chat.NextSteps.user_return(route.sourceChannelId, registration.id, message.id)
+
       effort = opts |> Keyword.get(:reasoning_effort, "") |> clean(20) |> String.downcase()
 
       SQL.transaction(fn ->
@@ -64,14 +80,20 @@ defmodule Cascade.Missions.Dispatches do
         )
       end)
 
-      Cascade.Missions.DispatchReannouncer.wake()
+      Cascade.Missions.WorkAvailable.notify()
 
       case SQL.one(
              "SELECT id,message_id,channel_id,registration_id,run_id,reasoning_effort,created_at FROM chat_agent_dispatches WHERE message_id=? AND registration_id=?",
              [message.id, registration.id]
            ) do
-        nil -> {:error, "Could not create chat agent dispatch"}
-        row -> hydrate(user_id, channel_id, row)
+        nil ->
+          {:error, "Could not create chat agent dispatch"}
+
+        row ->
+          with {:ok, dispatch} <- hydrate(user_id, channel_id, row) do
+            Cascade.Chat.Continuations.user_return(dispatch)
+            {:ok, dispatch}
+          end
       end
     else
       false -> {:error, "Agent not accepting this request"}
@@ -99,7 +121,9 @@ defmodule Cascade.Missions.Dispatches do
             {:ok, dispatch}
             when dispatch.registration.ownerUserId == user_id or
                    dispatch.registration.pingableByOthers ->
-              [dispatch | acc]
+              if Cascade.Chat.NextSteps.dispatch_ready?(dispatch),
+                do: [dispatch | acc],
+                else: acc
 
             _ ->
               acc
@@ -128,8 +152,10 @@ defmodule Cascade.Missions.Dispatches do
   @doc "Returns durable pending work in message sequence, then admission order."
   def pending do
     SQL.all("""
-    SELECT d.id,d.registration_id,m.mission_task_id
+    SELECT d.id,d.registration_id,m.mission_task_id,COALESCE(d.target_owner_user_id,va.owner_user_id)
     FROM chat_agent_dispatches d JOIN chat_messages m ON m.id=d.message_id
+    JOIN chat_agent_members member ON member.id=d.registration_id
+    JOIN vault_agents va ON va.id=member.vault_agent_id
     LEFT JOIN runs r ON r.chat_dispatch_id=d.id
     LEFT JOIN delegated_runs lease ON lease.run_id=r.id
     WHERE d.failed_at IS NULL AND
@@ -137,9 +163,11 @@ defmodule Cascade.Missions.Dispatches do
        (r.status='queued' AND lease.run_id IS NULL AND r.started_at < datetime('now','-30 seconds')))
     ORDER BY m.rowid,d.rowid
     """)
-    |> Enum.map(fn [id, registration_id, task_id] ->
+    |> Enum.filter(fn [id, _, _, _] -> Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id) end)
+    |> Enum.map(fn [id, registration_id, task_id, owner_id] ->
       %{
         id: id,
+        owner: owner_id,
         group:
           if(task_id in [nil, ""],
             do: {:registration, registration_id},
@@ -150,6 +178,12 @@ defmodule Cascade.Missions.Dispatches do
   end
 
   def for_execution(dispatch_id) do
+    if Cascade.Missions.ExecutionAdmission.dispatch_allowed?(dispatch_id),
+      do: admitted_for_execution(dispatch_id),
+      else: {:deferred, "Dispatch is outside the operator's exact execution admission."}
+  end
+
+  defp admitted_for_execution(dispatch_id) do
     with [nil, nil] <-
            SQL.one("SELECT failed_at,run_id FROM chat_agent_dispatches WHERE id=?", [dispatch_id]),
          {:ok, user_id, channel_id} <- requester(dispatch_id),
@@ -157,11 +191,41 @@ defmodule Cascade.Missions.Dispatches do
          true <- allowed?(user_id, dispatch.registration, dispatch.message),
          true <- target_unchanged?(dispatch),
          true <- present?(dispatch.conversationId),
-         true <- mission_pending?(dispatch) do
-      {:ok, dispatch}
+         true <- mission_pending?(dispatch),
+         true <- Cascade.Chat.Continuations.ready?(dispatch) do
+      cond do
+        interpretation_waiting_for_human?(dispatch) ->
+          {:deferred, "Mission interpretation is waiting for queued human input to settle"}
+
+        Cascade.Chat.NextSteps.dispatch_ready?(dispatch) ->
+          {:ok, dispatch}
+
+        true ->
+          {:deferred, "Next-step checkpoint is waiting for idle work state or was disabled"}
+      end
     else
       _ -> {:error, "Dispatch requester no longer has access to this agent or channel."}
     end
+  end
+
+  # A queued human turn would immediately steer this review. Let that turn
+  # reconcile the same durable batch first; only acknowledgment retires the wake.
+  # Check every execution refresh, including the transaction that starts the run.
+  defp interpretation_waiting_for_human?(dispatch) do
+    SQL.all(
+      """
+      SELECT d.id,r.status FROM chat_mission_interpretations i
+      JOIN chat_agent_dispatches d ON d.registration_id=?
+      JOIN chat_messages m ON m.id=d.message_id
+      LEFT JOIN runs r ON r.chat_dispatch_id=d.id
+      WHERE i.dispatch_id=? AND d.failed_at IS NULL
+        AND COALESCE(m.registration_id,'')='' AND COALESCE(m.agent_id,'')=''
+        AND COALESCE(m.mission_task_id,'')='' AND m.id NOT LIKE 'sys-%'
+        AND ((d.run_id IS NULL AND r.id IS NULL) OR r.status IN ('queued','running'))
+      """,
+      [dispatch.registration.id, dispatch.id]
+    )
+    |> Enum.any?(fn [id, status] -> status in ["queued", "running"] or Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id) end)
   end
 
   defp target_unchanged?(dispatch) do
@@ -190,7 +254,59 @@ defmodule Cascade.Missions.Dispatches do
         ) == [1]
 
       _ ->
-        true
+        if String.contains?(dispatch.messageId, "-interpret-") and
+             String.starts_with?(dispatch.messageId, "sys-mission-"),
+           do: Cascade.Missions.Interpretation.keep_wake?(dispatch.id),
+           else: true
+    end
+  end
+
+  @doc "SELECT-only delivery authorization for an already claimed dispatch; never re-admits it."
+  def delivery_allowed?(dispatch_id, run_id, owner_id) do
+    with [
+           requester,
+           channel,
+           source,
+           registration,
+           identity,
+           pingable,
+           taggable,
+           message_registration,
+           agent
+         ] <-
+           SQL.one(
+             """
+             SELECT d.requester_user_id,d.requester_channel_id,d.channel_id,m.id,va.id,
+               m.pingable_by_others,m.taggable_by_agents,msg.registration_id,msg.agent_id
+             FROM chat_agent_dispatches d
+             JOIN chat_agent_members m ON m.id=d.registration_id AND m.channel_id=d.channel_id
+             JOIN vault_agents va ON va.id=m.vault_agent_id
+             JOIN chat_messages msg ON msg.id=d.message_id AND msg.channel_id=d.channel_id
+             WHERE d.id=? AND d.run_id=? AND d.failed_at IS NULL
+               AND d.target_owner_user_id=? AND va.owner_user_id=d.target_owner_user_id
+               AND va.id=d.target_identity_id
+               AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now'))
+               AND NOT EXISTS(SELECT 1 FROM vault_agent_exclusions x
+                 WHERE x.vault_id=m.vault_id AND x.vault_agent_id=va.id)
+             """,
+             [dispatch_id, run_id, owner_id]
+           ),
+         {:ok, %{sourceChannelId: ^source}} <- Channel.assert_channel(channel, requester),
+         {:ok, %{ownerId: ^owner_id, ownerChannelId: owner_channel}} <-
+           Agents.resolve_owner_projection(requester, channel, registration),
+         {:ok, _} <- Channel.assert_channel(owner_channel, owner_id) do
+      allowed?(
+        requester,
+        %{
+          ownerUserId: owner_id,
+          vaultAgentId: identity,
+          pingableByOthers: pingable == 1,
+          taggableByAgents: taggable == 1
+        },
+        %{registrationId: message_registration, agentId: agent}
+      )
+    else
+      _ -> false
     end
   end
 
@@ -240,6 +356,16 @@ defmodule Cascade.Missions.Dispatches do
           :ok
       end
     end)
+  end
+
+  @doc "Classifies persisted admission diagnostics without changing task state."
+  def waiting_kind(error, failed_at) do
+    cond do
+      not is_nil(failed_at) -> "dispatch-attention"
+      String.starts_with?(error || "", "Mission task needs a repository cwd") -> "workspace-preparation"
+      String.contains?(error || "", "session is busy") -> "capacity"
+      true -> "provider"
+    end
   end
 
   def retry(dispatch_id, error) do
@@ -299,18 +425,26 @@ defmodule Cascade.Missions.Dispatches do
       task_id when is_binary(task_id) and task_id != "" ->
         "mission:#{task_id}"
 
-      _ ->
-        SQL.exec(
-          "UPDATE chat_agent_members SET conversation_id=? WHERE id=? AND (conversation_id IS NULL OR trim(conversation_id)='')",
-          [Ecto.UUID.generate(), registration_id]
-        )
-
-        case SQL.one("SELECT conversation_id FROM chat_agent_members WHERE id=?", [
-               registration_id
-             ]) do
-          [id] -> id
-          _ -> nil
+      _ when is_map(message) ->
+        if String.starts_with?(message.id, ["sys-mission-", "sys-next-"]) do
+          "mission-review:#{message.id}"
+        else
+          member_conversation(registration_id)
         end
+    end
+  end
+
+  defp member_conversation(registration_id) do
+    SQL.exec(
+      "UPDATE chat_agent_members SET conversation_id=? WHERE id=? AND (conversation_id IS NULL OR trim(conversation_id)='')",
+      [Ecto.UUID.generate(), registration_id]
+    )
+
+    case SQL.one("SELECT conversation_id FROM chat_agent_members WHERE id=?", [
+           registration_id
+         ]) do
+      [id] -> id
+      _ -> nil
     end
   end
 
@@ -394,7 +528,7 @@ defmodule Cascade.Missions.Dispatches do
         always =
           not from_agent and registration.ownerUserId == user_id and
             registration.replyToEveryMessage and
-            not (registration.orchestrator and calls_specialist) and
+            not calls_specialist and
             reply_to_all_available?(registration)
 
         identity = registration.vaultAgentId || registration.id
@@ -561,25 +695,6 @@ defmodule Cascade.Missions.Dispatches do
     |> Enum.uniq_by(&(&1.vaultAgentId || &1.id))
   end
 
-  defp remove_stale_coordinator_wakes(source_channel_id, message, targets) do
-    from_agent = present?(field(message, :registrationId)) or present?(field(message, :agentId))
-
-    if not from_agent do
-      targets
-      |> Enum.filter(& &1.orchestrator)
-      |> Enum.each(fn registration ->
-        SQL.exec(
-          """
-          DELETE FROM chat_agent_dispatches
-          WHERE channel_id=? AND registration_id=? AND run_id IS NULL
-            AND message_id LIKE 'sys-mission-%'
-          """,
-          [source_channel_id, registration.id]
-        )
-      end)
-    end
-  end
-
   defp message_source(message) do
     attachments =
       message
@@ -591,6 +706,13 @@ defmodule Cascade.Missions.Dispatches do
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
+  end
+
+  defp leading_mention(text) do
+    case Regex.run(~r/^\s*@\s*([[:alnum:]_.-]+)/u, to_string(text), capture: :all_but_first) do
+      [mention] -> mention
+      _ -> nil
+    end
   end
 
   defp mentions?(text, registration) do
@@ -615,13 +737,12 @@ defmodule Cascade.Missions.Dispatches do
     with {:ok, members} <- Agents.list_members(local_channel_id, user_id),
          registration when not is_nil(registration) <-
            Enum.find(members, &(&1.id == registration_id)),
-         {:ok, message} <- Messages.get(local_channel_id, user_id, message_id) do
-      [requester_user_id, requester_channel_id, conversation_id, error] =
-        SQL.one(
-          "SELECT requester_user_id,requester_channel_id,conversation_id,error FROM chat_agent_dispatches WHERE id=?",
-          [id]
-        )
-
+         {:ok, message} <- Messages.get(local_channel_id, user_id, message_id),
+         [requester_user_id, requester_channel_id, conversation_id, error] <-
+           SQL.one(
+             "SELECT requester_user_id,requester_channel_id,conversation_id,error FROM chat_agent_dispatches WHERE id=?",
+             [id]
+           ) do
       {:ok,
        %{
          id: id,

@@ -12,6 +12,7 @@ const readline = require('readline');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Resvg } = require('@resvg/resvg-js');
+const agentAccount = require('./agent-account.cjs');
 
 let cliAgentModulePromise = null;
 let cliAgentModuleMtimeMs = -1;
@@ -26,7 +27,7 @@ const CLAUDE_DEFAULT_MODEL = process.env.RUNNER_MODEL || 'claude-sonnet-5';
 // can override either surface without introducing a hard token ceiling.
 const CLAUDE_EFFORT = process.env.RUNNER_EFFORT || 'medium';
 const CLAUDE_CHAT_EFFORT = process.env.RUNNER_CHAT_EFFORT || CLAUDE_EFFORT;
-const CLAUDE_AGENT_CONTEXT = 'You are a local workspace assistant. This checkout is not the live Cascade app: use `cascade-note` for live notes (`cascade-note memory` for durable recall), `cascade-scratchpad jot` for work-journal entries, and normal file edits only for local scratch or non-note work. Notes you create via cascade-note are unlisted by default (chat/search/embed only, not the left sidebar). Only pass `--listed` if the user explicitly asks to put a note in the sidebar tree. Respect auth boundaries and only handle secrets the user explicitly provides for this task.';
+const CLAUDE_AGENT_CONTEXT = 'You are a local workspace assistant. Use normal filesystem edits for requested local work. Respect auth boundaries and only handle secrets the user explicitly provides for this task.';
 
 // Nudge agents to behave like chat participants, not verbose coding CLIs: the
 // chat collapses step narration into a trace disclosure, so the actual message
@@ -39,9 +40,20 @@ const CHAT_CONTEXT_TOOL_CONTEXT = 'Your channel transcript is append-only. A con
 // Children inherit these via process.env, so the wrapper authenticates against
 // the same local or remote instance the desktop is connected to.
 const noteApi = { url: '', token: '', configured: false };
+
+// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+function fizzerDir() {
+  const home = os.homedir();
+  const primary = path.join(home, '.fizzer');
+  if (fs.existsSync(primary)) return primary;
+  const legacy = path.join(home, '.cascade');
+  if (fs.existsSync(legacy)) return legacy;
+  return primary;
+}
+
 const AGENT_STATE_DIR = process.env.CASCADE_AGENT_STATE_DIR
   || process.env.CASCADE_USER_DATA_DIR
-  || path.join(os.homedir(), '.cascade');
+  || path.join(fizzerDir());
 const HELPER_CONFIG_PATH = path.join(AGENT_STATE_DIR, 'agent-helper-context.json');
 const RUN_CONTEXT_DIR = path.join(AGENT_STATE_DIR, 'run-contexts');
 const USER_BIN_DIR = process.env.CASCADE_AGENT_BIN_DIR || path.join(os.homedir(), '.local', 'bin');
@@ -122,6 +134,7 @@ function ensureExecutable(file) {
   try {
     if (!fs.existsSync(file)) return false;
     const current = fs.statSync(file).mode;
+    if ((current & 0o555) === 0o555) return true;
     fs.chmodSync(file, current | 0o755);
     return true;
   } catch (err) {
@@ -196,10 +209,35 @@ function helperConfigPathForRun(runId) {
   return HELPER_CONFIG_PATH;
 }
 
+function isExpiredJwt(token) {
+  if (typeof token !== 'string' || !token) return true;
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof payload.exp === 'number') {
+      return (Date.now() / 1000) > (payload.exp - 10);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMessageId, chatAuthor, agentId, agentMemoryKey, registrationId, workItemId } = {}) {
+  let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
+  if (!token || isExpiredJwt(token)) {
+    try {
+      const diskTokenPath = path.join(fizzerDir(), 'token');
+      if (fs.existsSync(diskTokenPath)) {
+        const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
+        if (dt && !isExpiredJwt(dt)) token = dt;
+      }
+    } catch { /* ignore */ }
+  }
   const payload = {
     url: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    token: noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || ''),
+    token,
     vaultId: vaultId || process.env.CASCADE_NOTE_VAULT || '',
     chatChannelId: channelId || process.env.CASCADE_CHAT_CHANNEL || '',
     chatMessageId: messageId || process.env.CASCADE_CHAT_MESSAGE || '',
@@ -218,6 +256,11 @@ function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMes
     fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
     fs.chmodSync(configPath, 0o600);
+    if (configPath !== HELPER_CONFIG_PATH) {
+      fs.mkdirSync(path.dirname(HELPER_CONFIG_PATH), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(HELPER_CONFIG_PATH, JSON.stringify(payload, null, 2), { mode: 0o600 });
+      fs.chmodSync(HELPER_CONFIG_PATH, 0o600);
+    }
   } catch (err) {
     console.warn('[agent-runner] failed to write helper context:', err?.message || err);
   }
@@ -249,9 +292,19 @@ function buildRunHelperEnv(opts) {
     registrationId,
     workItemId,
   });
+  let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
+  if (process.env.CASCADE_NOTE_TOKEN !== '' && (!token || isExpiredJwt(token))) {
+    try {
+      const diskTokenPath = path.join(fizzerDir(), 'token');
+      if (fs.existsSync(diskTokenPath)) {
+        const dt = fs.readFileSync(diskTokenPath, 'utf8').trim();
+        if (dt && !isExpiredJwt(dt)) token = dt;
+      }
+    } catch { /* ignore */ }
+  }
   const env = {
     CASCADE_NOTE_URL: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    CASCADE_NOTE_TOKEN: noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || ''),
+    CASCADE_NOTE_TOKEN: token,
     ...(noteApi.configured ? { CASCADE_NOTE_USER: '', CASCADE_NOTE_PASS: '' } : {}),
     CASCADE_HELPER_CONFIG: configPath,
     CASCADE_HELPER_DIR: resolveWrapperDir(),
@@ -326,7 +379,7 @@ function noteCapabilityContext(opts) {
   const helperDir = resolveWrapperDir();
   const vaultId = String(opts && opts.vaultId || '').trim();
   const vaultLine = vaultId ? ` Vault: ${vaultId}.` : '';
-  return `Live notes: \`cascade-note\` (not local .md; creates unlisted by default — use \`--listed\` only if the user asks for sidebar); durable memory: \`cascade-note memory\`; work journal: \`cascade-scratchpad jot\` (append-only — jot observations, outcomes, and dead ends as you work; consolidate into memory notes when the boot context says it is due).${vaultLine} Helpers on PATH and in ${helperDir}.`;
+  return `Live notes: \`cascade-note\` (not local .md; creates unlisted by default — use \`--listed\` only if the user asks for sidebar); durable memory: \`cascade-note memory\`; optional scratchpad: \`cascade-scratchpad jot\` for reusable root causes, decisions, or dead ends. Read and improve useful task-vault knowledge with judgment, including unexpected connections; preserve uncertainty and existing work within authorized scope.${vaultLine} Helpers on PATH and in ${helperDir}.`;
 }
 
 /** Permission rules for helper names plus the absolute paths agents may discover. */
@@ -625,18 +678,24 @@ async function runClaudeLocally(opts, emit) {
   if (images.length) args.push('--input-format', 'stream-json');
   else args.push(String(claudePrompt));
 
+  const { createRequestTiming } = await loadCliAgentModule();
+  const timing = createRequestTiming(emit, 'claude_cli_stdout');
   const child = spawn(process.env.CLAUDE_BIN || 'claude', args, {
     cwd,
     env: { ...process.env, ...helperEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  child.stdout.once('data', () => timing.firstResponse());
   activeClaudeProcesses.set(runId, child);
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   const exited = new Promise((resolve) => {
-    child.once('error', (error) => resolve({ error }));
-    child.once('close', (code, signal) => resolve({ code, signal }));
+    child.once('error', (error) => { timing.complete('launch_failed'); resolve({ error }); });
+    child.once('close', (code, signal) => {
+      timing.complete(signal ? 'signaled' : code === 0 ? 'completed' : 'failed');
+      resolve({ code, signal });
+    });
   });
   if (images.length) {
     child.stdin.end(`${JSON.stringify({
@@ -831,7 +890,7 @@ async function runClaudeLocally(opts, emit) {
     const { code, signal, error: launchError } = await exited;
     if (launchError) throw launchError;
     if (code !== 0 && !canceledClaudeRuns.has(runId) && !startupTimedOut) {
-      throw new Error(stderr.trim() || `Claude CLI exited with ${signal || `code ${code}`}.`);
+      throw new Error(stderr.trim() || summary || `Claude CLI exited with ${signal || `code ${code}`}.`);
     }
   } catch (error) {
     throw error;
@@ -862,6 +921,9 @@ async function runClaudeLocally(opts, emit) {
  * Resolves when the run finishes (success or failure).
  */
 async function startLocalAgentRun(opts, sendEvent) {
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.enabled()) {
+    return agentAccount.run(opts, sendEvent, noteApi);
+  }
   const runId = Number(opts.runId);
   if (!Number.isFinite(runId)) throw new Error('Invalid run id');
 
@@ -947,6 +1009,11 @@ async function startLocalAgentRun(opts, sendEvent) {
     const cwd = resolveAgentCwd(opts.cwd, opts.vaultRoot);
     const env = { ...process.env, ...helperEnv };
 
+    if (agent === 'codex' && opts.importedCodexSession && opts.resumeSessionId) {
+      require('./codex-sessions.cjs').assertCodexSessionIdle(opts.resumeSessionId);
+      env.CASCADE_IMPORTED_CODEX_SESSION = opts.resumeSessionId;
+    }
+
     const result = await runCliAgent({
       agent,
       context: isChatRun(opts) || selfContained ? '' : `${CLAUDE_AGENT_CONTEXT} ${noteCapabilityContext(opts)}`,
@@ -969,9 +1036,14 @@ async function startLocalAgentRun(opts, sendEvent) {
     return { sessionId: result.sessionId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (canceledCliRuns.has(runId)) {
+      emitTerminalStatus(emit, runId, 'canceled', 'Run canceled.');
+      return {};
+    }
     emitTerminalStatus(emit, runId, 'failed', message);
     throw error;
   } finally {
+    canceledCliRuns.delete(runId);
     clearInterval(heartbeat);
     if (activeCliAgentModules.get(runId) === cliModule) activeCliAgentModules.delete(runId);
     cleanupRunHelperConfig(runId);
@@ -979,8 +1051,11 @@ async function startLocalAgentRun(opts, sendEvent) {
   }
 }
 
+const canceledCliRuns = new Set();
+
 async function cancelLocalAgentRun(runId) {
   const id = Number(runId);
+  if (agentAccount.cancel(id)) return true;
 
   // Claude CLI runs: terminate the live child process.
   const claudeProcess = activeClaudeProcesses.get(id);
@@ -992,6 +1067,7 @@ async function cancelLocalAgentRun(runId) {
   }
 
   const mod = activeCliAgentModules.get(id) || await loadCliAgentModule();
+  if (activeCliAgentModules.has(id)) canceledCliRuns.add(id);
   // Antigravity keeps polling transcript.jsonl after agentapi exits — flag it.
   let flagged = false;
   if (typeof mod.cancelAntigravityRun === 'function') {
@@ -1016,8 +1092,14 @@ async function reapOrphanedLocalAgentRuns() {
   await loadCliAgentModule();
 }
 
+async function shutdownLocalAgentHost() {
+  const mod = await loadCliAgentModule();
+  mod.shutdownPersistentCliAgents?.();
+}
+
 module.exports = {
   startLocalAgentRun,
+  shutdownLocalAgentHost,
   cancelLocalAgentRun,
   reapOrphanedLocalAgentRuns,
   buildRunHelperEnv,

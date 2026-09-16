@@ -9,6 +9,8 @@
 
 'use strict';
 
+import { randomUUID } from 'node:crypto';
+import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,56 +20,73 @@ const DEFAULT_URL = 'https://cscd.online';
 const USAGE = `cascade-chat — read/send live Cascade chat
 
 Usage:
+  cascade-chat context get             read account-wide app guidance and revision
+  cascade-chat context set --file PATH --revision REV   replace guidance (conflicts return 409)
   cascade-chat history                 recent messages for the current channel
   cascade-chat attachment              write a message's images/files to disk
                         (--message-id <id>; default: newest message with media)
-  cascade-chat send --message <text>    send a standalone message to the channel
+  cascade-chat send --message <text> [--file preview.html]    send a standalone message with optional HTML
   cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
                                         create a typed single-agent handoff
+  cascade-chat continuation              read unfinished coordinator responsibility
+  cascade-chat continuation --status pending|waiting|completed|canceled --revision N --summary TEXT
   cascade-chat members                  list people-callable agent teammates
-  cascade-chat mission start --title T [--objective O] [--control-plane]
-  cascade-chat mission list
-  cascade-chat mission status [--mission <id|current>]
+  cascade-chat mission start --title T [--message BRIEF]
+  cascade-chat mission list [--json]
+  cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
+  cascade-chat mission status [--mission <id|current>] [--json | --detail]
+  cascade-chat mission interpret --mission <id> [--detail] [--file <path|->]  read or atomically save understanding and explanation
   cascade-chat mission history --mission <id>
-  cascade-chat mission delegate --mission <id> --to @agent --task T --message P [--after <task-id,...>] [--priority N] [--effort E] [--anonymous] [--isolated]
-  cascade-chat mission update --task <id> --status <status> [--summary S]
+  cascade-chat mission delegate --mission <id> --task T --purpose P --message I [--to @agent] [--anonymous] [--brief-note <id>] [--after <task-id,...>] [--priority N] [--effort E] [--isolated]
+  cascade-chat mission child --task T --message P [--mission current] [--effort E]
+  cascade-chat mission join            inspect child results; end turn to wait and resume for integration
+  cascade-chat mission steer --task <id> --message <instruction>
+  cascade-chat mission update --task <id> --status <status> [--summary S] [--review-outcome accepted|changes_requested] [--verification-passed true|false] [--finding]
   cascade-chat mission retry --task <id> [--summary S]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
-  cascade-chat mission finish --mission <id> [--summary S]
+  cascade-chat mission approve --mission <id> --expected-revisions '{"note-id":1}'
+  cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
+  cascade-chat mission note list --mission <id>
+  cascade-chat mission finish --mission <id> --verification <observed-evidence> [--summary S]
   cascade-chat avatar --file <path>     upload this agent's profile picture
   cascade-chat avatar --url <https-url> use an existing uploaded note image
                         (also --avatar-url; --url here is the image, not API base)
   cascade-chat distill                 condense chat into a vault note
-  cascade-chat search <query>          search chat (or all) via unified search
+  cascade-chat search <query>          short matching excerpts; full messages via history
 
-Options:
-  --vault <id>              vault id (default $CASCADE_NOTE_VAULT)
-  --channel <id>            channel id (default $CASCADE_CHAT_CHANNEL)
-  --message <text>          message body for send (default: stdin)
+  --message <text>          message body for send; mission start uses it as the brief/request
   --mission <id|current>    mission id for mission commands
   --task <id|title>         task id (update) or title (delegate)
   --to <@handle>            target agent for send handoff or mission delegate
+  --purpose <type>          research|implementation|review|fix|integration|verification
+  --brief-note <id>         linked mission brief/note id for a delegated task
+  --review-outcome <value>  accepted|changes_requested for a completed review task
+  --verification-passed <b> true|false for a completed verification task
+  --expected-revisions <j>  JSON object mapping note IDs to revisions for approval
+  --kind <type>             milestone|feature for a mission note
+  --content <text>          content for a mission note
+  --parent-note-id <id>     parent mission note
   --reply-to <message-id>   source message for a typed send handoff
   --relation <type>         builds_on|review_request|question|contradiction|decision
   --status <status>         pending|running|completed|failed|blocked|canceled
+  --task-status <states>    list task filter: comma-separated statuses (default open: pending,running,failed,blocked)
+  --detail                  original full JSON for mission list/status/interpret
+                            compact list defaults to open missions; --status accepts comma-separated
+                            active,reviewing,attention,blocked,completed,canceled or open|all
+  --finding                 request coordinator interpretation of a significant finding or question
   --summary <text>          concise task/mission outcome
-  --authority-messages <ids> comma-separated owner-authored instruction sources for a new mission
   --verification <text>     coordinator-observed checks and artifact/live evidence required to finish
-  --objective <text>        mission objective (defaults to triggering message)
   --after <task-id,...>     wait for these mission tasks to complete
   --priority <-100..100>    schedule higher-priority ready work first
   --effort <level>          per-task reasoning effort override
-  --anonymous               parallel subagent of --to (same agent, no occupancy)
   --isolated                prepare a dedicated worktree instead of the channel cwd
-  --control-plane           start without binding the coordinator run as a task
-  --root <message-id>       mission root (defaults to triggering chat message)
-  --changes-file <path>     JSON change request metadata for send
+  --changes-file <path|->   JSON change request metadata for send (- reads stdin)
   --raw-message             preserve literal backslash-n sequences in --message
   --url <https-url>         profile picture URL for avatar
   --file <path>            avatar PNG, JPEG, GIF or WebP (max 2MB)
   --clear                   remove this agent's profile picture
   --author <name>           author for send (default current agent/user)
-  --message-id <id>         message to open attachments from
+  --message-id <id>         full history message or attachment source
   --out <dir>               directory for written attachments (default temp dir)
   --before-message-id <id>  only messages before this message
   --around-message-id <id>  window centered around this message
@@ -84,65 +103,124 @@ Options:
   --scope chat|all          search scope (default chat)
   --url <base>              API base (default $CASCADE_NOTE_URL, else cscd.online)
   --token <jwt>             bearer token (default $CASCADE_NOTE_TOKEN)
-  --json                    machine-readable output
+  --json                    machine-readable output; errors are JSON on stderr
 
 Env: CASCADE_NOTE_URL, CASCADE_NOTE_TOKEN, CASCADE_NOTE_VAULT,
      CASCADE_CHAT_CHANNEL, CASCADE_CHAT_MESSAGE, CASCADE_CHAT_TRIGGERING_MESSAGE, CASCADE_CHAT_AUTHOR,
      CASCADE_HELPER_CONFIG`;
 
-function parseArgs(argv) {
-  const args = { _: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--json') args.json = true;
-    else if (a === '--include-reply-context') args['include-reply-context'] = true;
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) args[key] = true;
-      else { args[key] = next; i++; }
-    } else {
-      args._.push(a);
-    }
-  }
-  return args;
+// Keep detailed contracts beside the command parser; other commands reuse their usage lines.
+const COMMAND_HELP = {
+  search: `cascade-chat search <query> [--scope chat|all] [--limit N] [--json]
+
+Returns short matching excerpts in search rank order, with message identity.
+Read a full chat hit (including older messages) with:
+  cascade-chat history --channel <channelId> --message-id <id>
+Use --around-message-id <id> --include-reply-context for a recent context window.`,
+  'mission interpret': `cascade-chat mission interpret --mission <id|current> [--detail] [--file <path|->]
+
+Read current revision, fingerprint, understanding and evidence without --file.
+Identical objective/agenda values use {contextRef:[path,...]} pointing to the full
+value in this same response. Resolve references before editing saved input.
+Use --detail for original full JSON. Every read fetches current server state.
+Save a JSON object with --file PATH, or read JSON from stdin with --file -.
+Reads require the owning coordinator; writes also require a live coordinator run.
+Mission workers cannot record interpretation. The helper supplies coordinatorRegistrationId.
+
+Accepted JSON fields:
+  revision: required integer from the latest read (including 0).
+  fingerprint: string from that read; required when an evidence batch is pending.
+    Omission means "". Copy the returned value, never invent a fingerprint.
+  assessment: string replacing the saved assessment; other types leave it unchanged.
+  questions: array of objects with a nonempty string id. Use stable ids across saves.
+    answer and status affect whether a question remains outstanding. A nonempty
+    answer, or status answered|fulfilled|canceled|stopped|declined, closes its agenda item.
+  commitments: array of objects with a nonempty string id. Use stable ids across saves.
+    status: open|fulfilled|canceled (new items default to open).
+    accepted: false excludes an unaccepted proposal from the active agenda.
+    dueAt: optional ISO8601 timestamp for a promised wake.
+    Extra question/commitment metadata is preserved; it does not grant authority.
+  evidenceReferences: array, appended to saved references with duplicates removed.
+  body: optional string; nonblank text publishes an actual channel explanation.
+  noMaterialChange: true acknowledges quietly; omit body for this mode.
+  correctsMessageId: optional id of a previous explanation for this objective.
+
+Merge semantics: question/commitment objects merge by id, retaining omitted fields
+and items. Empty arrays do not delete history. Mark fulfilled/canceled explicitly.
+Other top-level fields are not saved as understanding. Input must stay under 64KB.
+
+Minimal quiet save (valid at revision 0 with no pending fingerprint; replace both
+values with the latest read before writing):
+  printf '%s\\n' '{"revision":0,"fingerprint":"","noMaterialChange":true}' | cascade-chat mission interpret --mission <id> --file -
+To publish, replace noMaterialChange with body: "Your concise explanation".
+The result includes the new revision, messageId and noMaterialChange. A quiet save
+creates no chat message. Do not repeat a published body or narrate a quiet ack;
+end with [no-reply] unless a separate direct owner answer remains.
+
+Errors: malformed/empty JSON or non-object input; stale revision (read and merge);
+changed evidence fingerprint (read again); stopped mission/interpretation; wrong
+coordinator or worker run; invalid stable ids, commitment status/dueAt or references;
+invalid correction id; input over 64KB. A pending batch requires body or explicit
+noMaterialChange:true; body and noMaterialChange:true are mutually exclusive.
+API failures include HTTP status and reason. An identical retry of a saved input
+returns its prior result; changing input at an already-used revision conflicts.`,
+  'mission list': `cascade-chat mission list [--status <filter>] [--task-status <filter>] [--json | --detail]
+
+Default: compact ownership rows for open missions and open tasks across the
+current vault. The workspace endpoint returns linked note summaries and task
+evidence; filters are applied by the helper.
+  --status open|all|<comma-separated statuses>
+    open (default): active,reviewing,attention,blocked; also completed,canceled.
+  --task-status open|all|<comma-separated statuses>
+    open (default): pending,running,failed,blocked; also completed,canceled.
+    Filters task rows, not the enclosing missions; empty missions remain visible.
+  --json    compact JSON array, with the same filters.
+  --detail  full historical JSON; no filters allowed.
+
+Example: cascade-chat mission list --status open --task-status running --json
+Use mission status --mission <id> --detail for one mission's full detail.
+Invalid statuses and --detail combined with filters are errors.`,
+  'mission status': `cascade-chat mission status [--mission <id|current>] [--json | --detail]
+Read current mission and task state, including phase, brief, notes, owners,
+attempts and blockers. Explicit mission IDs use the vault workspace endpoint.
+Every invocation fetches current server state; no unchanged-state cache.`,
+  'mission diagnose': `cascade-chat mission diagnose --task <id> [--mission <id|current>] [--json]
+Read-only comparison of task/run projection, forwarded provider events and runner presence.
+Shows ownership, timestamps and freshness (120 seconds); no prompts or event payloads.
+Execution remains unknown: recent events and a connected runner do not prove a live turn.
+Missing, inaccessible and unreachable evidence is explicit. No retry or recovery actions.`,
+  'mission history': `cascade-chat mission history --mission <id> [--json]
+
+Read the mission event history. An explicit id is required; current is not accepted.
+--json returns the full events array.
+Example: cascade-chat mission history --mission <id> --json`,
+  send: `cascade-chat send --message <text> [--changes-file <path|->]
+cascade-chat send --to @agent --reply-to <message-id> --relation <type> --message <instruction>
+
+Without --message, message text is read from stdin. --raw-message preserves literal
+backslash-n sequences in inline text. --changes-file - reads JSON metadata from
+stdin and requires an explicit --message so stdin has only one consumer.
+Metadata is a JSON object with required files array: each file has path, additions,
+and deletions. Optional commit and ref are strings. Empty paths are filtered;
+counts are converted to nonnegative numbers. Approvals start empty.
+Example: printf '%s\\n' '{"files":[{"path":"README.md","additions":1,"deletions":0}]}' | cascade-chat send --message 'Updated docs' --changes-file -
+Malformed/empty JSON and a missing files array are errors.
+Typed handoffs require all three routing flags, a registered agent, and relation
+builds_on|review_request|question|contradiction|decision; no --changes-file allowed.`,
+};
+
+function commandHelp(args) {
+  if (args._[0] === 'attachments') args._[0] = 'attachment';
+  if (args._[0] === 'mission' && args._[1] === 'show') return COMMAND_HELP['mission status'];
+  const key = args._.slice(0, args._[0] === 'mission' || args._[0] === 'context' ? 2 : 1).join(' ');
+  if (!key) return USAGE;
+  if (COMMAND_HELP[key]) return COMMAND_HELP[key];
+  const lines = USAGE.split('\n').filter((line) => line.startsWith(`  cascade-chat ${key} `));
+  if (!lines.length) fail(`unknown command "${key}". Run with --help.`);
+  return lines.map((line) => line.trimStart()).join('\n') + '\n\nUse --help after a subcommand for its options.';
 }
 
-function fail(msg, code = 1) {
-  process.stderr.write(`cascade-chat: ${msg}\n`);
-  process.exit(code);
-}
-
-function errorMessage(err) {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause instanceof Error ? ` (${err.cause.message})` : '';
-  return `${err.message}${cause}`;
-}
-
-function helperConfigPath() {
-  // Prefer the explicit per-run config path agent-runner wrote. CASCADE_RUN_ID
-  // alone can point at a missing/stale file when the parent env is polluted,
-  // which used to leave a ghost { usedChatSend: true } and suppress the wrong
-  // run bubble into an empty "(message)" shell.
-  const fromEnv = String(process.env.CASCADE_HELPER_CONFIG || '').trim();
-  if (fromEnv) return fromEnv;
-  const runId = String(process.env.CASCADE_RUN_ID || '').trim();
-  if (runId) {
-    return path.join(os.homedir(), '.cascade', 'run-contexts', `${runId}.json`);
-  }
-  return path.join(os.homedir(), '.cascade', 'agent-helper-context.json');
-}
-
-function readHelperConfig() {
-  try {
-    const raw = fs.readFileSync(helperConfigPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
+const { args, fail } = createCli('cascade-chat', { 'include-reply-context': ['include-reply-context', true] });
 
 /** Record that this run already posted via cascade-chat send (for double-post suppression). */
 function markChatSendUsed(config) {
@@ -181,7 +259,7 @@ function baseUrl(args, config, { ignoreArgsUrl = false } = {}) {
 }
 
 async function getToken(url, args, config) {
-  const explicit = String(args.token || configString(config, 'token') || process.env.CASCADE_NOTE_TOKEN || '').trim();
+  const explicit = resolveToken(args.token, configString(config, 'token'));
   if (explicit) return explicit;
   const user = String(process.env.CASCADE_NOTE_USER || '').trim();
   const pass = String(process.env.CASCADE_NOTE_PASS || '');
@@ -193,7 +271,10 @@ async function getToken(url, args, config) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: user, password: pass }),
   });
-  if (!res.ok) fail(`login failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    fail(httpError('POST', '/api/auth/login', res.status, text, `login failed (${res.status}): ${text}`));
+  }
   const body = await res.json();
   if (!body.token) fail('login response had no token');
   return body.token;
@@ -204,16 +285,99 @@ async function api(url, token, method, path, body) {
   const runId = String(process.env.CASCADE_RUN_ID || '').trim();
   if (runId) headers['x-cascade-run-id'] = runId;
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(`${url}${path}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(`${url}${path}`, {
+        method,
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      break;
+    } catch (error) {
+      // A refused loopback connection sent no request. Retry that local restart
+      // briefly; never replay an ambiguous write or bypass an HTTP rejection.
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname);
+      if (!local || error?.cause?.code !== 'ECONNREFUSED' || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${json.error || text}`);
+  if (!res.ok) fail(httpError(method, path, res.status, text, undefined, '->'));
   return json;
+}
+
+// Diagnostics never replay requests or print server error bodies (which may contain prompts).
+async function diagnosticGet(url, token, endpoint) {
+  try {
+    const res = await fetch(`${url}${endpoint}`, {
+      headers: { authorization: `Bearer ${token}`, 'x-cascade-run-id': process.env.CASCADE_RUN_ID || '' },
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+    });
+    if (!res.ok) return { state: res.status === 401 || res.status === 403 || res.status === 404 ? 'inaccessible' : 'unreachable', httpStatus: res.status };
+    return { state: 'available', data: await res.json() };
+  } catch { return { state: 'unreachable' }; }
+}
+
+function diagnosticTime(value, now) {
+  // SQLite timestamps are UTC without an explicit suffix.
+  const normalized = typeof value === 'string' && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + 'Z' : value;
+  const ms = typeof normalized === 'number' ? normalized : Date.parse(normalized);
+  if (!Number.isFinite(ms)) return { at: null, ageSeconds: null, freshness: 'unknown' };
+  const age = (now - ms) / 1000;
+  return { at: new Date(ms).toISOString(), ageSeconds: Math.round(age), freshness: age < 0 ? 'unknown' : age <= 120 ? 'fresh' : 'stale' };
+}
+
+async function diagnoseTask(url, token, base, vaultId, missionRef, taskId) {
+  const snapshot = await diagnosticGet(url, token, `${base}/${encodeURIComponent(missionRef)}`);
+  if (snapshot.state !== 'available') return { projection: snapshot, execution: 'unknown' };
+  const mission = snapshot.data.mission;
+  const task = mission?.tasks?.find(item => item.id === taskId);
+  if (!task) return { projection: { state: 'inaccessible' }, execution: 'unknown' };
+  const runId = task.runId;
+  const [runResult, eventsResult, runnerResult] = runId ? await Promise.all([
+    diagnosticGet(url, token, `/api/runs/${encodeURIComponent(runId)}`),
+    diagnosticGet(url, token, `/api/runs/${encodeURIComponent(runId)}/events`),
+    diagnosticGet(url, token, '/api/me/desktop-runner'),
+  ]) : [{ state: 'missing' }, { state: 'missing' }, { state: 'unknown' }];
+  const now = Date.now();
+  const run = runResult.data?.run;
+  // Reject inconsistent responses instead of associating evidence with a different run/vault.
+  const matched = run && String(run.id) === String(runId) && run.vault_id === vaultId;
+  const events = matched && Array.isArray(eventsResult.data?.events)
+    ? eventsResult.data.events.filter(event => String(event.run_id) === String(runId)) : [];
+  const latest = types => events.filter(event => !types || types.includes(event.type))
+    .sort((a, b) => (Date.parse(diagnosticTime(b.ts, now).at) || 0) - (Date.parse(diagnosticTime(a.ts, now).at) || 0))[0];
+  const provider = latest(['harness', 'text', 'session']);
+  const lastEvent = latest();
+  const findings = [];
+  if (matched && task.status !== run.status) findings.push('task_run_status_mismatch');
+  if (matched && ['completed', 'failed', 'canceled'].includes(run.status) && provider &&
+      Date.parse(diagnosticTime(provider.ts, now).at) > Date.parse(diagnosticTime(run.finished_at, now).at)) {
+    findings.push('provider_event_after_run_finished');
+  }
+  if (run && !matched) findings.push('run_identity_mismatch');
+  return {
+    observedAt: new Date(now).toISOString(),
+    freshnessThresholdSeconds: 120,
+    missionId: mission.id,
+    task: { id: task.id, status: task.status, assignee: task.assignee || null, assigneeMention: task.assigneeMention || null,
+      parentTaskId: task.parentTaskId || null, attempt: task.attempt, runId: runId || null,
+      updated: diagnosticTime(task.updatedAt, now) },
+    run: matched ? { state: 'available', id: run.id, status: run.status, provider: run.agent,
+      sessionId: run.session_id || null, conversationId: run.conversation_id || null,
+      ownership: 'authenticated account (run API enforced)', started: diagnosticTime(run.started_at, now),
+      finished: diagnosticTime(run.finished_at, now) } : { state: run ? 'identity_mismatch' : runResult.state, httpStatus: runResult.httpStatus },
+    providerEvidence: { state: matched ? eventsResult.state : 'unknown', source: 'forwarded run events',
+      lastEvent: diagnosticTime(lastEvent?.ts, now), lastProviderEvent: diagnosticTime(provider?.ts, now) },
+    runner: { state: runnerResult.state, scope: 'authenticated account',
+      connected: runnerResult.data?.online ?? null, lastSeen: diagnosticTime(runnerResult.data?.lastSeenAt, now) },
+    execution: 'unknown', findings,
+    limitation: 'No independent live provider probe is exposed. Forwarded events can lag or stop after settlement; runner presence is not proof of active execution.',
+  };
 }
 
 async function readStdin() {
@@ -225,6 +389,18 @@ async function readStdin() {
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', reject);
   });
+}
+
+async function readJsonInput(source, flag) {
+  if (typeof source !== 'string') fail(`${flag} requires a path or - for stdin.`);
+  const raw = source === '-' ? await readStdin() : fs.readFileSync(source, 'utf8');
+  if (!raw.trim()) fail(`${flag}: empty JSON input.`);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { fail(`${flag}: malformed JSON input.`); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(`${flag} must contain a JSON object.`);
+  }
+  return parsed;
 }
 
 function optionString(args, key, envKey, config, configKey) {
@@ -287,7 +463,7 @@ const IMAGE_EXTENSIONS = {
 
 /** Write one image/attachment source to disk and return its path.
  * Data URLs are decoded in place; http(s) sources are downloaded. */
-async function writeAttachment(source, dir, base, token) {
+async function writeAttachment(source, dir, base, token, apiBase) {
   const dataUrl = /^data:([^;,]+);base64,(.+)$/s.exec(String(source.url || '').trim());
   if (dataUrl) {
     const extension = IMAGE_EXTENSIONS[dataUrl[1]] || (dataUrl[1].split('/')[1] || 'bin').replace(/[^\w.-]/g, '');
@@ -295,7 +471,9 @@ async function writeAttachment(source, dir, base, token) {
     fs.writeFileSync(file, Buffer.from(dataUrl[2], 'base64'));
     return { path: file, media_type: dataUrl[1], name: source.name || path.basename(file) };
   }
-  const href = String(source.url || '').trim();
+  const rawHref = String(source.url || '').trim();
+  const href = rawHref.startsWith('/') && !rawHref.startsWith('//')
+    ? new URL(rawHref, apiBase).href : rawHref;
   if (!/^https?:\/\//i.test(href)) return null;
   const res = await fetch(href, { headers: { authorization: `Bearer ${token}` } });
   if (!res.ok) return null;
@@ -418,25 +596,38 @@ function formatHuman(messages) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
   const raw = args._[0];
+  if (!raw && !args.help && args.json) fail('missing command. Run with --help.');
   if (!raw || args.help) {
-    process.stdout.write(USAGE + '\n');
-    process.exit(raw ? 0 : 1);
+    process.stdout.write((args.help ? commandHelp(args) : USAGE) + '\n');
+    process.exit(args.help ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
-  if (!['history', 'send', 'members', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
+  if (!['context', 'history', 'send', 'members', 'continuation', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
     fail(`unknown command "${raw}". Run with --help.`);
   }
 
   const config = readHelperConfig();
   const vaultId = optionString(args, 'vault', 'CASCADE_NOTE_VAULT', config, 'vaultId');
   const channelId = optionString(args, 'channel', 'CASCADE_CHAT_CHANNEL', config, 'chatChannelId');
-  if (!vaultId) fail('missing vault. Pass --vault or set CASCADE_NOTE_VAULT.');
-  if (cmd !== 'search' && !channelId) fail('missing channel. Pass --channel or set CASCADE_CHAT_CHANNEL.');
+  if (cmd !== 'context' && !vaultId) fail('missing vault. Pass --vault or set CASCADE_NOTE_VAULT.');
+  if (!['context', 'search'].includes(cmd) && !channelId) fail('missing channel. Pass --channel or set CASCADE_CHAT_CHANNEL.');
 
   const url = baseUrl(args, config, { ignoreArgsUrl: cmd === 'avatar' });
   const token = await getToken(url, args, config);
+  if (cmd === 'context') {
+    const action = args._[1] || 'get';
+    if (!['get', 'set'].includes(action)) fail('Use context get or context set --file PATH --revision REV.');
+    let body;
+    if (action === 'set') {
+      if (!args.file || !args.revision) fail('Context set requires --file and --revision from context get.');
+      body = { content: fs.readFileSync(String(args.file), 'utf8'), revision: String(args.revision) };
+      if (Buffer.byteLength(body.content, 'utf8') > 12000) fail('App context must be at most 12000 bytes.');
+    }
+    const result = await api(url, token, action === 'get' ? 'GET' : 'PUT', '/api/app-context', body);
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
   if (cmd === 'members') {
     const { agents = [] } = await api(
       url,
@@ -460,92 +651,172 @@ async function main() {
     return;
   }
 
+  if (cmd === 'continuation') {
+    const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/continuation`;
+    const status = String(args.status || '').trim();
+    if (status && (!['pending', 'waiting', 'completed', 'canceled'].includes(status) || !/^\d+$/.test(String(args.revision || '')))) {
+      fail('continuation needs --status pending|waiting|completed|canceled and --revision <integer>. Read `cascade-chat continuation` for the latest revision and reconcile before saving.');
+    }
+    const result = await api(url, token, status ? 'POST' : 'GET', endpoint,
+      status ? { status, revision: Number(args.revision), summary: String(args.summary || '') } : undefined);
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
+
   if (cmd === 'mission') {
-    const sub = String(args._[1] || 'status').toLowerCase();
+    let sub = String(args._[1] || 'status').toLowerCase();
     const registrationId = configString(config, 'registrationId');
-    const missionRef = String(args.mission || args._[2] || 'current').trim() || 'current';
+    let missionRef = String(args.mission || args._[2] || 'current').trim() || 'current';
     if (sub === 'start') {
       if (!registrationId) fail('mission start can only be used from a registered coordinator run.');
       const title = String(args.title || '').trim();
       if (!title) fail('mission start needs --title <text>.');
-      const triggerMessageId = String(
-        args.root
-        || configString(config, 'chatTriggeringMessageId')
-        || process.env.CASCADE_CHAT_TRIGGERING_MESSAGE
-        || '',
-      ).trim();
-      // Mission cards project onto root_message_id. Always attach under a
-      // coordinator shell (Supagrok header), not the human triggering message.
-      const syntheticId = `sys-mission-root-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const synthetic = await api(
+      const rootMessageId = String(args.root || configString(config, 'chatTriggeringMessageId') || process.env.CASCADE_CHAT_TRIGGERING_MESSAGE || '').trim();
+      if (!rootMessageId) fail('mission start needs an existing root message (--root or the triggering message).');
+      const members = await api(
         url,
         token,
-        'POST',
-        `/api/vaults/${vaultId}/channels/${channelId}/messages`,
-        {
-          id: syntheticId,
-          channelId,
-          author: configString(config, 'displayName') || configString(config, 'mention') || 'Coordinator',
-          registrationId,
-          body: String(args.objective || '').trim() || title,
-          createdAt: new Date().toISOString(),
-          ...(triggerMessageId
-            ? { replyTo: { messageId: triggerMessageId, author: '', preview: title } }
-            : {}),
-        },
+        'GET',
+        `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/agents`,
       );
-      const rootMessageId = String(synthetic.message?.id || syntheticId).trim();
-      if (!rootMessageId) fail('mission start could not create a coordinator root message.');
+      const coordinator = (members.agents || []).find((member) => String(member.id) === registrationId);
+      const coordinatorIdentityId = String(coordinator?.vaultAgentId || '').trim();
+      if (!coordinatorIdentityId) {
+        fail(`mission start could not resolve coordinator registration ${registrationId} to a vault identity.`);
+      }
+      const rawBrief = args.message === true ? await readStdin() : args.message;
+      const briefContent = normalizeInlineMessage(
+        rawBrief === undefined ? title : rawBrief,
+        args['raw-message'] === true,
+      ).trim() || title;
       const result = await api(
         url,
         token,
         'POST',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions`,
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions`,
         {
+          id: randomUUID(),
+          title,
+          coordinatorIdentityId,
+          briefContent,
+          channelId,
           rootMessageId,
           coordinatorRegistrationId: registrationId,
-          title,
-          objective: String(args.objective || '').trim(),
-          controlPlane: args['control-plane'] === true,
-          authorityMessageIds: String(args['authority-messages'] || '').split(',').map(id => id.trim()).filter(Boolean),
         },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
       else process.stdout.write(`mission ${result.mission.id} started: ${result.mission.title}\n`);
       return;
     }
-    if (sub === 'status' || sub === 'show') {
-      const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';
-      const result = await api(
-        url,
-        token,
-        'GET',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}${coordinator}`,
-      );
-      if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
+    if (sub === 'diagnose') {
+      const taskId = String(args.task || '').trim();
+      if (!taskId) fail('mission diagnose needs --task <id>.');
+      const result = await diagnoseTask(url, token, `/api/vaults/${vaultId}/channels/${channelId}/missions`, vaultId, missionRef, taskId);
+      if (args.json) process.stdout.write(JSON.stringify(result) + '\n');
+      else if (!result.task) process.stdout.write(`projection: ${result.projection.state}; execution: unknown\n`);
       else {
+        const time = value => `${value?.at || 'unknown'} (${value?.freshness || 'unknown'})`;
+        process.stdout.write([
+          `task ${result.task.id}: ${result.task.status}; owner ${result.task.assigneeMention || result.task.assignee || 'unknown'}; attempt ${result.task.attempt}`,
+          `mission ${result.missionId}; parent ${result.task.parentTaskId || 'none'}; task updated ${time(result.task.updated)}`,
+          `run ${result.task.runId || 'none'}: ${result.run.status || result.run.state}; provider ${result.run.provider || 'unknown'}; session ${result.run.sessionId || 'unknown'}`,
+          `run ownership: ${result.run.ownership || 'unknown'}; conversation ${result.run.conversationId || 'unknown'}; finished ${time(result.run.finished)}`,
+          `forwarded provider evidence: ${result.providerEvidence.state}; last provider event ${time(result.providerEvidence.lastProviderEvent)}; last event ${time(result.providerEvidence.lastEvent)}`,
+          `account runner: ${result.runner.state}; connected ${result.runner.connected ?? 'unknown'}; last seen ${time(result.runner.lastSeen)}`,
+          `execution: unknown; findings: ${result.findings.join(', ') || 'none'}; freshness threshold 120s`,
+          result.limitation,
+        ].join('\n') + '\n');
+      }
+      return;
+    }
+    if (sub === 'status' || sub === 'show') {
+      const endpoint = missionRef === 'current'
+        ? `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/missions/current`
+        : `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}`;
+      const result = await api(url, token, 'GET', endpoint);
+      if (args.json || args.detail) {
+        const { authority, ...compact } = result.mission;
+        process.stdout.write(JSON.stringify(args.detail ? result.mission : {
+          ...compact,
+          authorityMessageIds: (authority || []).map(source => source.id),
+          detailCommand: `cascade-chat mission status --mission ${result.mission.id} --detail`,
+        }) + '\n');
+      } else {
         const mission = result.mission;
         const tasks = (mission.tasks || []).map((task) => (
           `  ${task.status === 'completed' ? '✓' : task.status === 'failed' || task.status === 'blocked' ? '!' : '·'} ${task.id}  ${task.title} — @${task.assigneeMention || task.assignee} (${task.status})${task.summary ? `\n      ${task.summary}` : ''}`
         )).join('\n');
-        process.stdout.write(`${mission.status}  ${mission.id}  ${mission.title}\n${tasks || '  (no tasks)'}\n`);
+        process.stdout.write(`${mission.status || mission.phase || 'unknown'}  ${mission.id}  ${mission.title}\n${tasks || '  (no tasks)'}\n`);
       }
       return;
     }
     if (sub === 'list') {
-      const coordinator = registrationId ? `?coordinator=${encodeURIComponent(registrationId)}` : '';
-      const result = await api(
-        url,
-        token,
-        'GET',
-        `/api/vaults/${vaultId}/channels/${channelId}/missions${coordinator}`,
-      );
-      if (args.json) process.stdout.write(JSON.stringify(result.missions || []) + '\n');
+      if (args.detail && (args.status || args['task-status'])) fail('--detail cannot be combined with list filters.');
+      const result = await api(url, token, 'GET',
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions`);
+      let missions = result.missions || [];
+      if (!args.detail && args.status && String(args.status) !== 'all') {
+        const requested = String(args.status) === 'open'
+          ? ['active', 'reviewing', 'attention', 'blocked']
+          : String(args.status).split(',').map((state) => state.trim());
+        const allowed = ['planning', 'executing', 'closed', 'active', 'reviewing', 'attention', 'blocked', 'completed', 'canceled'];
+        if (!requested.every((state) => allowed.includes(state))) {
+          fail(`Invalid --status; use open, all, or comma-separated ${allowed.join(',')}.`);
+        }
+        missions = missions.filter((mission) => requested.includes(mission.status || mission.phase));
+      }
+      if (!args.detail && args['task-status'] && String(args['task-status']) !== 'all') {
+        const requested = String(args['task-status']) === 'open'
+          ? ['pending', 'running', 'failed', 'blocked']
+          : String(args['task-status']).split(',').map((state) => state.trim());
+        const allowed = ['pending', 'running', 'completed', 'failed', 'blocked', 'canceled'];
+        if (!requested.every((state) => allowed.includes(state))) {
+          fail(`Invalid --task-status; use open, all, or comma-separated ${allowed.join(',')}.`);
+        }
+        missions = missions.map((mission) => ({
+          ...mission,
+          tasks: (mission.tasks || []).filter((task) => requested.includes(task.status)),
+        }));
+      }
+      if (args.json || args.detail) process.stdout.write(JSON.stringify(missions) + '\n');
       else {
-        const lines = (result.missions || []).map((mission) => (
-          `${mission.status.padEnd(10)}  ${mission.id}  ${mission.title}  · ${(mission.tasks || []).length} tasks`
-        ));
+        const lines = missions.map((mission) => {
+          const owner = mission.coordinatorMention || mission.coordinatorIdentityId || 'unknown';
+          const tasks = (mission.tasks || []).map((task) => {
+            const taskOwner = task.assigneeMention || task.assigneeRegistrationId || 'unknown';
+            return `  ${task.status.padEnd(10)}  ${task.id}  ${task.title}  · ${taskOwner}`;
+          });
+          return [`${(mission.status || mission.phase || 'unknown').padEnd(10)}  ${mission.id}  ${mission.title}  · ${owner}`, ...tasks].join('\n');
+        });
         process.stdout.write((lines.join('\n') || '(no missions)') + '\n');
+      }
+      return;
+    }
+    if (sub === 'interpret') {
+      if (!registrationId) fail('mission interpret requires a registered coordinator.');
+      const endpoint = `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}/interpretation`;
+      if (!args.file) {
+        const result = await api(url, token, 'GET', `${endpoint}?coordinator=${encodeURIComponent(registrationId)}`);
+        if (!args.detail) {
+          // Reuse the contextRef contract; compare pending evidence with current
+          // understanding rather than assuming they describe the same agenda.
+          for (const [target, key, source, sourceKey, path] of [
+            [result.evidence, 'objective', result, 'objective', ['objective']],
+            ...['questions', 'commitments'].map(key =>
+              [result.evidence?.agenda, key, result.understanding, key, ['understanding', key]]),
+          ]) {
+            const value = source?.[sourceKey];
+            const reference = { contextRef: path };
+            if (value !== undefined && target && JSON.stringify(target[key]) === JSON.stringify(value)
+                && JSON.stringify(reference).length < JSON.stringify(value).length) target[key] = reference;
+          }
+        }
+        process.stdout.write(JSON.stringify(result) + '\n');
+      } else {
+        const input = await readJsonInput(args.file, '--file');
+        const result = await api(url, token, 'POST', endpoint, { ...input, coordinatorRegistrationId: registrationId });
+        if (result.messageId) markChatSendUsed(config);
+        process.stdout.write(JSON.stringify(result) + '\n');
       }
       return;
     }
@@ -572,12 +843,83 @@ async function main() {
       }
       return;
     }
+    if (sub === 'approve') {
+      if (!missionRef || missionRef === 'current') fail('mission approve needs --mission <id>.');
+      const rawRevisions = String(args['expected-revisions'] || '').trim();
+      if (!rawRevisions) fail('mission approve needs --expected-revisions <JSON>.');
+      let expectedRevisions;
+      try { expectedRevisions = JSON.parse(rawRevisions); } catch { fail('mission approve expected revisions must be valid JSON.'); }
+      if (!expectedRevisions || typeof expectedRevisions !== 'object' || Array.isArray(expectedRevisions)) {
+        fail('mission approve expected revisions must be a JSON object.');
+      }
+      const result = await api(
+        url,
+        token,
+        'POST',
+        `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}/approve`,
+        { expectedRevisions },
+      );
+      if (args.json) process.stdout.write(JSON.stringify(result.mission || result) + '\n');
+      else process.stdout.write(`mission ${result.mission?.id || missionRef} approved\n`);
+      return;
+    }
+    if (sub === 'note' || sub === 'notes') {
+      const action = String(args._[2] || 'list').toLowerCase();
+      if (!missionRef || missionRef === 'current') fail(`mission note ${action} needs --mission <id>.`);
+      const endpoint = `/api/vaults/${encodeURIComponent(vaultId)}/missions/${encodeURIComponent(missionRef)}`;
+      if (action === 'list') {
+        const result = await api(url, token, 'GET', endpoint);
+        const notes = result.mission?.notes || [];
+        if (args.json) process.stdout.write(JSON.stringify(notes) + '\n');
+        else process.stdout.write((notes.map((note) => (
+          `${note.kind} ${note.noteId || note.id}  r${note.revision}  ${note.title || ''}`
+        )).join('\n') || '(no mission notes)') + '\n');
+        return;
+      }
+      if (action !== 'create') fail('mission note use create or list.');
+      const kind = String(args.kind || '').trim().toLowerCase();
+      if (!['milestone', 'feature'].includes(kind)) fail('mission note create needs --kind milestone|feature.');
+      const noteTitle = String(args.title || '').trim();
+      if (!noteTitle) fail('mission note create needs --title <text>.');
+      let noteContent = args.content;
+      if (noteContent === undefined) noteContent = args.message === true ? await readStdin() : args.message;
+      noteContent = normalizeInlineMessage(noteContent || '', args['raw-message'] === true).trim();
+      if (!noteContent) fail('mission note create needs --content <text> or stdin.');
+      const result = await api(url, token, 'POST', `${endpoint}/notes`, {
+        id: randomUUID(),
+        kind,
+        parentNoteId: String(args['parent-note-id'] || '').trim() || null,
+        title: noteTitle,
+        content: noteContent,
+      });
+      if (args.json) process.stdout.write(JSON.stringify(result) + '\n');
+      else process.stdout.write(`mission note ${result.note?.noteId || result.note?.id || 'created'} created\n`);
+      return;
+    }
+    if (sub === 'child') {
+      const title = String(args.task || args.title || '').trim();
+      if (!title) fail('mission child needs --task <title>.');
+      const prompt = String(args.message === undefined || args.message === true ? await readStdin() : normalizeInlineMessage(args.message, args['raw-message'] === true)).trim() || title;
+      const result = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/missions/${encodeURIComponent(missionRef)}/children`, {
+        title, prompt, reasoningEffort: String(args.effort || '').trim().toLowerCase(),
+      });
+      process.stdout.write(args.json ? JSON.stringify(result) + '\n' : `child ${result.task.id}: ${result.task.title} (isolated worktree)\n`);
+      return;
+    }
+    if (sub === 'join') {
+      const result = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/missions/children/join`, {});
+      process.stdout.write(JSON.stringify(result) + '\n');
+      return;
+    }
     if (sub === 'delegate') {
       if (!registrationId) fail('mission delegate can only be used from a registered coordinator run.');
       const assignee = String(args.to || '').trim();
       const title = String(args.task || args.title || '').trim();
-      if (!assignee) fail('mission delegate needs --to <@agent>.');
+      const purpose = String(args.purpose || '').trim().toLowerCase();
+      const allowedPurposes = ['research', 'implementation', 'review', 'fix', 'integration', 'verification'];
+
       if (!title) fail('mission delegate needs --task <title>.');
+      if (!allowedPurposes.includes(purpose)) fail('mission delegate needs --purpose research|implementation|review|fix|integration|verification.');
       const fromStdin = args.message === true || args.message === undefined;
       const rawPrompt = fromStdin ? await readStdin() : args.message;
       const prompt = (fromStdin
@@ -591,12 +933,14 @@ async function main() {
         {
           coordinatorRegistrationId: registrationId,
           title,
-          assignee,
+          purpose,
+          ...(assignee ? { assignee } : {}),
+          ...(!assignee || args.anonymous === true ? { anonymous: true } : {}),
           prompt,
+          ...(args['brief-note'] !== undefined ? { briefNoteId: String(args['brief-note']).trim() } : {}),
           dependsOn: String(args.after || '').split(',').map((item) => item.trim()).filter(Boolean),
           priority: Number(args.priority) || 0,
           reasoningEffort: String(args.effort || '').trim().toLowerCase(),
-          anonymous: args.anonymous === true,
           workspaceMode: args.isolated === true ? 'isolated' : 'shared',
         },
       );
@@ -607,6 +951,25 @@ async function main() {
       }
       return;
     }
+    if (sub === 'steer') {
+      if (!registrationId) fail('mission steer requires a registered coordinator.');
+      const taskId = String(args.task || '').trim();
+      if (!taskId) fail('mission steer needs --task <id>.');
+      const fromStdin = args.message === true || args.message === undefined;
+      const raw = fromStdin ? await readStdin() : args.message;
+      const message = (fromStdin ? String(raw) : normalizeInlineMessage(raw, args['raw-message'] === true)).trim();
+      if (!message) fail('mission steer needs --message <instruction> or stdin.');
+      const base = `/api/vaults/${vaultId}/channels/${channelId}/missions`;
+      const listed = await api(url, token, 'GET', `${base}?coordinator=${encodeURIComponent(registrationId)}`);
+      const task = (listed.missions || []).flatMap((mission) => mission.tasks || []).find((item) => item.id === taskId);
+      if (!task) fail('Task not found among this coordinator’s missions.');
+      const result = await api(url, token, 'POST', `${base}/tasks/${encodeURIComponent(taskId)}/steer`, {
+        coordinatorRegistrationId: registrationId, message, attempt: task.attempt, runId: task.runId ?? null,
+      });
+      if (args.json) process.stdout.write(JSON.stringify(result.steering) + '\n');
+      else process.stdout.write(`${result.steering.status} steering ${result.steering.id}: ${result.steering.detail}\n`);
+      return;
+    }
     if (sub === 'update' || sub === 'retry') {
       const taskId = String(args.task || args._[2] || '').trim();
       const status = sub === 'retry' ? 'pending' : String(args.status || '').trim().toLowerCase();
@@ -614,12 +977,31 @@ async function main() {
       if (!['pending', 'running', 'completed', 'failed', 'blocked', 'canceled'].includes(status)) {
         fail('mission update needs --status pending|running|completed|failed|blocked|canceled.');
       }
+      const reviewOutcome = args['review-outcome'] === undefined
+        ? undefined : String(args['review-outcome']).trim().toLowerCase();
+      if (reviewOutcome !== undefined && !['accepted', 'changes_requested'].includes(reviewOutcome)) {
+        fail('mission update --review-outcome must be accepted|changes_requested.');
+      }
+      const verificationValue = args['verification-passed'];
+      let verificationPassed;
+      if (verificationValue !== undefined) {
+        if (verificationValue === true) fail('mission update --verification-passed must be true|false.');
+        const normalized = String(verificationValue).trim().toLowerCase();
+        if (!['true', 'false'].includes(normalized)) fail('mission update --verification-passed must be true|false.');
+        verificationPassed = normalized === 'true';
+      }
       const result = await api(
         url,
         token,
         'PATCH',
         `/api/vaults/${vaultId}/channels/${channelId}/missions/tasks/${encodeURIComponent(taskId)}`,
-        { status, summary: String(args.summary || '').trim() },
+        {
+          status,
+          summary: String(args.summary || '').trim(),
+          ...(args.finding ? { finding: true } : {}),
+          ...(reviewOutcome !== undefined ? { reviewOutcome } : {}),
+          ...(verificationPassed !== undefined ? { verificationPassed } : {}),
+        },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');
       else process.stdout.write(sub === 'retry' ? `task ${taskId} queued for retry\n` : `task ${taskId} → ${status}\n`);
@@ -662,7 +1044,7 @@ async function main() {
       else process.stdout.write(`mission ${result.mission.id} → ${result.mission.status}\n`);
       return;
     }
-    fail(`unknown mission command "${sub}". Use start|list|status|history|delegate|update|retry|link-recovery|finish|cancel.`);
+    fail(`unknown mission command "${sub}". Use start|list|status|diagnose|history|interpret|delegate|child|join|steer|update|retry|link-recovery|approve|note|finish|cancel.`);
   }
 
   if (cmd === 'avatar') {
@@ -703,7 +1085,7 @@ async function main() {
     if (args.json) process.stdout.write(JSON.stringify(results) + '\n');
     else {
       process.stdout.write(
-        (results.map((r) => `[${r.type || '?'}] ${r.id}  ${r.title || ''}\n  ${r.snippet || ''}`).join('\n\n')
+        (results.map((r) => `[${r.type || '?'}] ${r.id}  ${r.title || ''}${r.channelId ? `  channel=${r.channelId}` : ''}${r.timestamp ? `  ${r.timestamp}` : ''}\n  ${r.snippet || ''}`).join('\n\n')
           || '(no matches)') + '\n',
       );
     }
@@ -779,7 +1161,7 @@ async function main() {
     ];
     const written = [];
     for (const source of sources) {
-      const saved = await writeAttachment(source, outDir, `${target.id}-${source.index}`, token);
+      const saved = await writeAttachment(source, outDir, `${target.id}-${source.index}`, token, url);
       if (saved) written.push(saved);
     }
     if (!written.length) fail(`message ${target.id} has no readable attachment.`);
@@ -793,6 +1175,7 @@ async function main() {
 
   if (cmd === 'send') {
     const fromStdin = args.message === true || args.message === undefined;
+    if (args['changes-file'] === '-' && fromStdin) fail('--changes-file - requires --message <text>; stdin cannot supply both.');
     const rawBody = fromStdin ? await readStdin() : args.message;
     const body = (fromStdin
       ? String(rawBody)
@@ -805,6 +1188,7 @@ async function main() {
     const collaborationRelation = optionString(args, 'relation');
     const collaborationRequested = Boolean(collaborationTarget || collaborationSource || collaborationRelation);
     if (collaborationRequested) {
+      if (args.file) fail('--file cannot be combined with a typed handoff.');
       if (!collaborationTarget || !collaborationSource || !collaborationRelation) {
         fail('typed handoff requires --to, --reply-to, and --relation.');
       }
@@ -837,7 +1221,7 @@ async function main() {
     const idPrefix = agentId || (author && author !== 'Agent' ? author.toLowerCase().replace(/\s+/g, '-') : 'msg');
     let changeRequest;
     if (typeof args['changes-file'] === 'string') {
-      const parsed = JSON.parse(fs.readFileSync(path.resolve(args['changes-file']), 'utf8'));
+      const parsed = await readJsonInput(args['changes-file'], '--changes-file');
       if (!parsed || !Array.isArray(parsed.files)) fail('--changes-file must contain a JSON object with a files array.');
       changeRequest = {
         files: parsed.files.map((file) => ({
@@ -850,6 +1234,19 @@ async function main() {
         approvals: [],
       };
     }
+    let attachments;
+    if (args.file) {
+      if (typeof args.file !== 'string' || !/\.html?$/i.test(args.file)) fail('--file requires a .html or .htm file.');
+      const stat = fs.statSync(args.file);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 1048576) fail('HTML file must be 1 byte to 1 MiB.');
+      const bytes = fs.readFileSync(args.file);
+      try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { fail('HTML must be UTF-8.'); }
+      const asset = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/html-assets-v1`, {
+        media_type: 'text/html', filename: path.basename(args.file), data: bytes.toString('base64'),
+      });
+      if (!asset.url?.startsWith(`/api/notes/${channelId}/assets/`)) fail('Upload returned an invalid channel asset URL.');
+      attachments = [{ url: asset.url, name: path.basename(args.file), media_type: 'text/html', data: '' }];
+    }
     const message = {
       id: `agent-${idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       channelId,
@@ -859,6 +1256,7 @@ async function main() {
       ...(agentId ? { agentId } : {}),
       ...(registrationId ? { registrationId } : {}),
       ...(changeRequest ? { changeRequest } : {}),
+      ...(attachments ? { attachments } : {}),
     };
     const result = await api(url, token, 'POST', `/api/vaults/${vaultId}/channels/${channelId}/messages`, message);
     const sent = result.message || message;
@@ -869,6 +1267,13 @@ async function main() {
     return;
   }
   const listPath = `/api/vaults/${vaultId}/channels/${channelId}/messages`;
+  const messageId = optionString(args, 'message-id');
+  if (messageId) {
+    const { message } = await api(url, token, 'GET', `${listPath}/${encodeURIComponent(messageId)}`);
+    const output = decorateMessages([message], [message], args);
+    process.stdout.write((args.json ? JSON.stringify(output) : formatHuman(output)) + '\n');
+    return;
+  }
   const requested = fetchLimit(args);
   let { messages = [] } = await api(url, token, 'GET', `${listPath}?limit=${requested}`);
   // Only pay for the full channel when the anchor really wasn't in the page.
@@ -883,4 +1288,4 @@ async function main() {
   else process.stdout.write(formatHuman(output) + '\n');
 }
 
-main().catch((err) => fail(errorMessage(err)));
+main().catch(fail);

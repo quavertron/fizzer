@@ -78,6 +78,22 @@ defmodule CascadeWeb.Static do
       |> put_resp_content_type(MIME.from_path(path))
       |> maybe_put_cache(path)
 
+    conn =
+      if Path.basename(path) == "app.html" do
+        origin = Cascade.Publishing.public_base_url(conn)
+        csp = conn |> get_resp_header("content-security-policy") |> List.first() || ""
+        put_resp_header(conn, "content-security-policy", String.replace(csp, "frame-src ", "frame-src #{origin}/api/html-previews/ "))
+      else
+        conn
+      end
+
+    conn =
+      if Path.basename(path) == "app.html" and Cascade.Chat.Voice.enabled?() do
+        put_resp_header(conn, "permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=(), usb=()")
+      else
+        conn
+      end
+
     {:served, send_file(conn, 200, path)}
   end
 

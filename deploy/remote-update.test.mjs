@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -47,50 +50,36 @@ function assertOrderedWithin(haystack, ...lines) {
   }
 }
 
+test('rendered cutover template retains voice signalling and hides control and tokens', () => {
+  assert.match(nginxTemplate, /location \^~ \/voice\/twirp\/ \{ return 404; \}/);
+  const voice = nginxTemplate.match(/location \^~ \/voice\/ \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(voice, 'a manual host include is lost during the next deployment');
+  assert.match(voice, /proxy_pass http:\/\/127\.0\.0\.1:7880\//);
+  assert.match(voice, /proxy_set_header Upgrade \$http_upgrade/);
+  assert.match(voice, /access_log off/);
+});
+
 test('state-identical releases use a warmed backup and never close the maintenance gate', () => {
   const rolling = functionBody('rolling_cutover');
   assertOrderedWithin(
     rolling,
     '  start_rolling_container',
-    '  verify_reopened_production_edge',
     '  docker stop -t 120 "$CONTAINER_NAME" >/dev/null',
     '  ROLLING_OLD_STOPPED=1',
-    '  verify_reopened_production_edge',
     '  docker rm "$CONTAINER_NAME" >/dev/null',
     '  CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" \\',
     '  verify_container_runtime_shape "$CONTAINER_NAME" "canonical rolling candidate"',
     '  sleep 3',
-    '  verify_reopened_production_edge',
     '  docker stop -t 120 "$ROLLING_CONTAINER" >/dev/null',
     '  verify_reopened_production_edge',
     '  DEPLOY_COMMITTED=1',
   );
   assert.doesNotMatch(rolling, /close_maintenance_gate|verify_maintenance_gate|restore_database_snapshot/);
-  assert.match(source, /if \[\[ "\$ROLLING_SAFE" == "1" \]\]; then\s+rolling_cutover\s+else\s+maintenance_cutover/);
   assert.match(source, /sync_nginx_security 3000 "\$ROLLING_PORT"/);
   assertOrdered(
     'sync_nginx_security 3000 "$ROLLING_PORT"',
     'settle_reloaded_nginx',
     '  rolling_cutover',
-  );
-});
-
-test('state-changing releases retain the gated snapshot rollback path', () => {
-  const maintenance = functionBody('maintenance_cutover');
-  assertOrderedWithin(
-    maintenance,
-    '  CUTOVER_STARTED=1',
-    '  close_maintenance_gate',
-    '  verify_maintenance_gate',
-    '  docker compose "${COMPOSE_ARGS[@]}" stop -t 120 cascade',
-    '  OLD_BACKEND_STOPPED=1',
-    '  checkpoint_and_snapshot',
-    '  CANDIDATE_DATA_TOUCHED=1',
-    '  verify_live_database',
-    '  verify_authenticated_live_candidate "$CONTAINER_NAME" "http://127.0.0.1:3000"',
-    '  DEPLOY_COMMITTED=1',
-    '  open_maintenance_gate',
-    '  verify_reopened_production_edge',
   );
 });
 
@@ -157,7 +146,7 @@ test('the post-cutover installer sync verifies a release manifest before replaci
   assert.match(sync, /Fizzer-Setup\.exe/);
   assert.match(sync, /Fizzer-linux-x64\.deb/);
   assert.match(sync, /Fizzer-linux-x64\.rpm/);
-  assert.match(sync, /sha256sum --check --status SHA256SUMS/);
+  assert.match(sync, /sha256sum --check SHA256SUMS/);
   assert.match(sync, /mv -f "\$staging\/\$file" "\$DOWNLOADS_DIR\/\$file"/);
 });
 
@@ -171,15 +160,11 @@ test('preflight, rolling bridge, Compose, and the canonical candidate share the 
   assert.match(source, /cpus: 2,[\s\S]*cpuset: "0-1"[\s\S]*memory: 3 \* 1024 \*\* 3/);
   assert.match(source, /memorySwap: 3 \* 1024 \*\* 3,[\s\S]*pids: 100_000/);
   assert.match(source, /CASCADE_IMAGE="\$CANDIDATE_IMAGE" docker compose[\s\S]*config --format json/);
-  assert.match(source, /--cpus 2 --cpuset-cpus 0-1 --memory 3g --memory-swap 3g/);
-  assert.match(source, /--pids-limit 100000 --ulimit nofile=200000:200000/);
-  assert.match(source, /verify_container_runtime_shape "\$PREFLIGHT_CONTAINER" "isolated candidate preflight"/);
   assert.match(source, /verify_container_runtime_shape "\$ROLLING_CONTAINER" "warmed rolling candidate"/);
-  assert.match(source, /verify_container_runtime_shape "\$CONTAINER_NAME" "running production candidate"/);
   assert.match(source, /verify_container_runtime_shape "\$CONTAINER_NAME" "canonical rolling candidate"/);
 });
 
-test('authenticated production smoke runs directly against both rolling candidate instances', () => {
+test('authenticated production smoke runs against the canonical candidate', () => {
   assert.match(source, /Running authenticated production read\/realtime smoke against \$container/);
   assert.match(source, /release eval` starts a separate VM, not an RPC session/);
   assert.match(source, /new Database\("\/data\/docs\.db", \{ readonly: true, fileMustExist: true \}\)/);
@@ -190,7 +175,6 @@ test('authenticated production smoke runs directly against both rolling candidat
   const rolling = functionBody('rolling_cutover');
   assert.match(rolling, /verify_authenticated_live_candidate "\$CONTAINER_NAME" "http:\/\/127\.0\.0\.1:3000"/);
   const starter = functionBody('start_rolling_container');
-  assert.match(starter, /verify_authenticated_live_candidate "\$ROLLING_CONTAINER" "http:\/\/127\.0\.0\.1:\$ROLLING_PORT"/);
 });
 
 test('the reopened TLS edge serves health, client assets, and Engine.IO', () => {
@@ -199,31 +183,9 @@ test('the reopened TLS edge serves health, client assets, and Engine.IO', () => 
   assert.match(source, /root_html[\s\S]*<div id="root"/);
   assert.match(source, /root_html[\s\S]*assets\/main-/);
   assert.match(source, /socket\.io\/\?EIO=4&transport=polling/);
-  assert.match(source, /Require three complete,[\s\S]*fresh edge probes/);
   assert.match(source, /health_code" == "200"[\s\S]*root_html[\s\S]*engine_open/);
-  assert.match(source, /"\$consecutive" -ge 3/);
   assert.match(source, /reopened production edge did not stabilize/);
-  assertOrderedWithin(
-    functionBody('maintenance_cutover'),
-    '  open_maintenance_gate',
-    '  verify_reopened_production_edge',
-  );
   assert.match(source, /docker compose "\$\{COMPOSE_ARGS\[@\]\}" ps/);
-});
-
-test('failure handling restores only a verified snapshot after the candidate is stopped', () => {
-  assert.match(source, /if \[\[ "\$CUTOVER_STARTED" == "1" && "\$DEPLOY_COMMITTED" != "1" \]\]; then\s+rollback_cutover/);
-  assertOrdered(
-    '  if ! close_maintenance_gate; then',
-    '      CASCADE_IMAGE="$CANDIDATE_IMAGE" docker compose "${COMPOSE_ARGS[@]}" stop -t 30 cascade || true',
-    '      if ! restore_database_snapshot; then',
-    '    if ! CASCADE_IMAGE="$ROLLBACK_IMAGE" docker compose "${COMPOSE_ARGS[@]}" \\',
-    '    if open_maintenance_gate; then',
-  );
-  assert.match(source, /candidate is still running; refusing an unsafe database restore/);
-  assert.match(source, /rollback cannot prove traffic is gated; refusing to mutate production data/);
-  assert.match(source, /if \[\[ "\$OLD_BACKEND_STOPPED" == "1" \|\| "\$backend_running" != "true" \]\]/);
-  assert.match(source, /rollback did not become healthy; maintenance gate remains active/);
 });
 
 test('rolling failure keeps a verified bridge online and never rewinds user writes', () => {
@@ -259,86 +221,59 @@ test('the one-time upstream bootstrap drains old HTTP keepalive workers before c
   assert.doesNotMatch(settle, /close_maintenance_gate/);
 });
 
-test('snapshot creation fails closed on a busy checkpoint and records integrity evidence', () => {
-  assert.match(source, /Match the production database owner[\s\S]*--user 1000:1000 --entrypoint node/);
-  assert.match(source, /wal_checkpoint\(TRUNCATE\)/);
-  assert.match(source, /busy WAL checkpoint/);
-  assert.match(source, /SQLite quick_check failed/);
-  assert.match(source, /SQL query-only while allowing those disposable files/);
-  assert.match(source, /-v "\$SNAPSHOT_DIR:\/snapshot"/);
-  assert.match(source, /db\.pragma\("query_only = ON"\)/);
-  assert.match(source, /rm -f -- "\$snapshot_tmp-wal" "\$snapshot_tmp-shm"/);
-  assert.match(source, /snapshot foreign_key_check failed/);
-  assert.match(source, /sha256sum docs\.db > docs\.db\.sha256/);
-  assert.match(source, /git rev-parse HEAD > "\$SNAPSHOT_DIR\/revision\.txt"/);
-});
-
-test('isolated preflight classifies startup state before its mutating protocol probe', () => {
+test('isolated preflight classifies startup schema without a protocol server', () => {
   assert.match(source, /busy preflight WAL checkpoint/);
   assert.match(source, /preflight SQLite quick_check failed/);
-  assert.match(source, /Classify only startup DDL/);
   assertOrderedWithin(
     functionBody('preflight_candidate'),
     '  dump_live_schema "$PREFLIGHT_DIR/before-schema.json"',
     '    --materialize-schema /preflight/before-schema.json \\',
     '  boot_preflight_database',
     '    --dump-schema /preflight/after.db > "$PREFLIGHT_DIR/after-schema.json"',
-    '    --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json 2>&1)"',
-    '  start_preflight_server',
-    '  docker run --rm --network host --entrypoint node \\',
-    '  docker rm -f "$PREFLIGHT_CONTAINER" >/dev/null',
+    '    --schema-only --before-schema /preflight/before-schema.json --after-schema /preflight/after-schema.json; then',
   );
-  assert.match(functionBody('start_preflight_server'), /verify_container_runtime_shape "\$PREFLIGHT_CONTAINER" "isolated candidate preflight"/);
-  assert.match(functionBody('verify_migration_clone'), /--before \/preflight\/before\.db --after \/preflight\/after\.db/);
 });
 
-test('preflight and live cutover bind the complete vault and QMD corpus without exemptions', () => {
-  assert.match(functionBody('verify_migration_clone'), /before-data\/vaults/);
-  assert.match(functionBody('verify_migration_clone'), /before-data\/qmd/);
-  assert.match(functionBody('verify_migration_clone'), /--before-root \/preflight\/before-data --after-root \/preflight\/after-data/);
-  assert.match(source, /"\$SNAPSHOT_DIR\/corpus\/vaults"/);
-  assert.match(source, /"\$SNAPSHOT_DIR\/corpus\/qmd"/);
-  assert.match(source, /--before-root \/snapshot\/corpus --after-root \/live-corpus/);
-  assert.match(source, /"\$DATA_DIR\/\.cascade\/vaults:\/live-corpus\/vaults:ro"/);
-  assert.match(source, /"\$DATA_DIR\/\.cascade\/qmd:\/live-corpus\/qmd:ro"/);
-  assert.doesNotMatch(source, /"\$DATA_DIR\/\.cascade:\/live-corpus:ro"/);
-  assert.match(source, /CASCADE_SQLITE_SNAPSHOT_TMPDIR=\/sqlite-scratch/);
-  assert.match(source, /sqlite-scratch:\/sqlite-scratch/);
-  assert.doesNotMatch(source, /allow-derived|ignore.*index\.sqlite/iu);
-  assert.match(source, /Candidate boot is schema-identical; rolling cutover is eligible/);
-  assert.match(source, /--schema-only/);
-  assert.match(source, /verify_live_schema_identity "\$ROLLING_CONTAINER"/);
-  assert.doesNotMatch(source, /verify_live_schema_identity "\$CONTAINER_NAME"/);
-  assert.doesNotMatch(functionBody('preflight_candidate'), /--require-identical/);
-  assert.doesNotMatch(functionBody('verify_live_schema_identity'), /backup_running_database/);
-});
-
-test('production gives runners ten minutes to reclaim after gated candidate startup', () => {
-  const configured = compose.match(/CASCADE_RUNNER_ORPHAN_RECLAIM_MS:\s*"(\d+)"/);
-  assert.ok(configured, 'production runner reclaim override is missing');
-  assert.equal(Number(configured[1]), 600_000);
-
-  const healthAttempts = source.match(/wait_for_url "\$HEALTH_URL" (\d+) "Elixir candidate"/);
-  assert.ok(healthAttempts, 'candidate health wait is missing');
-  assert.ok(Number(configured[1]) > Number(healthAttempts[1]) * 2_000);
-  assertOrderedWithin(
-    functionBody('maintenance_cutover'),
-    '  CANDIDATE_DATA_TOUCHED=1',
-    '  wait_for_url "$HEALTH_URL" 90 "Elixir candidate"',
-    '  verify_live_database',
-    '  DEPLOY_COMMITTED=1',
-  );
-  assert.match(source, /DEPLOY_COMMITTED=1\s+open_maintenance_gate/);
-});
-
-test('maintenance and cleanup operations fail closed and stay project scoped', () => {
-  assert.match(source, /install -m 0644 -o 0 -g 0 \/dev\/null "\$MAINTENANCE_MARKER"/);
-  assert.match(source, /if ! rm -f -- "\$MAINTENANCE_MARKER" \|\| \[\[ -e "\$MAINTENANCE_MARKER" \|\| -L "\$MAINTENANCE_MARKER" \]\]/);
-  assert.match(source, /consecutive=\$\(\(consecutive \+ 1\)\)/);
-  assert.match(source, /"\$consecutive" -ge 3/);
-  assert.match(source, /maintenance gate did not stabilize at HTTP 503/);
-  assert.match(source, /docker compose "\$\{COMPOSE_ARGS\[@\]\}" ps -aq[\s\S]*--status created --status exited --status dead cascade/);
-  assert.doesNotMatch(source, /--filter "label=com\.docker\.compose\.service=cascade"/);
+test('schema preflight accepts additions and rejects incompatibility before backup or cutover', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-schema-preflight-'));
+  try {
+    const script = `set -euo pipefail
+DATA_DIR="$1"
+CANDIDATE_IMAGE=fixture
+SCHEMA_CHANGED=0
+DRAINED_MIGRATION=0
+chown() { :; }
+dump_live_schema() { echo before > "$1"; }
+boot_preflight_database() { :; }
+docker() {
+  case "$*" in
+    *--materialize-schema*) touch "$PREFLIGHT_DIR/after.db" ;;
+    *--dump-schema*) echo after ;;
+    *--schema-only*) return "$TEST_COMPAT_STATUS" ;;
+    *) echo 'unexpected operation' >&2; return 99 ;;
+  esac
+}
+${functionBody('cleanup_preflight_clones')}
+${functionBody('preflight_candidate')}
+preflight_candidate
+echo "schema_changed=$SCHEMA_CHANGED"
+`;
+    for (const status of ['0', '1']) {
+      const result = spawnSync('bash', ['-c', script, 'test', directory], {
+        encoding: 'utf8', env: { ...process.env, TEST_COMPAT_STATUS: status },
+      });
+      assert.equal(result.status, Number(status), result.stderr);
+      if (status === '0') assert.match(result.stdout, /schema_changed=1/);
+      else {
+        assert.match(result.stderr, /unrecognized schema change/);
+        assert.doesNotMatch(result.stdout, /schema_changed=/);
+      }
+    }
+    assert.doesNotMatch(source, /maintenance_cutover|verify_migration_clone|verify_live_database|prune_cutover_snapshots/);
+    assertOrdered('preflight_candidate', '  if [[ "$SCHEMA_CHANGED" == "1" ]]; then backup_database_before_migration; fi', '  rolling_cutover');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('production secrets are regular root-owned mode 0600 before candidate startup', () => {
@@ -350,6 +285,323 @@ test('production secrets are regular root-owned mode 0600 before candidate start
     'secure_production_environment',
     'preflight_candidate',
   );
-  assert.match(functionBody('maintenance_cutover'), /CANDIDATE_DATA_TOUCHED=1/);
   assert.match(functionBody('rolling_cutover'), /start_rolling_container/);
+});
+
+test('repeat revision refreshes installers without cutover only with current live evidence', () => {
+  const start = source.indexOf('already_running_release() {');
+  const end = source.indexOf('AVAIL_KB=', start);
+  assert.ok(start > 0 && end > start, 'repeat deployment must have an early live-evidence guard');
+  const fastPath = source.slice(start, end);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-repeat-deploy-'));
+  const image = `sha256:${'a'.repeat(64)}`;
+  const revision = 'b'.repeat(40);
+  const script = `set -euo pipefail
+ROOT=/unused
+CONTAINER_NAME=cascade
+HEALTH_URL=http://unused
+REVISION=$TEST_REVISION
+docker() {
+  if [[ "$*" == "inspect --format {{.Image}} cascade" ]]; then
+    printf '%s' "$TEST_RUNNING_IMAGE"
+  elif [[ "$*" == *"{{.Id}}"* ]]; then
+    printf '%s' "$TEST_EXPECTED_IMAGE"
+  else
+    printf '%s' "$TEST_IMAGE_REVISION"
+  fi
+}
+curl() { printf '%s' "$TEST_HEALTH"; return "$TEST_CURL_STATUS"; }
+prune_cutover_snapshots() { echo RETENTION; }
+prune_build_cache() { :; }
+bash() { echo INSTALLERS; return "$TEST_INSTALLER_STATUS"; }
+${fastPath}
+echo CUTOVER
+`;
+  const run = (overrides = {}) => spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    env: { ...process.env, MAINTENANCE_MARKER: path.join(dir, 'maintenance'),
+      TEST_REVISION: revision, TEST_IMAGE_REVISION: revision,
+      TEST_RUNNING_IMAGE: image, TEST_EXPECTED_IMAGE: image,
+      TEST_HEALTH: '{"status":"ok"}', TEST_CURL_STATUS: '0', TEST_INSTALLER_STATUS: '0',
+      ...overrides },
+  });
+  try {
+    const healthy = run();
+    assert.equal(healthy.status, 0, healthy.stderr);
+    assert.match(healthy.stdout, /INSTALLERS/);
+    assert.doesNotMatch(healthy.stdout, /RETENTION/);
+    assert.doesNotMatch(healthy.stdout, /CUTOVER/);
+    for (const overrides of [
+      { TEST_RUNNING_IMAGE: `sha256:${'c'.repeat(64)}` },
+      { TEST_EXPECTED_IMAGE: '' },
+      { TEST_IMAGE_REVISION: 'd'.repeat(40) },
+      { TEST_HEALTH: '{"status":"error"}' },
+      { TEST_CURL_STATUS: '22' },
+    ]) {
+      const result = run(overrides);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /CUTOVER/);
+      assert.doesNotMatch(result.stdout, /INSTALLERS/);
+    }
+    const failedSync = run({ TEST_INSTALLER_STATUS: '17' });
+    assert.equal(failedSync.status, 17);
+    assert.doesNotMatch(failedSync.stdout, /CUTOVER|RETENTION/);
+    fs.writeFileSync(path.join(dir, 'maintenance'), '');
+    assert.match(run().stdout, /CUTOVER/);
+    fs.unlinkSync(path.join(dir, 'maintenance'));
+    fs.symlinkSync(path.join(dir, 'missing'), path.join(dir, 'maintenance'));
+    assert.match(run().stdout, /CUTOVER/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('late desktop completion cannot request an older production revision', () => {
+  assert.match(workflow, /gh api "repos\/\$GITHUB_REPOSITORY\/commits\/master" --jq .sha/);
+  assert.match(workflow, /"\$CURRENT_MASTER" != "\$REVISION"/);
+  assert.match(workflow, /echo "skipped=true" >> "\$GITHUB_OUTPUT"/);
+  assert.equal(workflow.match(/if: steps\.delivery\.outputs\.skipped != 'true'/g)?.length, 2);
+});
+
+test('desktop delivery checks current master after queueing and fails closed on lookup errors', () => {
+  const body = workflow.split('id: delivery')[1].split('        run: |\n')[1]
+    .split('\n      - name:')[0].replace(/^          /gm, '');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-desktop-delivery-'));
+  const revision = 'b'.repeat(40);
+  const run = (overrides = {}) => spawnSync('bash', ['-c', `
+    gh() { printf '%s' "$TEST_MASTER"; return "$TEST_LOOKUP_STATUS"; }
+    ssh() { echo SSH_CALLED; }
+${body}`], {
+    encoding: 'utf8',
+    env: { ...process.env, REVISION: revision, TEST_MASTER: revision,
+      TEST_LOOKUP_STATUS: '0', GITHUB_EVENT_NAME: 'workflow_run',
+      GITHUB_REPOSITORY: 'example/fizzer', GITHUB_OUTPUT: path.join(dir, 'output'),
+      GITHUB_STEP_SUMMARY: path.join(dir, 'summary'),
+      DEPLOY_PORT: '22', DEPLOY_USER: 'unused', DEPLOY_HOST: 'unused', ...overrides },
+  });
+  try {
+    const current = run();
+    assert.equal(current.status, 0, current.stderr);
+    assert.match(current.stdout, /SSH_CALLED/);
+    const stale = run({ TEST_MASTER: 'c'.repeat(40) });
+    assert.equal(stale.status, 0, stale.stderr);
+    assert.doesNotMatch(stale.stdout, /SSH_CALLED/);
+    assert.match(fs.readFileSync(path.join(dir, 'output'), 'utf8'), /skipped=true/);
+    const failed = run({ TEST_LOOKUP_STATUS: '1' });
+    assert.notEqual(failed.status, 0);
+    assert.doesNotMatch(failed.stdout, /SSH_CALLED/);
+    const push = run({ GITHUB_EVENT_NAME: 'push', TEST_MASTER: 'c'.repeat(40) });
+    assert.equal(push.status, 0, push.stderr);
+    assert.match(push.stdout, /SSH_CALLED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('retains warm build dependencies unless free disk space is under pressure', () => {
+  for (const [free, keep] of [[20 * 1024 * 1024, '8GB'], [4 * 1024 * 1024, '1GB']]) {
+    const result = spawnSync('bash', ['-c', `
+      set -euo pipefail
+      ROOT=/checkout
+      df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nroot 80000000 0 ${free} 0%% /\\n'; }
+      docker() { printf '%s\\n' "$*" >&2; }
+      ${functionBody('prune_build_cache')}
+      prune_build_cache
+    `], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, new RegExp('builder prune -af --keep-storage ' + keep));
+  }
+});
+
+test('preflight disposal releases large clones but retains rolling comparison evidence', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-clone-cleanup-'));
+  try {
+    for (const name of ['before.db', 'after.db', 'after.db-wal', 'before-schema.json', 'after-schema.json'])
+      fs.writeFileSync(path.join(directory, name), name);
+    for (const name of ['before-data', 'after-data', 'sqlite-scratch']) {
+      fs.mkdirSync(path.join(directory, name));
+      fs.writeFileSync(path.join(directory, name, 'corpus'), 'data');
+    }
+    const result = spawnSync('bash', ['-c', `set -euo pipefail
+      PREFLIGHT_DIR="$1"
+      ${functionBody('cleanup_preflight_clones')}
+      cleanup_preflight_clones`, 'test', directory], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readdirSync(directory).sort(), ['after-schema.json', 'before-schema.json']);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+const script = fileURLToPath(new URL('./sync-desktop-installers.sh', import.meta.url));
+const files = ['Fizzer-mac-arm64.dmg', 'Fizzer-mac-x64.dmg', 'Fizzer-Setup.exe',
+  'Fizzer-linux-x64.deb', 'Fizzer-linux-x64.rpm'];
+
+function runSync(t, permanentFailure) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-sync-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const downloads = path.join(root, 'downloads');
+  const release = path.join(root, 'release');
+  const bin = path.join(root, 'bin');
+  for (const dir of [downloads, release, bin]) fs.mkdirSync(dir);
+  for (const file of files) {
+    fs.writeFileSync(path.join(release, file), `new ${file}`);
+    fs.writeFileSync(path.join(downloads, file), `old ${file}`);
+  }
+  fs.writeFileSync(path.join(downloads, 'SHA256SUMS'), 'old manifest');
+  fs.writeFileSync(path.join(release, 'SHA256SUMS'), files.map(file =>
+    `${createHash('sha256').update(`new ${file}`).digest('hex')}  ${file}\n`).join(''));
+  fs.writeFileSync(path.join(bin, 'curl'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.env.PROBE_ROOT;
+const args = process.argv.slice(2);
+const url = new URL(args.find(arg => arg.startsWith('https://')));
+const file = path.basename(url.pathname);
+const counter = path.join(root, 'attempts');
+let attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+if (file === 'SHA256SUMS') fs.writeFileSync(counter, String(++attempt));
+fs.appendFileSync(path.join(root, 'requests'), url.href + '\\n');
+const target = args[args.indexOf('-o') + 1];
+fs.copyFileSync(path.join(root, 'release', file), target);
+if (file === 'Fizzer-Setup.exe' && (attempt === 1 || process.env.PERMANENT_FAILURE === '1')) {
+  fs.writeFileSync(target, 'stale installer');
+}
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const result = spawnSync('bash', [script], { encoding: 'utf8', env: {
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, PROBE_ROOT: root,
+    CASCADE_DOWNLOADS_DIR: downloads, FIZZER_DESKTOP_RELEASE_URL: 'https://example.test/desktop-beta',
+    PERMANENT_FAILURE: permanentFailure ? '1' : '0',
+  } });
+  return { result, root, downloads };
+}
+
+test('installer refresh retries a mixed rolling release and publishes only a verified set', t => {
+  const { result, root, downloads } = runSync(t, false);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Fizzer-Setup.exe: FAILED/);
+  assert.match(result.stdout, /Refreshed verified desktop installers/);
+  assert.equal(fs.readFileSync(path.join(root, 'attempts'), 'utf8'), '2');
+  for (const file of files) assert.equal(fs.readFileSync(path.join(downloads, file), 'utf8'), `new ${file}`);
+  const requests = fs.readFileSync(path.join(root, 'requests'), 'utf8').trim().split('\n').map(url => new URL(url));
+  assert.equal(requests.length, 12);
+  assert.ok(requests.every(url => url.searchParams.get('refresh')));
+  assert.notEqual(requests[0].search, requests[6].search);
+  assert.equal(fs.readdirSync(downloads).length, 6);
+});
+
+test('persistent checksum failure remains fatal and preserves every existing installer', t => {
+  const { result, root, downloads } = runSync(t, true);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /failed checksum verification after 3 complete downloads/);
+  assert.equal(fs.readFileSync(path.join(root, 'attempts'), 'utf8'), '3');
+  for (const file of files) assert.equal(fs.readFileSync(path.join(downloads, file), 'utf8'), `old ${file}`);
+  assert.equal(fs.readFileSync(path.join(downloads, 'SHA256SUMS'), 'utf8'), 'old manifest');
+  assert.equal(fs.readdirSync(downloads).length, 6);
+});
+
+test('healthy production edge returns after one probe without sleeping', () => {
+  const result = spawnSync('bash', ['-c', `set -euo pipefail
+DEPLOY_DOMAIN=example.test
+curl() {
+  case "$*" in
+    *api/health*) printf 200 ;;
+    *app.html*) printf '<div id="root"></div><script src="assets/main-app.js"></script>' ;;
+    *) printf '0{"sid":"probe"}' ;;
+  esac
+}
+sleep() { echo UNNECESSARY_WAIT; return 99; }
+${functionBody('verify_reopened_production_edge')}
+verify_reopened_production_edge
+`], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /UNNECESSARY_WAIT/);
+});
+
+test('mission migration drains before snapshot and never rolls back after reopening', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-drained-cutover-'));
+  try {
+    for (const fail of ['', 'health']) {
+      const log = path.join(directory, 'events');
+      fs.writeFileSync(log, '');
+      const script = `set -euo pipefail
+MAINTENANCE_MARKER="$1/maintenance"
+EVENT_LOG="$1/events"
+CONTAINER_NAME=cascade
+CANDIDATE_IMAGE=candidate
+CERTIFIED_IMAGE_ID=sha256:fixture
+COMPOSE_ARGS=()
+HEALTH_URL=http://fixture
+DRAINED_STARTED=0
+DRAINED_SNAPSHOT_READY=0
+DEPLOY_COMMITTED=0
+record() { echo "$*" >> "$EVENT_LOG"; }
+docker() {
+  if [[ "$1" == inspect ]]; then echo sha256:fixture; return; fi
+  [[ -e "$MAINTENANCE_MARKER" ]] || return 99
+  record "docker $*"
+}
+backup_database_before_migration() { record snapshot; }
+verify_container_runtime_shape() { record shape; }
+wait_for_url() { record health; [[ "$FAIL" != health ]]; }
+verify_live_schema_identity() { record schema; }
+check_engine_io() { record realtime; }
+verify_authenticated_live_candidate() { record auth; }
+verify_reopened_production_edge() {
+  [[ ! -e "$MAINTENANCE_MARKER" && "$DEPLOY_COMMITTED" == 1 ]]
+  record public
+}
+${functionBody('drained_mission_cutover')}
+trap 'echo "committed=$DEPLOY_COMMITTED snapshot=$DRAINED_SNAPSHOT_READY" >> "$EVENT_LOG"' EXIT
+drained_mission_cutover
+`;
+      const result = spawnSync('bash', ['-c', script, 'test', directory], { encoding: 'utf8', env: { ...process.env, FAIL: fail } });
+      assert.equal(result.status, fail ? 1 : 0, result.stderr);
+      const events = fs.readFileSync(log, 'utf8');
+      assert.ok(events.indexOf('docker stop') < events.indexOf('snapshot'));
+      assert.ok(events.indexOf('snapshot') < events.indexOf('docker compose'));
+      if (fail) {
+        assert.match(events, /committed=0 snapshot=1/);
+        assert.ok(fs.existsSync(path.join(directory, 'maintenance')));
+        assert.doesNotMatch(events, /public/);
+      } else {
+        assert.match(events, /auth\ndocker tag.*\npublic\ncommitted=1 snapshot=1/);
+      }
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('failed drained migration restores the snapshot before reopening the old image', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-drained-rollback-'));
+  try {
+    const snapshot = path.join(directory, 'snapshot');
+    fs.mkdirSync(snapshot);
+    fs.writeFileSync(path.join(snapshot, 'docs.db'), 'original database');
+    fs.writeFileSync(path.join(snapshot, 'docs.db.sha256'), `${createHash('sha256').update('original database').digest('hex')}  docs.db\n`);
+    fs.writeFileSync(path.join(directory, 'docs.db'), 'migrated database');
+    fs.writeFileSync(path.join(directory, 'docs.db-wal'), 'candidate WAL');
+    fs.writeFileSync(path.join(directory, 'maintenance'), '');
+    const script = `set -euo pipefail
+DATA_DIR="$1"
+LIVE_DB="$1/docs.db"
+SNAPSHOT_DIR="$1/snapshot"
+MAINTENANCE_MARKER="$1/maintenance"
+DRAINED_SNAPSHOT_READY=1
+ROLLBACK_IMAGE=old
+CONTAINER_NAME=cascade
+COMPOSE_ARGS=()
+HEALTH_URL=http://fixture
+container_exists() { return 0; }
+chown() { :; }
+docker() { [[ -e "$MAINTENANCE_MARKER" ]]; }
+wait_for_url() { [[ "$(cat "$LIVE_DB")" == 'original database' ]]; }
+verify_reopened_production_edge() { [[ ! -e "$MAINTENANCE_MARKER" ]]; }
+${functionBody('rollback_drained_cutover')}
+rollback_drained_cutover
+`;
+    const result = spawnSync('bash', ['-c', script, 'test', directory], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(directory, 'docs.db'), 'utf8'), 'original database');
+    assert.ok(!fs.existsSync(path.join(directory, 'docs.db-wal')));
+    assert.ok(!fs.existsSync(path.join(directory, 'maintenance')));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

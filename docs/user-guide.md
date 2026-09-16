@@ -90,8 +90,8 @@ npm run dev-headless
 
 Local runtime data is stored outside the checkout by default:
 
-- database: `~/.cascade/docs.db`;
-- vault files and assets: `~/.cascade/vaults/`.
+- database: `~/.fizzer/docs.db`;
+- vault files and assets: `~/.fizzer/vaults/`.
 
 ## The main workspace
 
@@ -341,25 +341,29 @@ Set a project folder when you want an agent to edit a repository or inspect a de
 
 ### Coordinate multiple agents
 
-A channel may designate one agent as its coordinator. The coordinator can answer simple questions directly and create a mission for non-trivial work. It can delegate tasks to other registered agents or to isolated anonymous worker sessions. Those workers execute a single assigned task; they do not become extra coordinators.
+A channel may designate one agent as its coordinator. The coordinator can answer simple questions directly and create a mission for non-trivial work. By default it delegates to its own anonymous worker sessions, inheriting its provider, model, profile and reasoning settings. Review uses a separate fresh worker session. Explicit human assignments to other registered agents remain supported; there is no automatic fallback to them. Those workers execute a single assigned task; they do not become extra coordinators. Existing tasks and history are not reassigned.
 
 Enable coordination when the channel benefits from a single dispatcher—for example, a project room with one planning agent and several specialist agents. Do not enable several competing coordinators for the same channel.
+
+**Suggest what to work on next** is off by default. When enabled, the coordinator considers useful next work after completion and when you return, without interrupting an active request. It may suggest one grounded task or record why no suggestion is appropriate. Accepting authorizes only the proposed task; declining preserves your reason and suppresses that topic. An unanswered suggestion waits for your response.
 
 ## Missions and durable work
 
 A **mission** is a durable task record projected into the chat transcript. It is useful when a request has multiple steps, may take a long time, needs delegation, or requires review after workers finish.
 
+Once you authorize work in chat, the coordinator can proceed within that scope without another manual mission approval. Agents maintain the brief, independently review the work, and verify delivery. Material scope changes still need your decision, and Stop remains authoritative.
+
 Typical mission states are:
 
-- pending or running;
+- active while tasks are pending or running;
 - reviewing after worker output arrives;
 - attention when a task fails or is blocked;
-- completed only after the coordinator explicitly finishes it;
+- completed after coordinator verification, or qualifying evidence for a mission configured for automatic completion;
 - canceled when stopped.
 
 Open **Missions** in a channel to inspect mission history. Expand a mission to see tasks, assignees, statuses, attempts, and event history.
 
-A coordinator can review worker evidence, retry a task, or finish the mission with a concise summary. Worker completion alone does not mean the mission is finished; the coordinator should verify and integrate the result.
+A coordinator can review worker evidence, retry a task, or finish a reviewed mission with a concise summary and verification. Before retrying, inspect the existing task and completed work; a retry starts a new attempt and must respect Stop. The assigned worker owns integration and authorized delivery. See [Agent runtime](https://github.com/quavertron/fizzer/blob/master/docs/agent-runtime.md#chat-first-orchestration) for completion and recovery details.
 
 Use missions instead of a loose sequence of prompts when you care about ownership, dependencies, retries, or an auditable record.
 

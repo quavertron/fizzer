@@ -11,11 +11,12 @@ defmodule Cascade.Chat.Agents do
   def list_vault(user_id, vault_id) do
     if VaultMembers.role(vault_id, user_id) do
       purge_expired_sessions!()
+      remove_departed_owners(vault_id)
 
       agents =
         SQL.all(
           """
-          SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.mention,
+          SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.color,va.mention,
             va.model,va.cwd,va.context_prompt,va.hermes_profile,va.hermes_safe_mode,
             va.identity_scope,va.expires_at,
             va.owner_user_id,u.username,va.created_at,va.updated_at
@@ -59,7 +60,7 @@ defmodule Cascade.Chat.Agents do
 
       existing =
         SQL.one(
-          "SELECT owner_user_id,avatar_url,identity_scope,expires_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
+          "SELECT owner_user_id,avatar_url,identity_scope,expires_at,color FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
           [id, user_id, vault_id]
         )
 
@@ -81,6 +82,34 @@ defmodule Cascade.Chat.Agents do
     end
   rescue
     error in Exqlite.Error -> {:error, Exception.message(error)}
+  end
+
+  @doc "Detach profiles whose owners have left this vault, including historical leftovers."
+  def remove_departed_owners(vault_id) do
+    SQL.transaction(fn ->
+      SQL.exec(
+        """
+        INSERT OR IGNORE INTO vault_agent_exclusions(vault_id,vault_agent_id)
+        SELECT ?,va.id FROM vault_agents va
+        WHERE va.owner_user_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM vault_members vm WHERE vm.vault_id=? AND vm.user_id=va.owner_user_id)
+          AND (va.vault_id=? OR EXISTS(
+            SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=va.id AND m.vault_id=?
+          ))
+        """,
+        [vault_id, vault_id, vault_id, vault_id]
+      )
+
+      SQL.exec(
+        """
+        DELETE FROM chat_agent_members WHERE vault_id=? AND vault_agent_id IN (
+          SELECT va.id FROM vault_agents va WHERE va.owner_user_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM vault_members vm WHERE vm.vault_id=? AND vm.user_id=va.owner_user_id)
+        )
+        """,
+        [vault_id, vault_id]
+      )
+    end)
   end
 
   @doc "Unlinks an agent from one vault; the owner-scoped profile and other vault memberships survive."
@@ -134,13 +163,15 @@ defmodule Cascade.Chat.Agents do
     purge_expired_sessions!()
 
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
+      remove_departed_owners(route.sourceVaultId)
+
       members =
         SQL.all(
           """
-            SELECT m.id,m.vault_agent_id,va.owner_user_id,m.agent_id,m.display_name,m.avatar_url,
+            SELECT m.id,m.vault_agent_id,va.owner_user_id,m.agent_id,m.display_name,m.avatar_url,va.color,
               m.mention,m.model,m.reasoning_effort,m.priority_service_tier,m.cwd,m.context_prompt,
               m.taggable_by_agents,m.reply_to_every_message,m.orchestrator,m.pingable_by_others,
-              m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode FROM chat_agent_members m
+              m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode,m.next_step_suggestions FROM chat_agent_members m
             JOIN vault_agents va ON va.id=m.vault_agent_id
             WHERE m.channel_id=? ORDER BY m.created_at,m.rowid
           """,
@@ -160,6 +191,27 @@ defmodule Cascade.Chat.Agents do
         flags \\ %{},
         restore_excluded \\ false
       ) do
+    put_channel_member(
+      user_id,
+      vault_id,
+      channel_id,
+      identity_id,
+      flags,
+      restore_excluded,
+      :owner
+    )
+  end
+
+  # Only ensure_vault_wide may materialize the already-authorized vault roster.
+  defp put_channel_member(
+         user_id,
+         vault_id,
+         channel_id,
+         identity_id,
+         flags,
+         restore_excluded,
+         access
+       ) do
     with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),
          [
            id,
@@ -167,6 +219,7 @@ defmodule Cascade.Chat.Agents do
            agent_id,
            display_name,
            avatar_url,
+           existing_color,
            default_mention,
            default_model,
            default_cwd,
@@ -174,10 +227,10 @@ defmodule Cascade.Chat.Agents do
            owner_id | _
          ] <-
            SQL.one(
-             "SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
+             "SELECT id,vault_id,agent_id,display_name,avatar_url,color,mention,model,cwd,context_prompt,owner_user_id,created_at,updated_at FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=? OR EXISTS(SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=vault_agents.id AND m.vault_id=?)) AND (identity_scope!='session' OR julianday(expires_at)>julianday('now'))",
              [identity_id, user_id, route.localVaultId, route.localVaultId]
            ),
-         :ok <- manage_identity(owner_id, user_id),
+         :ok <- authorize_channel_member(access, owner_id, user_id),
          :ok <- allow_vault_link(route.localVaultId, identity_id, restore_excluded),
          mention <- Schema.normalize_mention(default_mention, agent_id),
          model <- value(flags, "model", default_model) |> to_string() |> String.trim(),
@@ -186,7 +239,7 @@ defmodule Cascade.Chat.Agents do
          :ok <- member_handle_available(route.sourceChannelId, identity_id, mention) do
       existing =
         SQL.one(
-          "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? ORDER BY rowid LIMIT 1",
+          "SELECT id,reasoning_effort,priority_service_tier,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions FROM chat_agent_members WHERE vault_agent_id=? AND channel_id=? ORDER BY rowid LIMIT 1",
           [identity_id, route.sourceChannelId]
         )
 
@@ -204,6 +257,10 @@ defmodule Cascade.Chat.Agents do
 
       taggable = boolean(flags, "taggableByAgents", existing_value(existing, 3, 0) != 0)
       orchestrator = boolean(flags, "orchestrator", existing_value(existing, 5, 0) != 0)
+
+      next_step_suggestions =
+        orchestrator and
+          boolean(flags, "nextStepSuggestions", existing_value(existing, 11, 0) != 0)
 
       reply_every =
         orchestrator or boolean(flags, "replyToEveryMessage", existing_value(existing, 4, 0) != 0)
@@ -225,9 +282,33 @@ defmodule Cascade.Chat.Agents do
       with :ok <-
              coordinator_available(route.sourceChannelId, registration_id, owner_id, orchestrator) do
         SQL.transaction(fn ->
+          was_enabled =
+            SQL.one(
+              "SELECT next_step_suggestions FROM chat_agent_members WHERE channel_id=? AND id=?",
+              [route.sourceChannelId, registration_id]
+            ) == [1]
+
           if restore_excluded do
             SQL.exec("DELETE FROM vault_agent_exclusions WHERE vault_id=? AND vault_agent_id=?", [
               route.localVaultId,
+              identity_id
+            ])
+          end
+
+          # Color is a vault-agent-level property; the owner editing an existing
+          # agent must have it persisted here (add_to_channel otherwise only
+          # writes the channel registration).
+          if user_id == owner_id do
+            requested_color =
+              value(flags, "color", existing_color) |> to_string() |> String.trim() |> String.upcase()
+
+            new_color =
+              if Regex.match?(~r/^[0-9A-F]{6}$/, requested_color),
+                do: requested_color,
+                else: existing_color
+
+            SQL.exec("UPDATE vault_agents SET color=?,updated_at=datetime('now') WHERE id=?", [
+              new_color,
               identity_id
             ])
           end
@@ -236,8 +317,8 @@ defmodule Cascade.Chat.Agents do
             """
             INSERT INTO chat_agent_members(id,channel_id,vault_id,vault_agent_id,agent_id,display_name,avatar_url,
               mention,model,reasoning_effort,priority_service_tier,cwd,context_prompt,taggable_by_agents,
-              reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,final_reply_only,yolo,conversation_id,next_step_suggestions)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(channel_id,vault_agent_id) DO UPDATE SET
               agent_id=excluded.agent_id,display_name=excluded.display_name,avatar_url=excluded.avatar_url,
               mention=excluded.mention,model=excluded.model,reasoning_effort=excluded.reasoning_effort,
@@ -246,6 +327,7 @@ defmodule Cascade.Chat.Agents do
               reply_to_every_message=excluded.reply_to_every_message,orchestrator=excluded.orchestrator,
               pingable_by_others=excluded.pingable_by_others,ambient_group_chat=excluded.ambient_group_chat,
               final_reply_only=excluded.final_reply_only,yolo=excluded.yolo,
+              next_step_suggestions=excluded.next_step_suggestions,
               conversation_id=excluded.conversation_id,updated_at=datetime('now')
             """,
             [
@@ -269,9 +351,14 @@ defmodule Cascade.Chat.Agents do
               bool_int(ambient),
               bool_int(final_reply_only),
               bool_int(yolo),
-              conversation_id
+              conversation_id,
+              bool_int(next_step_suggestions)
             ]
           )
+
+          # Scheduling and disabling suggestions must commit with the settings.
+          observer = Application.fetch_env!(:cascade_elixir, :agent_suggestions_observer)
+          observer.(route.sourceChannelId, registration_id, next_step_suggestions, was_enabled)
         end)
 
         [saved_registration_id] =
@@ -296,6 +383,9 @@ defmodule Cascade.Chat.Agents do
       _ -> {:error, "Vault agent not found"}
     end
   end
+
+  defp authorize_channel_member(:owner, owner_id, user_id), do: manage_identity(owner_id, user_id)
+  defp authorize_channel_member(:vault_roster, _owner_id, _user_id), do: :ok
 
   defp allow_vault_link(_vault_id, _identity_id, true), do: :ok
 
@@ -390,20 +480,33 @@ defmodule Cascade.Chat.Agents do
   end
 
   def ensure_vault_wide(user_id, vault_id, channel_id) do
-    with {:ok, available} <- list_vault(user_id, vault_id) do
-      linked = linked_identity_ids(vault_id)
+    SQL.transaction(fn ->
+      with {:ok, _route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),
+           {:ok, members} <- list_members(channel_id, user_id) do
+        existing = MapSet.new(members, & &1.vaultAgentId)
 
-      Enum.each(available, fn identity ->
-        if MapSet.member?(linked, identity.id) do
-          case add_to_channel(user_id, vault_id, channel_id, identity.id) do
-            {:ok, _} -> :ok
-            _ -> :ok
+        linked_identity_ids(vault_id)
+        |> MapSet.difference(existing)
+        |> Enum.reduce_while(:ok, fn identity_id, :ok ->
+          case put_channel_member(
+                 user_id,
+                 vault_id,
+                 channel_id,
+                 identity_id,
+                 %{},
+                 false,
+                 :vault_roster
+               ) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, _} = error -> {:halt, error}
           end
+        end)
+        |> case do
+          :ok -> list_members(channel_id, user_id)
+          {:error, _} = error -> error
         end
-      end)
-
-      list_members(channel_id, user_id)
-    end
+      end
+    end)
   end
 
   defp linked_identity_ids(vault_id) do
@@ -459,6 +562,14 @@ defmodule Cascade.Chat.Agents do
   end
 
   defp persist_identity(user_id, vault_id, id, agent_id, mention, input, existing) do
+    color =
+      value(input, "color", existing_value(existing, 4, "FFFFFF"))
+      |> to_string()
+      |> String.trim()
+      |> String.upcase()
+
+    color = if Regex.match?(~r/^[0-9A-F]{6}$/, color), do: color, else: "FFFFFF"
+
     display_name =
       value(input, "displayName", "") |> to_string() |> String.trim() |> nonblank(agent_id)
 
@@ -482,10 +593,11 @@ defmodule Cascade.Chat.Agents do
     SQL.transaction(fn ->
       SQL.exec(
         """
-        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,
+        INSERT INTO vault_agents(id,vault_id,agent_id,display_name,avatar_url,color,mention,model,cwd,context_prompt,
           hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
           agent_id=excluded.agent_id,display_name=excluded.display_name,avatar_url=excluded.avatar_url,
+          color=CASE WHEN ? THEN excluded.color ELSE vault_agents.color END,
           mention=excluded.mention,model=excluded.model,cwd=excluded.cwd,context_prompt=excluded.context_prompt,
           hermes_profile=excluded.hermes_profile,hermes_safe_mode=excluded.hermes_safe_mode,
           identity_scope=excluded.identity_scope,expires_at=excluded.expires_at,
@@ -497,6 +609,7 @@ defmodule Cascade.Chat.Agents do
           agent_id,
           display_name,
           avatar,
+          color,
           mention,
           model,
           cwd,
@@ -505,7 +618,8 @@ defmodule Cascade.Chat.Agents do
           bool_int(hermes_safe_mode),
           identity_scope,
           expires_at,
-          user_id
+          user_id,
+          bool_int(Map.has_key?(input, "color") or Map.has_key?(input, :color))
         ]
       )
 
@@ -532,6 +646,7 @@ defmodule Cascade.Chat.Agents do
          agent_id,
          display_name,
          avatar,
+         color,
          mention,
          model,
          cwd,
@@ -551,6 +666,7 @@ defmodule Cascade.Chat.Agents do
       agentId: agent_id,
       displayName: display_name,
       avatarUrl: avatar || "",
+      color: color || "FFFFFF",
       mention: mention,
       model: model || "",
       cwd: cwd || "",
@@ -573,6 +689,7 @@ defmodule Cascade.Chat.Agents do
          agent_id,
          name,
          avatar,
+         color,
          mention,
          model,
          effort,
@@ -588,7 +705,8 @@ defmodule Cascade.Chat.Agents do
          yolo,
          conversation_id,
          hermes_profile,
-         hermes_safe_mode
+         hermes_safe_mode,
+         next_step_suggestions
        ]) do
     %{
       id: id,
@@ -597,6 +715,7 @@ defmodule Cascade.Chat.Agents do
       agentId: agent_id,
       displayName: name,
       avatarUrl: avatar || "",
+      color: color || "FFFFFF",
       mention: mention,
       model: model || "",
       reasoningEffort: effort || "",
@@ -606,6 +725,7 @@ defmodule Cascade.Chat.Agents do
       taggableByAgents: taggable != 0,
       replyToEveryMessage: reply_every != 0,
       orchestrator: orchestrator != 0,
+      nextStepSuggestions: next_step_suggestions != 0,
       pingableByOthers: pingable != 0,
       ambientGroupChat: ambient != 0,
       finalReplyOnly: final_reply_only != 0,

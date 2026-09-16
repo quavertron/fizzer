@@ -1,0 +1,1161 @@
+defmodule CascadeWeb.OrchestrationMissionExecutionTest do
+  use ExUnit.Case, async: false
+
+  import Plug.Conn
+  import Plug.Test
+
+  alias Cascade.Accounts.SQL
+  alias Cascade.Auth.Token
+  alias Cascade.Chat.{Agents, Channel, Messages}
+  alias Cascade.Content.Store, as: ContentStore
+  alias Cascade.Missions.Dispatches
+  alias Cascade.Realtime.{Hub, Session}
+  alias Cascade.Realtime.Protocol.{EngineIO, SocketIO}
+  alias Cascade.Runs.Store
+
+  setup do
+    worker = Process.whereis(Cascade.Missions.DispatchReannouncer)
+    :sys.suspend(worker)
+    Process.unregister(Cascade.Missions.DispatchReannouncer)
+
+    on_exit(fn ->
+      Process.register(worker, Cascade.Missions.DispatchReannouncer)
+      :sys.resume(worker)
+    end)
+
+    suffix = System.unique_integer([:positive])
+    owner = user!(900_000 + suffix, "dispatch_owner_#{suffix}")
+    guest = user!(1_900_000 + suffix, "dispatch_guest_#{suffix}")
+    owner_vault = ContentStore.create_vault(owner.id, %{name: "Owner #{suffix}"})
+    guest_vault = ContentStore.create_vault(guest.id, %{name: "Guest #{suffix}"})
+
+    owner_channel =
+      ContentStore.create_note(owner_vault.id, owner.id, %{
+        title: "Owner room",
+        content: "cascade://chat-channel"
+      })
+
+    guest_channel =
+      ContentStore.create_note(guest_vault.id, guest.id, %{
+        title: "Guest projection",
+        content: "cascade://chat-channel"
+      })
+
+    assert {:ok, _route} =
+             Channel.link(
+               owner_vault.id,
+               owner_channel.id,
+               guest_vault.id,
+               guest_channel.id,
+               guest.id
+             )
+
+    {:ok, identity} =
+      Agents.upsert_identity(owner.id, owner_vault.id, %{
+        agentId: "codex",
+        displayName: "Sol",
+        mention: "sol-#{suffix}",
+        model: "gpt-5.6-sol",
+        cwd: "/owner/registration"
+      })
+
+    {:ok, registration} =
+      Agents.add_to_channel(owner.id, owner_vault.id, owner_channel.id, identity.id, %{
+        reasoningEffort: "high",
+        priorityServiceTier: true,
+        pingableByOthers: true,
+        yolo: true,
+        conversationId: "owner-conversation-#{suffix}"
+      })
+
+    assert {:ok, %{cwd: "/owner/channel"}} =
+             Channel.update_settings(owner_channel.id, owner.id, %{cwd: "/owner/channel"})
+
+    {:ok, source_message} =
+      Messages.create(guest, guest_vault.id, guest_channel.id, %{
+        id: "dispatch-source-#{suffix}",
+        body: "@#{registration.mention} finish the owner-side work"
+      })
+
+    {:ok, dispatch} =
+      Dispatches.create(guest.id, guest_channel.id, source_message, registration.id,
+        reasoning_effort: "max"
+      )
+
+    Dispatches.fail(dispatch.id, "Fixture admission consumed")
+
+    sid = "chat-dispatch-runner-#{suffix}"
+
+    {:ok, ^sid, session_pid} =
+      Cascade.Realtime.start_session(sid: sid, domain: Cascade.Realtime.DomainAdapter)
+
+    assert {:ok, _open_packet} = Session.poll(sid, 1_000)
+    connect_runner!(sid, Token.sign_user(owner))
+    assert {:ok, _connect_packet} = Session.poll(sid, 1_000)
+    register_runner!(sid)
+    assert {:ok, registered_packet} = Session.poll(sid, 1_000)
+    assert registered_packet =~ "runner:registered"
+
+    on_exit(fn ->
+      Hub.unregister_runner(owner.id, sid)
+
+      if Process.alive?(session_pid) do
+        DynamicSupervisor.terminate_child(Cascade.Realtime.SessionSupervisor, session_pid)
+      end
+
+      SQL.exec("DELETE FROM vaults WHERE id IN (?,?)", [owner_vault.id, guest_vault.id])
+      SQL.exec("DELETE FROM users WHERE id IN (?,?)", [owner.id, guest.id])
+      File.rm_rf!(owner_vault.root_path)
+      File.rm_rf!(guest_vault.root_path)
+    end)
+
+    %{
+      owner: owner,
+      guest: guest,
+      owner_vault: owner_vault,
+      guest_vault: guest_vault,
+      owner_channel: owner_channel,
+      guest_channel: guest_channel,
+      registration: registration,
+      dispatch: dispatch,
+      sid: sid
+    }
+  end
+
+  for limit <- [2, "unlimited"] do
+  test "scoped recovery (#{limit}) blocks old disconnected dispatch and queued transport on reconnect without canceling retained work", ctx do
+    alias Cascade.Missions.ExecutionAdmission
+    alias Cascade.Runs.RunnerLifecycle
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    [encoded, attempts] = Store.pending_delivery(run.id, ctx.owner.id)
+    baseline = SQL.all("SELECT id,status FROM runs ORDER BY id")
+    dispatches = SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id")
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => unquote(limit), "tasks" => [], "retainedRuns" => []}]}
+    Application.put_env(:cascade_elixir, :execution_admission, policy)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    refute RunnerLifecycle.online?(ctx.owner.id)
+    RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    register_runner!(ctx.sid)
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    refute packets =~ "run:delegate"
+    assert RunnerLifecycle.online?(ctx.owner.id)
+    RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    Session.emit(ctx.sid, "/runners", "run:delegate", [Jason.decode!(encoded)])
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    refute packets =~ "run:delegate"
+    assert Store.pending_delivery(run.id, ctx.owner.id) == [encoded, attempts]
+    assert SQL.all("SELECT id,status FROM runs ORDER BY id") == baseline
+    assert SQL.all("SELECT id,run_id,failed_at FROM chat_agent_dispatches ORDER BY id") == dispatches
+    retained = %{"runId" => run.id, "vaultId" => ctx.owner_vault.id, "dispatchId" => ctx.dispatch.id}
+    Application.put_env(:cascade_elixir, :execution_admission, put_in(policy, ["owners", Access.at(0), "retainedRuns"], [retained]))
+    assert ExecutionAdmission.run_allowed?(run.id, ctx.owner.id)
+    assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
+  end
+
+  test "future owner work (#{limit}) survives disconnect and queued transport without reviving old work", ctx do
+    alias Cascade.Missions.ExecutionAdmission
+    alias Cascade.Runs.RunnerLifecycle
+    prior = Application.get_env(:cascade_elixir, :execution_admission)
+    on_exit(fn -> Application.put_env(:cascade_elixir, :execution_admission, prior) end)
+    [seq] = SQL.one("SELECT MAX(rowid) FROM chat_messages")
+    policy = %{"version" => 1, "owners" => [%{"ownerId" => ctx.owner.id, "maxConcurrent" => unquote(limit), "tasks" => [], "retainedRuns" => [], "futureOwnerMessageAfterSeq" => seq}]}
+    Application.put_env(:cascade_elixir, :execution_admission, policy)
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{body: "New owner request, fixture transport only"})
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    assert ExecutionAdmission.dispatch_allowed?(dispatch.id)
+    refute ExecutionAdmission.dispatch_allowed?(ctx.dispatch.id)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    assert {:retry, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch.id]) == [nil]
+    register_runner!(ctx.sid)
+    assert {:ok, _} = Session.poll(ctx.sid, 1_000)
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    [encoded, _] = Store.pending_delivery(run.id, ctx.owner.id)
+    Hub.unregister_runner(ctx.owner.id, ctx.sid)
+    register_runner!(ctx.sid)
+    assert {:ok, _} = Session.poll(ctx.sid, 1_000)
+    assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    Session.emit(ctx.sid, "/runners", "run:delegate", [Jason.decode!(encoded)])
+    assert {:ok, packets} = Session.poll(ctx.sid, 1_000)
+    assert packets =~ "run:delegate"
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch.id]) == [1]
+    assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [ctx.dispatch.id]) == [nil]
+  end
+  end
+
+  @tag :race_audit
+  test "two BEAM processes claim one dispatch without duplicate delegation", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    directory = Path.join(System.tmp_dir!(), "fizzer-process-race-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+    config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
+    paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
+    script = Path.expand("../support/dispatch_process_probe.exs", __DIR__)
+    tasks = for index <- 1..2 do
+      Task.async(fn ->
+        {output, status} = System.cmd(System.find_executable("elixir"),
+          paths ++ [script, config, directory, to_string(index), ctx.dispatch.id, to_string(ctx.owner.id)],
+          env: [{"ERL_FLAGS", "+S 2:2"}], stderr_to_stdout: true)
+        if status != 0, do: IO.puts(output)
+        {output, status}
+      end)
+    end
+    try do
+      eventually(fn -> Enum.all?(1..2, &File.exists?(Path.join(directory, "ready-#{&1}"))) end, 1_500)
+    after
+      File.write!(Path.join(directory, "release"), "go")
+    end
+    for task <- tasks do
+      {output, status} = Task.await(task, 20_000)
+      assert status == 0, output
+    end
+    results = for index <- 1..2, do: directory |> Path.join("result-#{index}.json") |> File.read!() |> Jason.decode!()
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [ctx.dispatch.id]) == [1]
+    assert Enum.sum(Enum.map(results, & &1["delegations"])) == 1, inspect(results)
+  end
+
+  @tag :race_audit
+  test "revocation prevents queued runner work and delivery retries from reaching the runner", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    # Ensure this is an already-enqueued packet, not merely an in-flight cast.
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    # The simulated runner has not polled or acknowledged the queued work.
+    SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    assert {:error, _} = Dispatches.for_execution(ctx.dispatch.id)
+    Cascade.Runs.RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    refute packet =~ "run:delegate", "Revoked guest work was still delivered to the owner's runner"
+  end
+
+  for transport <- [:enqueue, :waiting_poll, :websocket, :upgrade] do
+    @tag delivery_transport: transport
+    test "revocation blocks stale delivery at #{transport}", ctx do
+      alias Cascade.Runs.RunnerLifecycle
+      SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+      assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+      [encoded, attempts] = Store.pending_delivery(run.id, ctx.owner.id)
+      payload = Jason.decode!(encoded)
+      assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+
+      if ctx.delivery_transport != :upgrade do
+        assert {:ok, initial} = Session.poll(ctx.sid, 1_000)
+        assert initial =~ "run:delegate"
+      end
+
+      if ctx.delivery_transport in [:upgrade, :websocket] do
+        assert {:ok, []} = Session.attach_websocket(ctx.sid, self(), :upgrade)
+        assert {:ok, _} = Session.websocket_packet(ctx.sid, "2probe", self())
+      end
+      if ctx.delivery_transport == :websocket do
+        assert {:ok, []} = Session.websocket_packet(ctx.sid, "5", self())
+      end
+      poll = if ctx.delivery_transport == :waiting_poll do
+        task = Task.async(fn -> Session.poll(ctx.sid, 2_000) end)
+        {:ok, pid} = Cascade.Realtime.lookup(ctx.sid)
+        eventually(fn -> :sys.get_state(pid).poll_waiter != nil end)
+        task
+      end
+
+      SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+      refute RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+      refute RunnerLifecycle.delegate(ctx.owner.id, payload)
+      RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+      assert Store.pending_delivery(run.id, ctx.owner.id) == [encoded, attempts]
+      # A stale producer bypassing the lifecycle is still checked by transport.
+      Session.emit(ctx.sid, "/runners", "run:delegate", [payload])
+      case ctx.delivery_transport do
+        :upgrade ->
+          assert {:ok, packets} = Session.websocket_packet(ctx.sid, "5", self())
+          refute Enum.join(packets) =~ "run:delegate"
+        :websocket ->
+          assert_receive {:socket_io_packets, packets}
+          refute Enum.join(packets) =~ "run:delegate"
+          refute_receive {:socket_io_packets, _}, 50
+        :waiting_poll ->
+          assert {:ok, packet} = Task.await(poll)
+          refute packet =~ "run:delegate"
+        :enqueue ->
+          assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+          refute packet =~ "run:delegate"
+      end
+    end
+  end
+
+  for revocation <- [:requester_membership, :owner_membership, :expiry, :exclusion, :target_identity, :agent_permission, :terminal] do
+    @tag delivery_revocation: revocation
+    test "claimed delivery rechecks #{revocation} without writes", ctx do
+      alias Cascade.Runs.RunnerLifecycle
+      SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+      assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+      case ctx.delivery_revocation do
+        :requester_membership -> SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=?", [ctx.guest_vault.id, ctx.guest.id])
+        :owner_membership -> SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=?", [ctx.owner_vault.id, ctx.owner.id])
+        :expiry -> SQL.exec("UPDATE vault_agents SET identity_scope='session',expires_at=datetime('now','-1 minute') WHERE id=?", [ctx.registration.vaultAgentId])
+        :exclusion -> SQL.exec("INSERT INTO vault_agent_exclusions(vault_id,vault_agent_id) VALUES(?,?)", [ctx.owner_vault.id, ctx.registration.vaultAgentId])
+        :target_identity -> SQL.exec("UPDATE chat_agent_dispatches SET target_identity_id='different' WHERE id=?", [ctx.dispatch.id])
+        :agent_permission -> SQL.exec("UPDATE chat_messages SET agent_id='guest-agent' WHERE id=?", [ctx.dispatch.messageId])
+        :terminal -> Store.finish(run.id, "canceled", "Fixture cancellation")
+      end
+      Cascade.DB.Repo.checkout(fn ->
+        Ecto.Adapters.SQL.query!(Cascade.DB.Repo, "PRAGMA query_only=ON", [])
+        try do
+          refute RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+        after
+          Ecto.Adapters.SQL.query!(Cascade.DB.Repo, "PRAGMA query_only=OFF", [])
+        end
+      end)
+      assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+      refute packet =~ "run:delegate"
+    end
+  end
+
+  @tag :race_probe
+  test "concurrent dispatch callers create one run and send one delegation", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    parent = self()
+
+    tasks = for _ <- 1..8 do
+      Task.async(fn ->
+        send(parent, {:ready, self()})
+        receive do: (:go -> :ok)
+        CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+      end)
+    end
+
+    for task <- tasks, do: assert_receive({:ready, pid} when pid == task.pid)
+    publisher = Process.whereis(Cascade.Realtime.OrderedPublisher)
+    :sys.suspend(publisher)
+    try do
+      for task <- tasks, do: send(task.pid, :go)
+      eventually(fn -> pending_dispatch_starts(publisher) == length(tasks) end)
+    after
+      :sys.resume(publisher)
+    end
+    results = Enum.map(tasks, &Task.await(&1, 10_000))
+    run = Store.find_by_chat_dispatch(ctx.dispatch.id)
+    assert run
+    assert Enum.any?(results, &match?({:ok, %{id: id}} when id == run.id, &1))
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [ctx.dispatch.id]) == [1]
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    {:ok, packets} = EngineIO.decode_payload(packet)
+    delegations = Enum.filter(packets, &String.contains?(&1.data, "run:delegate"))
+    assert length(delegations) == 1
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "revoking guest permission after admission blocks execution", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, _} = Dispatches.for_execution(ctx.dispatch.id)
+    SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    assert {:error, _} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    refute Store.find_by_chat_dispatch(ctx.dispatch.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "revocation while dispatch waits for its final transaction fails closed", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    publisher = Process.whereis(Cascade.Realtime.OrderedPublisher)
+    :sys.suspend(publisher)
+
+    task = Task.async(fn -> CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id) end)
+
+    try do
+      eventually(fn -> pending_dispatch_starts(publisher) == 1 end)
+
+      SQL.exec("UPDATE chat_agent_members SET pingable_by_others=0 WHERE id=?", [ctx.registration.id])
+    after
+      :sys.resume(publisher)
+    end
+
+    assert {:error, _} = Task.await(task)
+    refute Store.find_by_chat_dispatch(ctx.dispatch.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  @tag :race_probe
+  test "completion arriving after cancel acknowledgment cannot resurrect the run", ctx do
+    {:ok, run} = Store.start(ctx.owner_vault.id, nil, "Late completion race", "codex")
+    :ok = Store.record_delegated(run.id, ctx.owner.id)
+    cancel = Task.async(fn -> Store.cancel(run.id) end)
+    assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+    {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
+    {:ok, %{id: ack_id, data: ["run:cancel", _]}} = SocketIO.decode(encoded)
+    send_socket!(ctx.sid, SocketIO.ack("/runners", ack_id, [%{success: true}]))
+    assert Task.await(cancel)
+    assert Store.get(run.id).status == "canceled"
+    assert :already_terminal = Store.finish(run.id, "completed", "Late provider response")
+    assert Store.get(run.id).status == "canceled"
+    assert Store.get(run.id).summary == "Run canceled by user."
+    refute Store.delegated_owner(run.id)
+  end
+
+  for terminal <- ["canceled", "completed", "failed"] do
+    @race_terminal terminal
+    test "cancel tolerates #{@race_terminal} arriving before its acknowledgment", ctx do
+      {:ok, run} = Store.start(ctx.owner_vault.id, nil, "Cancel race", "codex")
+      :ok = Store.record_delegated(run.id, ctx.owner.id)
+      cancel = Task.async(fn -> Store.cancel(run.id, steering: true) end)
+      assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+      {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
+      {:ok, %{id: ack_id, data: ["run:cancel", _]}} = SocketIO.decode(encoded)
+      :ok = Store.finish(run.id, @race_terminal, "Provider settled first")
+
+      send_socket!(ctx.sid, %{
+        type: :ack,
+        namespace: "/runners",
+        id: ack_id,
+        data: [%{success: true}]
+      })
+
+      assert Task.await(cancel)
+      assert Store.get(run.id).status == @race_terminal
+
+      terminal_events =
+        Store.events(run.id)
+        |> Enum.filter(
+          &(&1.type == "status" and Jason.decode!(&1.payload_json)["status"] == "canceled")
+        )
+
+      assert length(terminal_events) == if(@race_terminal == "canceled", do: 1, else: 0)
+    end
+  end
+
+  @tag :self_subagents
+  test "default implementation and review inherit coordinator runtime without a legacy fallback", ctx do
+    alias Cascade.Missions.Store, as: Missions
+    alias Cascade.Missions.Scheduler
+
+    # Leave the old Sol registration present: selecting it would be observable.
+    for {agent, profile, effort} <- [{"codex", "", "xhigh"}, {"hermes", "fixture-astra", ""}] do
+      {:ok, identity} = Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
+        agentId: agent, hermesProfile: profile, model: "gpt-6-astra",
+        displayName: "Coordinator #{agent}", mention: "astra-#{agent}"
+      })
+      {:ok, coordinator} = Agents.add_to_channel(ctx.owner.id, ctx.owner_vault.id,
+        ctx.owner_channel.id, identity.id, %{orchestrator: true, reasoningEffort: effort})
+      {:ok, root} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id,
+        %{body: "Implement bounded fixture #{agent}"})
+      {:ok, mission} = Missions.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id,
+        %{rootMessageId: root.id, coordinatorRegistrationId: coordinator.id, title: "Own workers #{agent}"})
+      approve_mission(ctx, mission)
+      input = %{coordinatorRegistrationId: coordinator.id, title: "Implement #{agent}", purpose: "implementation"}
+      assert {:ok, implementation} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, input)
+      assert implementation.task.assigneeRegistrationId == coordinator.id
+      assert implementation.task.anonymous
+      assert {:ok, review} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        %{input | title: "Review #{agent}", purpose: "review"} |> Map.put(:dependsOn, [implementation.task.id]))
+      assert review.task.assigneeRegistrationId == coordinator.id
+      assert review.task.anonymous
+
+      for added <- [implementation, review] do
+        [scheduled] = Scheduler.schedule(mission.mission.id).dispatches
+        assert scheduled.dispatch.registration.id == coordinator.id
+        assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(scheduled.dispatch.id)
+        assert run.conversation_id == "mission:#{added.task.id}"
+        [encoded, _] = Store.pending_delivery(run.id, ctx.owner.id)
+        payload = Jason.decode!(encoded)
+        assert payload["agent"] == agent
+        assert payload["model"] == "gpt-6-astra"
+        assert payload["hermesProfile"] == profile
+        assert payload["reasoningEffort"] == if(effort == "", do: nil, else: effort)
+        assert payload["chatRegistrationId"] == coordinator.id
+        refute payload["resumeSessionId"]
+        assert payload["prompt"] =~ "worker assigned to Fizzer mission task #{added.task.id}"
+        if added.task.purpose == "review", do: assert(payload["prompt"] =~ "do not act as the implementer")
+        if dir = System.get_env("FIZZER_SELF_SUBAGENT_FIXTURE_DIR") do
+          File.mkdir_p!(dir)
+          File.write!(Path.join(dir, "#{agent}-#{added.task.purpose}.json"), encoded)
+        end
+        Store.finish(run.id, "completed", "Offline fixture artifact")
+        SQL.exec("UPDATE chat_mission_tasks SET status='completed',summary='Offline fixture artifact',review_outcome=? WHERE id=?",
+          [if(added.task.purpose == "review", do: "accepted", else: ""), added.task.id])
+      end
+
+      assert {:ok, override} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        Map.merge(input, %{title: "Human override #{agent}", assignee: ctx.registration.id}))
+      assert override.task.assigneeRegistrationId == ctx.registration.id
+      refute override.task.anonymous
+      assert {:error, _} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        Map.merge(input, %{title: "Missing target", assignee: "missing-agent"}))
+      # A missing coordinator reference must not resolve to another member.
+      assert {:error, _} = Missions.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id,
+        %{input | title: "No fallback", coordinatorRegistrationId: "missing-coordinator"})
+      SQL.exec("UPDATE chat_agent_members SET orchestrator=0 WHERE id=?", [coordinator.id])
+    end
+  end
+
+  test "worker steering resumes its provider session and cwd without stopping the coordinator",
+       ctx do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [ctx.registration.id])
+
+    {:ok, root} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        id: "steer-root-#{ctx.registration.id}",
+        body: "Implement steering"
+      })
+
+    {:ok, mission} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: root.id,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Steer wire"
+      })
+    approve_mission(ctx, mission)
+
+
+    {:ok, added} =
+      Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: ctx.registration.id,
+        assignee: ctx.registration.id,
+        anonymous: true,
+        title: "Worker",
+        purpose: "implementation",
+        prompt: "Keep a file edit and remember a context marker."
+      })
+
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error='' WHERE id=?", [
+      ctx.dispatch.id
+    ])
+
+    {:ok, coordinator_run} =
+      Store.start(ctx.owner_vault.id, nil, "Coordinator", "codex",
+        chat_dispatch_id: ctx.dispatch.id
+      )
+
+    Dispatches.attach_run(ctx.dispatch.id, coordinator_run.id)
+    [item] = Cascade.Missions.Scheduler.schedule(mission.mission.id).dispatches
+
+    response =
+      request(ctx, %{
+        prompt: "Execute the worker task",
+        conversation_id: ctx.registration.conversationId,
+        chatDispatchId: item.dispatch.id,
+        chat: %{channelId: ctx.guest_channel.id, messageId: "worker-http-#{added.task.id}"}
+      })
+
+    assert response.status == 202
+    assert {:ok, worker} = CascadeWeb.OrchestrationController.execute_dispatch(item.dispatch.id)
+    assert worker.conversation_id == "mission:#{added.task.id}"
+
+    assert Store.get(coordinator_run.id).status == "queued"
+    assert {:ok, initial_packet} = Session.poll(ctx.sid, 1_000)
+    assert initial_packet =~ "run:delegate"
+    refute initial_packet =~ "run:cancel"
+    refute worker.prompt =~ "start a durable mission"
+    refute worker.prompt =~ "Participants:"
+
+    assert worker.prompt =~
+             "cascade-chat history --around-message-id mission-task-#{added.task.id}"
+
+    SQL.exec("UPDATE runs SET session_id='retained-provider-context' WHERE id=?", [worker.id])
+
+    {:ok, request} =
+      Cascade.Missions.Store.request_steering(
+        ctx.owner.id,
+        ctx.owner_channel.id,
+        added.task.id,
+        %{
+          coordinatorRegistrationId: ctx.registration.id,
+          message: "Use the remembered marker and keep that file edit.",
+          attempt: 0,
+          runId: worker.id
+        }
+      )
+
+    delivery = Task.async(fn -> Cascade.Missions.Steering.deliver(request) end)
+    assert {:ok, cancel_packet} = Session.poll(ctx.sid, 1_000)
+    {:ok, packets} = EngineIO.decode_payload(cancel_packet)
+    [%{data: encoded}] = packets
+
+    {:ok, %{id: ack_id, data: ["run:cancel", %{"runId" => canceled_id}]}} =
+      SocketIO.decode(encoded)
+
+    assert canceled_id == worker.id
+
+    # The provider can report cancellation before the desktop acknowledges Stop.
+    :ok = Store.finish(worker.id, "canceled", "Run canceled.")
+
+    send_socket!(ctx.sid, %{
+      type: :ack,
+      namespace: "/runners",
+      id: ack_id,
+      data: [%{success: true}]
+    })
+
+    assert %{status: "queued"} = Task.await(delivery)
+
+    [resumed_dispatch] =
+      SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=? AND run_id IS NULL", [
+        added.task.id
+      ])
+
+    assert {:ok, resumed} = CascadeWeb.OrchestrationController.execute_dispatch(resumed_dispatch)
+    resumed_id = resumed.id
+    assert {:ok, resumed_packet} = Session.poll(ctx.sid, 1_000)
+    assert resumed_packet =~ "retained-provider-context"
+    assert resumed_packet =~ "resumeSessionId"
+    assert resumed_packet =~ "Use the remembered marker"
+    assert resumed_packet =~ "/owner/channel"
+    refute resumed.prompt =~ "Shared room delta"
+    refute resumed_packet =~ "run:cancel"
+    assert Store.get(resumed_id).conversation_id == "mission:#{added.task.id}"
+    assert Store.get(coordinator_run.id).status == "queued"
+    assert Store.get(worker.id).status == "canceled"
+  end
+
+  test "a checkpoint deferred after browser discovery creates no run and remains durable", ctx do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1,next_step_suggestions=1 WHERE id=?", [
+      ctx.registration.id
+    ])
+
+    {:ok, _mission} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: ctx.dispatch.messageId,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Existing work"
+      })
+
+    source = "sys-next-enable-#{ctx.registration.id}"
+
+    assert Cascade.Chat.NextSteps.enqueue(
+             ctx.owner_channel.id,
+             ctx.registration.id,
+             source,
+             "enable",
+             "Consider next work"
+           ) == nil
+
+    [dispatch_id] = SQL.one("SELECT id FROM chat_agent_dispatches WHERE message_id=?", [source])
+
+    response =
+      request(ctx, %{
+        prompt: "Consider next work",
+        chatDispatchId: dispatch_id,
+        chat: %{channelId: ctx.guest_channel.id, messageId: "agent-dispatch-#{dispatch_id}"}
+      })
+
+    assert response.status == 202
+    assert {:busy, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+    assert SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch_id]) == [nil]
+    assert Store.find_by_chat_dispatch(dispatch_id) == nil
+
+    assert SQL.one("SELECT outcome FROM chat_next_step_checks WHERE source_id=?", [source]) == [
+             "pending"
+           ]
+  end
+
+  test "enabled obligation is claimed without a chat page and retains owner authority", ctx do
+    # A stalled historical mission must not suppress all later consideration.
+    {:ok, stalled} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: ctx.dispatch.messageId,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Old repair awaiting attention"
+      })
+
+    SQL.exec(
+      "INSERT INTO chat_mission_tasks(id,mission_id,title,assignee_registration_id,status) VALUES(?,?,?,?, 'failed')",
+      ["stalled-#{stalled.mission.id}", stalled.mission.id, "Failed repair", ctx.registration.id]
+    )
+
+    SQL.exec("UPDATE chat_missions SET status='attention',wake_sent=1 WHERE id=?", [
+      stalled.mission.id
+    ])
+
+    {:ok, registration} =
+      Agents.add_to_channel(
+        ctx.owner.id,
+        ctx.owner_vault.id,
+        ctx.owner_channel.id,
+        ctx.registration.vaultAgentId,
+        %{orchestrator: true, nextStepSuggestions: true}
+      )
+
+    [source] =
+      SQL.one(
+        "SELECT source_id FROM chat_next_step_checks WHERE registration_id=? AND kind='enable'",
+        [registration.id]
+      )
+
+    {:ok, [dispatch]} =
+      Dispatches.list_pending(ctx.owner.id, ctx.owner_channel.id)
+      |> case do
+        {:ok, items} -> {:ok, Enum.filter(items, &(&1.messageId == source))}
+      end
+
+    assert {:ok, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+
+    [run_id] = SQL.one("SELECT run_id FROM chat_agent_dispatches WHERE id=?", [dispatch.id])
+    assert is_integer(run_id)
+    assert Store.get(run_id).prompt =~ "offer exactly one new bounded work suggestion"
+    refute Store.get(run_id).prompt =~ "Do not offer a new proactive suggestion"
+    refute Store.get(run_id).prompt =~ "start a durable mission"
+    assert {:ok, transcript} = Messages.list(ctx.owner_channel.id, ctx.owner.id)
+    refute Enum.any?(transcript, &(&1.id == source))
+    assert {:ok, internal} = Messages.get(ctx.owner_channel.id, ctx.owner.id, source)
+    assert internal.body =~ "Next-step checkpoint"
+
+    reply =
+      complete_checkpoint(
+        ctx,
+        dispatch.id,
+        run_id,
+        "<!-- fizzer-next:#{source} --> The old repair is stalled. Should reviewing its saved evidence be next?"
+      )
+
+    assert reply.body =~ "Should reviewing its saved evidence be next?"
+    assert {:ok, transcript} = Messages.list(ctx.owner_channel.id, ctx.owner.id)
+    assert Enum.any?(transcript, &(&1.id == reply.id))
+    assert Store.get(run_id).prompt =~ "This checkpoint grants no authority to start work"
+
+    assert {:ok, same} =
+             CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+
+    assert same.id == run_id
+
+    assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [ctx.owner_channel.id]) ==
+             [1]
+  end
+
+  for outcome <- [:proposal, :none] do
+    @tag checkpoint_outcome: outcome
+    test "next-step lifecycle does not redispatch #{outcome} after mission closure and scheduler restart",
+         ctx do
+      alias Cascade.Chat.Schema
+      alias Cascade.Missions.{Authority, DispatchReannouncer, Scheduler}
+      alias Cascade.Missions.Store, as: Missions
+
+      {:ok, _source} =
+        Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+          body: "The updater keeps failing and interrupting my work."
+        })
+
+      {:ok, registration} =
+        Agents.add_to_channel(
+          ctx.owner.id,
+          ctx.owner_vault.id,
+          ctx.owner_channel.id,
+          ctx.registration.vaultAgentId,
+          %{orchestrator: true, nextStepSuggestions: true}
+        )
+
+      [source] =
+        SQL.one(
+          "SELECT source_id FROM chat_next_step_checks WHERE registration_id=? AND kind='enable'",
+          [registration.id]
+        )
+
+      # Use the actual recovery process and connected test runner; no provider is invoked.
+      scheduler = start_supervised!({DispatchReannouncer, interval: 60_000})
+
+      eventually(fn ->
+        match?(
+          [_, run] when is_integer(run),
+          SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id=?", [source])
+        )
+      end)
+
+      [dispatch, run] =
+        SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id=?", [source])
+
+      assert is_integer(run)
+      assert Store.get(run).prompt =~ "offer exactly one new bounded work suggestion"
+      assert {:ok, packet} = Session.poll(ctx.sid, 1_000)
+      assert length(Regex.scan(~r/run:delegate/, packet)) == 1
+      :ok = stop_supervised(DispatchReannouncer)
+
+      body =
+        "<!-- fizzer-next:#{source} -->\n\nThe updater keeps interrupting you. Should fixing that failure be next?"
+
+      proposed = complete_checkpoint(ctx, dispatch, run, body)
+      assert proposed.body == body
+
+      assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [
+               ctx.owner_channel.id
+             ]) ==
+               [0]
+
+      {:ok, accepted} =
+        Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+          body: "Yes, fix that failure, but keep my editor open.",
+          replyTo: %{messageId: proposed.id, author: proposed.author, body: proposed.body}
+        })
+
+      assert {:ok, [accept_dispatch]} =
+               Dispatches.create_for_message(ctx.owner.id, ctx.owner_channel.id, accepted)
+
+      assert accept_dispatch.registration.id == registration.id
+
+      assert {:ok, accepted_run} =
+               CascadeWeb.OrchestrationController.execute_dispatch(accept_dispatch.id)
+
+      assert {:ok, _packet} = Session.poll(ctx.sid, 1_000)
+      Store.finish(accepted_run.id, "completed", "Accepted bounded repair")
+
+      assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [
+               ctx.owner_channel.id
+             ]) ==
+               [0]
+
+      {:ok, feedback} =
+        Messages.create(
+          ctx.owner,
+          ctx.owner_vault.id,
+          ctx.owner_channel.id,
+          %{
+            agentId: "codex",
+            registrationId: registration.id,
+            body:
+              "<!-- fizzer-next-feedback:#{proposed.id}:#{accepted.id}:accepted --> I will fix only that failure and keep your editor open."
+          },
+          access: :agent
+        )
+
+      assert feedback.body == "I will fix only that failure and keep your editor open."
+
+      assert SQL.one(
+               "SELECT feedback,feedback_message_id FROM chat_next_step_checks WHERE message_id=?",
+               [proposed.id]
+             ) == ["accepted", accepted.id]
+
+      {:ok, created} =
+        Missions.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+          rootMessageId: accepted.id,
+          coordinatorRegistrationId: registration.id,
+          title: "Fix updater failure",
+          objective: "Fix only the updater failure; keep the editor open."
+        })
+      approve_mission(ctx, created)
+
+      finish = %{
+        coordinatorRegistrationId: registration.id,
+        status: "completed",
+        summary:
+          "Updater repair verified; editor remained open." <>
+            if(ctx.checkpoint_outcome == :proposal,
+              do:
+                " Separate packaging failure still blocks release; outside the accepted repair.",
+              else: ""
+            )
+      }
+
+      {:ok, implementation} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: registration.id,
+          anonymous: true,
+          title: "Repair and verify updater",
+          purpose: "implementation",
+          workspaceMode: "shared"
+        })
+
+      [%{dispatch: worker}] = Scheduler.schedule(created.mission.id).dispatches
+
+      {:ok, worker_run} =
+        Store.start(ctx.owner_vault.id, nil, "Repair updater", "codex",
+          chat_dispatch_id: worker.id
+        )
+
+      :ok = Dispatches.attach_run(worker.id, worker_run.id)
+      {:ok, _} = Missions.attach_run(worker.id, worker_run.id)
+      evidence = "Fixture artifact: updater repair; focused checks passed."
+      :ok = Store.finish(worker_run.id, "completed", evidence)
+      {:ok, settled} = Scheduler.settle_run(worker_run.id, "completed", evidence)
+      assert settled.settled.update.mission.status == "reviewing"
+      {:ok, reviewer_identity} =
+        Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
+          agentId: "reviewer-#{created.mission.id}",
+          displayName: "Reviewer",
+          mention: "reviewer-#{created.mission.id}"
+        })
+
+      {:ok, reviewer} =
+        Agents.add_to_channel(
+          ctx.owner.id,
+          ctx.owner_vault.id,
+          ctx.owner_channel.id,
+          reviewer_identity.id
+        )
+
+      {:ok, review} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: reviewer.id,
+          title: "Independent review",
+          purpose: "review",
+          dependsOn: [implementation.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(ctx.owner.id, ctx.owner_channel.id, review.task.id, %{
+                 status: "completed",
+                 summary: "Review accepted",
+                 reviewOutcome: "accepted"
+               })
+
+      {:ok, integration} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: registration.id,
+          anonymous: true,
+          title: "Integrate repair",
+          purpose: "integration",
+          dependsOn: [review.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(ctx.owner.id, ctx.owner_channel.id, integration.task.id, %{
+                 status: "completed",
+                 summary: "Repair integrated"
+               })
+
+      {:ok, verification_task} =
+        Missions.add_task(ctx.owner.id, ctx.owner_channel.id, created.mission.id, %{
+          coordinatorRegistrationId: registration.id,
+          assignee: registration.id,
+          anonymous: true,
+          title: "Verify repair",
+          purpose: "verification",
+          dependsOn: [integration.task.id]
+        })
+
+      assert {:ok, _} =
+               Missions.update_task(
+                 ctx.owner.id,
+                 ctx.owner_channel.id,
+                 verification_task.task.id,
+                 %{
+                   status: "completed",
+                   summary: "Verification passed",
+                   verificationPassed: true
+                 }
+               )
+
+
+      verification =
+        "Fixture verification: inspected artifact and passing focused checks; editor remained open."
+
+      assert {:ok, completed} =
+               Missions.finish(
+                 ctx.owner.id,
+                 ctx.owner_channel.id,
+                 created.mission.id,
+                 Map.put(finish, :verification, verification)
+               )
+
+      assert completed.mission.status == "completed"
+
+      assert SQL.one("SELECT verification FROM chat_missions WHERE id=?", [created.mission.id]) ==
+               [
+                 verification
+               ]
+
+      # Finishing work does not admit another model merely to discover a follow-up.
+      completion_source = "sys-next-completed-#{created.mission.id}"
+      Schema.ensure!()
+      recovered = start_supervised!({DispatchReannouncer, interval: 60_000})
+      refute recovered == scheduler
+      Scheduler.emit_projection(completed)
+      send(recovered, :wake)
+      :sys.get_state(recovered)
+
+      assert SQL.one("SELECT COUNT(*) FROM chat_agent_dispatches WHERE message_id=?", [
+               completion_source
+             ]) == [0]
+
+      assert SQL.one("SELECT COUNT(*) FROM chat_next_step_checks WHERE source_id=?", [
+               completion_source
+             ]) == [0]
+    end
+  end
+
+  defp complete_checkpoint(ctx, dispatch_id, run_id, body) do
+    assert {:ok, []} =
+             Cascade.Realtime.DomainAdapter.handle_event(
+               "/runners",
+               "runner:runEvent",
+               [%{runId: run_id, type: "status", payload: %{status: "completed", summary: body}}],
+               %{id: ctx.owner.id},
+               %{}
+             )
+
+    assert Store.get(run_id).status == "completed"
+
+    assert {:ok, message} =
+             Messages.get(ctx.owner_channel.id, ctx.owner.id, "agent-dispatch-#{dispatch_id}")
+
+    message
+  end
+
+  test "coordinator reviews are claimed without a chat page and repeated claims reuse the run",
+       ctx do
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1,next_step_suggestions=1 WHERE id=?", [
+      ctx.registration.id
+    ])
+
+    {:ok, root} =
+      Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        id: "review-root-#{ctx.registration.id}",
+        body: "Finish the task"
+      })
+
+    {:ok, mission} =
+      Cascade.Missions.Store.create(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{
+        rootMessageId: root.id,
+        coordinatorRegistrationId: ctx.registration.id,
+        title: "Review without UI"
+      })
+    approve_mission(ctx, mission)
+
+
+    {:ok, added} =
+      Cascade.Missions.Store.add_task(ctx.owner.id, ctx.owner_channel.id, mission.mission.id, %{
+        coordinatorRegistrationId: ctx.registration.id,
+        assignee: ctx.registration.id,
+        anonymous: true,
+        title: "Worker",
+        purpose: "implementation"
+      })
+
+    {:ok, _} =
+      Cascade.Missions.Store.update_task(ctx.owner.id, ctx.owner_channel.id, added.task.id, %{
+        status: "failed",
+        summary: "Needs review"
+      })
+
+    Cascade.Missions.Scheduler.schedule(mission.mission.id)
+
+    [review_id] =
+      SQL.one("SELECT id FROM chat_agent_dispatches WHERE message_id LIKE ?", [
+        "sys-mission-#{mission.mission.id}-%"
+      ])
+
+    assert {:ok, _} = CascadeWeb.OrchestrationController.execute_dispatch(review_id)
+
+    [dispatch_id, run_id] =
+      SQL.one("SELECT id,run_id FROM chat_agent_dispatches WHERE message_id LIKE ?", [
+        "sys-mission-#{mission.mission.id}-%"
+      ])
+
+    assert is_integer(run_id)
+    run = Store.get(run_id)
+
+    assert {:ok, duplicate} =
+             CascadeWeb.OrchestrationController.execute_dispatch(dispatch_id)
+
+    assert duplicate.id == run.id
+    assert Store.get(run.id).prompt =~ "cascade-chat mission interpret"
+    refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
+    refute Store.get(run.id).prompt =~ "You must evaluate the next useful step"
+
+    assert SQL.one("SELECT COUNT(*) FROM runs WHERE chat_dispatch_id=?", [dispatch_id]) == [
+             1
+           ]
+
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [
+             mission.mission.id
+           ]) == [1]
+  end
+
+  defp pending_dispatch_starts(publisher) do
+    {:messages, messages} = Process.info(publisher, :messages)
+    Enum.count(messages, fn
+      {:"$gen_call", _, {:mutate, fun}} ->
+        {:name, name} = :erlang.fun_info(fun, :name)
+        String.contains?(Atom.to_string(name), "start_dispatch")
+      _ -> false
+    end)
+  end
+
+  defp queued_runner_packets(sid) do
+    {:ok, pid} = Cascade.Realtime.lookup(sid)
+    :sys.get_state(pid).queue |> :queue.to_list() |> Enum.join("\n")
+  end
+
+  defp approve_mission(ctx, mission) do
+    content = "Approved mission brief."
+    note_id = "mission-brief-#{mission.mission.id}"
+
+    note =
+      ContentStore.create_note(ctx.owner_vault.id, ctx.owner.id, %{
+        id: note_id,
+        title: "Mission brief",
+        content: content,
+        is_listed: true
+      })
+
+    revision = Cascade.Content.Privacy.note_revision(note)
+
+    SQL.exec(
+      "INSERT INTO chat_mission_notes(mission_id,note_id,kind,parent_note_id,position,revision) VALUES(?,?, 'mission',NULL,0,?)",
+      [mission.mission.id, note.id, revision]
+    )
+
+    assert {:ok, _} =
+             Cascade.Missions.Store.approve_workspace(
+               ctx.owner.id,
+               ctx.owner_vault.id,
+               mission.mission.id,
+               %{note.id => revision}
+             )
+  end
+
+  defp eventually(fun, attempts \\ 200)
+  defp eventually(fun, 0), do: assert(fun.())
+
+  defp eventually(fun, attempts) do
+    if fun.(),
+      do: :ok,
+      else:
+        (
+          Process.sleep(10)
+          eventually(fun, attempts - 1)
+        )
+  end
+
+  defp request(ctx, body) do
+    conn(:post, "/api/vaults/#{ctx.guest_vault.id}/runs", Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{Token.sign_user(ctx.guest)}")
+    |> CascadeWeb.OrchestrationRouter.call(CascadeWeb.OrchestrationRouter.init([]))
+  end
+
+  defp user!(id, username) do
+    SQL.exec(
+      "INSERT INTO users(id,username,password_hash,display_name,avatar_url,auth_version) VALUES(?,?,?,?,'',0)",
+      [id, username, "x", username]
+    )
+
+    %{id: id, username: username, auth_version: 0}
+  end
+
+  defp connect_runner!(sid, token) do
+    send_socket!(sid, %{type: :connect, namespace: "/runners", data: %{"token" => token}})
+  end
+
+  defp register_runner!(sid) do
+    send_socket!(
+      sid,
+      SocketIO.event("/runners", "runner:register", [
+        %{"activeRunIds" => [], "runnerInstanceId" => sid}
+      ])
+    )
+  end
+
+  defp send_socket!(sid, packet) do
+    payload = EngineIO.encode_payload([%{type: :message, data: SocketIO.encode(packet)}])
+    assert :ok = Session.receive_payload(sid, payload)
+  end
+end

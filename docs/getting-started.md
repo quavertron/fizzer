@@ -77,8 +77,8 @@ See `node scripts/dev-instance.cjs --help` for instance options.
 By default Fizzer stores runtime data outside the checkout (using the legacy
 `.cascade` directory name for compatibility):
 
-- SQLite database: `~/.cascade/docs.db`
-- Vault files and assets: `~/.cascade/vaults/`
+- SQLite database: `~/.fizzer/docs.db`
+- Vault files and assets: `~/.fizzer/vaults/`
 
 Override the database for an isolated run:
 

@@ -52,7 +52,8 @@ defmodule CascadeWeb.RouterTest do
              "id" => user_id,
              "username" => @username,
              "displayName" => "Sol",
-             "avatarUrl" => ""
+             "avatarUrl" => "",
+             "color" => "FFFFFF"
            }
 
     assert body["owner"]
@@ -71,6 +72,37 @@ defmodule CascadeWeb.RouterTest do
 
     assert me.status == 200
     assert Jason.decode!(me.resp_body)["user"]["username"] == @username
+  end
+
+  test "an existing account with no vaults can authenticate and create its first vault" do
+    login = request(:post, "/api/auth/login", %{
+      username: @username, password: "correct horse battery staple"
+    })
+    assert login.status == 200
+    token = Jason.decode!(login.resp_body)["token"]
+    session = conn(:get, "/api/session")
+      |> put_req_header("authorization", "Bearer " <> token)
+      |> put_req_header("x-cascade-session-migrate", "1")
+      |> CascadeWeb.Router.call(@options)
+    assert Jason.decode!(session.resp_body)["authenticated"]
+    [cookie] = get_resp_header(session, "set-cookie")
+    cookie = cookie |> String.split(";", parts: 2) |> hd()
+    call = fn method, path, body ->
+      json_conn(method, path, body)
+      |> put_req_header("cookie", cookie)
+      |> put_req_header("x-cascade-browser", "1")
+      |> CascadeWeb.Router.call(@options)
+    end
+    assert Jason.decode!(call.(:get, "/api/vaults", nil).resp_body)["vaults"] == []
+    created = call.(:post, "/api/vaults", %{name: "First remote vault"})
+    assert created.status == 201
+    vault = Jason.decode!(created.resp_body)["vault"]
+    try do
+      assert vault["created_by"] == @user_id
+      assert Enum.any?(Jason.decode!(call.(:get, "/api/vaults", nil).resp_body)["vaults"], &(&1["id"] == vault["id"]))
+    after
+      Cascade.Content.Store.delete_vault(vault["id"], @user_id)
+    end
   end
 
   test "browser login keeps the bearer out of JSON" do

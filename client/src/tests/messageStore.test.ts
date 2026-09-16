@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatMessageStore, fetchChatMessageSnapshot } from '../chat/messageStore';
 import { api, ApiError } from '../api';
 import { captureChatMessageSnapshotBaseline, reconcileChatMessageSnapshot } from '../chat/runBlocks';
@@ -7,8 +7,10 @@ vi.mock('../api', async (original) => ({ ...await original<typeof import('../api
 import type { ChatMessage } from '../chat/types';
 
 function message(id: string, channelId: string): ChatMessage {
-  return { id, channelId, author: 'asdfasdf', body: id, createdAt: id };
+  return { id, channelId, author: 'asdfasdf', actorUserId: 1, body: id, createdAt: id };
 }
+
+beforeEach(() => chatMessageStore.setActivityUserId(1));
 
 describe('channel snapshot recovery', () => {
   const live: ChatMessage = { ...message('older-run', 'recovery'), seq: 1, agentId: 'codex', status: 'running' };
@@ -33,6 +35,18 @@ describe('channel snapshot recovery', () => {
     expect(reconcileChatMessageSnapshot([newer], recovered, baseline)).toEqual([newer]);
   });
 
+  it('retains loaded historical pages across recent snapshots and concurrent realtime changes', async () => {
+    const old = { ...message('historical', 'recovery'), seq: 2 };
+    const deleted = { ...message('deleted-recent', 'recovery'), seq: 130 };
+    const recent = { ...message('recent', 'recovery'), seq: 140 };
+    const snapshot = captureChatMessageSnapshotBaseline([old, deleted]);
+    vi.mocked(api).mockResolvedValueOnce({ messages: [recent], beforeSeq: 120, hasMore: true });
+    const remote = await fetchChatMessageSnapshot('vault', 'recovery', snapshot);
+    const arrived = { ...message('arrived', 'recovery'), seq: 141 };
+    expect(reconcileChatMessageSnapshot([old, deleted, arrived], remote, snapshot)).toEqual([old, recent, arrived]);
+    expect(reconcileChatMessageSnapshot([arrived], remote, snapshot)).toEqual([recent, arrived]);
+  });
+
   it('discovers server-owned queued rows without an optimistic agent shell', async () => {
     const queued = { ...live, status: 'queued' as const, body: 'Queued...' };
     vi.mocked(api).mockResolvedValueOnce({ messages: [queued] });
@@ -53,6 +67,16 @@ describe('channel snapshot recovery', () => {
 });
 
 describe('chatMessageStore', () => {
+  it('keeps checkpoint dispatch envelopes out of loaded and realtime conversation', () => {
+    const channel = 'internal-checkpoints';
+    const checkpoint = { ...message('sys-next-completed-mission', channel), agentId: 'codex', body: 'Next-step checkpoint (completion). Evaluate permitted evidence.' };
+    const reply = { ...message('agent-dispatch-checkpoint', channel), agentId: 'codex', body: 'Should fixing the packaging failure be next?' };
+    chatMessageStore.set(channel, [checkpoint]);
+    expect(chatMessageStore.getChannel(channel)).toEqual([]);
+    chatMessageStore.update(channel, (prev) => [...prev, checkpoint, reply]);
+    expect(chatMessageStore.getChannel(channel)).toEqual([reply]);
+  });
+
   it('distinguishes an unloaded channel from a loaded-empty one', () => {
     expect(chatMessageStore.hasChannel('never')).toBe(false);
     chatMessageStore.set('loaded-empty', []);
@@ -104,7 +128,7 @@ describe('chatMessageStore', () => {
 
     chatMessageStore.update(channelId, (messages) => [
       ...messages,
-      { ...message('live-agent', channelId), agentId: 'sol', status: 'running' },
+      { ...message('live-agent', channelId), agentId: 'sol', status: 'running', runId: 1 },
     ]);
     expect(chatMessageStore.getAgentActivity()[channelId]).toBe('running');
 
@@ -122,7 +146,7 @@ describe('chatMessageStore', () => {
     chatMessageStore.set(channelId, []);
     chatMessageStore.update(channelId, (messages) => [
       ...messages,
-      { ...message('canceled-agent', channelId), agentId: 'sol', status: 'running' },
+      { ...message('canceled-agent', channelId), agentId: 'sol', status: 'running', runId: 2 },
     ]);
     chatMessageStore.update(channelId, (messages) => messages.map((item) => (
       item.id === 'canceled-agent' ? { ...item, status: 'canceled' } : item
@@ -130,3 +154,31 @@ describe('chatMessageStore', () => {
     expect(chatMessageStore.getAgentActivity()[channelId]).toBeUndefined();
   });
 });
+
+ it('hides completed empty dispatch shells consistently with snapshots while preserving queued activity', () => {
+   const channel = 'terminal-shell';
+   const row = { ...message('shell', channel), agentId: 'codex', body: 'Thinking...', status: 'queued' as const };
+   chatMessageStore.set(channel, [row]);
+   expect(chatMessageStore.getChannel(channel)).toEqual([row]);
+   chatMessageStore.update(channel, () => [{ ...row, status: undefined }]);
+   expect(chatMessageStore.getChannel(channel)).toEqual([]);
+   chatMessageStore.remove(channel);
+ });
+
+ it('shows orange activity only for the signed-in owner, including cached rows after account changes', () => {
+   const channel = 'shared-owners';
+   const other = { ...message('other', channel), actorUserId: 2, agentId: 'claude-code', status: 'running' as const, runId: 3 };
+   const unknown = { ...other, id: 'unknown', actorUserId: undefined };
+   chatMessageStore.set(channel, [other, unknown]);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBeUndefined();
+   const own = { ...other, id: 'own', actorUserId: 1, status: 'queued' as const };
+   chatMessageStore.update(channel, rows => [...rows, own]);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBe('queued');
+   chatMessageStore.update(channel, rows => rows.filter(row => row.id !== 'own'));
+   expect(chatMessageStore.getAgentActivity()[channel]).not.toBe('running');
+   expect(chatMessageStore.getChannel(channel)).toEqual([other, unknown]);
+   chatMessageStore.setActivityUserId(2);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBe('running');
+   chatMessageStore.setActivityUserId(null);
+   expect(chatMessageStore.getAgentActivity()[channel]).toBeUndefined();
+ });

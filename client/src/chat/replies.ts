@@ -1,8 +1,9 @@
 import { normalizeMention } from './mentions';
+import { stripChatControlMarkers } from './shared';
 import type { ChatAgentRegistration, ChatMessage, ChatReplyRef } from './types';
 
 export function buildReplyPreview(message: ChatMessage) {
-  const body = message.body.trim();
+  const body = stripChatControlMarkers(message.body);
   if (body) return body.length > 120 ? `${body.slice(0, 119)}…` : body;
   if (message.images?.length) return `[${message.images.length} image${message.images.length === 1 ? '' : 's'}]`;
   if (message.attachments?.length) return message.attachments[0]?.name || '[attachment]';

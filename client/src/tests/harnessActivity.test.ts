@@ -188,6 +188,19 @@ describe('buildHarnessActivity', () => {
     expect(activity.thinkingText).toContain('vault rail');
   });
 
+  it('advances the original trailing live window as a text block grows', () => {
+    const text = 'Earlier context '.repeat(20) + 'MOVING words at the live edge';
+    const headline = (text: string) => liveActivityHeadline(buildHarnessActivity(msg({
+      status: 'running', blocks: [{ type: 'thinking', text }],
+    }))).detail;
+    const first = headline(text);
+    const next = headline(text + ' next');
+    expect(first).toHaveLength(88);
+    expect(next).toHaveLength(88);
+    expect(next.endsWith(' next')).toBe(true);
+    expect(next.indexOf('MOVING')).toBeLessThan(first.indexOf('MOVING'));
+  });
+
   it('hides raw JSON blobs from the live header', () => {
     const activity = buildHarnessActivity(msg({
       status: 'running',

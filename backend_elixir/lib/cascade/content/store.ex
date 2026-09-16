@@ -1,6 +1,8 @@
 defmodule Cascade.Content.Store do
   @moduledoc "Node-compatible vault, folder, note, tag, link, graph, and filesystem storage."
 
+  import Bitwise
+
   alias Cascade.Content.Query
 
   @chat_channel_marker "cascade://chat-channel"
@@ -32,12 +34,14 @@ defmodule Cascade.Content.Store do
     :position,
     :word_count,
     :created_at,
-    :updated_at
+    :updated_at,
+    :revision_counter
   ]
 
   def vaults_base_dir do
     case System.get_env("CASCADE_VAULTS_BASE_DIR", "") |> String.trim() do
-      "" -> Path.join([System.user_home!(), ".cascade", "vaults"])
+      "" ->
+        Application.get_env(:cascade_elixir, :test_vaults_base_dir) || Cascade.Config.dotdir("vaults")
       configured -> Path.expand(configured)
     end
   end
@@ -482,7 +486,7 @@ defmodule Cascade.Content.Store do
         """
         SELECT n.id, n.vault_id, n.folder_id, n.title, n.content_preview,
                n.is_pinned, n.is_archived, n.is_listed, n.position, n.word_count,
-               n.created_at, n.updated_at
+               n.created_at, n.updated_at, n.revision_counter
         FROM notes n
         WHERE n.vault_id = ? #{Enum.join(clauses, "")}
         ORDER BY n.is_pinned DESC, n.updated_at DESC
@@ -500,7 +504,8 @@ defmodule Cascade.Content.Store do
       Query.map(
         """
         SELECT id, vault_id, folder_id, title, content_preview,
-               is_pinned, is_archived, is_listed, position, word_count, created_at, updated_at
+               is_pinned, is_archived, is_listed, position, word_count, created_at, updated_at,
+               revision_counter
         FROM notes WHERE id = ?
         """,
         [note_id],
@@ -531,8 +536,11 @@ defmodule Cascade.Content.Store do
   end
 
   def create_note(vault_id, user_id, opts) do
-    id = Ecto.UUID.generate()
-
+    id =
+      case blank_nil(value(opts, :id)) do
+        nil -> Ecto.UUID.generate()
+        value -> to_string(value)
+      end
     content =
       case value(opts, :content) do
         nil -> ""
@@ -564,8 +572,9 @@ defmodule Cascade.Content.Store do
     Query.execute(
       """
       INSERT INTO notes
-        (id, vault_id, folder_id, title, content, content_preview, is_pinned, is_archived, is_listed, position, word_count, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
+        (id, vault_id, folder_id, title, content, content_preview, is_pinned, is_archived,
+         is_listed, revision_counter, position, word_count, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 1, ?, ?, ?)
       """,
       [
         id,
@@ -587,80 +596,189 @@ defmodule Cascade.Content.Store do
     get_note(id)
   end
 
-  def update_note(note_id, content, actor_user_id \\ nil) do
-    existing =
-      Query.map(
-        "SELECT id, vault_id, folder_id, title, content FROM notes WHERE id = ?",
-        [note_id],
-        [:id, :vault_id, :folder_id, :title, :content]
-      )
-
-    existing = existing || raise(ArgumentError, "Note not found")
+  def update_note(note_id, content, actor_user_id \\ nil, opts \\ []) do
     normalized = normalize_backticks(content)
+    expected_revision = value(opts, :expected_revision)
+    actor_origin = value(opts, :actor_origin)
+    mutation_auth = value(opts, :auth) || %{actor_id: actor_user_id, origin: actor_origin || :external}
+    mutation_id = value(opts, :mutation_id) || Ecto.UUID.generate()
 
-    if normalized == existing.content do
-      get_note(note_id)
-    else
-      if file_path = resolve_note_path(note_id) do
-        File.mkdir_p!(Path.dirname(file_path))
-        File.write!(file_path, normalized)
-      end
+    transaction_result =
+      Query.transaction(fn ->
+        # Begin with a write so the compare-and-write cannot be invalidated by
+        # another SQLite connection between its read and update.
+        Query.execute("UPDATE notes SET id = id WHERE id = ?", [note_id])
 
-      Query.execute(
-        "UPDATE notes SET content = ?, content_preview = ?, word_count = ?, updated_at = datetime('now') WHERE id = ?",
-        [normalized, preview(normalized), word_count(normalized), note_id]
-      )
+        existing =
+          Query.map(
+            "SELECT id, vault_id, folder_id, title, content, revision_counter FROM notes WHERE id = ?",
+            [note_id],
+            [:id, :vault_id, :folder_id, :title, :content, :revision_counter]
+          )
 
-      reindex_links(note_id, existing.vault_id, normalized)
-      notify_mutation(note_id, actor_user_id, :content)
-      maybe_invalidate_presence_channels(existing.content, normalized)
-      get_note(note_id)
+        existing = existing || raise(ArgumentError, "Note not found")
+        mission_linked = mission_note_linked?(note_id)
+        current_revision = Cascade.Content.Privacy.note_revision(existing)
+        cond do
+          mission_linked and external_actor_origin?(actor_origin) and is_nil(expected_revision) ->
+            {:error, %{error: "revision_required"}}
+
+          not is_nil(expected_revision) and to_string(expected_revision) != current_revision ->
+            {:error, %{error: "revision_conflict", note: get_note(note_id)}}
+
+          true ->
+            next_content =
+              if agent_actor_origin?(actor_origin),
+                do: Cascade.Content.Privacy.restore_blocks(existing.content, normalized),
+                else: normalized
+
+            if next_content == existing.content do
+              {:ok, get_note(note_id), existing.content, existing.content, mission_linked, false}
+            else
+              file_path = resolve_note_path(note_id)
+              snapshot = note_file_snapshot(file_path)
+
+              try do
+                if file_path do
+                  File.mkdir_p!(Path.dirname(file_path))
+                  File.write!(file_path, next_content)
+                end
+
+                Query.execute(
+                  "UPDATE notes SET content = ?, content_preview = ?, word_count = ?, revision_counter = revision_counter + 1, updated_at = datetime('now') WHERE id = ?",
+                  [next_content, preview(next_content), word_count(next_content), note_id]
+                )
+                reindex_links(note_id, existing.vault_id, next_content)
+
+                updated_note = get_note(note_id)
+                committed_revision = Cascade.Content.Privacy.note_revision(updated_note)
+
+                if mission_linked do
+                  notify_linked_note_revision(
+                    note_id,
+                    actor_user_id,
+                    :content,
+                    previous_revision: current_revision,
+                    committed_revision: committed_revision,
+                    mutation_id: mutation_id,
+                    auth: mutation_auth,
+                    in_transaction: true
+                  )
+                end
+
+                {
+                  :ok,
+                  updated_note,
+                  existing.content,
+                  next_content,
+                  mission_linked,
+                  true
+                }
+              rescue
+                error ->
+                  case restore_note_file(snapshot) do
+                    :ok ->
+                      reraise error, __STACKTRACE__
+
+                    {:error, restore_error} ->
+                      raise ArgumentError,
+                        "Could not restore note file after failed update: #{Exception.message(restore_error)}"
+                  end
+              end
+            end
+        end
+      end)
+
+    case transaction_result do
+      {:ok, {:error, %{error: "revision_required"} = reason}} ->
+        {:error, reason}
+
+      {:ok, {:error, %{error: "revision_conflict"} = reason}} ->
+        {:error, reason}
+
+      {:ok, {:ok, note, before, after_content, _mission_linked, changed?}} ->
+        if changed? do
+          notify_mutation(note_id, actor_user_id, :content)
+          maybe_invalidate_presence_channels(before, after_content)
+        end
+
+        note
+
+      {:error, reason} ->
+        raise "Could not update note: #{inspect(reason)}"
     end
   end
 
   def rename_note(note_id, new_title_raw, actor_user_id \\ nil) do
-    existing =
-      Query.map("SELECT id, vault_id, title FROM notes WHERE id = ?", [note_id], [
-        :id,
-        :vault_id,
-        :title
-      ])
-
-    existing = existing || raise(ArgumentError, "Note not found")
     new_title = new_title_raw |> to_string() |> String.trim()
     if new_title == "", do: raise(ArgumentError, "Title cannot be empty")
 
-    if new_title == existing.title do
-      get_note(note_id)
-    else
-      if Query.one(
-           "SELECT id FROM notes WHERE vault_id = ? AND title = ? COLLATE NOCASE AND id != ?",
-           [existing.vault_id, new_title, note_id]
-         ) do
-        raise ArgumentError, "A note with that title already exists"
-      end
+    transaction_result =
+      Query.transaction(fn ->
+        existing =
+          Query.map(
+            "SELECT id, vault_id, title, revision_counter FROM notes WHERE id = ?",
+            [note_id],
+            [:id, :vault_id, :title, :revision_counter]
+          )
 
-      old_path = resolve_note_path(note_id)
+        existing = existing || raise(ArgumentError, "Note not found")
 
-      Query.execute("UPDATE notes SET title = ?, updated_at = datetime('now') WHERE id = ?", [
-        new_title,
-        note_id
-      ])
+        if new_title == existing.title do
+          {:unchanged, existing}
+        else
+          if Query.one(
+               "SELECT id FROM notes WHERE vault_id = ? AND title = ? COLLATE NOCASE AND id != ?",
+               [existing.vault_id, new_title, note_id]
+             ) do
+            raise ArgumentError, "A note with that title already exists"
+          end
 
-      new_path = resolve_note_path(note_id)
+          old_path = resolve_note_path(note_id)
+          previous_revision = Cascade.Content.Privacy.note_revision(existing)
 
-      if old_path && new_path && old_path != new_path do
-        try do
-          File.mkdir_p!(Path.dirname(new_path))
-          if File.exists?(old_path), do: File.rename!(old_path, new_path)
-        rescue
-          _ -> :ok
+          Query.execute(
+            "UPDATE notes SET title = ?, revision_counter = revision_counter + 1, updated_at = datetime('now') WHERE id = ?",
+            [new_title, note_id]
+          )
+
+          if mission_note_linked?(note_id) do
+            notify_linked_note_revision(
+              note_id,
+              actor_user_id,
+              :rename,
+              previous_revision: previous_revision,
+              committed_revision:
+                Cascade.Content.Privacy.note_revision(%{
+                  revision_counter: existing.revision_counter + 1
+                }),
+              in_transaction: true
+            )
+          end
+
+          {:renamed, existing, old_path}
         end
-      end
+      end)
 
-      update_wikilink_targets(existing.vault_id, existing.title, new_title, actor_user_id)
-      notify_mutation(note_id, actor_user_id, :rename)
-      get_note(note_id)
+    case transaction_result do
+      {:ok, {:unchanged, _existing}} ->
+        get_note(note_id)
+
+      {:ok, {:renamed, existing, old_path}} ->
+        new_path = resolve_note_path(note_id)
+
+        if old_path && new_path && old_path != new_path do
+          try do
+            File.mkdir_p!(Path.dirname(new_path))
+            if File.exists?(old_path), do: File.rename!(old_path, new_path)
+          rescue
+            _ -> :ok
+          end
+        end
+
+        update_wikilink_targets(existing.vault_id, existing.title, new_title, actor_user_id)
+        notify_mutation(note_id, actor_user_id, :rename)
+        get_note(note_id)
     end
   end
 
@@ -683,6 +801,7 @@ defmodule Cascade.Content.Store do
       end
     end
 
+    safe_delete_mission_note_relation(note_id)
     Query.execute("DELETE FROM notes WHERE id = ?", [note_id])
     Cascade.Realtime.PresenceDispatcher.invalidate_user_channels()
     :ok
@@ -1040,6 +1159,31 @@ defmodule Cascade.Content.Store do
     end)
   end
 
+  def search(vault_id, query, opts \\ %{}) do
+    scope = value(opts, :scope) || "notes"
+    limit = opts |> value(:limit) |> numeric_default(40) |> max(1) |> min(100)
+    fts_query = search_terms(query)
+    redact_private? = value(opts, :redact_private) == true
+
+    if fts_query == "" do
+      []
+    else
+      note_hits =
+        if scope in ["notes", "all"],
+          do: search_notes(vault_id, fts_query, query, limit, redact_private?),
+          else: []
+
+      chat_hits =
+        if scope in ["chat", "all"],
+          do: search_chat(vault_id, fts_query, query, limit, redact_private?),
+          else: []
+
+      (note_hits ++ chat_hits)
+      |> Enum.sort_by(& &1.score, :desc)
+      |> Enum.take(limit)
+    end
+  end
+
   def rescan_vault(vault_id, user_id) do
     vault = raw_vault(vault_id)
 
@@ -1274,7 +1418,10 @@ defmodule Cascade.Content.Store do
         [vault_id, folder_id, is_listed]
       )
       |> List.flatten()
-      |> Enum.map(&(sanitize_path_segment(&1) |> String.downcase()))
+      # Legacy titles can contain characters that new path segments reject.
+      |> Enum.map(fn title ->
+        title |> sanitize_filename() |> String.trim_leading(".") |> String.trim() |> String.downcase()
+      end)
       |> MapSet.new()
 
     if not MapSet.member?(taken, sanitize_path_segment(desired) |> String.downcase()) do
@@ -1480,13 +1627,7 @@ defmodule Cascade.Content.Store do
 
     if existing do
       if existing.content != content do
-        Query.execute(
-          "UPDATE notes SET content = ?, content_preview = ?, word_count = ?, updated_at = datetime('now') WHERE id = ?",
-          [content, preview(content), word_count(content), existing.id]
-        )
-
-        reindex_links(existing.id, vault.id, content)
-        notify_mutation(existing.id, user_id, :rescan)
+        update_note(existing.id, content, user_id)
       end
     else
       id = Ecto.UUID.generate()
@@ -1496,11 +1637,12 @@ defmodule Cascade.Content.Store do
           "SELECT COALESCE(MAX(position), -1) + 1 FROM notes WHERE vault_id = ? AND folder_id IS ? AND is_listed = 1",
           [vault.id, folder_id]
         )
-
       Query.execute(
         """
-        INSERT INTO notes (id, vault_id, folder_id, title, content, content_preview, is_pinned, is_archived, position, word_count, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+        INSERT INTO notes
+          (id, vault_id, folder_id, title, content, content_preview, is_pinned, is_archived,
+           revision_counter, position, word_count, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, ?)
         """,
         [
           id,
@@ -1518,6 +1660,175 @@ defmodule Cascade.Content.Store do
       reindex_links(id, vault.id, content)
       notify_mutation(id, user_id, :rescan)
     end
+  end
+
+  defp search_terms(query) do
+    ~r/[a-z0-9_@#\.\/:-]{2,}/u
+    |> Regex.scan(query |> to_string() |> String.downcase())
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.map_join(" OR ", &"\"#{String.replace(&1, "\"", "\"\"")}\"")
+  end
+
+  defp search_notes(vault_id, fts_query, query, limit, redact_private?) do
+    Query.maps(
+      """
+      SELECT n.id, n.title, n.content, -bm25(notes_fts)
+      FROM notes_fts JOIN notes n ON n.rowid = notes_fts.rowid
+      WHERE notes_fts MATCH ? AND n.vault_id = ? AND n.is_archived = 0
+      ORDER BY bm25(notes_fts) LIMIT ?
+      """,
+      [fts_query, vault_id, limit],
+      [:id, :title, :body, :score]
+    )
+    |> Enum.map(fn hit ->
+      body =
+        if redact_private?, do: Cascade.Content.Privacy.redact_blocks(hit.body), else: hit.body
+
+      hit
+      |> Map.drop([:body])
+      |> Map.put(:snippet, search_snippet(body, query))
+      |> Map.put(:type, "note")
+    end)
+  end
+
+  defp search_chat(vault_id, fts_query, query, limit, redact_private?) do
+    try do
+      Query.maps(
+        """
+        SELECT m.id, m.author, m.channel_id, m.body, -bm25(chat_messages_fts), m.created_at
+        FROM chat_messages_fts JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+        WHERE chat_messages_fts MATCH ? AND m.vault_id = ? AND m.body != '' AND m.status IS NULL
+          AND m.id NOT LIKE 'sys-next-%'
+
+        ORDER BY bm25(chat_messages_fts) LIMIT ?
+        """,
+        [fts_query, vault_id, limit],
+        [:id, :title, :channelId, :body, :score, :timestamp]
+      )
+      |> Enum.map(fn hit ->
+        body =
+          if redact_private?, do: Cascade.Content.Privacy.redact_blocks(hit.body), else: hit.body
+
+        hit
+        |> Map.drop([:body])
+        |> Map.put(:snippet, search_snippet(body, query))
+        |> Map.put(:type, "chat")
+      end)
+    rescue
+      _ -> []
+    end
+  end
+
+  defp search_snippet(text, query) do
+    clean = text |> String.replace(~r/\s+/u, " ") |> String.trim()
+
+    terms =
+      ~r/[a-z0-9_@#\.\/:-]{2,}/u
+      |> Regex.scan(query |> to_string() |> String.downcase())
+      |> List.flatten()
+
+    lower = String.downcase(clean)
+
+    at =
+      terms
+      |> Enum.map(fn term ->
+        case :binary.match(lower, term) do
+          :nomatch -> -1
+          {index, _length} -> index
+        end
+      end)
+      |> Enum.reject(&(&1 < 0))
+      |> Enum.min(fn -> -1 end)
+
+    start = max(0, if(at < 0, do: 0, else: at) - 70)
+    requested_length = min(240, byte_size(clean) - start)
+    value = safe_binary_slice(clean, start, requested_length)
+    prefix = if start > 0, do: "…", else: ""
+    suffix = if start + requested_length < byte_size(clean), do: "…", else: ""
+    prefix <> value <> suffix
+  end
+
+  defp safe_binary_slice(value, start, length) do
+    start = advance_to_utf8_boundary(value, min(start, byte_size(value)))
+    finish = retreat_to_utf8_boundary(value, min(start + length, byte_size(value)))
+    binary_part(value, start, max(0, finish - start))
+  end
+
+  defp advance_to_utf8_boundary(value, index) when index >= byte_size(value), do: byte_size(value)
+
+  defp advance_to_utf8_boundary(value, index) do
+    if (:binary.at(value, index) &&& 0xC0) == 0x80,
+      do: advance_to_utf8_boundary(value, index + 1),
+      else: index
+  end
+
+  defp retreat_to_utf8_boundary(_value, 0), do: 0
+  defp retreat_to_utf8_boundary(value, index) when index >= byte_size(value), do: byte_size(value)
+
+  defp retreat_to_utf8_boundary(value, index) do
+    if (:binary.at(value, index) &&& 0xC0) == 0x80,
+      do: retreat_to_utf8_boundary(value, index - 1),
+      else: index
+  end
+
+  defp mission_note_linked?(note_id) do
+    Query.one(
+      "SELECT 1 FROM chat_mission_notes WHERE note_id = ? LIMIT 1",
+      [note_id]
+    ) != nil
+  rescue
+    _ -> false
+  end
+
+  defp safe_delete_mission_note_relation(note_id) do
+    Query.execute("DELETE FROM chat_mission_notes WHERE note_id = ?", [note_id])
+  rescue
+    _ -> :ok
+  end
+
+
+  defp external_actor_origin?(origin),
+    do: origin in [:agent, "agent", :human, "human", :api, "api", :external, "external"]
+
+  defp agent_actor_origin?(origin), do: origin in [:agent, "agent"]
+
+  defp note_file_snapshot(nil), do: {nil, :absent}
+
+  defp note_file_snapshot(path) do
+    case File.read(path) do
+      {:ok, content} -> {path, {:present, content}}
+      {:error, :enoent} -> {path, :absent}
+      {:error, reason} -> raise "Could not read note file before update: #{inspect(reason)}"
+    end
+  end
+
+  defp restore_note_file({nil, :absent}), do: :ok
+
+  defp restore_note_file({path, :absent}) do
+    try do
+      if File.exists?(path), do: File.rm!(path)
+      :ok
+    rescue
+      error -> {:error, error}
+    end
+  end
+
+  defp restore_note_file({path, {:present, content}}) do
+    try do
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, content)
+      :ok
+    rescue
+      error -> {:error, error}
+    end
+  end
+
+  # Unlike the best-effort activity sink, this observer runs synchronously
+  # inside the write transaction and must propagate failures to the caller.
+  defp notify_linked_note_revision(note_id, actor_user_id, kind, opts) do
+    observer = Application.fetch_env!(:cascade_elixir, :linked_note_revision_observer)
+    observer.(note_id, actor_user_id, kind, opts)
   end
 
   def notify_note_mutation(note_id, actor_user_id, kind) do
@@ -1571,6 +1882,15 @@ defmodule Cascade.Content.Store do
     do: Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
 
   defp has_key?(_, _), do: false
+
   defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp value(options, key) when is_list(options) do
+    case List.keyfind(options, key, 0) || List.keyfind(options, Atom.to_string(key), 0) do
+      {_key, value} -> value
+      nil -> nil
+    end
+  end
+
   defp value(_, _), do: nil
 end

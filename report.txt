@@ -1,0 +1,3797 @@
+# Dependency refactoring report
+
+Project: <code>/Users/diego/mystuff/Coding/fizzer/backend_elixir</code>
+
+Scope: <code>/Users/diego/mystuff/Coding/fizzer/backend_elixir/lib</code>
+
+Extractor: source. 4 cyclic groups, 53 cyclic edges, 14 direct two-file pairs.
+
+## Agent task
+
+Preserve behavior while reducing cyclic dependencies. Read repository instructions and establish relevant baseline tests first. Start with the direct pairs and ranked candidates below. Inspect each reference and its callers; propose the smallest change that moves responsibility or introduces an explicit interface. Do not delete calls merely to remove edges. Make one coherent refactor at a time, run relevant tests, and regenerate this report after every change. For Elixir, verify proposed dependency changes with the Mix extractor. Use the complete graph to check effects outside the chosen group.
+
+## Interpretation
+
+- All extracted dependency edges are retained in graph. Every intra-group edge is listed once in cyclic_edges.
+- Scope is the requested directory. Dependencies outside it may be targets without outgoing edges; run at project root for cross-boundary cycles.
+- Source AST references are evidence, not proof of runtime calls. Dynamic dispatch and macro-generated edges may have no source evidence; missing evidence is explicit.
+- Madge does not supply source locations here. Its edges are retained with unavailable evidence.
+- Removal scores simulate one edge at a time on the unchanged graph. They are not a minimum cut or permission to delete behavior. Scores are not additive.
+
+## Direct two-file cycles
+
+- <code>lib/cascade/accounts/moderation.ex</code> <-> <code>lib/cascade/accounts/vault_members.ex</code>
+- <code>lib/cascade/accounts/vault_members.ex</code> <-> <code>lib/cascade/chat/agents.ex</code>
+- <code>lib/cascade/chat/continuations.ex</code> <-> <code>lib/cascade/missions/dispatches.ex</code>
+- <code>lib/cascade/chat/next_steps.ex</code> <-> <code>lib/cascade/missions/dispatches.ex</code>
+- <code>lib/cascade/missions/authority.ex</code> <-> <code>lib/cascade/missions/interpretation.ex</code>
+- <code>lib/cascade/missions/children.ex</code> <-> <code>lib/cascade/missions/store.ex</code>
+- <code>lib/cascade/missions/dispatches.ex</code> <-> <code>lib/cascade/missions/store.ex</code>
+- <code>lib/cascade/missions/interpretation.ex</code> <-> <code>lib/cascade/missions/store.ex</code>
+- <code>lib/cascade/missions/scheduler.ex</code> <-> <code>lib/cascade/missions/store.ex</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex</code> <-> <code>lib/cascade/runs/store.ex</code>
+- <code>lib/cascade/runs/store.ex</code> <-> <code>lib/cascade/wiki_maintenance.ex</code>
+- <code>lib/cascade/realtime.ex</code> <-> <code>lib/cascade/realtime/session.ex</code>
+- <code>lib/cascade/realtime/hub.ex</code> <-> <code>lib/cascade/realtime/session.ex</code>
+- <code>lib/cascade_web/orchestration_router.ex</code> <-> <code>lib/cascade_web/orchestration_routes.ex</code>
+
+## Ranked investigation candidates
+
+Top 10, ordered by reduction in the largest cyclic group, then cyclic edges eliminated, then direct pairs. Each score assumes that single dependency is removed through a behavior-preserving refactor. Zero group reduction means that edge alone does not split the group.
+
+- E23: <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>. Largest-group reduction: 2; cyclic edges eliminated: 8.
+- E52: <code>lib/cascade_web/orchestration_router.ex</code> -> <code>lib/cascade_web/orchestration_routes.ex</code>. Largest-group reduction: 2; cyclic edges eliminated: 2.
+- E53: <code>lib/cascade_web/orchestration_routes.ex</code> -> <code>lib/cascade_web/orchestration_router.ex</code>. Largest-group reduction: 2; cyclic edges eliminated: 2.
+- E36: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 8.
+- E10: <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 4.
+- E14: <code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 4.
+- E18: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 4.
+- E39: <code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 4.
+- E3: <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/accounts/moderation.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 3.
+- E49: <code>lib/cascade/realtime/hub.ex</code> -> <code>lib/cascade/realtime/session.ex</code>. Largest-group reduction: 1; cyclic edges eliminated: 3.
+
+## Every cyclic dependency edge
+
+### E1 (group 1)
+
+<code>lib/cascade/accounts/moderation.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+- <code>lib/cascade/accounts/moderation.ex:21</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    if VaultMembers.role(vault_id, actor_id) != "owner" do</code>
+- <code>lib/cascade/accounts/moderation.ex:66</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      VaultMembers.role(vault_id, actor_id) != "owner" -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:72</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      target_id == vault.created_by or VaultMembers.role(vault_id, target_id) == "owner" -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:85</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      VaultMembers.role(vault_id, actor_id) != "owner" -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:142</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      VaultMembers.role(vault_id, actor_id) != "owner" -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:171</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      VaultMembers.role(vault_id, actor_id) != "owner" -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:331</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      is_nil(VaultMembers.role(vault.id, reporter_id)) -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:362</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>          is_nil(VaultMembers.role(vault_id, id)) -&gt;</code>
+- <code>lib/cascade/accounts/moderation.ex:375</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    if is_nil(VaultMembers.role(requested_vault_id, reporter_id)) do</code>
+
+Shortest loop through this edge: <code>lib/cascade/accounts/moderation.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/accounts/moderation.ex</code>
+
+### E2 (group 1)
+
+<code>lib/cascade/accounts/moderation.ex</code> -> <code>lib/cascade/chat/agents.ex</code>
+
+- <code>lib/cascade/accounts/moderation.ex:270</code> references <code>Cascade.Chat.Agents</code>: <code>          Cascade.Chat.Agents.remove_departed_owners(vault_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/accounts/moderation.ex</code> -> <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/accounts/moderation.ex</code>
+
+### E3 (group 1)
+
+<code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/accounts/moderation.ex</code>
+
+- <code>lib/cascade/accounts/vault_members.ex:63</code> references <code>Cascade.Accounts.Moderation</code>: <code>      Moderation.banned?(vault_id, target_id) -&gt;</code>
+
+Shortest loop through this edge: <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/accounts/moderation.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+### E4 (group 1)
+
+<code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code>
+
+- <code>lib/cascade/accounts/vault_members.ex:125</code> references <code>Cascade.Chat.Agents</code>: <code>          Cascade.Chat.Agents.remove_departed_owners(vault_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+### E5 (group 1)
+
+<code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+- <code>lib/cascade/chat/agents.ex:12</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    if VaultMembers.role(vault_id, user_id) do</code>
+- <code>lib/cascade/chat/agents.ex:53</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    if VaultMembers.role(vault_id, user_id) do</code>
+- <code>lib/cascade/chat/agents.ex:117</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    with true &lt;- not is_nil(VaultMembers.role(vault_id, user_id)),</code>
+- <code>lib/cascade/chat/agents.ex:143</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>    with true &lt;- not is_nil(VaultMembers.role(vault_id, user_id)),</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code>
+
+### E6 (group 1)
+
+<code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/avatars.ex</code>
+
+- <code>lib/cascade/chat/agents.ex:152</code> references <code>Cascade.Chat.Avatars</code>: <code>      if deleted, do: Avatars.purge(identity_id)</code>
+- <code>lib/cascade/chat/agents.ex:459</code> references <code>Cascade.Chat.Avatars</code>: <code>         {:ok, stored_url} &lt;- Avatars.persist(user_id, identity_id, url) do</code>
+- <code>lib/cascade/chat/agents.ex:803</code> references <code>Cascade.Chat.Avatars</code>: <code>    Enum.each(expired, &amp;Avatars.purge/1)</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/avatars.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code>
+
+### E7 (group 1)
+
+<code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/channel.ex</code>
+
+- <code>lib/cascade/chat/agents.ex:165</code> references <code>Cascade.Chat.Channel</code>: <code>    with {:ok, route} &lt;- Channel.assert_channel(channel_id, user_id) do</code>
+- <code>lib/cascade/chat/agents.ex:215</code> references <code>Cascade.Chat.Channel</code>: <code>    with {:ok, route} &lt;- Channel.assert_vault_channel(vault_id, channel_id, user_id),</code>
+- <code>lib/cascade/chat/agents.ex:427</code> references <code>Cascade.Chat.Channel</code>: <code>    with {:ok, route} &lt;- Channel.assert_vault_channel(vault_id, channel_id, user_id),</code>
+- <code>lib/cascade/chat/agents.ex:450</code> references <code>Cascade.Chat.Channel</code>: <code>         {:ok, route} &lt;- Channel.assert_vault_channel(vault_id, channel_id, user_id),</code>
+- <code>lib/cascade/chat/agents.ex:484</code> references <code>Cascade.Chat.Channel</code>: <code>      with {:ok, _route} &lt;- Channel.assert_vault_channel(vault_id, channel_id, user_id),</code>
+- <code>lib/cascade/chat/agents.ex:529</code> references <code>Cascade.Chat.Channel</code>: <code>    with {:ok, route} &lt;- Channel.assert_channel(channel_id, user_id),</code>
+- <code>lib/cascade/chat/agents.ex:542</code> references <code>Cascade.Chat.Channel</code>: <code>        Enum.find(Channel.list_routes(route.sourceVaultId, route.sourceChannelId), fn candidate -&gt;</code>
+- <code>lib/cascade/chat/agents.ex:884</code> references <code>Cascade.Chat.Channel</code>: <code>    case Channel.assert_channel(route.sourceChannelId, owner_id) do</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/channel.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code>
+
+### E8 (group 1)
+
+<code>lib/cascade/chat/avatars.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+- <code>lib/cascade/chat/avatars.ex:68</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>         role when not is_nil(role) &lt;- VaultMembers.role(note.vault_id, user_id),</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/avatars.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/avatars.ex</code>
+
+### E9 (group 1)
+
+<code>lib/cascade/chat/channel.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code>
+
+- <code>lib/cascade/chat/channel.ex:308</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>      member? = not is_nil(VaultMembers.role(route.sourceVaultId, target_id))</code>
+- <code>lib/cascade/chat/channel.ex:323</code> references <code>Cascade.Accounts.VaultMembers</code>: <code>               do: VaultMembers.remove(route.sourceVaultId, actor_id, target_id),</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/channel.ex</code> -> <code>lib/cascade/accounts/vault_members.ex</code> -> <code>lib/cascade/chat/agents.ex</code> -> <code>lib/cascade/chat/channel.ex</code>
+
+### E10 (group 2)
+
+<code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+- <code>lib/cascade/chat/continuations.ex:83</code> references <code>Cascade.Missions.Dispatches</code>: <code>    if Dispatches.human?(d) and d.registration.orchestrator and</code>
+- <code>lib/cascade/chat/continuations.ex:239</code> references <code>Cascade.Missions.Dispatches</code>: <code>    Dispatches.retract_pending_reply(dispatch)</code>
+- <code>lib/cascade/chat/continuations.ex:478</code> references <code>Cascade.Missions.Dispatches</code>: <code>      {:ok, dispatch} = Dispatches.create(s.owner, route.localChannelId, message, s.registration)</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/continuations.ex</code>
+
+### E11 (group 2)
+
+<code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+- <code>lib/cascade/chat/next_steps.ex:240</code> references <code>Cascade.Missions.Dispatches</code>: <code>          Cascade.Missions.Dispatches.create(</code>
+- <code>lib/cascade/chat/next_steps.ex:387</code> references <code>Cascade.Missions.Dispatches</code>: <code>           Cascade.Missions.Dispatches.get(owner, route.localChannelId, dispatch_id),</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code>
+
+### E12 (group 2)
+
+<code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+- <code>lib/cascade/chat/next_steps.ex:221</code> references <code>Cascade.Missions.Store</code>: <code>           {:ok, route} &lt;- Cascade.Missions.Store.owner_route(owner, vault, channel),</code>
+- <code>lib/cascade/chat/next_steps.ex:385</code> references <code>Cascade.Missions.Store</code>: <code>         {:ok, route} &lt;- Cascade.Missions.Store.owner_route(owner, vault, channel),</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code>
+
+### E13 (group 2)
+
+<code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/chat/next_steps.ex:284</code> references <code>Cascade.Runs.Store</code>: <code>                  Cascade.Runs.Store.find_open_for_chat_registration(registration_id, dispatch.id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code>
+
+### E14 (group 2)
+
+<code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/missions/authority.ex:36</code> references <code>Cascade.Missions.Interpretation</code>: <code>            |&gt; Cascade.Missions.Interpretation.encode_context()</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/authority.ex</code>
+
+### E15 (group 2)
+
+<code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/missions/children.ex:205</code> references <code>Cascade.Missions.Interpretation</code>: <code>          Cascade.Missions.Interpretation.encode_context(children)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/children.ex</code>
+
+### E16 (group 2)
+
+<code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+- <code>lib/cascade/missions/children.ex:36</code> references <code>Cascade.Missions.Store</code>: <code>        Store.add_task(user, channel, parent.mission, bounded, parent_task_id: parent.id)</code>
+- <code>lib/cascade/missions/children.ex:256</code> references <code>Cascade.Missions.Store</code>: <code>        Store.update_task(user, channel, child, %{</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/children.ex</code>
+
+### E17 (group 2)
+
+<code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/continuations.ex</code>
+
+- <code>lib/cascade/missions/dispatches.ex:80</code> references <code>Cascade.Chat.Continuations</code>: <code>            Cascade.Chat.Continuations.user_return(dispatch)</code>
+- <code>lib/cascade/missions/dispatches.ex:174</code> references <code>Cascade.Chat.Continuations</code>: <code>         true &lt;- Cascade.Chat.Continuations.ready?(dispatch) do</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+### E18 (group 2)
+
+<code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code>
+
+- <code>lib/cascade/missions/dispatches.ex:40</code> references <code>Cascade.Chat.NextSteps</code>: <code>      Cascade.Chat.NextSteps.user_return(route.sourceChannelId, registration.id, message.id)</code>
+- <code>lib/cascade/missions/dispatches.ex:110</code> references <code>Cascade.Chat.NextSteps</code>: <code>              if Cascade.Chat.NextSteps.dispatch_ready?(dispatch),</code>
+- <code>lib/cascade/missions/dispatches.ex:179</code> references <code>Cascade.Chat.NextSteps</code>: <code>        Cascade.Chat.NextSteps.dispatch_ready?(dispatch) -&gt;</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+### E19 (group 2)
+
+<code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/missions/dispatches.ex:238</code> references <code>Cascade.Missions.Interpretation</code>: <code>           do: Cascade.Missions.Interpretation.keep_wake?(dispatch.id),</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+### E20 (group 2)
+
+<code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+- <code>lib/cascade/missions/dispatches.ex:275</code> references <code>Cascade.Missions.Store</code>: <code>          with {:ok, route} &lt;- Cascade.Missions.Store.owner_route(owner_id, vault_id, channel_id),</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+### E21 (group 2)
+
+<code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code>
+
+- <code>lib/cascade/missions/dispatches.ex:536</code> references <code>Cascade.Runs.RunnerLifecycle</code>: <code>    usage = RunnerLifecycle.plan_usage(owner_id)[agent_id] || %{}</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+### E22 (group 2)
+
+<code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/authority.ex</code>
+
+- <code>lib/cascade/missions/interpretation.ex:1127</code> references <code>Cascade.Missions.Authority</code>: <code>    #{Cascade.Missions.Authority.context(wake.mission.id)}</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+### E23 (group 2)
+
+<code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+- <code>lib/cascade/missions/interpretation.ex:381</code> references <code>Cascade.Missions.Store</code>: <code>      recoveryEvidence: Store.recovery_context(id),</code>
+- <code>lib/cascade/missions/interpretation.ex:629</code> references <code>Cascade.Missions.Store</code>: <code>          {:ok, update} = Store.refresh(id)</code>
+- <code>lib/cascade/missions/interpretation.ex:768</code> references <code>Cascade.Missions.Store</code>: <code>    with {:ok, update} &lt;- Store.get(user_id, channel_id, mission_id, registration_id),</code>
+- <code>lib/cascade/missions/interpretation.ex:892</code> references <code>Cascade.Missions.Store</code>: <code>          {:ok, route} = Store.owner_route(user.id, update.vaultId, update.channelId)</code>
+- <code>lib/cascade/missions/interpretation.ex:1090</code> references <code>Cascade.Missions.Store</code>: <code>      with {:ok, route} &lt;- Store.owner_route(owner, vault, channel),</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+### E24 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/authority.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:273</code> references <code>Cascade.Missions.Authority</code>: <code>              Cascade.Missions.Authority.context(candidate.missionId)</code>
+- <code>lib/cascade/missions/scheduler.ex:314</code> references <code>Cascade.Missions.Authority</code>: <code>        #{Cascade.Missions.Authority.context(wake.mission.id)}</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E25 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/children.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:121</code> references <code>Cascade.Missions.Children</code>: <code>        Cascade.Missions.Children.resume_ready(mission_id)</code>
+- <code>lib/cascade/missions/scheduler.ex:272</code> references <code>Cascade.Missions.Children</code>: <code>              Cascade.Missions.Children.context(candidate.taskId),</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E26 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:285</code> references <code>Cascade.Missions.Dispatches</code>: <code>      Dispatches.create(</code>
+- <code>lib/cascade/missions/scheduler.ex:352</code> references <code>Cascade.Missions.Dispatches</code>: <code>           Dispatches.create(</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E27 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:185</code> references <code>Cascade.Missions.Interpretation</code>: <code>    Enum.each(ids, &amp;Cascade.Missions.Interpretation.flush(&amp;1, events))</code>
+- <code>lib/cascade/missions/scheduler.ex:359</code> references <code>Cascade.Missions.Interpretation</code>: <code>        do: Cascade.Missions.Interpretation.admitted(wake.mission.id, dispatch.id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E28 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:25</code> references <code>Cascade.Missions.Store</code>: <code>      {:ok, _} = Store.attach_run(dispatch_id, run_id)</code>
+- <code>lib/cascade/missions/scheduler.ex:26</code> references <code>Cascade.Missions.Store</code>: <code>      {:ok, _} = Store.settle_run(run_id, status, summary)</code>
+- <code>lib/cascade/missions/scheduler.ex:122</code> references <code>Cascade.Missions.Store</code>: <code>        scheduled = Store.schedulable(mission_id)</code>
+- <code>lib/cascade/missions/scheduler.ex:138</code> references <code>Cascade.Missions.Store</code>: <code>            case Store.claim_wake(id) do</code>
+- <code>lib/cascade/missions/scheduler.ex:149</code> references <code>Cascade.Missions.Store</code>: <code>            case Store.refresh(mission_id) do</code>
+- <code>lib/cascade/missions/scheduler.ex:192</code> references <code>Cascade.Missions.Store</code>: <code>    case Store.root_message(update) do</code>
+- <code>lib/cascade/missions/scheduler.ex:201</code> references <code>Cascade.Missions.Store</code>: <code>      with {:ok, settled} &lt;- Store.settle_run(run_id, status, summary) do</code>
+- <code>lib/cascade/missions/scheduler.ex:223</code> references <code>Cascade.Missions.Store</code>: <code>          case Store.claim_wake(wake.mission.id) do</code>
+- <code>lib/cascade/missions/scheduler.ex:248</code> references <code>Cascade.Missions.Store</code>: <code>    {:ok, route} = Store.owner_route(candidate.createdBy, candidate.vaultId, candidate.channelId)</code>
+- <code>lib/cascade/missions/scheduler.ex:293</code> references <code>Cascade.Missions.Store</code>: <code>    {:ok, update} = Store.link_dispatch(candidate.taskId, dispatch.id)</code>
+- <code>lib/cascade/missions/scheduler.ex:306</code> references <code>Cascade.Missions.Store</code>: <code>    {:ok, route} = Store.owner_route(wake.createdBy, wake.vaultId, wake.channelId)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E29 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:77</code> references <code>Cascade.Runs.RunnerLifecycle</code>: <code>  defp cancel_run(user, run), do: Cascade.Runs.RunnerLifecycle.cancel(user, run, 2_000)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E30 (group 2)
+
+<code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/missions/scheduler.ex:67</code> references <code>Cascade.Runs.Store</code>: <code>        Cascade.Runs.Store.finish(run, "canceled", "Mission task canceled.")</code>
+- <code>lib/cascade/missions/scheduler.ex:69</code> references <code>Cascade.Runs.Store</code>: <code>        Cascade.Runs.Store.publish(run, "status", %{</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+### E31 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code>
+
+- <code>lib/cascade/missions/store.ex:1380</code> references <code>Cascade.Chat.Continuations</code>: <code>        not Cascade.Chat.Continuations.owns_recovery?(run_id) and</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E32 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/authority.ex</code>
+
+- <code>lib/cascade/missions/store.ex:92</code> references <code>Cascade.Missions.Authority</code>: <code>                Cascade.Missions.Authority.capture!(</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/authority.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E33 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/children.ex</code>
+
+- <code>lib/cascade/missions/store.ex:722</code> references <code>Cascade.Missions.Children</code>: <code>              not Cascade.Missions.Children.joining?(task.id)</code>
+- <code>lib/cascade/missions/store.ex:931</code> references <code>Cascade.Missions.Children</code>: <code>              if status == "completed" and Cascade.Missions.Children.unresolved?(task_id),</code>
+- <code>lib/cascade/missions/store.ex:1025</code> references <code>Cascade.Missions.Children</code>: <code>                  do: Cascade.Missions.Children.cancel(task_id),</code>
+- <code>lib/cascade/missions/store.ex:1194</code> references <code>Cascade.Missions.Children</code>: <code>                else: Cascade.Missions.Children.settlement(task.id, status)</code>
+- <code>lib/cascade/missions/store.ex:1196</code> references <code>Cascade.Missions.Children</code>: <code>            if next == "joining", do: Cascade.Missions.Children.wait(task.id)</code>
+- <code>lib/cascade/missions/store.ex:1225</code> references <code>Cascade.Missions.Children</code>: <code>              release: not Cascade.Missions.Children.joining?(task.id),</code>
+- <code>lib/cascade/missions/store.ex:1510</code> references <code>Cascade.Missions.Children</code>: <code>        |&gt; Map.merge(Cascade.Missions.Children.projection(task.id))</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/children.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E34 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+- <code>lib/cascade/missions/store.ex:2170</code> references <code>Cascade.Missions.Dispatches</code>: <code>        Cascade.Missions.Dispatches.retract_pending_reply(dispatch_id)</code>
+- <code>lib/cascade/missions/store.ex:2857</code> references <code>Cascade.Missions.Dispatches</code>: <code>      case Cascade.Missions.Dispatches.create(</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E35 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/missions/store.ex:118</code> references <code>Cascade.Missions.Interpretation</code>: <code>              Cascade.Missions.Interpretation.initialize(mission_id)</code>
+- <code>lib/cascade/missions/store.ex:324</code> references <code>Cascade.Missions.Interpretation</code>: <code>        Cascade.Missions.Interpretation.resolve_migration_decision(mission.id, user_id)</code>
+- <code>lib/cascade/missions/store.ex:325</code> references <code>Cascade.Missions.Interpretation</code>: <code>        Cascade.Missions.Interpretation.initialize(mission.id)</code>
+- <code>lib/cascade/missions/store.ex:343</code> references <code>Cascade.Missions.Interpretation</code>: <code>    Cascade.Missions.Interpretation.note_changed(note_id, actor_id, kind, opts)</code>
+- <code>lib/cascade/missions/store.ex:559</code> references <code>Cascade.Missions.Interpretation</code>: <code>          if Cascade.Missions.Interpretation.migration_decision_pending?(mission.id),</code>
+- <code>lib/cascade/missions/store.ex:872</code> references <code>Cascade.Missions.Interpretation</code>: <code>          Cascade.Missions.Interpretation.action_key(caller_run, ["steer", task_id, instruction])</code>
+- <code>lib/cascade/missions/store.ex:1154</code> references <code>Cascade.Missions.Interpretation</code>: <code>      case Cascade.Missions.Interpretation.claim(update) do</code>
+- <code>lib/cascade/missions/store.ex:2432</code> references <code>Cascade.Missions.Interpretation</code>: <code>      not Cascade.Missions.Interpretation.migration_decision_pending?(mission.id) and</code>
+- <code>lib/cascade/missions/store.ex:2976</code> references <code>Cascade.Missions.Interpretation</code>: <code>    Cascade.Missions.Interpretation.initialize(mission_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E36 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code>
+
+- <code>lib/cascade/missions/store.ex:335</code> references <code>Cascade.Missions.Scheduler</code>: <code>      _ = Cascade.Missions.Scheduler.schedule(id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/missions/scheduler.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E37 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/missions/store.ex:1405</code> references <code>Cascade.Runs.Store</code>: <code>           Cascade.Runs.Store.find_open_for_chat_registration(mission.coordinator_registration_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E38 (group 2)
+
+<code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/work_items.ex</code>
+
+- <code>lib/cascade/missions/store.ex:1547</code> references <code>Cascade.WorkItems</code>: <code>    case WorkItems.get(user_id, work_item_id) do</code>
+- <code>lib/cascade/missions/store.ex:1593</code> references <code>Cascade.WorkItems</code>: <code>          case WorkItems.get(user_id, task.work_item_id) do</code>
+- <code>lib/cascade/missions/store.ex:1611</code> references <code>Cascade.WorkItems</code>: <code>            case WorkItems.get(user_id, id) do</code>
+- <code>lib/cascade/missions/store.ex:1652</code> references <code>Cascade.WorkItems</code>: <code>      case WorkItems.create(user_id, mission.vault_id, input) do</code>
+- <code>lib/cascade/missions/store.ex:1667</code> references <code>Cascade.WorkItems</code>: <code>    if is_integer(run_id) and run_id &gt; 0, do: WorkItems.link_run(user_id, item.id, run_id)</code>
+- <code>lib/cascade/missions/store.ex:1670</code> references <code>Cascade.WorkItems</code>: <code>      WorkItems.acquire_lease(user_id, item.id, task.assignee_registration_id)</code>
+- <code>lib/cascade/missions/store.ex:1676</code> references <code>Cascade.WorkItems</code>: <code>    WorkItems.update(user_id, item.id, %{</code>
+- <code>lib/cascade/missions/store.ex:1686</code> references <code>Cascade.WorkItems</code>: <code>      WorkItems.release_lease(user_id, item.id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/work_items.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code>
+
+### E39 (group 2)
+
+<code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/runs/runner_lifecycle.ex:25</code> references <code>Cascade.Runs.Store</code>: <code>    %{base | online: online?(owner_id), activeRuns: Store.active_delegated_count(owner_id)}</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:46</code> references <code>Cascade.Runs.Store</code>: <code>      if Store.record_delegated(run_id, owner_id, payload) == :ok do</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:61</code> references <code>Cascade.Runs.Store</code>: <code>      case Store.pending_delivery(run_id, owner_id) do</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:66</code> references <code>Cascade.Runs.Store</code>: <code>          Store.finish(run_id, "failed", summary)</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:67</code> references <code>Cascade.Runs.Store</code>: <code>          Store.publish(run_id, "status", %{status: "failed", summary: summary})</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:139</code> references <code>Cascade.Runs.Store</code>: <code>  def accept_event?(run_id, owner_id), do: Store.delegated_owner(run_id) == owner_id</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:200</code> references <code>Cascade.Runs.Store</code>: <code>      |&gt; Enum.filter(&amp;(Store.delegated_owner(&amp;1) == owner_id))</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:209</code> references <code>Cascade.Runs.Store</code>: <code>          Store.open_delegated()</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:250</code> references <code>Cascade.Runs.Store</code>: <code>      Enum.any?(Store.open_delegated(), &amp;(&amp;1.owner_user_id == owner_id))</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:273</code> references <code>Cascade.Runs.Store</code>: <code>    if Store.delegated_owner(run_id) == owner_id do</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:316</code> references <code>Cascade.Runs.Store</code>: <code>          Store.open_delegated()</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:334</code> references <code>Cascade.Runs.Store</code>: <code>        Store.delegated_owner(run_id) != lease.owner_id or</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:341</code> references <code>Cascade.Runs.Store</code>: <code>    |&gt; Enum.filter(fn {run_id, lease} -&gt; Store.delegated_owner(run_id) == lease.owner_id end)</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:353</code> references <code>Cascade.Runs.Store</code>: <code>    Store.open_delegated()</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:361</code> references <code>Cascade.Runs.Store</code>: <code>      not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:364</code> references <code>Cascade.Runs.Store</code>: <code>      Store.finish(row.run_id, "failed", summary)</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:365</code> references <code>Cascade.Runs.Store</code>: <code>      Store.publish(row.run_id, "status", %{status: "failed", summary: summary})</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:372</code> references <code>Cascade.Runs.Store</code>: <code>      Store.finish(run_id, "failed", loose_summary)</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:373</code> references <code>Cascade.Runs.Store</code>: <code>      Store.publish(run_id, "status", %{status: "failed", summary: loose_summary})</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:389</code> references <code>Cascade.Runs.Store</code>: <code>      if is_nil(Store.pending_delivery(run_id, Store.delegated_owner(run_id))) do</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:390</code> references <code>Cascade.Runs.Store</code>: <code>        Store.finish(run_id, "failed", reason)</code>
+- <code>lib/cascade/runs/runner_lifecycle.ex:391</code> references <code>Cascade.Runs.Store</code>: <code>        Store.publish(run_id, "status", %{status: "failed", summary: reason})</code>
+
+Shortest loop through this edge: <code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code>
+
+### E40 (group 2)
+
+<code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code>
+
+- <code>lib/cascade/runs/store.ex:343</code> references <code>Cascade.Chat.Continuations</code>: <code>      Cascade.Chat.Continuations.stop(run_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/chat/continuations.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+### E41 (group 2)
+
+<code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code>
+
+- <code>lib/cascade/runs/store.ex:378</code> references <code>Cascade.Missions.Interpretation</code>: <code>      if not steering?, do: Cascade.Missions.Interpretation.stop_run(run_id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+### E42 (group 2)
+
+<code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code>
+
+- <code>lib/cascade/runs/store.ex:361</code> references <code>Cascade.Runs.RunnerLifecycle</code>: <code>        force? -&gt; Cascade.Runs.RunnerLifecycle.request_cancel(owner_id, run_id)</code>
+- <code>lib/cascade/runs/store.ex:362</code> references <code>Cascade.Runs.RunnerLifecycle</code>: <code>        true -&gt; Cascade.Runs.RunnerLifecycle.cancel(owner_id, run_id)</code>
+- <code>lib/cascade/runs/store.ex:366</code> references <code>Cascade.Runs.RunnerLifecycle</code>: <code>         (owner_id &amp;&amp; not stopped? &amp;&amp; Cascade.Runs.RunnerLifecycle.online?(owner_id) &amp;&amp;</code>
+
+Shortest loop through this edge: <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/runs/runner_lifecycle.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+### E43 (group 2)
+
+<code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/wiki_maintenance.ex</code>
+
+- <code>lib/cascade/runs/store.ex:314</code> references <code>Cascade.WikiMaintenance</code>: <code>            clean(summary, if(Cascade.WikiMaintenance.run?(run_id), do: 200_000, else: 20_000)),</code>
+- <code>lib/cascade/runs/store.ex:324</code> references <code>Cascade.WikiMaintenance</code>: <code>        Cascade.WikiMaintenance.run_finished(run_id, status, summary)</code>
+
+Shortest loop through this edge: <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/wiki_maintenance.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+### E44 (group 2)
+
+<code>lib/cascade/wiki_maintenance.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code>
+
+- <code>lib/cascade/wiki_maintenance.ex:221</code> references <code>Cascade.Missions.Dispatches</code>: <code>            {:ok, dispatch} = Dispatches.create(owner_id, channel_id, message, registration_id)</code>
+- <code>lib/cascade/wiki_maintenance.ex:350</code> references <code>Cascade.Missions.Dispatches</code>: <code>        [id] when is_binary(id) -&gt; Dispatches.retract_pending_reply(id)</code>
+
+Shortest loop through this edge: <code>lib/cascade/wiki_maintenance.ex</code> -> <code>lib/cascade/missions/dispatches.ex</code> -> <code>lib/cascade/chat/next_steps.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/wiki_maintenance.ex</code>
+
+### E45 (group 2)
+
+<code>lib/cascade/wiki_maintenance.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/wiki_maintenance.ex:187</code> references <code>Cascade.Runs.Store</code>: <code>              Cascade.Runs.Store.cancel(run_id, force: true)</code>
+- <code>lib/cascade/wiki_maintenance.ex:344</code> references <code>Cascade.Runs.Store</code>: <code>      [id] -&gt; Cascade.Runs.Store.cancel(id, force: true)</code>
+
+Shortest loop through this edge: <code>lib/cascade/wiki_maintenance.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/wiki_maintenance.ex</code>
+
+### E46 (group 2)
+
+<code>lib/cascade/work_items.ex</code> -> <code>lib/cascade/runs/store.ex</code>
+
+- <code>lib/cascade/work_items.ex:481</code> references <code>Cascade.Runs.Store</code>: <code>      case Store.get(run_id) do</code>
+- <code>lib/cascade/work_items.ex:500</code> references <code>Cascade.Runs.Store</code>: <code>                  case Store.get(linked_run) do</code>
+- <code>lib/cascade/work_items.ex:502</code> references <code>Cascade.Runs.Store</code>: <code>                      Store.cancel(linked_run)</code>
+
+Shortest loop through this edge: <code>lib/cascade/work_items.ex</code> -> <code>lib/cascade/runs/store.ex</code> -> <code>lib/cascade/missions/interpretation.ex</code> -> <code>lib/cascade/missions/store.ex</code> -> <code>lib/cascade/work_items.ex</code>
+
+### E47 (group 3)
+
+<code>lib/cascade/realtime.ex</code> -> <code>lib/cascade/realtime/hub.ex</code>
+
+- <code>lib/cascade/realtime.ex:10</code> references <code>Cascade.Realtime.Hub</code>: <code>    with :ok &lt;- Hub.admit(sid, max_sessions) do</code>
+- <code>lib/cascade/realtime.ex:21</code> references <code>Cascade.Realtime.Hub</code>: <code>          Hub.release(sid)</code>
+- <code>lib/cascade/realtime.ex:40</code> references <code>Cascade.Realtime.Hub</code>: <code>    do: Hub.broadcast(room, namespace, event, args, except_sid)</code>
+
+Shortest loop through this edge: <code>lib/cascade/realtime.ex</code> -> <code>lib/cascade/realtime/hub.ex</code> -> <code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime.ex</code>
+
+### E48 (group 3)
+
+<code>lib/cascade/realtime.ex</code> -> <code>lib/cascade/realtime/session.ex</code>
+
+- <code>lib/cascade/realtime.ex:34</code> references <code>Cascade.Realtime.Session</code>: <code>  def emit(sid, namespace, event, args \\ []), do: Session.emit(sid, namespace, event, args)</code>
+- <code>lib/cascade/realtime.ex:37</code> references <code>Cascade.Realtime.Session</code>: <code>    do: Session.emit_with_ack(sid, namespace, event, args, timeout)</code>
+
+Shortest loop through this edge: <code>lib/cascade/realtime.ex</code> -> <code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime.ex</code>
+
+### E49 (group 3)
+
+<code>lib/cascade/realtime/hub.ex</code> -> <code>lib/cascade/realtime/session.ex</code>
+
+- <code>lib/cascade/realtime/hub.ex:76</code> references <code>Cascade.Realtime.Session</code>: <code>      |&gt; Enum.each(&amp;Session.disconnect_namespace(&amp;1, namespace, :session_revoked))</code>
+- <code>lib/cascade/realtime/hub.ex:86</code> references <code>Cascade.Realtime.Session</code>: <code>    |&gt; Enum.each(&amp;Session.disconnect(&amp;1, :session_revoked))</code>
+- <code>lib/cascade/realtime/hub.ex:95</code> references <code>Cascade.Realtime.Session</code>: <code>      {^room, sid, ^namespace} when sid != except_sid -&gt; Session.emit(sid, namespace, event, args)</code>
+- <code>lib/cascade/realtime/hub.ex:210</code> references <code>Cascade.Realtime.Session</code>: <code>        Session.disconnect_namespace(old_sid, old_namespace, :runner_replaced)</code>
+
+Shortest loop through this edge: <code>lib/cascade/realtime/hub.ex</code> -> <code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime/hub.ex</code>
+
+### E50 (group 3)
+
+<code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime.ex</code>
+
+- <code>lib/cascade/realtime/session.ex:735</code> references <code>Cascade.Realtime</code>: <code>    do: Application.get_env(:cascade_elixir, Cascade.Realtime, [])[key] || default</code>
+
+Shortest loop through this edge: <code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime.ex</code> -> <code>lib/cascade/realtime/session.ex</code>
+
+### E51 (group 3)
+
+<code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime/hub.ex</code>
+
+- <code>lib/cascade/realtime/session.ex:54</code> references <code>Cascade.Realtime.Hub</code>: <code>    Hub.track(sid, self())</code>
+- <code>lib/cascade/realtime/session.ex:374</code> references <code>Cascade.Realtime.Hub</code>: <code>      case Hub.join(state.sid, namespace, "user:#{identity.id}") do</code>
+- <code>lib/cascade/realtime/session.ex:526</code> references <code>Cascade.Realtime.Hub</code>: <code>    case Hub.join(state.sid, namespace, room) do</code>
+- <code>lib/cascade/realtime/session.ex:533</code> references <code>Cascade.Realtime.Hub</code>: <code>    :ok = Hub.leave(state.sid, namespace, room)</code>
+- <code>lib/cascade/realtime/session.ex:541</code> references <code>Cascade.Realtime.Hub</code>: <code>    Hub.broadcast(room, namespace, event, args)</code>
+- <code>lib/cascade/realtime/session.ex:569</code> references <code>Cascade.Realtime.Hub</code>: <code>    :ok = Hub.register_runner(identity.id, state.sid, namespace, metadata)</code>
+- <code>lib/cascade/realtime/session.ex:600</code> references <code>Cascade.Realtime.Hub</code>: <code>        rooms = Hub.rooms_for_session(state.sid, namespace)</code>
+- <code>lib/cascade/realtime/session.ex:601</code> references <code>Cascade.Realtime.Hub</code>: <code>        Hub.leave_namespace(state.sid, namespace, reason)</code>
+
+Shortest loop through this edge: <code>lib/cascade/realtime/session.ex</code> -> <code>lib/cascade/realtime/hub.ex</code> -> <code>lib/cascade/realtime/session.ex</code>
+
+### E52 (group 4)
+
+<code>lib/cascade_web/orchestration_router.ex</code> -> <code>lib/cascade_web/orchestration_routes.ex</code>
+
+- <code>lib/cascade_web/orchestration_router.ex:47</code> references <code>CascadeWeb.OrchestrationRoutes</code>: <code>    JSON.send(conn, 404, %{error: "Not found", routes: OrchestrationRoutes.count()})</code>
+
+Shortest loop through this edge: <code>lib/cascade_web/orchestration_router.ex</code> -> <code>lib/cascade_web/orchestration_routes.ex</code> -> <code>lib/cascade_web/orchestration_router.ex</code>
+
+### E53 (group 4)
+
+<code>lib/cascade_web/orchestration_routes.ex</code> -> <code>lib/cascade_web/orchestration_router.ex</code>
+
+- <code>lib/cascade_web/orchestration_routes.ex:4</code> references <code>CascadeWeb.OrchestrationRouter</code>: <code>  defdelegate catalog(), to: CascadeWeb.OrchestrationRouter</code>
+
+Shortest loop through this edge: <code>lib/cascade_web/orchestration_routes.ex</code> -> <code>lib/cascade_web/orchestration_router.ex</code> -> <code>lib/cascade_web/orchestration_routes.ex</code>
+
+## Complete machine-readable snapshot
+
+Includes the entire extracted graph, all cyclic edges and references, all candidate scores, group membership, and source hashes for checking stale line references.
+
+```json
+{
+   "cyclic_edges" : [
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/accounts/moderation.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/accounts/moderation.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 5
+         },
+         "id" : "E1",
+         "references" : [
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 21,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    if VaultMembers.role(vault_id, actor_id) != \"owner\" do"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 66,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      VaultMembers.role(vault_id, actor_id) != \"owner\" ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 72,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      target_id == vault.created_by or VaultMembers.role(vault_id, target_id) == \"owner\" ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 85,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      VaultMembers.role(vault_id, actor_id) != \"owner\" ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 142,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      VaultMembers.role(vault_id, actor_id) != \"owner\" ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 171,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      VaultMembers.role(vault_id, actor_id) != \"owner\" ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 331,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      is_nil(VaultMembers.role(vault.id, reporter_id)) ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 362,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "          is_nil(VaultMembers.role(vault_id, id)) ->"
+            },
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 375,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    if is_nil(VaultMembers.role(requested_vault_id, reporter_id)) do"
+            }
+         ],
+         "source" : "lib/cascade/accounts/moderation.ex",
+         "target" : "lib/cascade/accounts/vault_members.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/accounts/moderation.ex",
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/accounts/moderation.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 5
+         },
+         "id" : "E2",
+         "references" : [
+            {
+               "file" : "lib/cascade/accounts/moderation.ex",
+               "kind" : "static_module_reference",
+               "line" : 270,
+               "module" : "Cascade.Chat.Agents",
+               "text" : "          Cascade.Chat.Agents.remove_departed_owners(vault_id)"
+            }
+         ],
+         "source" : "lib/cascade/accounts/moderation.ex",
+         "target" : "lib/cascade/chat/agents.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/accounts/moderation.ex",
+            "lib/cascade/accounts/vault_members.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 3,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 4
+         },
+         "id" : "E3",
+         "references" : [
+            {
+               "file" : "lib/cascade/accounts/vault_members.ex",
+               "kind" : "static_module_reference",
+               "line" : 63,
+               "module" : "Cascade.Accounts.Moderation",
+               "text" : "      Moderation.banned?(vault_id, target_id) ->"
+            }
+         ],
+         "source" : "lib/cascade/accounts/vault_members.ex",
+         "target" : "lib/cascade/accounts/moderation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/accounts/vault_members.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 5
+         },
+         "id" : "E4",
+         "references" : [
+            {
+               "file" : "lib/cascade/accounts/vault_members.ex",
+               "kind" : "static_module_reference",
+               "line" : 125,
+               "module" : "Cascade.Chat.Agents",
+               "text" : "          Cascade.Chat.Agents.remove_departed_owners(vault_id)"
+            }
+         ],
+         "source" : "lib/cascade/accounts/vault_members.ex",
+         "target" : "lib/cascade/chat/agents.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 5
+         },
+         "id" : "E5",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 12,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    if VaultMembers.role(vault_id, user_id) do"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 53,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    if VaultMembers.role(vault_id, user_id) do"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 117,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    with true <- not is_nil(VaultMembers.role(vault_id, user_id)),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 143,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "    with true <- not is_nil(VaultMembers.role(vault_id, user_id)),"
+            }
+         ],
+         "source" : "lib/cascade/chat/agents.ex",
+         "target" : "lib/cascade/accounts/vault_members.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/chat/avatars.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 4
+         },
+         "id" : "E6",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 152,
+               "module" : "Cascade.Chat.Avatars",
+               "text" : "      if deleted, do: Avatars.purge(identity_id)"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 459,
+               "module" : "Cascade.Chat.Avatars",
+               "text" : "         {:ok, stored_url} <- Avatars.persist(user_id, identity_id, url) do"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 803,
+               "module" : "Cascade.Chat.Avatars",
+               "text" : "    Enum.each(expired, &Avatars.purge/1)"
+            }
+         ],
+         "source" : "lib/cascade/chat/agents.ex",
+         "target" : "lib/cascade/chat/avatars.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/chat/channel.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 4
+         },
+         "id" : "E7",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 165,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "    with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 215,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 427,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 450,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "         {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 484,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "      with {:ok, _route} <- Channel.assert_vault_channel(vault_id, channel_id, user_id),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 529,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "    with {:ok, route} <- Channel.assert_channel(channel_id, user_id),"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 542,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "        Enum.find(Channel.list_routes(route.sourceVaultId, route.sourceChannelId), fn candidate ->"
+            },
+            {
+               "file" : "lib/cascade/chat/agents.ex",
+               "kind" : "static_module_reference",
+               "line" : 884,
+               "module" : "Cascade.Chat.Channel",
+               "text" : "    case Channel.assert_channel(route.sourceChannelId, owner_id) do"
+            }
+         ],
+         "source" : "lib/cascade/chat/agents.ex",
+         "target" : "lib/cascade/chat/channel.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/avatars.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/chat/avatars.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 4
+         },
+         "id" : "E8",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/avatars.ex",
+               "kind" : "static_module_reference",
+               "line" : 68,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "         role when not is_nil(role) <- VaultMembers.role(note.vault_id, user_id),"
+            }
+         ],
+         "source" : "lib/cascade/chat/avatars.ex",
+         "target" : "lib/cascade/accounts/vault_members.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/channel.ex",
+            "lib/cascade/accounts/vault_members.ex",
+            "lib/cascade/chat/agents.ex",
+            "lib/cascade/chat/channel.ex"
+         ],
+         "group" : 1,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 4
+         },
+         "id" : "E9",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/channel.ex",
+               "kind" : "static_module_reference",
+               "line" : 308,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "      member? = not is_nil(VaultMembers.role(route.sourceVaultId, target_id))"
+            },
+            {
+               "file" : "lib/cascade/chat/channel.ex",
+               "kind" : "static_module_reference",
+               "line" : 323,
+               "module" : "Cascade.Accounts.VaultMembers",
+               "text" : "               do: VaultMembers.remove(route.sourceVaultId, actor_id, target_id),"
+            }
+         ],
+         "source" : "lib/cascade/chat/channel.ex",
+         "target" : "lib/cascade/accounts/vault_members.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/continuations.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 4,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E10",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/continuations.ex",
+               "kind" : "static_module_reference",
+               "line" : 83,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "    if Dispatches.human?(d) and d.registration.orchestrator and"
+            },
+            {
+               "file" : "lib/cascade/chat/continuations.ex",
+               "kind" : "static_module_reference",
+               "line" : 239,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "    Dispatches.retract_pending_reply(dispatch)"
+            },
+            {
+               "file" : "lib/cascade/chat/continuations.ex",
+               "kind" : "static_module_reference",
+               "line" : 478,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "      {:ok, dispatch} = Dispatches.create(s.owner, route.localChannelId, message, s.registration)"
+            }
+         ],
+         "source" : "lib/cascade/chat/continuations.ex",
+         "target" : "lib/cascade/missions/dispatches.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E11",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/next_steps.ex",
+               "kind" : "static_module_reference",
+               "line" : 240,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "          Cascade.Missions.Dispatches.create("
+            },
+            {
+               "file" : "lib/cascade/chat/next_steps.ex",
+               "kind" : "static_module_reference",
+               "line" : 387,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "           Cascade.Missions.Dispatches.get(owner, route.localChannelId, dispatch_id),"
+            }
+         ],
+         "source" : "lib/cascade/chat/next_steps.ex",
+         "target" : "lib/cascade/missions/dispatches.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E12",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/next_steps.ex",
+               "kind" : "static_module_reference",
+               "line" : 221,
+               "module" : "Cascade.Missions.Store",
+               "text" : "           {:ok, route} <- Cascade.Missions.Store.owner_route(owner, vault, channel),"
+            },
+            {
+               "file" : "lib/cascade/chat/next_steps.ex",
+               "kind" : "static_module_reference",
+               "line" : 385,
+               "module" : "Cascade.Missions.Store",
+               "text" : "         {:ok, route} <- Cascade.Missions.Store.owner_route(owner, vault, channel),"
+            }
+         ],
+         "source" : "lib/cascade/chat/next_steps.ex",
+         "target" : "lib/cascade/missions/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E13",
+         "references" : [
+            {
+               "file" : "lib/cascade/chat/next_steps.ex",
+               "kind" : "static_module_reference",
+               "line" : 284,
+               "module" : "Cascade.Runs.Store",
+               "text" : "                  Cascade.Runs.Store.find_open_for_chat_registration(registration_id, dispatch.id)"
+            }
+         ],
+         "source" : "lib/cascade/chat/next_steps.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/authority.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/authority.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 4,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E14",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/authority.ex",
+               "kind" : "static_module_reference",
+               "line" : 36,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "            |> Cascade.Missions.Interpretation.encode_context()"
+            }
+         ],
+         "source" : "lib/cascade/missions/authority.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/children.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/children.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E15",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/children.ex",
+               "kind" : "static_module_reference",
+               "line" : 205,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "          Cascade.Missions.Interpretation.encode_context(children)"
+            }
+         ],
+         "source" : "lib/cascade/missions/children.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/children.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/children.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E16",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/children.ex",
+               "kind" : "static_module_reference",
+               "line" : 36,
+               "module" : "Cascade.Missions.Store",
+               "text" : "        Store.add_task(user, channel, parent.mission, bounded, parent_task_id: parent.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/children.ex",
+               "kind" : "static_module_reference",
+               "line" : 256,
+               "module" : "Cascade.Missions.Store",
+               "text" : "        Store.update_task(user, channel, child, %{"
+            }
+         ],
+         "source" : "lib/cascade/missions/children.ex",
+         "target" : "lib/cascade/missions/store.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E17",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 80,
+               "module" : "Cascade.Chat.Continuations",
+               "text" : "            Cascade.Chat.Continuations.user_return(dispatch)"
+            },
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 174,
+               "module" : "Cascade.Chat.Continuations",
+               "text" : "         true <- Cascade.Chat.Continuations.ready?(dispatch) do"
+            }
+         ],
+         "source" : "lib/cascade/missions/dispatches.ex",
+         "target" : "lib/cascade/chat/continuations.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/missions/dispatches.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 4,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E18",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 40,
+               "module" : "Cascade.Chat.NextSteps",
+               "text" : "      Cascade.Chat.NextSteps.user_return(route.sourceChannelId, registration.id, message.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 110,
+               "module" : "Cascade.Chat.NextSteps",
+               "text" : "              if Cascade.Chat.NextSteps.dispatch_ready?(dispatch),"
+            },
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 179,
+               "module" : "Cascade.Chat.NextSteps",
+               "text" : "        Cascade.Chat.NextSteps.dispatch_ready?(dispatch) ->"
+            }
+         ],
+         "source" : "lib/cascade/missions/dispatches.ex",
+         "target" : "lib/cascade/chat/next_steps.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/dispatches.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E19",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 238,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "           do: Cascade.Missions.Interpretation.keep_wake?(dispatch.id),"
+            }
+         ],
+         "source" : "lib/cascade/missions/dispatches.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/dispatches.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E20",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 275,
+               "module" : "Cascade.Missions.Store",
+               "text" : "          with {:ok, route} <- Cascade.Missions.Store.owner_route(owner_id, vault_id, channel_id),"
+            }
+         ],
+         "source" : "lib/cascade/missions/dispatches.ex",
+         "target" : "lib/cascade/missions/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/runs/runner_lifecycle.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E21",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/dispatches.ex",
+               "kind" : "static_module_reference",
+               "line" : 536,
+               "module" : "Cascade.Runs.RunnerLifecycle",
+               "text" : "    usage = RunnerLifecycle.plan_usage(owner_id)[agent_id] || %{}"
+            }
+         ],
+         "source" : "lib/cascade/missions/dispatches.ex",
+         "target" : "lib/cascade/runs/runner_lifecycle.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/authority.ex",
+            "lib/cascade/missions/interpretation.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E22",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 1127,
+               "module" : "Cascade.Missions.Authority",
+               "text" : "    #{Cascade.Missions.Authority.context(wake.mission.id)}"
+            }
+         ],
+         "source" : "lib/cascade/missions/interpretation.ex",
+         "target" : "lib/cascade/missions/authority.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/interpretation.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 8,
+            "largest_group_reduction" : 2,
+            "largest_remaining_group" : 10
+         },
+         "id" : "E23",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 381,
+               "module" : "Cascade.Missions.Store",
+               "text" : "      recoveryEvidence: Store.recovery_context(id),"
+            },
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 629,
+               "module" : "Cascade.Missions.Store",
+               "text" : "          {:ok, update} = Store.refresh(id)"
+            },
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 768,
+               "module" : "Cascade.Missions.Store",
+               "text" : "    with {:ok, update} <- Store.get(user_id, channel_id, mission_id, registration_id),"
+            },
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 892,
+               "module" : "Cascade.Missions.Store",
+               "text" : "          {:ok, route} = Store.owner_route(user.id, update.vaultId, update.channelId)"
+            },
+            {
+               "file" : "lib/cascade/missions/interpretation.ex",
+               "kind" : "static_module_reference",
+               "line" : 1090,
+               "module" : "Cascade.Missions.Store",
+               "text" : "      with {:ok, route} <- Store.owner_route(owner, vault, channel),"
+            }
+         ],
+         "source" : "lib/cascade/missions/interpretation.ex",
+         "target" : "lib/cascade/missions/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/authority.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E24",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 273,
+               "module" : "Cascade.Missions.Authority",
+               "text" : "              Cascade.Missions.Authority.context(candidate.missionId)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 314,
+               "module" : "Cascade.Missions.Authority",
+               "text" : "        #{Cascade.Missions.Authority.context(wake.mission.id)}"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/missions/authority.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/children.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E25",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 121,
+               "module" : "Cascade.Missions.Children",
+               "text" : "        Cascade.Missions.Children.resume_ready(mission_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 272,
+               "module" : "Cascade.Missions.Children",
+               "text" : "              Cascade.Missions.Children.context(candidate.taskId),"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/missions/children.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E26",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 285,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "      Dispatches.create("
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 352,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "           Dispatches.create("
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/missions/dispatches.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E27",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 185,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "    Enum.each(ids, &Cascade.Missions.Interpretation.flush(&1, events))"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 359,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "        do: Cascade.Missions.Interpretation.admitted(wake.mission.id, dispatch.id)"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E28",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 25,
+               "module" : "Cascade.Missions.Store",
+               "text" : "      {:ok, _} = Store.attach_run(dispatch_id, run_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 26,
+               "module" : "Cascade.Missions.Store",
+               "text" : "      {:ok, _} = Store.settle_run(run_id, status, summary)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 122,
+               "module" : "Cascade.Missions.Store",
+               "text" : "        scheduled = Store.schedulable(mission_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 138,
+               "module" : "Cascade.Missions.Store",
+               "text" : "            case Store.claim_wake(id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 149,
+               "module" : "Cascade.Missions.Store",
+               "text" : "            case Store.refresh(mission_id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 192,
+               "module" : "Cascade.Missions.Store",
+               "text" : "    case Store.root_message(update) do"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 201,
+               "module" : "Cascade.Missions.Store",
+               "text" : "      with {:ok, settled} <- Store.settle_run(run_id, status, summary) do"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 223,
+               "module" : "Cascade.Missions.Store",
+               "text" : "          case Store.claim_wake(wake.mission.id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 248,
+               "module" : "Cascade.Missions.Store",
+               "text" : "    {:ok, route} = Store.owner_route(candidate.createdBy, candidate.vaultId, candidate.channelId)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 293,
+               "module" : "Cascade.Missions.Store",
+               "text" : "    {:ok, update} = Store.link_dispatch(candidate.taskId, dispatch.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 306,
+               "module" : "Cascade.Missions.Store",
+               "text" : "    {:ok, route} = Store.owner_route(wake.createdBy, wake.vaultId, wake.channelId)"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/missions/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/runs/runner_lifecycle.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E29",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 77,
+               "module" : "Cascade.Runs.RunnerLifecycle",
+               "text" : "  defp cancel_run(user, run), do: Cascade.Runs.RunnerLifecycle.cancel(user, run, 2_000)"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/runs/runner_lifecycle.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E30",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 67,
+               "module" : "Cascade.Runs.Store",
+               "text" : "        Cascade.Runs.Store.finish(run, \"canceled\", \"Mission task canceled.\")"
+            },
+            {
+               "file" : "lib/cascade/missions/scheduler.ex",
+               "kind" : "static_module_reference",
+               "line" : 69,
+               "module" : "Cascade.Runs.Store",
+               "text" : "        Cascade.Runs.Store.publish(run, \"status\", %{"
+            }
+         ],
+         "source" : "lib/cascade/missions/scheduler.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E31",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1380,
+               "module" : "Cascade.Chat.Continuations",
+               "text" : "        not Cascade.Chat.Continuations.owns_recovery?(run_id) and"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/chat/continuations.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/authority.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E32",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 92,
+               "module" : "Cascade.Missions.Authority",
+               "text" : "                Cascade.Missions.Authority.capture!("
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/missions/authority.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/children.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E33",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 722,
+               "module" : "Cascade.Missions.Children",
+               "text" : "              not Cascade.Missions.Children.joining?(task.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 931,
+               "module" : "Cascade.Missions.Children",
+               "text" : "              if status == \"completed\" and Cascade.Missions.Children.unresolved?(task_id),"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1025,
+               "module" : "Cascade.Missions.Children",
+               "text" : "                  do: Cascade.Missions.Children.cancel(task_id),"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1194,
+               "module" : "Cascade.Missions.Children",
+               "text" : "                else: Cascade.Missions.Children.settlement(task.id, status)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1196,
+               "module" : "Cascade.Missions.Children",
+               "text" : "            if next == \"joining\", do: Cascade.Missions.Children.wait(task.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1225,
+               "module" : "Cascade.Missions.Children",
+               "text" : "              release: not Cascade.Missions.Children.joining?(task.id),"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1510,
+               "module" : "Cascade.Missions.Children",
+               "text" : "        |> Map.merge(Cascade.Missions.Children.projection(task.id))"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/missions/children.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E34",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 2170,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "        Cascade.Missions.Dispatches.retract_pending_reply(dispatch_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 2857,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "      case Cascade.Missions.Dispatches.create("
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/missions/dispatches.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E35",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 118,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "              Cascade.Missions.Interpretation.initialize(mission_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 324,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "        Cascade.Missions.Interpretation.resolve_migration_decision(mission.id, user_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 325,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "        Cascade.Missions.Interpretation.initialize(mission.id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 343,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "    Cascade.Missions.Interpretation.note_changed(note_id, actor_id, kind, opts)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 559,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "          if Cascade.Missions.Interpretation.migration_decision_pending?(mission.id),"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 872,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "          Cascade.Missions.Interpretation.action_key(caller_run, [\"steer\", task_id, instruction])"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1154,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "      case Cascade.Missions.Interpretation.claim(update) do"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 2432,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "      not Cascade.Missions.Interpretation.migration_decision_pending?(mission.id) and"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 2976,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "    Cascade.Missions.Interpretation.initialize(mission_id)"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/missions/scheduler.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 8,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E36",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 335,
+               "module" : "Cascade.Missions.Scheduler",
+               "text" : "      _ = Cascade.Missions.Scheduler.schedule(id)"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/missions/scheduler.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E37",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1405,
+               "module" : "Cascade.Runs.Store",
+               "text" : "           Cascade.Runs.Store.find_open_for_chat_registration(mission.coordinator_registration_id)"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/work_items.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E38",
+         "references" : [
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1547,
+               "module" : "Cascade.WorkItems",
+               "text" : "    case WorkItems.get(user_id, work_item_id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1593,
+               "module" : "Cascade.WorkItems",
+               "text" : "          case WorkItems.get(user_id, task.work_item_id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1611,
+               "module" : "Cascade.WorkItems",
+               "text" : "            case WorkItems.get(user_id, id) do"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1652,
+               "module" : "Cascade.WorkItems",
+               "text" : "      case WorkItems.create(user_id, mission.vault_id, input) do"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1667,
+               "module" : "Cascade.WorkItems",
+               "text" : "    if is_integer(run_id) and run_id > 0, do: WorkItems.link_run(user_id, item.id, run_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1670,
+               "module" : "Cascade.WorkItems",
+               "text" : "      WorkItems.acquire_lease(user_id, item.id, task.assignee_registration_id)"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1676,
+               "module" : "Cascade.WorkItems",
+               "text" : "    WorkItems.update(user_id, item.id, %{"
+            },
+            {
+               "file" : "lib/cascade/missions/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 1686,
+               "module" : "Cascade.WorkItems",
+               "text" : "      WorkItems.release_lease(user_id, item.id)"
+            }
+         ],
+         "source" : "lib/cascade/missions/store.ex",
+         "target" : "lib/cascade/work_items.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/runs/runner_lifecycle.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/runs/runner_lifecycle.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 4,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E39",
+         "references" : [
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 25,
+               "module" : "Cascade.Runs.Store",
+               "text" : "    %{base | online: online?(owner_id), activeRuns: Store.active_delegated_count(owner_id)}"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 46,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      if Store.record_delegated(run_id, owner_id, payload) == :ok do"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 61,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      case Store.pending_delivery(run_id, owner_id) do"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 66,
+               "module" : "Cascade.Runs.Store",
+               "text" : "          Store.finish(run_id, \"failed\", summary)"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 67,
+               "module" : "Cascade.Runs.Store",
+               "text" : "          Store.publish(run_id, \"status\", %{status: \"failed\", summary: summary})"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 139,
+               "module" : "Cascade.Runs.Store",
+               "text" : "  def accept_event?(run_id, owner_id), do: Store.delegated_owner(run_id) == owner_id"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 200,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      |> Enum.filter(&(Store.delegated_owner(&1) == owner_id))"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 209,
+               "module" : "Cascade.Runs.Store",
+               "text" : "          Store.open_delegated()"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 250,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      Enum.any?(Store.open_delegated(), &(&1.owner_user_id == owner_id))"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 273,
+               "module" : "Cascade.Runs.Store",
+               "text" : "    if Store.delegated_owner(run_id) == owner_id do"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 316,
+               "module" : "Cascade.Runs.Store",
+               "text" : "          Store.open_delegated()"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 334,
+               "module" : "Cascade.Runs.Store",
+               "text" : "        Store.delegated_owner(run_id) != lease.owner_id or"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 341,
+               "module" : "Cascade.Runs.Store",
+               "text" : "    |> Enum.filter(fn {run_id, lease} -> Store.delegated_owner(run_id) == lease.owner_id end)"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 353,
+               "module" : "Cascade.Runs.Store",
+               "text" : "    Store.open_delegated()"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 361,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 364,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      Store.finish(row.run_id, \"failed\", summary)"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 365,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      Store.publish(row.run_id, \"status\", %{status: \"failed\", summary: summary})"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 372,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      Store.finish(run_id, \"failed\", loose_summary)"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 373,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      Store.publish(run_id, \"status\", %{status: \"failed\", summary: loose_summary})"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 389,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      if is_nil(Store.pending_delivery(run_id, Store.delegated_owner(run_id))) do"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 390,
+               "module" : "Cascade.Runs.Store",
+               "text" : "        Store.finish(run_id, \"failed\", reason)"
+            },
+            {
+               "file" : "lib/cascade/runs/runner_lifecycle.ex",
+               "kind" : "static_module_reference",
+               "line" : 391,
+               "module" : "Cascade.Runs.Store",
+               "text" : "        Store.publish(run_id, \"status\", %{status: \"failed\", summary: reason})"
+            }
+         ],
+         "source" : "lib/cascade/runs/runner_lifecycle.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/chat/continuations.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/runs/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E40",
+         "references" : [
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 343,
+               "module" : "Cascade.Chat.Continuations",
+               "text" : "      Cascade.Chat.Continuations.stop(run_id)"
+            }
+         ],
+         "source" : "lib/cascade/runs/store.ex",
+         "target" : "lib/cascade/chat/continuations.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/runs/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E41",
+         "references" : [
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 378,
+               "module" : "Cascade.Missions.Interpretation",
+               "text" : "      if not steering?, do: Cascade.Missions.Interpretation.stop_run(run_id)"
+            }
+         ],
+         "source" : "lib/cascade/runs/store.ex",
+         "target" : "lib/cascade/missions/interpretation.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/runs/runner_lifecycle.ex",
+            "lib/cascade/runs/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E42",
+         "references" : [
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 361,
+               "module" : "Cascade.Runs.RunnerLifecycle",
+               "text" : "        force? -> Cascade.Runs.RunnerLifecycle.request_cancel(owner_id, run_id)"
+            },
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 362,
+               "module" : "Cascade.Runs.RunnerLifecycle",
+               "text" : "        true -> Cascade.Runs.RunnerLifecycle.cancel(owner_id, run_id)"
+            },
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 366,
+               "module" : "Cascade.Runs.RunnerLifecycle",
+               "text" : "         (owner_id && not stopped? && Cascade.Runs.RunnerLifecycle.online?(owner_id) &&"
+            }
+         ],
+         "source" : "lib/cascade/runs/store.ex",
+         "target" : "lib/cascade/runs/runner_lifecycle.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/wiki_maintenance.ex",
+            "lib/cascade/runs/store.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 3,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E43",
+         "references" : [
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 314,
+               "module" : "Cascade.WikiMaintenance",
+               "text" : "            clean(summary, if(Cascade.WikiMaintenance.run?(run_id), do: 200_000, else: 20_000)),"
+            },
+            {
+               "file" : "lib/cascade/runs/store.ex",
+               "kind" : "static_module_reference",
+               "line" : 324,
+               "module" : "Cascade.WikiMaintenance",
+               "text" : "        Cascade.WikiMaintenance.run_finished(run_id, status, summary)"
+            }
+         ],
+         "source" : "lib/cascade/runs/store.ex",
+         "target" : "lib/cascade/wiki_maintenance.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/wiki_maintenance.ex",
+            "lib/cascade/missions/dispatches.ex",
+            "lib/cascade/chat/next_steps.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/wiki_maintenance.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E44",
+         "references" : [
+            {
+               "file" : "lib/cascade/wiki_maintenance.ex",
+               "kind" : "static_module_reference",
+               "line" : 221,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "            {:ok, dispatch} = Dispatches.create(owner_id, channel_id, message, registration_id)"
+            },
+            {
+               "file" : "lib/cascade/wiki_maintenance.ex",
+               "kind" : "static_module_reference",
+               "line" : 350,
+               "module" : "Cascade.Missions.Dispatches",
+               "text" : "        [id] when is_binary(id) -> Dispatches.retract_pending_reply(id)"
+            }
+         ],
+         "source" : "lib/cascade/wiki_maintenance.ex",
+         "target" : "lib/cascade/missions/dispatches.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/wiki_maintenance.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/wiki_maintenance.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 12
+         },
+         "id" : "E45",
+         "references" : [
+            {
+               "file" : "lib/cascade/wiki_maintenance.ex",
+               "kind" : "static_module_reference",
+               "line" : 187,
+               "module" : "Cascade.Runs.Store",
+               "text" : "              Cascade.Runs.Store.cancel(run_id, force: true)"
+            },
+            {
+               "file" : "lib/cascade/wiki_maintenance.ex",
+               "kind" : "static_module_reference",
+               "line" : 344,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      [id] -> Cascade.Runs.Store.cancel(id, force: true)"
+            }
+         ],
+         "source" : "lib/cascade/wiki_maintenance.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/work_items.ex",
+            "lib/cascade/runs/store.ex",
+            "lib/cascade/missions/interpretation.ex",
+            "lib/cascade/missions/store.ex",
+            "lib/cascade/work_items.ex"
+         ],
+         "group" : 2,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 11
+         },
+         "id" : "E46",
+         "references" : [
+            {
+               "file" : "lib/cascade/work_items.ex",
+               "kind" : "static_module_reference",
+               "line" : 481,
+               "module" : "Cascade.Runs.Store",
+               "text" : "      case Store.get(run_id) do"
+            },
+            {
+               "file" : "lib/cascade/work_items.ex",
+               "kind" : "static_module_reference",
+               "line" : 500,
+               "module" : "Cascade.Runs.Store",
+               "text" : "                  case Store.get(linked_run) do"
+            },
+            {
+               "file" : "lib/cascade/work_items.ex",
+               "kind" : "static_module_reference",
+               "line" : 502,
+               "module" : "Cascade.Runs.Store",
+               "text" : "                      Store.cancel(linked_run)"
+            }
+         ],
+         "source" : "lib/cascade/work_items.ex",
+         "target" : "lib/cascade/runs/store.ex"
+      },
+      {
+         "direct_pair" : false,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/realtime.ex",
+            "lib/cascade/realtime/hub.ex",
+            "lib/cascade/realtime/session.ex",
+            "lib/cascade/realtime.ex"
+         ],
+         "group" : 3,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 3
+         },
+         "id" : "E47",
+         "references" : [
+            {
+               "file" : "lib/cascade/realtime.ex",
+               "kind" : "static_module_reference",
+               "line" : 10,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    with :ok <- Hub.admit(sid, max_sessions) do"
+            },
+            {
+               "file" : "lib/cascade/realtime.ex",
+               "kind" : "static_module_reference",
+               "line" : 21,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "          Hub.release(sid)"
+            },
+            {
+               "file" : "lib/cascade/realtime.ex",
+               "kind" : "static_module_reference",
+               "line" : 40,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    do: Hub.broadcast(room, namespace, event, args, except_sid)"
+            }
+         ],
+         "source" : "lib/cascade/realtime.ex",
+         "target" : "lib/cascade/realtime/hub.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/realtime.ex",
+            "lib/cascade/realtime/session.ex",
+            "lib/cascade/realtime.ex"
+         ],
+         "group" : 3,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 3
+         },
+         "id" : "E48",
+         "references" : [
+            {
+               "file" : "lib/cascade/realtime.ex",
+               "kind" : "static_module_reference",
+               "line" : 34,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "  def emit(sid, namespace, event, args \\\\ []), do: Session.emit(sid, namespace, event, args)"
+            },
+            {
+               "file" : "lib/cascade/realtime.ex",
+               "kind" : "static_module_reference",
+               "line" : 37,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "    do: Session.emit_with_ack(sid, namespace, event, args, timeout)"
+            }
+         ],
+         "source" : "lib/cascade/realtime.ex",
+         "target" : "lib/cascade/realtime/session.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/realtime/hub.ex",
+            "lib/cascade/realtime/session.ex",
+            "lib/cascade/realtime/hub.ex"
+         ],
+         "group" : 3,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 3,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 2
+         },
+         "id" : "E49",
+         "references" : [
+            {
+               "file" : "lib/cascade/realtime/hub.ex",
+               "kind" : "static_module_reference",
+               "line" : 76,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "      |> Enum.each(&Session.disconnect_namespace(&1, namespace, :session_revoked))"
+            },
+            {
+               "file" : "lib/cascade/realtime/hub.ex",
+               "kind" : "static_module_reference",
+               "line" : 86,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "    |> Enum.each(&Session.disconnect(&1, :session_revoked))"
+            },
+            {
+               "file" : "lib/cascade/realtime/hub.ex",
+               "kind" : "static_module_reference",
+               "line" : 95,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "      {^room, sid, ^namespace} when sid != except_sid -> Session.emit(sid, namespace, event, args)"
+            },
+            {
+               "file" : "lib/cascade/realtime/hub.ex",
+               "kind" : "static_module_reference",
+               "line" : 210,
+               "module" : "Cascade.Realtime.Session",
+               "text" : "        Session.disconnect_namespace(old_sid, old_namespace, :runner_replaced)"
+            }
+         ],
+         "source" : "lib/cascade/realtime/hub.ex",
+         "target" : "lib/cascade/realtime/session.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/realtime/session.ex",
+            "lib/cascade/realtime.ex",
+            "lib/cascade/realtime/session.ex"
+         ],
+         "group" : 3,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 3,
+            "largest_group_reduction" : 1,
+            "largest_remaining_group" : 2
+         },
+         "id" : "E50",
+         "references" : [
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 735,
+               "module" : "Cascade.Realtime",
+               "text" : "    do: Application.get_env(:cascade_elixir, Cascade.Realtime, [])[key] || default"
+            }
+         ],
+         "source" : "lib/cascade/realtime/session.ex",
+         "target" : "lib/cascade/realtime.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade/realtime/session.ex",
+            "lib/cascade/realtime/hub.ex",
+            "lib/cascade/realtime/session.ex"
+         ],
+         "group" : 3,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 1,
+            "largest_group_reduction" : 0,
+            "largest_remaining_group" : 3
+         },
+         "id" : "E51",
+         "references" : [
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 54,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    Hub.track(sid, self())"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 374,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "      case Hub.join(state.sid, namespace, \"user:#{identity.id}\") do"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 526,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    case Hub.join(state.sid, namespace, room) do"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 533,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    :ok = Hub.leave(state.sid, namespace, room)"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 541,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    Hub.broadcast(room, namespace, event, args)"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 569,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "    :ok = Hub.register_runner(identity.id, state.sid, namespace, metadata)"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 600,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "        rooms = Hub.rooms_for_session(state.sid, namespace)"
+            },
+            {
+               "file" : "lib/cascade/realtime/session.ex",
+               "kind" : "static_module_reference",
+               "line" : 601,
+               "module" : "Cascade.Realtime.Hub",
+               "text" : "        Hub.leave_namespace(state.sid, namespace, reason)"
+            }
+         ],
+         "source" : "lib/cascade/realtime/session.ex",
+         "target" : "lib/cascade/realtime/hub.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade_web/orchestration_router.ex",
+            "lib/cascade_web/orchestration_routes.ex",
+            "lib/cascade_web/orchestration_router.ex"
+         ],
+         "group" : 4,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 2,
+            "largest_remaining_group" : 0
+         },
+         "id" : "E52",
+         "references" : [
+            {
+               "file" : "lib/cascade_web/orchestration_router.ex",
+               "kind" : "static_module_reference",
+               "line" : 47,
+               "module" : "CascadeWeb.OrchestrationRoutes",
+               "text" : "    JSON.send(conn, 404, %{error: \"Not found\", routes: OrchestrationRoutes.count()})"
+            }
+         ],
+         "source" : "lib/cascade_web/orchestration_router.ex",
+         "target" : "lib/cascade_web/orchestration_routes.ex"
+      },
+      {
+         "direct_pair" : true,
+         "evidence" : "source_ast",
+         "example_loop" : [
+            "lib/cascade_web/orchestration_routes.ex",
+            "lib/cascade_web/orchestration_router.ex",
+            "lib/cascade_web/orchestration_routes.ex"
+         ],
+         "group" : 4,
+         "hypothetical_removal" : {
+            "cyclic_edges_eliminated" : 2,
+            "largest_group_reduction" : 2,
+            "largest_remaining_group" : 0
+         },
+         "id" : "E53",
+         "references" : [
+            {
+               "file" : "lib/cascade_web/orchestration_routes.ex",
+               "kind" : "static_module_reference",
+               "line" : 4,
+               "module" : "CascadeWeb.OrchestrationRouter",
+               "text" : "  defdelegate catalog(), to: CascadeWeb.OrchestrationRouter"
+            }
+         ],
+         "source" : "lib/cascade_web/orchestration_routes.ex",
+         "target" : "lib/cascade_web/orchestration_router.ex"
+      }
+   ],
+   "dependency_filter" : null,
+   "direct_pairs" : [
+      [
+         "lib/cascade/accounts/moderation.ex",
+         "lib/cascade/accounts/vault_members.ex"
+      ],
+      [
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/agents.ex"
+      ],
+      [
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/missions/dispatches.ex"
+      ],
+      [
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/missions/dispatches.ex"
+      ],
+      [
+         "lib/cascade/missions/authority.ex",
+         "lib/cascade/missions/interpretation.ex"
+      ],
+      [
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/store.ex"
+      ],
+      [
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/store.ex"
+      ],
+      [
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/store.ex"
+      ],
+      [
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/store.ex"
+      ],
+      [
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      [
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      [
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      [
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      [
+         "lib/cascade_web/orchestration_router.ex",
+         "lib/cascade_web/orchestration_routes.ex"
+      ]
+   ],
+   "extractor" : "source",
+   "graph" : {
+      "lib/cascade/accounts/accounts.ex" : [
+         "lib/cascade/accounts/invites.ex",
+         "lib/cascade/accounts/jwt.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/auth/accounts.ex",
+         "lib/cascade/auth/password.ex",
+         "lib/cascade/auth/token.ex",
+         "lib/cascade/config.ex"
+      ],
+      "lib/cascade/accounts/android_battery.ex" : [
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/accounts/bootstrap.ex" : [
+         "lib/cascade/accounts/schema.ex"
+      ],
+      "lib/cascade/accounts/community_activity.ex" : [
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/accounts/direct_messages.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/realtime/presence_dispatcher.ex"
+      ],
+      "lib/cascade/accounts/invites.ex" : [
+         "lib/cascade/accounts/jwt.ex",
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/accounts/jwt.ex" : [
+         "lib/cascade/config.ex"
+      ],
+      "lib/cascade/accounts/moderation.ex" : [
+         "lib/cascade/accounts/direct_messages.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/auth/accounts.ex",
+         "lib/cascade/chat/agents.ex"
+      ],
+      "lib/cascade/accounts/product_feedback.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/auth/accounts.ex"
+      ],
+      "lib/cascade/accounts/public_vaults.ex" : [
+         "lib/cascade/accounts/direct_messages.ex",
+         "lib/cascade/accounts/moderation.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/privacy.ex"
+      ],
+      "lib/cascade/accounts/schema.ex" : [
+         "lib/cascade/accounts/community_activity.ex",
+         "lib/cascade/accounts/public_vaults.ex",
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/accounts/sql.ex" : [
+         "lib/cascade/db/repo.ex",
+         "lib/cascade/db/write_coordinator.ex"
+      ],
+      "lib/cascade/accounts/vault_members.ex" : [
+         "lib/cascade/accounts/moderation.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex"
+      ],
+      "lib/cascade/application.ex" : [
+         "lib/cascade/db/bootstrap.ex",
+         "lib/cascade/db/instance_owner.ex",
+         "lib/cascade/db/repo.ex",
+         "lib/cascade/db/write_coordinator.ex",
+         "lib/cascade/domain_bootstrap.ex",
+         "lib/cascade/missions/dispatch_reannouncer.ex",
+         "lib/cascade/realtime/auth_batcher.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/realtime/verified_token_cache.ex",
+         "lib/cascade/runs/supervisor.ex",
+         "lib/cascade/runs/transport_callbacks.ex",
+         "lib/cascade/search/qmd/worker.ex",
+         "lib/cascade_web/rate_limiter.ex",
+         "lib/cascade_web/router.ex"
+      ],
+      "lib/cascade/auth/accounts.ex" : [
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/auth/password.ex" : [],
+      "lib/cascade/auth/session.ex" : [
+         "lib/cascade/auth/accounts.ex",
+         "lib/cascade/auth/token.ex",
+         "lib/cascade/config.ex"
+      ],
+      "lib/cascade/auth/token.ex" : [
+         "lib/cascade/config.ex"
+      ],
+      "lib/cascade/chat/agents.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/avatars.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/schema.ex"
+      ],
+      "lib/cascade/chat/avatars.ex" : [
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/config.ex",
+         "lib/cascade/content/assets.ex",
+         "lib/cascade/content/store.ex"
+      ],
+      "lib/cascade/chat/channel.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/content/assets.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/realtime/presence_dispatcher.ex"
+      ],
+      "lib/cascade/chat/collaborations.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/room_context.ex",
+         "lib/cascade/chat/schema.ex"
+      ],
+      "lib/cascade/chat/continuations.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/revision_conflict.ex"
+      ],
+      "lib/cascade/chat/dispatch_prompt.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/room_context.ex",
+         "lib/cascade/chat/schema.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/runs/prompt_context.ex"
+      ],
+      "lib/cascade/chat/events.ex" : [],
+      "lib/cascade/chat/invites.ex" : [
+         "lib/cascade/accounts/direct_messages.ex",
+         "lib/cascade/accounts/jwt.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/store.ex"
+      ],
+      "lib/cascade/chat/messages.ex" : [
+         "lib/cascade/accounts/direct_messages.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/evolution.ex"
+      ],
+      "lib/cascade/chat/next_steps.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/chat/pending_reply.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/realtime/events.ex"
+      ],
+      "lib/cascade/chat/registration_lookup.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex"
+      ],
+      "lib/cascade/chat/room_context.ex" : [
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/schema.ex"
+      ],
+      "lib/cascade/chat/schema.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/config.ex" : [
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/content/activity.ex" : [
+         "lib/cascade/accounts/community_activity.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      "lib/cascade/content/assets.ex" : [
+         "lib/cascade/content/query.ex",
+         "lib/cascade/content/store.ex"
+      ],
+      "lib/cascade/content/privacy.ex" : [],
+      "lib/cascade/content/query.ex" : [
+         "lib/cascade/db/repo.ex",
+         "lib/cascade/db/write_coordinator.ex"
+      ],
+      "lib/cascade/content/store.ex" : [
+         "lib/cascade/config.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/query.ex",
+         "lib/cascade/realtime/presence_dispatcher.ex"
+      ],
+      "lib/cascade/content/vault_deletion.ex" : [
+         "lib/cascade/content/query.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/db/write_coordinator.ex"
+      ],
+      "lib/cascade/content/versions.ex" : [
+         "lib/cascade/content/query.ex"
+      ],
+      "lib/cascade/db/bootstrap.ex" : [
+         "lib/cascade/db/migrator.ex"
+      ],
+      "lib/cascade/db/instance_owner.ex" : [
+         "lib/cascade/config.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/db/migration.ex" : [],
+      "lib/cascade/db/migrations/v1_core_compatibility.ex" : [
+         "lib/cascade/db/migration.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/db/migrations/v2_note_revision_counter.ex" : [
+         "lib/cascade/db/migration.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/db/migrations/v3_profile_colors.ex" : [
+         "lib/cascade/db/migration.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/db/migrator.ex" : [
+         "lib/cascade/db/migrations/v1_core_compatibility.ex",
+         "lib/cascade/db/migrations/v2_note_revision_counter.ex",
+         "lib/cascade/db/migrations/v3_profile_colors.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/cascade/db/repo.ex" : [],
+      "lib/cascade/db/write_coordinator.ex" : [],
+      "lib/cascade/domain_bootstrap.ex" : [
+         "lib/cascade/accounts/schema.ex",
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/chat/schema.ex",
+         "lib/cascade/content/activity.ex",
+         "lib/cascade/evolution.ex",
+         "lib/cascade/missions/dispatch_reannouncer.ex",
+         "lib/cascade/missions/schema.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/publishing.ex",
+         "lib/cascade/runs/chat_projection.ex",
+         "lib/cascade/runs/schema.ex",
+         "lib/cascade/scratchpad.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      "lib/cascade/evolution.ex" : [
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/query.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/content/versions.ex"
+      ],
+      "lib/cascade/managed_agents.ex" : [
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/missions/authority.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/missions/interpretation.ex"
+      ],
+      "lib/cascade/missions/children.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/pending_steering.ex",
+         "lib/cascade/missions/store.ex"
+      ],
+      "lib/cascade/missions/context.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/content/privacy.ex"
+      ],
+      "lib/cascade/missions/dispatch_reannouncer.ex" : [
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/execution.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/steering.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      "lib/cascade/missions/dispatches.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/chat/pending_reply.ex",
+         "lib/cascade/chat/room_context.ex",
+         "lib/cascade/chat/schema.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/missions/work_available.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/runner_lifecycle.ex"
+      ],
+      "lib/cascade/missions/execution.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/dispatch_prompt.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/chat/room_context.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/chat_projection.ex",
+         "lib/cascade/runs/prompt_context.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/work_items.ex"
+      ],
+      "lib/cascade/missions/interpretation.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/pending_reply.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/missions/authority.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/revision_conflict.ex"
+      ],
+      "lib/cascade/missions/pending_steering.ex" : [
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/missions/scheduler.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/missions/authority.ex",
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/missions/schema.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/content/privacy.ex"
+      ],
+      "lib/cascade/missions/steering.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/missions/pending_steering.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/work_available.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/missions/store.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/missions/authority.ex",
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/pending_steering.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/work_items.ex"
+      ],
+      "lib/cascade/missions/work_available.ex" : [],
+      "lib/cascade/privacy.ex" : [
+         "lib/cascade/content/privacy.ex"
+      ],
+      "lib/cascade/publishing.ex" : [
+         "lib/cascade/content/query.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/publishing/scrubber.ex"
+      ],
+      "lib/cascade/publishing/scrubber.ex" : [],
+      "lib/cascade/realtime.ex" : [
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      "lib/cascade/realtime/auth.ex" : [
+         "lib/cascade/auth/token.ex",
+         "lib/cascade/realtime/auth_batcher.ex",
+         "lib/cascade/realtime/verified_token_cache.ex"
+      ],
+      "lib/cascade/realtime/auth_batcher.ex" : [
+         "lib/cascade/auth/accounts.ex"
+      ],
+      "lib/cascade/realtime/domain.ex" : [],
+      "lib/cascade/realtime/domain_adapter.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/realtime/domain.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/work_items.ex"
+      ],
+      "lib/cascade/realtime/events.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/realtime/presence_dispatcher.ex"
+      ],
+      "lib/cascade/realtime/hub.ex" : [
+         "lib/cascade/realtime/runner_callbacks.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      "lib/cascade/realtime/ordered_publisher.ex" : [
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/hub.ex"
+      ],
+      "lib/cascade/realtime/presence_dispatcher.ex" : [],
+      "lib/cascade/realtime/protocol/engine_io.ex" : [],
+      "lib/cascade/realtime/protocol/socket_io.ex" : [],
+      "lib/cascade/realtime/runner_callbacks.ex" : [],
+      "lib/cascade/realtime/session.ex" : [
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/auth.ex",
+         "lib/cascade/realtime/domain.ex",
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/realtime/protocol/engine_io.ex",
+         "lib/cascade/realtime/protocol/socket_io.ex"
+      ],
+      "lib/cascade/realtime/supervisor.ex" : [
+         "lib/cascade/realtime/events.ex"
+      ],
+      "lib/cascade/realtime/verified_token_cache.ex" : [
+         "lib/cascade/auth/token.ex"
+      ],
+      "lib/cascade/realtime/web_socket.ex" : [
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      "lib/cascade/revision_conflict.ex" : [],
+      "lib/cascade/runs/app_context.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/revision_conflict.ex"
+      ],
+      "lib/cascade/runs/cancellation.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/runs/chat_projection.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      "lib/cascade/runs/prompt_context.ex" : [
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/evolution.ex",
+         "lib/cascade/missions/context.ex",
+         "lib/cascade/runs/app_context.ex",
+         "lib/cascade/scratchpad.ex"
+      ],
+      "lib/cascade/runs/runner_lifecycle.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/runs/schema.ex" : [
+         "lib/cascade/accounts/sql.ex"
+      ],
+      "lib/cascade/runs/store.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/pending_steering.ex",
+         "lib/cascade/missions/work_available.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/wiki_maintenance.ex"
+      ],
+      "lib/cascade/runs/supervisor.ex" : [],
+      "lib/cascade/runs/transport_callbacks.ex" : [
+         "lib/cascade/missions/dispatch_reannouncer.ex",
+         "lib/cascade/realtime/runner_callbacks.ex",
+         "lib/cascade/runs/runner_lifecycle.ex"
+      ],
+      "lib/cascade/scratchpad.ex" : [
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/query.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/evolution.ex"
+      ],
+      "lib/cascade/search/qmd.ex" : [
+         "lib/cascade/config.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/query.ex",
+         "lib/cascade/search/qmd/worker.ex"
+      ],
+      "lib/cascade/search/qmd/adapter.ex" : [],
+      "lib/cascade/search/qmd/worker.ex" : [
+         "lib/cascade/search/qmd/adapter.ex"
+      ],
+      "lib/cascade/wiki_maintenance.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/content/versions.ex",
+         "lib/cascade/db/write_coordinator.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade/work_items.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/runs/store.ex"
+      ],
+      "lib/cascade_web/account_router.ex" : [
+         "lib/cascade/accounts/accounts.ex",
+         "lib/cascade/accounts/android_battery.ex",
+         "lib/cascade/accounts/community_activity.ex",
+         "lib/cascade/accounts/direct_messages.ex",
+         "lib/cascade/accounts/invites.ex",
+         "lib/cascade/accounts/moderation.ex",
+         "lib/cascade/accounts/product_feedback.ex",
+         "lib/cascade/accounts/public_vaults.ex",
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/auth/accounts.ex",
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/config.ex",
+         "lib/cascade_web/auth.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex",
+         "lib/cascade_web/rate_limiter.ex"
+      ],
+      "lib/cascade_web/account_routes.ex" : [
+         "lib/cascade_web/account_router.ex"
+      ],
+      "lib/cascade_web/auth.ex" : [
+         "lib/cascade/auth/session.ex",
+         "lib/cascade_web/authorization.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/auth_controller.ex" : [
+         "lib/cascade/auth/accounts.ex",
+         "lib/cascade/auth/password.ex",
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/auth/token.ex",
+         "lib/cascade_web/auth.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/authorization.ex" : [
+         "lib/cascade/privacy.ex"
+      ],
+      "lib/cascade_web/chat_router.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/collaborations.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/chat/registration_lookup.ex",
+         "lib/cascade/chat/room_context.ex",
+         "lib/cascade/db/repo.ex",
+         "lib/cascade/db/write_coordinator.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/realtime/ordered_publisher.ex",
+         "lib/cascade/runs/app_context.ex",
+         "lib/cascade_web/auth.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/chat_routes.ex" : [
+         "lib/cascade_web/chat_router.ex"
+      ],
+      "lib/cascade_web/content_controller.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/chat/avatars.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/content/assets.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/content/vault_deletion.ex",
+         "lib/cascade/content/versions.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/content_router.ex" : [
+         "lib/cascade_web/content_controller.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/content_routes.ex" : [
+         "lib/cascade_web/content_router.ex"
+      ],
+      "lib/cascade_web/domain_dispatch.ex" : [],
+      "lib/cascade_web/extended_content_controller.ex" : [
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/chat/invites.ex",
+         "lib/cascade/content/privacy.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/evolution.ex",
+         "lib/cascade/publishing.ex",
+         "lib/cascade/scratchpad.ex",
+         "lib/cascade/search/qmd.ex",
+         "lib/cascade/wiki_maintenance.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/extended_content_router.ex" : [
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/extended_content_controller.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/extended_content_routes.ex" : [
+         "lib/cascade_web/extended_content_router.ex"
+      ],
+      "lib/cascade_web/json.ex" : [],
+      "lib/cascade_web/mission_router.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/channel.ex",
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/events.ex",
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/dispatch_reannouncer.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/steering.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade_web/auth.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/mission_routes.ex" : [
+         "lib/cascade_web/mission_router.ex"
+      ],
+      "lib/cascade_web/orchestration_controller.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/chat/messages.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/managed_agents.ex",
+         "lib/cascade/missions/dispatch_reannouncer.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/execution.ex",
+         "lib/cascade/runs/cancellation.ex",
+         "lib/cascade/runs/prompt_context.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/work_items.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/orchestration_router.ex" : [
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex",
+         "lib/cascade_web/orchestration_controller.ex",
+         "lib/cascade_web/orchestration_routes.ex"
+      ],
+      "lib/cascade_web/orchestration_routes.ex" : [
+         "lib/cascade_web/orchestration_router.ex"
+      ],
+      "lib/cascade_web/rate_limiter.ex" : [],
+      "lib/cascade_web/route_catalog.ex" : [
+         "lib/cascade_web/account_routes.ex",
+         "lib/cascade_web/chat_routes.ex",
+         "lib/cascade_web/content_routes.ex",
+         "lib/cascade_web/extended_content_routes.ex",
+         "lib/cascade_web/mission_routes.ex",
+         "lib/cascade_web/orchestration_routes.ex",
+         "lib/cascade_web/system_routes.ex"
+      ],
+      "lib/cascade_web/router.ex" : [
+         "lib/cascade/db/repo.ex",
+         "lib/cascade/publishing.ex",
+         "lib/cascade/realtime/domain_adapter.ex",
+         "lib/cascade/realtime/events.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade_web/account_router.ex",
+         "lib/cascade_web/account_routes.ex",
+         "lib/cascade_web/auth_controller.ex",
+         "lib/cascade_web/chat_router.ex",
+         "lib/cascade_web/chat_routes.ex",
+         "lib/cascade_web/content_router.ex",
+         "lib/cascade_web/content_routes.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/extended_content_router.ex",
+         "lib/cascade_web/json.ex",
+         "lib/cascade_web/mission_router.ex",
+         "lib/cascade_web/mission_routes.ex",
+         "lib/cascade_web/orchestration_router.ex",
+         "lib/cascade_web/security.ex",
+         "lib/cascade_web/socket_io_plug.ex",
+         "lib/cascade_web/static.ex",
+         "lib/cascade_web/system_router.ex"
+      ],
+      "lib/cascade_web/security.ex" : [
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/config.ex",
+         "lib/cascade_web/json.ex",
+         "lib/cascade_web/rate_limiter.ex"
+      ],
+      "lib/cascade_web/socket_io_plug.ex" : [
+         "lib/cascade/auth/session.ex",
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/session.ex",
+         "lib/cascade/realtime/web_socket.ex"
+      ],
+      "lib/cascade_web/static.ex" : [],
+      "lib/cascade_web/system_router.ex" : [
+         "lib/cascade/config.ex",
+         "lib/cascade_web/domain_dispatch.ex",
+         "lib/cascade_web/json.ex"
+      ],
+      "lib/cascade_web/system_routes.ex" : [
+         "lib/cascade_web/system_router.ex"
+      ],
+      "lib/mix/tasks/cascade.load_fixtures.ex" : [
+         "lib/cascade/accounts/sql.ex",
+         "lib/cascade/auth/token.ex",
+         "lib/cascade/content/store.ex",
+         "lib/cascade/db/repo.ex"
+      ],
+      "lib/mix/tasks/cascade.parity.ex" : [
+         "lib/cascade_web/route_catalog.ex"
+      ]
+   },
+   "graph_sha256" : "3d4fed617436adcae2077beb351cc5c9a943330de72a149bf2214bd8e3649e2c",
+   "groups" : [
+      [
+         "lib/cascade/accounts/moderation.ex",
+         "lib/cascade/accounts/vault_members.ex",
+         "lib/cascade/chat/agents.ex",
+         "lib/cascade/chat/avatars.ex",
+         "lib/cascade/chat/channel.ex"
+      ],
+      [
+         "lib/cascade/chat/continuations.ex",
+         "lib/cascade/chat/next_steps.ex",
+         "lib/cascade/missions/authority.ex",
+         "lib/cascade/missions/children.ex",
+         "lib/cascade/missions/dispatches.ex",
+         "lib/cascade/missions/interpretation.ex",
+         "lib/cascade/missions/scheduler.ex",
+         "lib/cascade/missions/store.ex",
+         "lib/cascade/runs/runner_lifecycle.ex",
+         "lib/cascade/runs/store.ex",
+         "lib/cascade/wiki_maintenance.ex",
+         "lib/cascade/work_items.ex"
+      ],
+      [
+         "lib/cascade/realtime.ex",
+         "lib/cascade/realtime/hub.ex",
+         "lib/cascade/realtime/session.ex"
+      ],
+      [
+         "lib/cascade_web/orchestration_router.ex",
+         "lib/cascade_web/orchestration_routes.ex"
+      ]
+   ],
+   "notes" : [
+      "All extracted dependency edges are retained in graph. Every intra-group edge is listed once in cyclic_edges.",
+      "Scope is the requested directory. Dependencies outside it may be targets without outgoing edges; run at project root for cross-boundary cycles.",
+      "Source AST references are evidence, not proof of runtime calls. Dynamic dispatch and macro-generated edges may have no source evidence; missing evidence is explicit.",
+      "Madge does not supply source locations here. Its edges are retained with unavailable evidence.",
+      "Removal scores simulate one edge at a time on the unchanged graph. They are not a minimum cut or permission to delete behavior. Scores are not additive."
+   ],
+   "project_root" : "/Users/diego/mystuff/Coding/fizzer/backend_elixir",
+   "ranked_candidates" : [
+      "E23",
+      "E52",
+      "E53",
+      "E36",
+      "E10",
+      "E14",
+      "E18",
+      "E39",
+      "E3",
+      "E49",
+      "E50",
+      "E43",
+      "E6",
+      "E7",
+      "E8",
+      "E9",
+      "E38",
+      "E46",
+      "E1",
+      "E4",
+      "E5",
+      "E11",
+      "E16",
+      "E17",
+      "E20",
+      "E22",
+      "E28",
+      "E33",
+      "E34",
+      "E35",
+      "E48",
+      "E51",
+      "E42",
+      "E45",
+      "E2",
+      "E12",
+      "E13",
+      "E15",
+      "E19",
+      "E21",
+      "E24",
+      "E25",
+      "E26",
+      "E27",
+      "E29",
+      "E30",
+      "E31",
+      "E32",
+      "E37",
+      "E47",
+      "E40",
+      "E41",
+      "E44"
+   ],
+   "requested_directory" : "/Users/diego/mystuff/Coding/fizzer/backend_elixir/lib",
+   "schema_version" : 1,
+   "source_sha256" : {
+      "lib/cascade/accounts/moderation.ex" : "809cbbfcafae97a78342bbb43ea3b50c3baa88e1fba408de3bec57dcc39a531f",
+      "lib/cascade/accounts/vault_members.ex" : "137c7c3aaa49979f850641f2766e4e07a8a656095e039766047a29b0dbf634be",
+      "lib/cascade/chat/agents.ex" : "d4cf31107d587532264c58d52dd6ce75e601467047001523cbd4ffcbffafe861",
+      "lib/cascade/chat/avatars.ex" : "88f26eec8cd32b60a3b9eede621c01b285084521027c4aac2781f4a4e20e3312",
+      "lib/cascade/chat/channel.ex" : "d00216d690fc8a8938eb5d628cd2a3591698429eac118da8334373003c7b0721",
+      "lib/cascade/chat/continuations.ex" : "d98ec68ad4b80d15a759c5f23f5e599cc3de0f3defdadbcaf9c1285d5cdcb932",
+      "lib/cascade/chat/next_steps.ex" : "f3da748a37d8afee4c3bf91001f64784aac259ea890bbdb6e7ff2742a6c87870",
+      "lib/cascade/missions/authority.ex" : "3bc0cee15626b2f9684eaa6411bebe2283c0ebb183ef49fa35bf9ff6207b821b",
+      "lib/cascade/missions/children.ex" : "3b9cdf4540f6b02361e8778c1281cd472189e22e19594b4edb8e26bcafbd7723",
+      "lib/cascade/missions/dispatches.ex" : "24014b01283f3ae7d37007436439ee0ad62b66bf879348fab0987ad74d6900ad",
+      "lib/cascade/missions/interpretation.ex" : "802090b9ecd1fe5aff0bbd452cb05ea51d1d4a55ad66d57d0aa1b8e8d8dc051e",
+      "lib/cascade/missions/scheduler.ex" : "9c8d52a6f08953b94ab158c28c9928dd08f9333b237d86cd5ae7674d9baf4990",
+      "lib/cascade/missions/store.ex" : "c3c9bd6e51a2d76968c5955d228f5bfcfbde105cb17e662606e4d8621c9bc238",
+      "lib/cascade/realtime.ex" : "d94a2cd1a368bd47ace545916a188a19704b895ad86e8078e5eb1da407935e13",
+      "lib/cascade/realtime/hub.ex" : "ed28aa2faeef1be54a156431afacdd244cff6a16de61978b29b1cd41e6d3711a",
+      "lib/cascade/realtime/session.ex" : "aa787542158652800e3dceab84aa87bef4ba81b2f3b151c07337b325d21fc9b4",
+      "lib/cascade/runs/runner_lifecycle.ex" : "6f2685c9019161e0f1f18faab9b1549ba055663261d6cdcac5136c91a4bef5c3",
+      "lib/cascade/runs/store.ex" : "63f76c8aaf4f85636b57c7e01e89245248754b24a43cb31164e0dbf997497199",
+      "lib/cascade/wiki_maintenance.ex" : "f67c079862b8f6e9319f71c3b77e7c86e25eb2140a8e541c8ad4836e4e245039",
+      "lib/cascade/work_items.ex" : "a7d96adc35a8868773ecfa6143e4256f2699d29559cc725bad1deef7dd7f2730",
+      "lib/cascade_web/orchestration_router.ex" : "f965983d7aa3cdaaab2d5fe0f8fb6ff9fa3fe95d68b48ef4cfc1393e4e03dd52",
+      "lib/cascade_web/orchestration_routes.ex" : "ad35134cda5c74b6f255f396aaf4d4e66891c83cf3d37ee0026a2b6eb2a2b379"
+   }
+}
+```

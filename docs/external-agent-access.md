@@ -1,9 +1,9 @@
 # External Along access (opt-in, source desktop, Unix only)
 
-Narrow API port from beta into the existing `fizzer-main` checkout, explicitly
-approved separately from other beta changes. No desktop restart or live activation
-was performed. Packaged apps and Windows are excluded. The TCP helper proxy is
-unchanged; no credential files, helper contexts, or model sessions are used.
+Opt-in, owner-private external API for the source desktop. Packaged apps and
+Windows are excluded. The TCP helper proxy is unchanged; no credential files,
+helper contexts, or model sessions are used. Backend deployment and local desktop
+activation are separate operations.
 
 ## Atomic no-invocation contract (backend deployment required)
 
@@ -25,9 +25,9 @@ creation. Ambient/settings changes cannot switch this operation into invocation.
 Normal messages, mentions and ambient behavior remain unchanged. This contract
 covers this creation operation, not subsequent explicit edits or invocations.
 
-**Deploy the backend addition through the authorized release process before live
-sends can work.** Source desktop changes alone do not enable the deployed server.
-No backend deploy, real API write, desktop restart, or live activation was performed.
+**Deploy the backend addition through GitHub Actions before live sends can work.**
+Source desktop changes alone do not enable the deployed server. A production
+release does not restart or activate any local desktop.
 
 ## Authentication and identity
 
@@ -55,9 +55,8 @@ service applies the narrower scope. Same-UID programs can access the socket.
    - `FIZZER_EXTERNAL_AGENT_ACCESS=1`
    - `FIZZER_EXTERNAL_AGENT_DIRECTORY=/home/jt/.cascade/along-main-access`
    - `FIZZER_EXTERNAL_AGENT_VAULT=<verified-private-wiki-vault-id>`
-     (replace the placeholder with the real ID; the formerly documented
-     `5f57525b-4272-47aa-96ed-cc913a6563e8` is now a **public** user-group vault,
-     verified by authenticated read on 2026-09-09, and is not a private wiki target).
+     (replace with the verified private vault ID; the formerly documented
+     `5f57525b-4272-47aa-96ed-cc913a6563e8` is a public user-group vault, not a wiki target).
    - `FIZZER_EXTERNAL_AGENT_OWNER=1`
    - normal app instance selection pinned to the intended HTTPS origin.
      The embedded HTTP backend is intentionally not accepted by this hook.
@@ -80,15 +79,15 @@ HTTP method, credential, registration, run ID, reply, attachment, or proxy route
 | read | noteId | scoped note with upstream agent privacy redaction |
 | history | channelId | last 40 messages, not full harness logs |
 | createChannel | requestId, title | listed note exactly `cascade://chat-channel` |
-| inspectPrivateVault | none | exact scoped vault visibility, owner and complete single-owner membership; refuses public/shared vaults |
-| createPrivateVault | requestId | user-session/normal-CSRF creation of fixed name `Along — shared wiki`, explicit private input, exact private/owner/member readback |
-| createNote | requestId, title, content | listed ordinary wiki note; privacy/owner/membership checked before POST and again after exact body readback |
+| inspectPrivateVault | none | exact scoped private vault, owner and complete single-owner membership |
+| createPrivateVault | requestId | fixed name `Along — shared wiki`, explicit private input and exact privacy/owner/member readback |
+| createNote | requestId, title, content | ordinary listed note; privacy checked before POST and after exact body readback |
 | send | requestId, channelId, body | persisted attributed message; unsupported backends refused before message POST |
 
 ### Private wiki extension (source-tested, not live)
 
-The three wiki operations above are a local source extension after the deployed
-API release. Six Node tests pass using actual private sockets and loopback HTTP;
+The three wiki operations above require the updated opt-in local desktop module;
+deploying master does not activate a running desktop. Six Node tests use actual private sockets and loopback HTTP;
 these are fixtures, not proof of signed-in Chromium or production writes.
 
 Prefer creating the vault in the normal signed-in app first, then pinning that
@@ -127,19 +126,18 @@ Bounds: 1000 receipts, one in-flight operation, 16 KiB request, 1 MiB response,
 never contain upstream bodies, tokens, or private paths. No delete/edit/model/
 registration mutation/credential-export operation is exposed.
 
-## Verified, and not verified
+## Verification
 
-- `npm run test:release:desktop`: 75 passed, 0 failed.
-- `MIX_ENV=test mix test test/cascade_web/external_agent_access_test.exs`:
-  1 passed. Actual Elixir router and temporary SQLite/files exercised CSRF token
-  minting, `is_listed` note create/read/list, agent attribution, persisted history,
-  zero dispatch with ambient/agent tagging enabled, explicit mentions, reply ping
-  input, clear-command text and concurrent membership changes on the new route;
-  unchanged ambient/mention dispatch on the legacy route. No runner connected,
-  and run count remains unchanged. Authentication/owner/viewer/channel denials
-  also exercise the real backend.
-- Node tests exercise real Unix sockets and loopback HTTP fixtures plus executable
-  client, durable send receipts/replay, refusal before message POST on unsupported
-  capability, mixed-version POST failure without fallback, and scope/bounds.
-- No real deployed API write, signed-in Chromium test, app restart, or phone
-  activation. No commit, push, branch switch, or unrelated production code port.
+Run `node --test cascade-electron/external-agent-access.test.cjs`,
+`npm run test:release:desktop`, and `npm run build` from the release checkout.
+Run `MIX_ENV=test mix test test/cascade_web/external_agent_access_test.exs
+test/cascade_web/orchestration_chat_dispatch_test.exs` from `backend_elixir`.
+
+The isolated router/SQLite regression covers browser CSRF minting, note wire
+shape, attribution/readback, no dispatch or run under ambient settings, explicit
+mentions, reply inputs, clear text and concurrent settings changes, permission
+denials, and unchanged legacy dispatch. Node tests use real private Unix sockets
+and loopback HTTP fixtures, including durable replay and mixed-version refusal.
+These tests do not establish signed-in Chromium compatibility, deployed API
+writes, desktop activation, or phone readiness. Record release-specific counts,
+preexisting failures, workflow URL, and exact deployed revision separately.

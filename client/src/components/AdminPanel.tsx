@@ -1,3 +1,4 @@
+import { LoadingIndicator } from './LoadingIndicator';
 /**
  * @file AdminPanel.tsx — Owner-only admin modal.
  *
@@ -202,7 +203,7 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
           <div className="admin-report-title"><h3 id="admin-accounts-title">Accounts</h3><span>{users.length} total</span></div>
           <div className="admin-user-list">
           {loading ? (
-            <div className="admin-panel-hint">Loading accounts…</div>
+            <div className="admin-panel-hint"><LoadingIndicator label="Loading accounts" /></div>
           ) : users.length === 0 ? (
             <div className="admin-panel-hint">No accounts.</div>
           ) : users.map((u) => (
