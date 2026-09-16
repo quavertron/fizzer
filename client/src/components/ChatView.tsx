@@ -969,6 +969,7 @@ export const ChatView = memo(function ChatView({
                 return (
                   <ChatGroupRow
                     key={head.id}
+                    deferInitialBody={(previousChannelIdRef.current !== channelId || wasAtBottomRef.current) && !historyAnchorRef.current}
                     group={group}
                     continuesPrevious={continuesPrevious}
                     traceContent={traceContent}

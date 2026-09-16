@@ -85,6 +85,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onImageLoad,
   onAgentAvatarClick,
   scrollRootRef,
+  deferInitialBody = false,
   vaultId,
   onHydrateMessage,
   traceContent,
@@ -125,6 +126,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onAgentAvatarClick?: (event: React.MouseEvent) => void;
   /** Chat scroller element — used as IntersectionObserver root. */
   scrollRootRef: RefObject<HTMLDivElement | null>;
+  /** Defer the initial recent-history body to viewport observation, not older-page prepends. */
+  deferInitialBody?: boolean;
   vaultId?: string;
   onHydrateMessage?: (message: ChatMessage) => void;
   /** A collapsed workflow trace carried by this agent row. */
@@ -141,10 +144,14 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   const groupSelected = group.messages.some((message) => message.id === selectedMessageId);
   const articleRef = useRef<HTMLElement | null>(null);
   const heightRef = useRef(0);
-  // Start mounted so first paint / stick-to-bottom has real content; IO then unmounts offscreen.
-  const [inView, setInView] = useState(true);
+  const revealAboveRef = useRef<number | null>(null);
+  // Let the existing observer choose the initial viewport + 600px buffer from
+  // actual scroller geometry, after ChatView has pinned the placeholders. Starting
+  // every body mounted pays the entire markdown/layout cost before IO can prune it.
+  const [inView, setInView] = useState(() => !deferInitialBody || typeof IntersectionObserver === 'undefined');
   const forceMounted = groupSelected
-    || group.messages.some((message) => message.status === 'running')
+    || Boolean(jumpHighlightMessageId)
+    || group.messages.some((message) => isLiveAgentStatus(message.status))
     // Never unmount mid-swipe: orphan pointer capture freezes clicks until restart.
     || swipeGestureActive();
 
@@ -157,8 +164,16 @@ export const ChatGroupRow = memo(function ChatGroupRow({
         const entry = entries[0];
         if (!entry) return;
         if (entry.isIntersecting) {
+          // First reveals replace estimates with variable-height content. Keep a
+          // history reader's viewport still when that happens in the upper buffer.
+          // The existing ChatView ResizeObserver owns bottom-following instead.
+          if (root && el.classList.contains('is-offscreen')
+            && el.getBoundingClientRect().bottom <= root.getBoundingClientRect().top
+            && root.scrollHeight - root.scrollTop - root.clientHeight > 48) {
+            revealAboveRef.current = el.offsetHeight;
+          }
           setInView(true);
-        } else if (!forceMounted && !swipeGestureActive()) {
+        } else if (!forceMounted && !swipeGestureActive() && !el.contains(document.activeElement)) {
           // Preserve height so scroll position doesn't jump when unmounting markdown.
           heightRef.current = el.offsetHeight || heightRef.current;
           setInView(false);
@@ -176,21 +191,28 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   }, [scrollRootRef, forceMounted, group.messages.length]);
 
   useLayoutEffect(() => {
-    if (inView && articleRef.current) {
+    if ((inView || forceMounted) && articleRef.current) {
       heightRef.current = articleRef.current.offsetHeight || heightRef.current;
+      if (revealAboveRef.current != null && scrollRootRef.current) {
+        scrollRootRef.current.scrollTop += heightRef.current - revealAboveRef.current;
+        revealAboveRef.current = null;
+      }
     }
   });
 
   const showBody = inView || forceMounted;
-  const placeholderH = heightRef.current || (groupHasRunWidget ? 120 : 72);
+  const placeholderH = heightRef.current || Math.max(groupHasRunWidget ? 120 : 72, group.messages.length * 72);
 
   return (
     <article
       ref={articleRef}
+      data-message-id={showBody ? undefined : head.id}
       data-agent-ownership={avatarKind === 'agent' ? ownership : undefined}
       className={`chat-message-group ${continuesPrevious ? 'is-continuation' : ''} ${tail.status ? `status-${tail.status}` : ''} ${groupHasRunWidget ? 'has-run-widget' : ''} ${groupSelected ? 'selected' : ''} ${showBody ? '' : 'is-offscreen'}`}
       style={showBody ? undefined : { height: placeholderH, minHeight: placeholderH }}
-      aria-hidden={showBody ? undefined : true}
+      tabIndex={showBody ? undefined : 0}
+      aria-label={showBody ? undefined : `Messages by ${authorLabel || head.author}`}
+      onFocusCapture={() => setInView(true)}
       onContextMenu={contextMenuMessage
         ? (event) => onContextMenu(event, contextMenuMessage)
         : undefined}
