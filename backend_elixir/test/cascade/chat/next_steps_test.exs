@@ -149,6 +149,88 @@ defmodule Cascade.Chat.NextStepsTest do
     refute proposal(c).body == ""
   end
 
+  for route <- [:owner_return, :enable, :completion] do
+    @route route
+    test "#{route} dispatch carries the grounded feedback policy once", c do
+      worker = Process.whereis(Cascade.Missions.DispatchReannouncer)
+      :sys.suspend(worker)
+      on_exit(fn -> :sys.resume(worker) end)
+      enable(c)
+
+      dispatch =
+        case @route do
+          :owner_return ->
+            {:ok, dispatch} = Dispatches.create(c.user.id, c.channel.id, c.source, c.member.id)
+            dispatch
+
+          :enable ->
+            [[source, "enable", "pending"]] = checks(c)
+            NextSteps.pending(c.channel.id, c.member.id, source).dispatch
+
+          :completion ->
+            NextSteps.enqueue(
+              c.channel.id,
+              c.member.id,
+              "sys-next-completed-#{Ecto.UUID.generate()}",
+              "completion",
+              "Accepted work completed."
+            ).dispatch
+        end
+
+      # An in-memory runner receives the real prepared prompt; no provider/model is called.
+      sid = "next-step-route-#{dispatch.id}"
+
+      {:ok, ^sid, pid} =
+        Cascade.Realtime.start_session(sid: sid, domain: Cascade.Realtime.DomainAdapter)
+
+      Cascade.Realtime.Hub.register_runner(c.user.id, sid, "/runners", %{})
+
+      on_exit(fn ->
+        Cascade.Realtime.Hub.unregister_runner(c.user.id, sid)
+
+        if Process.alive?(pid),
+          do: DynamicSupervisor.terminate_child(Cascade.Realtime.SessionSupervisor, pid)
+      end)
+
+      assert {:ok, run} = Cascade.Missions.Execution.execute_dispatch(dispatch.id)
+      prompt = Cascade.Runs.Store.get(run.id).prompt
+      assert prompt =~ "fizzer-next:#{dispatch.messageId}"
+
+      assert length(String.split(prompt, "must offer exactly one new bounded work suggestion")) ==
+               2
+
+      assert prompt =~ "verify concrete repository claims against current permitted source"
+      assert prompt =~ "state the premise itself as an unverified hypothesis"
+      assert prompt =~ "compare the action and rationale"
+      assert prompt =~ "revise the approach rather than just rewording the question"
+      assert prompt =~ "Do not repackage declined work"
+      assert prompt =~ "repeat a pending question on an async receipt"
+      assert prompt =~ "ask permission for already authorized work"
+      assert prompt =~ "An ignored proposal is not acceptance"
+      assert prompt =~ "no tools that implement proposed work until owner acceptance"
+
+      if @route != :owner_return do
+        {:ok, envelope} = Messages.get(c.channel.id, c.user.id, dispatch.messageId)
+        refute envelope.body =~ "offer exactly one"
+        refute envelope.body =~ "speculative benefits"
+        assert envelope.body =~ "This checkpoint grants no authority to start work."
+      end
+    end
+  end
+
+  test "publication validates lifecycle, not the truth of a repository claim", c do
+    enable(c)
+
+    input = %{
+      proposal_input(c)
+      | body:
+          "<!-- fizzer-next:#{c.source.id} -->\n\nThe obsolete release scripts add maintenance; shall I delete them?"
+    }
+
+    {:ok, saved} = Messages.create(c.user, c.vault_id, c.channel.id, input, access: :agent)
+    assert saved.body == input.body
+  end
+
   test "default off and disablement suppress a generated suggestion at publication", c do
     assert proposal(c).body == ""
     enable(c)
