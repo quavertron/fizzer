@@ -175,7 +175,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
       last_seen: %{},
       disconnect_timers: %{},
       run_leases: %{},
-      startup_orphans: startup_orphan_ids(),
+      startup_orphans: startup_orphans(),
       orphan_reclaim: Keyword.get(opts, :orphan_reclaim_ms, @orphan_reclaim),
       run_lease: Keyword.get(opts, :run_lease_ms, @orphan_reclaim)
     }
@@ -374,7 +374,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
     delegated_summary = "Desktop agent runner did not reclaim this run after server restart."
     loose_summary = "Server restarted while this run was in progress."
 
-    Enum.each(state.startup_orphans, fn run_id ->
+    Enum.each(state.startup_orphans.delegated, fn run_id ->
       case Store.get(run_id) do
         %{status: status} when status in ["queued", "running"] ->
           case Store.delegated_owner(run_id) do
@@ -390,8 +390,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
               end
 
             nil ->
-              Store.finish(run_id, "failed", loose_summary)
-              Store.publish(run_id, "status", %{status: "failed", summary: loose_summary})
+              :ok
           end
 
         _ ->
@@ -399,14 +398,34 @@ defmodule Cascade.Runs.RunnerLifecycle do
       end
     end)
 
-    {:noreply, %{state | startup_orphans: MapSet.new()}}
+    Enum.each(state.startup_orphans.loose, fn run_id ->
+      case Store.get(run_id) do
+        %{status: status} when status in ["queued", "running"] ->
+          if is_nil(Store.delegated_owner(run_id)) do
+            Store.finish(run_id, "failed", loose_summary)
+            Store.publish(run_id, "status", %{status: "failed", summary: loose_summary})
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+
+    {:noreply, %{state | startup_orphans: empty_startup_orphans()}}
   end
 
-  defp startup_orphan_ids do
-    Cascade.Accounts.SQL.all("SELECT id FROM runs WHERE status IN ('queued','running')")
-    |> Enum.map(&hd/1)
-    |> MapSet.new()
+  defp startup_orphans do
+    Cascade.Accounts.SQL.all("""
+    SELECT r.id,d.run_id FROM runs r LEFT JOIN delegated_runs d ON d.run_id=r.id
+    WHERE r.status IN ('queued','running')
+    """)
+    |> Enum.reduce(empty_startup_orphans(), fn
+      [run_id, nil], orphans -> update_in(orphans.loose, &MapSet.put(&1, run_id))
+      [run_id, _], orphans -> update_in(orphans.delegated, &MapSet.put(&1, run_id))
+    end)
   end
+
+  defp empty_startup_orphans, do: %{delegated: MapSet.new(), loose: MapSet.new()}
 
   defp reclaimed?(run_id, owner_id, state) do
     online?(owner_id) and

@@ -312,6 +312,30 @@ defmodule Cascade.Runs.OrchestrationStateTest do
     assert Store.get(run.id).status == "queued"
   end
 
+  test "startup recovery preserves an inherited loose run delegated after initialization",
+       context do
+    assert {:ok, run} = Store.start(context.vault_id, nil, "delegated after init", "codex")
+    snapshot_startup_orphans()
+    register_online_runner(context.user_id, [])
+
+    assert :ok =
+             Store.record_delegated(run.id, context.user_id, %{
+               runId: run.id,
+               prompt: "continue after restart"
+             })
+
+    Store.acknowledge_delivery(run.id)
+    RunnerLifecycle.heartbeat(run.id, context.user_id)
+    :sys.get_state(RunnerLifecycle)
+
+    send(RunnerLifecycle, :orphan_reclaim)
+    :sys.get_state(RunnerLifecycle)
+
+    assert Store.get(run.id).status == "queued"
+    assert Store.delegated_owner(run.id) == context.user_id
+    assert Store.pending_delivery(run.id, context.user_id) == nil
+  end
+
   test "startup recovery fails inherited orphans and preserves reclaimed work", context do
     assert {:ok, delegated} =
              Store.start(context.vault_id, nil, "delegated before init", "codex")
@@ -338,7 +362,11 @@ defmodule Cascade.Runs.OrchestrationStateTest do
            } = eventually_status(loose.id, "failed")
 
     assert Store.get(reclaimed.id).status == "queued"
-    assert :sys.get_state(RunnerLifecycle).startup_orphans == MapSet.new()
+
+    assert :sys.get_state(RunnerLifecycle).startup_orphans == %{
+             delegated: MapSet.new(),
+             loose: MapSet.new()
+           }
   end
 
   test "runner callback registration is intentionally single-owned by DomainAdapter", context do
