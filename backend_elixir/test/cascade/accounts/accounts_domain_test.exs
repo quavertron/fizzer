@@ -339,6 +339,7 @@ defmodule Cascade.AccountsDomainTest do
   test "note mentions survive autosaves and rename, and respect read watermarks" do
     Cascade.Content.Activity.install()
     vault = Store.create_vault(1, %{name: "Mentions"})
+    Store.create_folder(vault.id, %{name: "_agent"})
     assert {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
 
     SQL.exec("UPDATE vault_members SET created_at='2000-01-01T00:00:00Z' WHERE vault_id=?", [

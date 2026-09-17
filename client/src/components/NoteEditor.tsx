@@ -1,13 +1,14 @@
 import { useEffect, useRef, useMemo, useCallback, useState, memo } from 'react';
-import type { Note, NoteSummary } from '../api';
-import { api, formatRelativeDate, type NotePublishInfo } from '../api';
+import type { Note, NoteSummary, VaultMember } from '../api';
+import { api, snapshotVaultApi, formatRelativeDate, type NotePublishInfo } from '../api';
 import { findEmbeddedNote, normalizeDocEmbedTarget, NOTE_DND_TYPE, noteEmbedMarkdown } from '../docEmbeds';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, placeholder as cmPlaceholder, Decoration, type DecorationSet, WidgetType, drawSelection } from '@codemirror/view';
 import { EditorState, type Extension, RangeSetBuilder, Prec, StateField, StateEffect, Transaction } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle, indentOnInput, bracketMatching, defaultHighlightStyle } from '@codemirror/language';
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
-import { closeBrackets } from '@codemirror/autocomplete';
+import { closeBrackets, closeCompletion } from '@codemirror/autocomplete';
+import { noteMentions, refreshNoteMentions } from '../noteMentions';
 import { languages } from '@codemirror/language-data';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { tags } from '@lezer/highlight';
@@ -1305,6 +1306,12 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
   const [mobileSaveState, setMobileSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const mentionMembersRef = useRef<VaultMember[]>([]);
+  const mentionVaultRef = useRef(note?.vault_id);
+  if (mentionVaultRef.current !== note?.vault_id) {
+    mentionVaultRef.current = note?.vault_id;
+    mentionMembersRef.current = [];
+  }
   const contentRef = useRef(content);
   const onContentChangeRef = useRef(onContentChange);
   const onSaveRef = useRef(onSave);
@@ -1580,6 +1587,7 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
       indentOnInput(),
       bracketMatching(),
       closeBrackets(),
+      noteMentions(() => mentionMembersRef.current, readOnly),
       history(),
       EditorView.lineWrapping,
       cmPlaceholder('Start writing...'),
@@ -1783,6 +1791,39 @@ export const NoteEditor = memo(function NoteEditor({ note, content, onContentCha
       });
     }
   }, [extensions, note?.id]);
+
+  // Capture routing and cancel pending requests when this note's vault changes.
+  useEffect(() => {
+    const vaultId = note?.vault_id;
+    let controller: AbortController | undefined;
+    let disposed = false;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      mentionMembersRef.current = [];
+      const view = viewRef.current;
+      if (view) {
+        closeCompletion(view);
+        view.dispatch({ effects: refreshNoteMentions.of() });
+      }
+      if (!vaultId) return;
+      void api<{ members: VaultMember[] }>(`/api/vaults/${vaultId}/members`, {
+        ...snapshotVaultApi(vaultId), signal,
+      }).then(({ members }) => {
+        if (disposed || signal.aborted) return;
+        mentionMembersRef.current = members;
+        viewRef.current?.dispatch({ effects: refreshNoteMentions.of() });
+      }).catch(() => {});
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => {
+      disposed = true;
+      controller?.abort();
+      window.removeEventListener('focus', refresh);
+    };
+  }, [note?.id, note?.vault_id]);
 
   // Update content when note changes externally
   useEffect(() => {

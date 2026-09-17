@@ -267,7 +267,7 @@ defmodule Cascade.Accounts.CommunityActivity do
         JOIN users u ON u.id=activity.actor_user_id
         LEFT JOIN community_read_state state ON state.user_id=? AND state.source_type='note' AND state.source_id=n.id
         WHERE activity.actor_user_id!=? AND n.is_archived=0 AND n.is_listed=1
-          AND (?=1 OR n.folder_id NOT IN (
+          AND (?=1 OR n.folder_id IS NULL OR n.folder_id NOT IN (
             WITH RECURSIVE agent_folders(id) AS (
               SELECT id FROM folders WHERE vault_id=n.vault_id AND parent_id IS NULL AND name='_agent'
               UNION ALL SELECT child.id FROM folders child JOIN agent_folders parent ON child.parent_id=parent.id
