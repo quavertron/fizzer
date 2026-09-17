@@ -53,16 +53,41 @@ try {
     return route.fulfill({json:{message:saved}});
   });
   const url = `http://127.0.0.1:${server.config.server.port}/reaction-test.html`;
-  for(let i=0;i<2;i++){const page=await context.newPage();pages.push(page);await page.goto(url);await page.getByRole('button',{name:'Add reaction',exact:true}).waitFor();}
+  for(let i=0;i<2;i++){const page=await context.newPage();pages.push(page);page.on('pageerror',error=>console.error(error.message));await page.goto(url);await page.locator('.chat-message-chunk').waitFor();}
   const [page,viewer]=pages;
+  const chunk = page.locator('.chat-message-chunk');
+  const stableBox = async (locator, before, reason) => {
+    const after = await locator.boundingBox();
+    for (const key of ['x','y','width','height']) assert(Math.abs(before[key]-after[key]) < 0.5, `${reason}: ${key} ${before[key]} -> ${after[key]}`);
+  };
+  await page.mouse.move(0,0);
+  const resting = await chunk.boundingBox();
+  await chunk.hover();
+  await stableBox(chunk, resting, 'Hover must not resize or shift an empty message');
+  await page.locator('.chat-message-chunk').hover();
+  await chunk.hover();
   await page.getByRole('button',{name:'Add reaction',exact:true}).click();
+  await stableBox(chunk, resting, 'Opening picker must not resize or shift a message');
   await page.getByRole('button',{name:'Laugh',exact:true}).click();
   await page.getByRole('button',{name:'Laugh, 1, your reaction',exact:true}).waitFor();
   assert.equal(await viewer.getByRole('button',{name:'Laugh, 1, your reaction',exact:true}).getAttribute('aria-pressed'),'true');
+  const reaction = page.getByRole('button',{name:'Laugh, 1, your reaction',exact:true});
+  const reactionBox = await reaction.boundingBox();
+  await chunk.hover();
+  await page.getByRole('button',{name:'Add reaction',exact:true}).click();
+  await stableBox(reaction, reactionBox, 'Opening picker must not move existing reactions');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('group',{name:'Choose reaction'}).count(),0);
+  await chunk.hover();
+  await page.getByRole('button',{name:'Add reaction',exact:true}).click();
+  await page.locator('.chat-header-copy').click();
+  assert.equal(await page.getByRole('group',{name:'Choose reaction'}).count(),0);
   await page.reload();
   await page.getByRole('button',{name:'Laugh, 1, your reaction',exact:true}).click();
   await page.waitForFunction(()=>!window.rows()[0].reactions.items['😂']);
   fail=true;
+  await page.locator('.chat-message-chunk').hover();
+  await chunk.hover();
   await page.getByRole('button',{name:'Add reaction',exact:true}).click();
   await page.getByRole('button',{name:'Laugh',exact:true}).click();
   await page.getByRole('alert').filter({hasText:'Could not update reaction'}).waitFor();
@@ -83,9 +108,15 @@ try {
   await touchPage.route('**/api/**',route=>route.fulfill({json:{messages:[],agents:[],participants:[]}}));
   await touchPage.goto(url);
   const add=touchPage.getByRole('button',{name:'Add reaction',exact:true});
+  const touchChunk=touchPage.locator('.chat-message-chunk');
+  await touchChunk.waitFor();
+  const touchBox=await touchChunk.boundingBox();
+  await touchPage.getByText('New streamed content',{exact:true}).tap();
+  await stableBox(touchChunk,touchBox,'Touch reveal must not move the message');
   await add.tap();
+  await stableBox(touchChunk,touchBox,'Touch picker must not move the message');
   const bounds=await touchPage.getByRole('button',{name:'Thumbs up',exact:true}).boundingBox();
   assert(bounds.height>=43.99 && bounds.width>=43.99, JSON.stringify({bounds, coarse: await touchPage.evaluate(()=>matchMedia("(pointer: coarse)").matches)}));
   assert.equal(puts,4);
-  console.log('PASS: real ChatView per-message controls, toggle/count/own state, second viewer, reload, failure, stale HTTP/realtime, keyboard and touch targets');
+  console.log('PASS: real ChatView per-message controls, toggle/count/own state, second viewer, reload, failure, stale HTTP/realtime, stable hover/picker geometry, dismiss, keyboard and touch targets');
 } finally {await browser?.close();await server.close();}
