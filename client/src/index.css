@@ -4708,11 +4708,13 @@ button.chat-avatar.is-clickable:focus-visible {
   font-weight: 600;
   letter-spacing: 0.01em;
 }
-.chat-mention.is-unavailable,
-.chat-user-copy .chat-user-handle.is-unavailable {
+.chat-mention.is-unavailable {
   color: var(--text-tertiary);
   background: var(--bg-raised);
   border-color: var(--border);
+}
+.chat-user-copy .chat-user-handle.is-unavailable {
+  color: var(--text-tertiary);
 }
 .chat-reply-mention-toggle:disabled {
   color: var(--text-tertiary);

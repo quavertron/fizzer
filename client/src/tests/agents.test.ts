@@ -45,6 +45,18 @@ describe('agent editor layout', () => {
   });
 });
 
+describe('agent roster handle styling', () => {
+  it('keeps roster handles plain while chat mentions retain their background', () => {
+    const styles = readFileSync(new URL('../index.css', import.meta.url), 'utf8');
+    const chatMention = styles.match(/\.chat-mention\s*\{([^}]+)\}/)?.[1] || '';
+    const rosterHandle = styles.match(/\.chat-user-copy \.chat-user-handle\.is-unavailable\s*\{([^}]+)\}/)?.[1];
+
+    expect(chatMention).toMatch(/\bbackground\s*:/);
+    expect(rosterHandle).toMatch(/\bcolor\s*:/);
+    expect(rosterHandle).not.toMatch(/\b(?:background|border(?:-color)?)\s*:/);
+  });
+});
+
 describe('OMP model presets', () => {
   it('uses provider-qualified ids for the major authenticated catalogs', () => {
     const ids = CHAT_AGENT_MODEL_PRESETS.omp.map(({ id }) => id);
