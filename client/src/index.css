@@ -9677,4 +9677,4 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .chat-work-trace.status-canceled .chat-mission-state { background: var(--text-muted); }
 .chat-work-trace.is-live .chat-mission-state,
 .chat-mission-card.is-live .chat-mission-state { background: var(--warning); }
-.chat-mission-card:not(.is-open) { border: 0; background: transparent; box-shadow: none; }
+.chat-mission-card:not(.is-open) { border: 0; box-shadow: none; }

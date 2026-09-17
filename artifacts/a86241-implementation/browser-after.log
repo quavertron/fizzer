@@ -1,0 +1,3 @@
+PASS desktop: replay, identities, expansion, exact Stop; single preview and persistent collapsed/expanded background
+PASS narrow: replay, identities, expansion, exact Stop; single preview and persistent collapsed/expanded background
+PASS split: replay, identities, expansion, exact Stop; single preview and persistent collapsed/expanded background

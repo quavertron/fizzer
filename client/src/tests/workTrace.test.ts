@@ -511,7 +511,15 @@ it('gives a mission and its bound worker one activity surface, preserving later 
   expect(segments).toHaveLength(2);
   expect(segments[0]).toMatchObject({ kind: 'work', carrier: { id: 'root' }, trace: [assignment, worker] });
   expect(segments[1]).toMatchObject({ kind: 'group', group: { messages: [unrelated] } });
-  const card = renderToStaticMarkup(createElement(ChatMissionCard, { mission: mission.mission!, tracePeek: workTracePeek([worker]) }));
+  const card = renderToStaticMarkup(createElement(ChatMissionCard, {
+    mission: mission.mission!, tracePeek: workTracePeek([worker]),
+    traceContent: createElement(ChatWorkTrace, {
+      trace: [assignment, worker], embedded: true, forceOpen: true,
+      selectedMessageId: null, onCancelRun: () => {}, onContextMenu: () => {},
+      onReply: () => {}, runningMessageState: new Map(),
+    }),
+  }));
+  expect(card).not.toContain('chat-work-trace-body');
   expect(card).toContain(missionAccent(mission.mission!.id));
   expect(card).toContain('chat-mission-state');
   expect(card).not.toContain('Work details');

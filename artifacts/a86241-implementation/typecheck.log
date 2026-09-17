@@ -1,0 +1,4 @@
+
+> fizzer@0.2.0 typecheck:client
+> tsc --noEmit -p client/tsconfig.json
+

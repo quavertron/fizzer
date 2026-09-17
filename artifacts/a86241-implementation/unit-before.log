@@ -1,0 +1,41 @@
+
+> client@0.0.0 test
+> vitest run src/tests/workTrace.test.ts
+
+
+ RUN  v4.1.9 /home/jt/.fizzer/worktrees/cascade/682b2bda-repair-duplicate-live-previews-a-a86241/client
+
+ ❯ src/tests/workTrace.test.ts (48 tests | 1 failed) 40ms
+   × gives a mission and its bound worker one activity surface, preserving later answers and unrelated work 11ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/tests/workTrace.test.ts > gives a mission and its bound worker one activity surface, preserving later answers and unrelated work
+AssertionError: expected '<div class="chat-mission-card is-acti…' not to contain 'chat-work-trace-body'
+
+Expected: "chat-work-trace-body"
+Received: "<div class="chat-mission-card is-active is-live" data-mission-id="bf3a6199-8132-4e75-8e58-ec37c097e5a2" style="--mission-accent:#b6a0d2" data-open="false" role="button" tabindex="0" aria-expanded="false"><div class="chat-mission-head"><button type="button" class="chat-mission-toggle" tabindex="-1"><span class="chat-mission-state" aria-hidden="true"></span><strong title="Desktop packaging is still running for the helper prompt changes; I’m watching it through completion.">Desktop packaging is still running for the helper prompt changes; I’m watching it through completion.</strong><span class="chat-mission-status">working</span><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right chat-mission-chevron" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button></div><div class="chat-mission-content"><div class="chat-mission-tasks"><div class="chat-mission-task is-running"><span aria-hidden="true">↳</span><div><strong>Consolidate worker context</strong><span>@astra · running</span></div></div></div><div class="chat-mission-trace"><div class="chat-swipe-row chat-work-trace-swipe"><div class="chat-swipe-reply-hint" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply" aria-hidden="true"><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path><path d="m9 17-5-5 5-5"></path></svg></div><div class="chat-swipe-content"><div class="chat-work-trace phase-working status-running is-open is-live is-embedded is-forced-open"><div class="chat-work-trace-body" role="log" aria-label="Agent work trace"><div class="chat-swipe-row chat-work-line-swipe"><div class="chat-swipe-reply-hint" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply" aria-hidden="true"><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path><path d="m9 17-5-5 5-5"></path></svg></div><div class="chat-swipe-content"><div class="chat-work-line   status-done" data-message-id="mission-task-worker-task"><button type="button" class="chat-work-line-fold" title="Instructions" aria-expanded="false" aria-label="Expand Astra work step: Instructions"><span class="chat-work-mark task" aria-hidden="true">›</span><span class="chat-work-author">Delegated · Astra</span><span class="chat-work-preview">Instructions</span><time dateTime="2026-08-03T00:00:00.000Z">8:00 PM</time><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right chat-work-chevron" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button></div></div></div><div class="chat-swipe-row chat-work-line-swipe"><div class="chat-swipe-reply-hint" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply" aria-hidden="true"><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path><path d="m9 17-5-5 5-5"></path></svg></div><div class="chat-swipe-content"><div class="chat-work-line   status-running" data-message-id="worker"><button type="button" class="chat-work-line-fold" title="Packaging is still running." aria-expanded="false" aria-label="Expand Astra work step: Packaging is still running."><span class="thinking-spinner chat-work-mark run" title="Packaging is still running." role="status" aria-label="Packaging is still running."></span><span class="chat-work-author">Delegated · Astra</span><span class="chat-work-preview">Packaging is still running.</span><time dateTime="2026-08-03T00:00:00.000Z">8:00 PM</time><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right chat-work-chevron" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button></div></div></div></div></div></div></div></div></div></div>"
+
+ ❯ src/tests/workTrace.test.ts:523:20
+    521|   }));
+    522|   expect(card.match(/Desktop packaging is still running for the helper…
+    523|   expect(card).not.toContain('chat-work-trace-body');
+       |                    ^
+    524|   expect(card).toContain(missionAccent(mission.mission!.id));
+    525|   expect(card).toContain('chat-mission-state');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 47 passed (48)
+   Start at  06:53:48
+   Duration  693ms (transform 326ms, setup 0ms, import 566ms, tests 40ms, environment 0ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /home/jt/.fizzer/worktrees/cascade/682b2bda-repair-duplicate-live-previews-a-a86241/client
+npm error workspace client@0.0.0
+npm error location /home/jt/.fizzer/worktrees/cascade/682b2bda-repair-duplicate-live-previews-a-a86241/client
+npm error command failed
+npm error command sh -c vitest run src/tests/workTrace.test.ts

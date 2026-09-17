@@ -1,0 +1,3 @@
+PASS desktop: replay, identities, expansion, exact Stop; baseline has duplicate preview and missing collapsed background
+PASS narrow: replay, identities, expansion, exact Stop; baseline has duplicate preview and missing collapsed background
+PASS split: replay, identities, expansion, exact Stop; baseline has duplicate preview and missing collapsed background

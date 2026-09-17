@@ -1,0 +1,18 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: desktop: visible live sentence count
+
+2 !== 1
+
+    at file:///home/jt/.fizzer/worktrees/cascade/682b2bda-repair-duplicate-live-previews-a-a86241/scripts/test-mission-preview-browser.mjs:63:10 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 2,
+  expected: 1,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.11.1

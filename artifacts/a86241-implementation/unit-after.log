@@ -1,0 +1,13 @@
+
+> client@0.0.0 test
+> vitest run src/tests/workTrace.test.ts
+
+
+ RUN  v4.1.9 /home/jt/.fizzer/worktrees/cascade/682b2bda-repair-duplicate-live-previews-a-a86241/client
+
+
+ Test Files  1 passed (1)
+      Tests  48 passed (48)
+   Start at  06:56:50
+   Duration  557ms (transform 244ms, setup 0ms, import 443ms, tests 27ms, environment 0ms)
+
