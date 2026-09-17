@@ -48,6 +48,7 @@ Usage:
   cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
   cascade-chat mission note list --mission <id>
   cascade-chat mission finish --mission <id> --verification <observed-evidence> [--summary S]
+    [--verified-integrations-file <json-array> --objective <exact-objective>]
   cascade-chat avatar --file <path>     upload this agent's profile picture
   cascade-chat avatar --url <https-url> use an existing uploaded note image
                         (also --avatar-url; --url here is the image, not API base)
@@ -1036,6 +1037,17 @@ async function main() {
     }
     if (sub === 'finish' || sub === 'cancel') {
       if (!registrationId) fail(`mission ${sub} can only be used from a registered coordinator run.`);
+      let verifiedIntegrations;
+      if (args['verified-integrations-file'] !== undefined) {
+        if (sub !== 'finish' || typeof args['verified-integrations-file'] !== 'string' || !args.objective || !args.verification) {
+          fail('--verified-integrations-file requires finish, a JSON file, --objective and --verification.');
+        }
+        verifiedIntegrations = JSON.parse(fs.readFileSync(args['verified-integrations-file'], 'utf8'));
+        if (!Array.isArray(verifiedIntegrations) || !verifiedIntegrations.length || verifiedIntegrations.some(pin =>
+          !pin || typeof pin.taskId !== 'string' || !pin.taskId || !Number.isInteger(pin.runId) || pin.runId <= 0 || !Number.isInteger(pin.attempt) || pin.attempt < 0)) {
+          fail('verification pins must be a nonempty array of {taskId, runId, attempt}.');
+        }
+      }
       const result = await api(
         url,
         token,
@@ -1046,6 +1058,7 @@ async function main() {
           status: sub === 'cancel' ? 'canceled' : 'completed',
           summary: String(args.summary || '').trim(),
           verification: String(args.verification || '').trim(),
+          ...(verifiedIntegrations ? { verifiedIntegrations, objective: String(args.objective) } : {}),
         },
       );
       if (args.json) process.stdout.write(JSON.stringify(result.mission) + '\n');

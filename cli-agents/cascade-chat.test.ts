@@ -887,3 +887,39 @@ test('mission summary-file preserves literal file/stdin text and validates input
     assert.equal(bodies.length, 0);
   }
 });
+
+test('mission finish transports explicit verification pins without another task or request', async (t) => {
+  const bodies: unknown[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      assert.equal(req.url, '/api/vaults/vault/channels/channel/missions/mission/finish');
+      bodies.push(JSON.parse(body));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ mission: { id: 'mission', status: 'completed' } }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-finish-pins-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId: 'coordinator' }));
+  const pins = [{ taskId: 'integration', runId: 42, attempt: 0 }];
+  const file = path.join(dir, 'pins.json');
+  fs.writeFileSync(file, JSON.stringify(pins));
+  const args = [cli, 'mission', 'finish', '--mission', 'mission', '--url', `http://127.0.0.1:${address.port}`,
+    '--token', 'test', '--vault', 'vault', '--channel', 'channel', '--objective', 'Exact original scope',
+    '--verification', 'Observed release and affected behavior', '--verified-integrations-file', file];
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  await execFileAsync(process.execPath, args, { env });
+  assert.deepEqual(bodies, [{ coordinatorRegistrationId: 'coordinator', status: 'completed', summary: '',
+    objective: 'Exact original scope', verification: 'Observed release and affected behavior', verifiedIntegrations: pins }]);
+  for (const invalid of [[], {}, [{ ...pins[0], runId: '42' }], [{ ...pins[0], attempt: -1 }]]) {
+    fs.writeFileSync(file, JSON.stringify(invalid));
+    await assert.rejects(execFileAsync(process.execPath, args, { env }), /verification pins/);
+    assert.equal(bodies.length, 1);
+  }
+});

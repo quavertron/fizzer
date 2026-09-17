@@ -1084,6 +1084,8 @@ defmodule Cascade.Missions.Store do
 
         result =
           SQL.transaction(fn ->
+            mission = mission_row(mission.id)
+            if mission.status in ~w(completed canceled), do: raise("Mission is already closed")
             tasks =
               maybe_finish_primary(
                 mission,
@@ -1102,8 +1104,12 @@ defmodule Cascade.Missions.Store do
                  do: "canceled",
                  else: status
 
+            interpretation =
+              if final_status == "completed", do: Cascade.Missions.Interpretation.before_delivery(mission.id)
+
             if final_status == "completed" do
-              ensure_delivery_ready!(mission, tasks)
+              verified = verify_existing_integrations!(mission, tasks, input)
+              ensure_delivery_ready!(mission, tasks, verified)
             end
 
             if final_status == "completed" and
@@ -1119,8 +1125,6 @@ defmodule Cascade.Missions.Store do
             end
 
             verification = clean(field(input, :verification), 8_000)
-            interpretation =
-              if final_status == "completed", do: Cascade.Missions.Interpretation.before_delivery(mission.id)
 
             SQL.exec("UPDATE chat_missions SET verification=? WHERE id=?", [
               verification,
@@ -1776,10 +1780,12 @@ defmodule Cascade.Missions.Store do
           [task.run_id, task.dispatch_id]) == [1]
   defp completion_evidence_pending?(_), do: false
 
-  defp direct_evidence_ready?(%{status: status}, _mission) when status != "completed",
+  defp direct_evidence_ready?(task, mission, supplied_verification \\ false)
+
+  defp direct_evidence_ready?(%{status: status}, _mission, _supplied) when status != "completed",
     do: false
 
-  defp direct_evidence_ready?(task, mission) do
+  defp direct_evidence_ready?(task, mission, supplied_verification) do
     # Task completion records the delivered outcome; run status records provider
     # execution. A recovered delivery may complete a task whose bound run failed.
     # Keep that failure intact, require a settled bound run, and leave observed
@@ -1805,8 +1811,8 @@ defmodule Cascade.Missions.Store do
 
         work_item_id ->
           SQL.one(
-            "SELECT COUNT(*) FROM work_items WHERE id=? AND base_commit<>'' AND worktree_path<>'' AND verification<>''",
-            [work_item_id]
+            "SELECT COUNT(*) FROM work_items WHERE id=? AND base_commit<>'' AND worktree_path<>'' AND (verification<>'' OR ?)",
+            [work_item_id, if(supplied_verification or recorded_integration_verification?(task, mission), do: 1, else: 0)]
           ) == [1]
       end
 
@@ -2092,7 +2098,79 @@ defmodule Cascade.Missions.Store do
 
   defp maybe_finish_primary(_mission, tasks, _status, _run_id, _summary), do: tasks
 
-  defp ensure_delivery_ready!(mission, tasks) do
+  # Explicit coordinator verification reuses actual integrations, not synthetic
+  # verification tasks. Receipt and mission closure commit or roll back together.
+  defp verify_existing_integrations!(mission, tasks, input) do
+    pins = field(input, :verifiedIntegrations) || []
+    verification = clean(field(input, :verification), 8_000)
+    unless is_list(pins) and length(pins) <= length(tasks),
+      do: raise("verifiedIntegrations must be a bounded list of exact task/run/attempt pins")
+
+    if pins != [] and (field(input, :objective) != mission.objective or verification == ""),
+      do: raise("Integration verification requires the exact objective and observed evidence")
+
+    Enum.reduce(pins, MapSet.new(), fn pin, verified ->
+      task = is_map(pin) && Enum.find(tasks, &(&1.id == field(pin, :taskId)))
+      unless task && task.purpose == "integration" && task.status == "completed" &&
+               field(pin, :runId) == task.run_id && field(pin, :attempt) == task.attempt &&
+               direct_evidence_ready?(task, mission, true),
+        do: raise("Integration verification requires exact settled integration evidence")
+
+      unless MapSet.member?(verified, task.id) do
+        record_event(mission.id, %{
+          task_id: task.id, run_id: task.run_id, attempt: task.attempt,
+          kind: "integration_verified_by_coordinator", summary: verification,
+          source_key: integration_verification_key(task, mission)
+        })
+      end
+      MapSet.put(verified, task.id)
+    end)
+  end
+
+  defp integration_verification_key(task, mission) do
+    by_id = Map.new(task_rows(mission.id), &{&1.id, &1})
+    chain = dependency_closure([task.id], by_id) |> Enum.sort()
+    snapshot = Enum.map(chain, fn id ->
+      case by_id[id] do
+        nil -> {id, :missing}
+        t -> {evidence_snapshot(t, mission), t.purpose, t.review_outcome,
+              t.verification_passed, dependencies(t),
+              SQL.one("SELECT repository,branch,json_extract(NULLIF(git_state_json,''),'$.headCommit'),json_extract(NULLIF(git_state_json,''),'$.dirty') FROM work_items WHERE id=?", [t.work_item_id])}
+      end
+    end)
+    "integration-verified:#{task.id}:#{digest(snapshot)}"
+  end
+
+  defp recorded_integration_verification?(%{purpose: "integration"} = task, mission) do
+    case SQL.one("SELECT source_key FROM chat_mission_events WHERE mission_id=? AND task_id=? AND kind='integration_verified_by_coordinator' ORDER BY id DESC LIMIT 1", [mission.id, task.id]) do
+      [key] -> key == integration_verification_key(task, mission)
+      _ -> false
+    end
+  end
+  defp recorded_integration_verification?(_, _), do: false
+
+  # Reuse only an explicitly linked, unchanged integration from an explicitly
+  # closed delivery. Prose references and successful provider exits never qualify.
+  defp recovered_delivery_covered?(task, mission) do
+    if task.status == "completed" and recovered_evidence_ready?(task, mission) do
+      [source_id] = SQL.one("SELECT source_task_id FROM chat_mission_recovery_evidence WHERE task_id=?", [task.id])
+      source = task_row(source_id)
+      source_mission = mission_row(source.mission_id)
+      source.purpose == "integration" and source_mission.id != mission.id and
+        source_mission.status == "completed" and
+        source_mission.created_by == mission.created_by and
+        source_mission.vault_id == mission.vault_id and
+        source_mission.channel_id == mission.channel_id and
+        source_mission.coordinator_registration_id == mission.coordinator_registration_id and
+        SQL.one("SELECT 1 FROM chat_mission_events WHERE mission_id=? AND kind='mission_completed' AND source_key=?",
+          [source_mission.id, "mission-completed:#{source_mission.id}"]) == [1] and
+        recorded_integration_verification?(source, source_mission)
+    else
+      false
+    end
+  end
+
+  defp ensure_delivery_ready!(mission, tasks, verified) do
     historical = SQL.all("SELECT task_id,attempt FROM chat_mission_events WHERE mission_id=? AND kind='historical_task_fenced'", [mission.id]) |> MapSet.new(&List.to_tuple/1)
     tasks = Enum.reject(tasks, &MapSet.member?(historical, {&1.id, &1.attempt}))
 
@@ -2111,7 +2189,10 @@ defmodule Cascade.Missions.Store do
     integrations = Enum.filter(tasks, &(&1.purpose == "integration" and &1.status == "completed"))
     passed_verifications = Enum.filter(tasks, &passed_verification?/1)
 
-    unless Enum.all?(delivered, &delivery_covered?(&1, accepted_reviews, integrations, passed_verifications, by_id)) do
+    unless Enum.all?(delivered, fn work ->
+      delivery_covered?(work, accepted_reviews, integrations, passed_verifications, by_id, verified) or
+        recovered_delivery_covered?(work, mission)
+    end) do
       raise "Every delivered implementation or fix must have an accepted review, integration, and passed verification"
     end
 
@@ -2152,14 +2233,15 @@ defmodule Cascade.Missions.Store do
       task.verification_passed == false
   end
 
-  defp delivery_covered?(work, accepted_reviews, integrations, passed_verifications, by_id) do
+  defp delivery_covered?(work, accepted_reviews, integrations, passed_verifications, by_id, verified) do
     Enum.any?(accepted_reviews, fn review ->
       work.id in dependency_closure(dependencies(review), by_id) and
         Enum.any?(integrations, fn integration ->
           review.id in dependencies(integration) and
-            Enum.any?(passed_verifications, fn verification ->
-              integration.id in dependencies(verification)
-            end)
+            (MapSet.member?(verified, integration.id) or
+              Enum.any?(passed_verifications, fn verification ->
+                integration.id in dependencies(verification)
+              end))
         end)
     end)
   end

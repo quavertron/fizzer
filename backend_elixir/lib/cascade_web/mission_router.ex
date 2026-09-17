@@ -425,7 +425,9 @@ defmodule CascadeWeb.MissionRouter do
         coordinatorRegistrationId: string_body(conn, "coordinatorRegistrationId"),
         status: status,
         summary: string_body(conn, "summary"),
-        verification: string_body(conn, "verification")
+        verification: string_body(conn, "verification"),
+        objective: string_body(conn, "objective"),
+        verifiedIntegrations: body(conn, "verifiedIntegrations", [])
       }
 
       opts = if run_id(conn), do: [current_run_id: run_id(conn)], else: []
