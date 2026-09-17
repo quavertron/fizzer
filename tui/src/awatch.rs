@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
 use portable_pty::{CommandBuilder, MasterPty, Child, PtySize};
 use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}, widgets::{Block, Borders, Paragraph}};
+use crate::terminal_theme;
 
 #[derive(Default)]
 pub struct Awatch {
@@ -134,7 +135,7 @@ impl Awatch {
     }
     pub fn render(&self, frame: &mut Frame, area: Rect, focused: bool) {
         let block = self.panel_block(area)
-            .border_style(Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray }));
+            .border_style(Style::default().fg(if focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() }));
         let inner = self.content_area(area);
         frame.render_widget(block, area);
         if let Some(session) = &self.session {
@@ -145,8 +146,8 @@ impl Awatch {
             let message_area = if self.session.is_some() {
                 Rect::new(inner.x, inner.bottom().saturating_sub(2).max(inner.y), inner.width, inner.height.min(2))
             } else { inner };
-            frame.render_widget(Paragraph::new(self.error.as_str()).style(Style::default().fg(Color::Yellow)), message_area);
-        }
+            frame.render_widget(Paragraph::new(self.error.as_str()).style(Style::default().fg(terminal_theme::readable_foreground(Color::Yellow))), message_area);
+    }
     }
 }
 impl Session {

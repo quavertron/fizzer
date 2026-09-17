@@ -9,6 +9,7 @@ use crate::app::{
     parse_hex_color, ActivePane, AgentSettingsField, App, ChatRenderCache, InlineSvgBlock, HEADER_HEIGHT,
     UserSettingsField, VaultActionField, VaultActionState,
 };
+use crate::terminal_theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     crate::purrvect::begin_frame();
@@ -65,7 +66,7 @@ fn render_buffer_picker(frame: &mut Frame, app: &App) {
     state.select((!choices.is_empty()).then_some(picker.selected.min(choices.len().saturating_sub(1))));
     let block = Block::default().borders(Borders::ALL)
         .title(if picker.command { format!("M-x {} ", picker.query) } else { format!("Switch to buffer{}: {} ", if picker.other { " in window" } else { "" }, picker.query) })
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)));
     frame.render_stateful_widget(List::new(items).block(block)
         .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan)), area, &mut state);
 }
@@ -95,7 +96,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let loading_indicator = if app.is_loading {
-        Span::styled(" [Syncing...] ", Style::default().fg(Color::Yellow).bold())
+        Span::styled(" [Syncing...] ", Style::default().fg(terminal_theme::readable_foreground(Color::Yellow)).bold())
     } else {
         Span::raw("")
     };
@@ -111,7 +112,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let mut title_spans = vec![
-        Span::styled(" ◈ FIZZER ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" ◈ FIZZER ", Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).add_modifier(Modifier::BOLD)),
     ];
     title_spans.extend(mode_badge);
     title_spans.extend(runner_badge);
@@ -181,7 +182,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(visible.into_iter().collect::<String>())
-            .style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan))),
         header_columns[1],
     );
 }
@@ -191,7 +192,7 @@ const FOCUS_COLOR: Color = Color::Rgb(98, 215, 232);
 
 fn render_focus_wrap(frame: &mut Frame, area: Rect) {
     let bounds = crate::panes::main_area(frame.area());
-    let accent = FOCUS_COLOR;
+    let accent = terminal_theme::readable_foreground(FOCUS_COLOR);
     let background = crate::terminal_theme::background();
     if area.width < 3 || area.height < 2 { return; }
     for x in [area.x, area.right() - 1] {
@@ -309,7 +310,7 @@ fn emacs_hint_line(prefix: bool) -> Line<'static> {
     let mut previous = background;
     let mut spans = Vec::new();
     if prefix {
-        spans.push(Span::styled("C-x: ", Style::default().fg(Color::White)));
+        spans.push(Span::styled("C-x: ", Style::default().fg(terminal_theme::body_text())));
     }
     for (index, hint) in EMACS_HINTS.split("   ").enumerate() {
         let (color, foreground) = if index % 2 == 0 {
@@ -439,9 +440,9 @@ fn render_shared_borders(frame: &mut Frame, panes: &[(ratatui_hypertile::PaneId,
 }
 fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Vaults;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() };
     let mut items: Vec<ListItem> = if app.vaults.is_empty() {
-        vec![ListItem::new(Span::styled("  No vaults", Style::default().fg(Color::DarkGray)))]
+        vec![ListItem::new(Span::styled("  No vaults", Style::default().fg(terminal_theme::secondary_text())))]
     } else {
         app.vaults.iter().enumerate().map(|(idx, vault)| {
             let name = if vault.name.is_empty() { &vault.id } else { &vault.name };
@@ -470,11 +471,11 @@ fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
             let style = if selected && is_focused {
                 Style::default().fg(Color::Black).bg(Color::Cyan).bold()
             } else if selected {
-                Style::default().fg(Color::Cyan).bold()
+                Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()
             } else if active {
-                Style::default().fg(Color::White).bold()
+                Style::default().fg(terminal_theme::body_text()).bold()
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(terminal_theme::secondary_text())
             };
             ListItem::new(format!(
                 "{}{}{} {}{}",
@@ -502,9 +503,9 @@ fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
         let style = if selected && is_focused {
             Style::default().fg(Color::Black).bg(Color::Cyan).bold()
         } else if selected {
-            Style::default().fg(Color::Cyan).bold()
+            Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(terminal_theme::secondary_text())
         };
         items.push(
             ListItem::new(format!(
@@ -516,7 +517,7 @@ fn render_vaults_panel(frame: &mut Frame, app: &App, area: Rect) {
             .style(style),
         );
     }
-    let title = Span::styled(" Vaults ", Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold());
+    let title = Span::styled(" Vaults ", Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::body_text() }).bold());
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(area);
     let block = Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(border_color));
     let mut state = ListState::default().with_selected(Some(app.selected_vault_idx));
@@ -544,27 +545,27 @@ fn render_vault_action_modal(frame: &mut Frame, app: &App, area: Rect) {
         Some(VaultActionState::ConnectRemote { .. }) => " Connect remote server ",
         None => " Vault ",
     };
-    let mut lines = vec![Line::from(Span::styled(title, Style::default().fg(Color::Cyan).bold()))];
+    let mut lines = vec![Line::from(Span::styled(title, Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()))];
     match app.vault_action.as_ref().unwrap() {
         VaultActionState::CreateLocal { name } => {
             lines.push(Line::from("Vault name:"));
-            lines.push(Line::from(Span::styled(format!("  {}_", name), Style::default().fg(Color::White))));
+            lines.push(Line::from(Span::styled(format!("  {}_", name), Style::default().fg(terminal_theme::body_text()))));
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("Enter Create    Esc Cancel", Style::default().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled("Enter Create    Esc Cancel", Style::default().fg(terminal_theme::secondary_text()))));
         }
         VaultActionState::ConnectRemote { origin, username, password, field } => {
             let row = |label: &str, value: &str, selected: bool| Line::from(vec![
-                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
-                Span::styled(if value.is_empty() { "_".to_string() } else { format!("{}{}", value, if selected { "_" } else { "" }) }, if selected { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+                Span::styled(format!("{}: ", label), Style::default().fg(terminal_theme::secondary_text())),
+                Span::styled(if value.is_empty() { "_".to_string() } else { format!("{}{}", value, if selected { "_" } else { "" }) }, if selected { Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
             ]);
             lines.push(row("Origin / Link", origin, *field == VaultActionField::NameOrOrigin));
             lines.push(row("Username", username, *field == VaultActionField::Username));
             lines.push(row("Password", &"•".repeat(password.chars().count()), *field == VaultActionField::Password));
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("Tab/↑↓ next field    Enter Connect    Esc Cancel", Style::default().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled("Tab/↑↓ next field    Enter Connect    Esc Cancel", Style::default().fg(terminal_theme::secondary_text()))));
         }
     }
-    frame.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::Cyan)).padding(ratatui::widgets::Padding::new(2, 2, 1, 1))), modal);
+    frame.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan))).padding(ratatui::widgets::Padding::new(2, 2, 1, 1))), modal);
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -680,10 +681,10 @@ fn agent_termimation_ball(ag: &crate::api::AgentItem, tick: u64, run_seed: u64, 
 
 fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Agents;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() };
 
     let items: Vec<ListItem> = if app.agents.is_empty() {
-        vec![ListItem::new(Span::styled("  No agents registered", Style::default().fg(Color::DarkGray)))]
+        vec![ListItem::new(Span::styled("  No agents registered", Style::default().fg(terminal_theme::secondary_text())))]
     } else {
         app.agents
             .iter()
@@ -698,14 +699,16 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                     "pi" => Color::Blue,
                     _ => Color::Yellow,
                 };
-                let badge_color = resolve_color(ag.color.as_deref(), default_badge);
+                let badge_color = ag.color.as_deref()
+                    .map(|color| terminal_theme::readable_foreground(resolve_color(Some(color), default_badge)))
+                    .unwrap_or_else(|| terminal_theme::readable_foreground(default_badge));
 
                 let name_style = if is_selected && is_focused {
                     Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
                 } else if is_selected {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default().fg(terminal_theme::body_text()).add_modifier(Modifier::BOLD)
                 };
 
                 let is_active = app.is_agent_active(ag);
@@ -721,7 +724,7 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(ball_str, ball_style),
                     Span::styled(&ag.display_name, name_style),
                     Span::raw(" "),
-                    Span::styled(format!("@{}", ag.mention), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("@{}", ag.mention), Style::default().fg(terminal_theme::secondary_text())),
                 ]);
 
                 let model_info = if !ag.model.is_empty() {
@@ -732,7 +735,7 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
 
                 let sub_line = Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(model_info, Style::default().fg(Color::DarkGray)),
+                    Span::styled(model_info, Style::default().fg(terminal_theme::secondary_text())),
                 ]);
 
                 ListItem::new(vec![top_line, sub_line])
@@ -741,9 +744,9 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let title_style = if is_focused {
-        Style::default().fg(Color::Cyan).bold()
+        Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()
     } else {
-        Style::default().fg(Color::White).bold()
+        Style::default().fg(terminal_theme::body_text()).bold()
     };
 
     let title = Span::styled(format!(" Agents · #{} ({}) ", app.active_channel_title(), app.agents.len()), title_style);
@@ -826,21 +829,31 @@ fn response_termimation(app: &App, message_index: usize) -> Option<String> {
 fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Users;
     let items: Vec<ListItem> = if app.users.is_empty() {
-        vec![ListItem::new(Span::styled("  No users", Style::default().fg(Color::DarkGray)))]
+        vec![ListItem::new(Span::styled("  No users", Style::default().fg(terminal_theme::secondary_text())))]
     } else {
         app.users
             .iter()
             .enumerate()
             .map(|(idx, user)| {
+                let selected_and_focused = idx == app.selected_user_idx && is_focused;
                 let display_name = if user.display_name.trim().is_empty() {
                     &user.username
                 } else {
                     &user.display_name
                 };
-                let color = if user.username == app.author {
-                    resolve_color(Some(app.author_color.as_str()), Color::White)
+                let color = if selected_and_focused {
+                    Color::Black
                 } else {
-                    resolve_color(user.color.as_deref(), Color::White)
+                    terminal_theme::readable_foreground(if user.username == app.author {
+                        resolve_color(Some(app.author_color.as_str()), terminal_theme::body_text())
+                    } else {
+                        resolve_color(user.color.as_deref(), terminal_theme::body_text())
+                    })
+                };
+                let secondary = if selected_and_focused {
+                    Color::Black
+                } else {
+                    terminal_theme::secondary_text()
                 };
                 let mut top = vec![
                     Span::raw(if idx == app.selected_user_idx { "> " } else { "  " }),
@@ -849,16 +862,16 @@ fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
                 ];
                 if display_name != &user.username {
                     top.push(Span::raw(" "));
-                    top.push(Span::styled(format!("@{}", user.username), Style::default().fg(Color::DarkGray)));
+                    top.push(Span::styled(format!("@{}", user.username), Style::default().fg(secondary)));
                 }
                 let item = ListItem::new(vec![
                     Line::from(top),
                     Line::from(vec![
                         Span::raw("    "),
-                        Span::styled(&user.role, Style::default().fg(Color::DarkGray)),
+                        Span::styled(&user.role, Style::default().fg(secondary)),
                     ]),
                 ]);
-                if idx == app.selected_user_idx && is_focused {
+                if selected_and_focused {
                     item.style(Style::default().bg(Color::Cyan).fg(Color::Black).bold())
                 } else {
                     item
@@ -871,9 +884,9 @@ fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
         .borders(buffer_borders(area, frame.area()))
         .title(Span::styled(
             format!(" Users ({}) ", app.users.len()),
-            Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
+            Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::body_text() }).bold(),
         ))
-        .border_style(Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }));
+        .border_style(Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() }));
     frame.render_widget(List::new(items).block(block), area);
 }
 
@@ -904,9 +917,9 @@ fn agent_for_message<'a>(
 
 fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::Notes;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() };
     let items: Vec<ListItem> = if app.notes.is_empty() {
-        vec![ListItem::new(Span::styled("  No notes", Style::default().fg(Color::DarkGray)))]
+        vec![ListItem::new(Span::styled("  No notes", Style::default().fg(terminal_theme::secondary_text())))]
     } else {
         app.notes
             .iter()
@@ -916,14 +929,14 @@ fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
                 let title_style = if idx == app.selected_note_idx && is_focused {
                     Style::default().fg(Color::Black).bg(Color::Cyan).bold()
                 } else if idx == app.selected_note_idx {
-                    Style::default().fg(Color::Cyan).bold()
+                    Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()
                 } else {
-                    Style::default().fg(Color::White).bold()
+                    Style::default().fg(terminal_theme::body_text()).bold()
                 };
                 let preview = note.content_preview.lines().next().unwrap_or("").trim();
                 ListItem::new(vec![
                     Line::from(vec![Span::raw(if idx == app.selected_note_idx { "> " } else { "  " }), Span::styled(title, title_style)]),
-                    Line::from(vec![Span::raw("   "), Span::styled(preview, Style::default().fg(Color::DarkGray))]),
+                    Line::from(vec![Span::raw("   "), Span::styled(preview, Style::default().fg(terminal_theme::secondary_text()))]),
                 ])
             })
             .collect()
@@ -931,7 +944,7 @@ fn render_notes_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .borders(buffer_borders(area, frame.area()))
-        .title(Span::styled(format!(" Notes ({}) ", app.notes.len()), Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold()))
+        .title(Span::styled(format!(" Notes ({}) ", app.notes.len()), Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::body_text() }).bold()))
         .border_style(Style::default().fg(border_color));
     // Notes occupy two terminal rows each. Stateful list rendering keeps the
     // selected note inside the viewport as the arrow keys move through it.
@@ -949,7 +962,7 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
     } else if is_focused {
         Color::Cyan
     } else {
-        Color::DarkGray
+        terminal_theme::secondary_text()
     };
 
     let mut items: Vec<ListItem> = Vec::new();
@@ -980,11 +993,11 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
         let style = if is_selected && is_focused && !editing_name {
             Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
         } else if is_selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).add_modifier(Modifier::BOLD)
         } else if is_active {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(terminal_theme::body_text()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(terminal_theme::secondary_text())
         };
 
         ListItem::new(text).style(style)
@@ -992,11 +1005,11 @@ fn render_chat_selector(frame: &mut Frame, app: &App, area: Rect) {
 
     let title = if editing_name {
         let label = if renaming { " Rename channel " } else { " New channel " };
-        Span::styled(format!("{} Enter ✓  Esc ✗ ", label), Style::default().fg(Color::Green).bold())
+        Span::styled(format!("{} Enter ✓  Esc ✗ ", label), Style::default().fg(terminal_theme::readable_foreground(Color::Green)).bold())
     } else {
         Span::styled(
             " Chats / Channels ",
-            Style::default().fg(if is_focused { Color::Cyan } else { Color::White }).bold(),
+            Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::body_text() }).bold(),
         )
     };
 
@@ -1055,7 +1068,7 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
         push_line(
             Line::from(Span::styled(
                 msg.to_string(),
-                Style::default().fg(Color::DarkGray).italic(),
+                Style::default().fg(terminal_theme::secondary_text()).italic(),
             )),
             msg,
         );
@@ -1080,22 +1093,22 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
             let is_self = msg.agent_id.is_none() && msg.author == app.author;
 
             let author_color = if is_self {
-                resolve_color(Some(app.author_color.as_str()), Color::White)
+                terminal_theme::readable_foreground(resolve_color(Some(app.author_color.as_str()), terminal_theme::body_text()))
             } else if is_agent {
                 if let Some(ag) = maybe_agent {
-                    resolve_color(ag.color.as_deref(), Color::White)
+                    terminal_theme::readable_foreground(resolve_color(ag.color.as_deref(), terminal_theme::body_text()))
                 } else {
-                    Color::White
+                    terminal_theme::body_text()
                 }
             } else if msg.author == "System" {
-                Color::Magenta
+                terminal_theme::readable_foreground(Color::Magenta)
             } else if let Some(user) = app.users.iter().find(|user| {
                 user.username.eq_ignore_ascii_case(&msg.author)
                     || user.display_name.eq_ignore_ascii_case(&msg.author)
             }) {
-                resolve_color(user.color.as_deref(), Color::White)
+                terminal_theme::readable_foreground(resolve_color(user.color.as_deref(), terminal_theme::body_text()))
             } else {
-                Color::White
+                terminal_theme::body_text()
             };
 
             if !continues_group {
@@ -1104,7 +1117,7 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     Span::styled("● ", Style::default().fg(author_color)),
                     Span::styled(msg.author.clone(), Style::default().fg(author_color).bold()),
                     Span::raw("  "),
-                    Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(ts.clone(), Style::default().fg(terminal_theme::secondary_text())),
                 ]);
                 let text_line = format!("● {}  {}", msg.author, ts);
                 let row = push_line(author_line, &text_line);
@@ -1236,7 +1249,7 @@ pub fn chat_scroll_top(app: &App, cache: &ChatRenderCache, visible_lines: usize)
 
 fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::ChatMessages;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() };
 
     let active_title = format!(" #{} ", app.active_channel_title());
 
@@ -1248,7 +1261,7 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
 
     let messages_block = Block::default()
         .borders(buffer_borders(area, frame.area()))
-        .title(Span::styled(active_title, Style::default().fg(if is_focused { FOCUS_COLOR } else { Color::White }).bold()))
+        .title(Span::styled(active_title, Style::default().fg(if is_focused { FOCUS_COLOR } else { terminal_theme::body_text() }).bold()))
         .border_style(Style::default().fg(border_color));
 
     let visible_lines = messages_block.inner(area).height as usize;
@@ -1334,8 +1347,7 @@ fn highlight_line_range(line: &mut Line, start: usize, end: usize) {
             let is_selected = start <= offset + index && offset + index < end;
             if is_selected != selected && !chunk.is_empty() {
                 let style = if selected {
-                    span.style
-                        .bg(Color::Rgb(50, 50, 50))
+                    terminal_theme::text_selection_style(span.style)
                 } else { span.style };
                 next.push(Span::styled(std::mem::take(&mut chunk), style));
             }
@@ -1344,8 +1356,7 @@ fn highlight_line_range(line: &mut Line, start: usize, end: usize) {
         }
         if !chunk.is_empty() {
             let style = if selected {
-                span.style
-                    .bg(Color::Rgb(50, 50, 50))
+                terminal_theme::text_selection_style(span.style)
             } else { span.style };
             next.push(Span::styled(chunk, style));
         }
@@ -1461,17 +1472,17 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 fn mention_color(app: &App, mention: &str) -> Color {
     let name = mention.trim_start_matches('@');
     if !app.author.is_empty() && name.eq_ignore_ascii_case(&app.author) {
-        return resolve_color(Some(app.author_color.as_str()), Color::White);
+        return resolve_color(Some(app.author_color.as_str()), terminal_theme::body_text());
     }
     if let Some(ag) = app.agents.iter().find(|a| a.mention.eq_ignore_ascii_case(name)) {
-        return resolve_color(ag.color.as_deref(), Color::White);
+        return resolve_color(ag.color.as_deref(), terminal_theme::body_text());
     }
     if let Some(user) = app.users.iter().find(|u| {
         u.username.eq_ignore_ascii_case(name) || u.display_name.eq_ignore_ascii_case(name)
     }) {
-        return resolve_color(user.color.as_deref(), Color::White);
+        return resolve_color(user.color.as_deref(), terminal_theme::body_text());
     }
-    Color::White
+    terminal_theme::body_text()
 }
 
 fn styled_message_text(text: &str, app: &App) -> Vec<Span<'static>> {
@@ -1486,7 +1497,7 @@ fn styled_message_text(text: &str, app: &App) -> Vec<Span<'static>> {
             && (chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' || chars[i + 1] == '-')
         {
             if start < i {
-                spans.push(Span::styled(chars[start..i].iter().collect::<String>(), Style::default().fg(Color::White)));
+                spans.push(Span::styled(chars[start..i].iter().collect::<String>(), Style::default().fg(terminal_theme::body_text())));
             }
             let mut end = i + 1;
             while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_' || chars[end] == '-') {
@@ -1494,7 +1505,7 @@ fn styled_message_text(text: &str, app: &App) -> Vec<Span<'static>> {
             }
             let mention_text: String = chars[i..end].iter().collect();
             let color = mention_color(app, &mention_text);
-            spans.push(Span::styled(mention_text, Style::default().fg(color).bold()));
+            spans.push(Span::styled(mention_text, Style::default().fg(terminal_theme::readable_foreground(color)).bold()));
             start = end;
             i = end;
         } else {
@@ -1502,21 +1513,21 @@ fn styled_message_text(text: &str, app: &App) -> Vec<Span<'static>> {
         }
     }
     if start < chars.len() || spans.is_empty() {
-        spans.push(Span::styled(chars[start..].iter().collect::<String>(), Style::default().fg(Color::White)));
+        spans.push(Span::styled(chars[start..].iter().collect::<String>(), Style::default().fg(terminal_theme::body_text())));
     }
     spans
 }
 
 fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.active_pane == ActivePane::ChatInput;
-    let border_color = if is_focused { Color::Cyan } else { Color::DarkGray };
+    let border_color = if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() };
 
     let title = if app.pending_images.is_empty() {
-        Span::styled(format!(" Message · #{} ", app.active_channel_title()), Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }))
+        Span::styled(format!(" Message · #{} ", app.active_channel_title()), Style::default().fg(if is_focused { terminal_theme::readable_foreground(Color::Cyan) } else { terminal_theme::secondary_text() }))
     } else {
         Span::styled(
             format!(" Message · #{} [{} image{} attached] ", app.active_channel_title(), app.pending_images.len(), if app.pending_images.len() == 1 { "" } else { "s" }),
-            Style::default().fg(Color::Yellow).bold(),
+            Style::default().fg(terminal_theme::readable_foreground(Color::Yellow)).bold(),
         )
     };
 
@@ -1547,14 +1558,14 @@ fn render_input_composer(frame: &mut Frame, app: &App, area: Rect) {
     let mut rendered_lines: Vec<Line> = Vec::new();
     for line_text in &raw_lines {
         rendered_lines.push(Line::from(vec![
-            Span::styled(*line_text, Style::default().fg(Color::White)),
+            Span::styled(*line_text, Style::default().fg(terminal_theme::body_text())),
         ]));
     }
 
     frame.render_widget(input_block, area);
     if inner.width >= 2 {
         let prefix = if app.input_scroll_offset == 0 { "> " } else { "  " };
-        frame.render_widget(Paragraph::new(prefix).style(Style::default().fg(Color::Cyan)), inner);
+        frame.render_widget(Paragraph::new(prefix).style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan))), inner);
         let text_area = Rect::new(inner.x + 2, inner.y, inner.width - 2, inner.height);
         frame.render_widget(Paragraph::new(rendered_lines)
             .wrap(Wrap { trim: false })
@@ -1757,15 +1768,15 @@ pub fn render_slider_line<'a>(
     let knob_pos = (ratio * (track_width.saturating_sub(1) as f64)).round() as usize;
 
     let label_style = if is_selected {
-        Style::default().fg(Color::Black).bg(label_color).bold()
+        Style::default().fg(terminal_theme::contrast_foreground(label_color)).bg(label_color).bold()
     } else {
-        Style::default().fg(label_color).bold()
+        Style::default().fg(terminal_theme::readable_foreground(label_color)).bold()
     };
 
     let suffix_style = if is_selected {
-        Style::default().fg(Color::White).bold()
+        Style::default().fg(terminal_theme::body_text()).bold()
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(terminal_theme::secondary_text())
     };
 
     let mut spans: Vec<Span<'a>> = Vec::with_capacity(track_width + 2);
@@ -1776,7 +1787,7 @@ pub fn render_slider_line<'a>(
         let (r, g, b) = color_at(t);
         let track_color = rgb_to_display_color(r, g, b);
         if i == knob_pos {
-            spans.push(Span::styled("●", Style::default().fg(Color::White).bold()));
+            spans.push(Span::styled("●", Style::default().fg(terminal_theme::body_text()).bold()));
         } else {
             spans.push(Span::styled("▆", Style::default().fg(track_color)));
         }
@@ -1829,8 +1840,8 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(title, Style::default().fg(Color::Cyan).bold()))
-        .border_style(Style::default().fg(Color::Cyan));
+        .title(Span::styled(title, Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold()))
+        .border_style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)));
 
     let is_codex = modal.agent.agent_id == "codex";
     let is_claude = modal.agent.agent_id == "claude-code";
@@ -1839,10 +1850,10 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
 
     // Summary line
     lines.push(Line::from(vec![
-        Span::styled(" Agent Type: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&modal.agent.agent_id, Style::default().fg(Color::White).bold()),
-        Span::styled("   Vault: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(app.vault_name.as_str(), Style::default().fg(Color::White)),
+        Span::styled(" Agent Type: ", Style::default().fg(terminal_theme::secondary_text())),
+        Span::styled(&modal.agent.agent_id, Style::default().fg(terminal_theme::body_text()).bold()),
+        Span::styled("   Vault: ", Style::default().fg(terminal_theme::secondary_text())),
+        Span::styled(app.vault_name.as_str(), Style::default().fg(terminal_theme::body_text())),
     ]));
     lines.push(Line::from(""));
 
@@ -1863,9 +1874,9 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         ""
     };
     lines.push(Line::from(vec![
-        Span::styled("  Name:              ", if name_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
-        Span::styled(format!(" {} ", name_display), if name_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-        Span::styled(name_hint, Style::default().fg(Color::Yellow)),
+        Span::styled("  Name:              ", if name_sel { Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
+        Span::styled(format!(" {} ", name_display), if name_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+        Span::styled(name_hint, Style::default().fg(terminal_theme::readable_foreground(Color::Yellow))),
     ]));
 
     // Handle (@mention)
@@ -1885,9 +1896,9 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         ""
     };
     lines.push(Line::from(vec![
-        Span::styled("  Handle:            ", if handle_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
-        Span::styled(format!(" {} ", handle_display), if handle_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-        Span::styled(handle_hint, Style::default().fg(Color::Yellow)),
+        Span::styled("  Handle:            ", if handle_sel { Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
+        Span::styled(format!(" {} ", handle_display), if handle_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+        Span::styled(handle_hint, Style::default().fg(terminal_theme::readable_foreground(Color::Yellow))),
     ]));
 
     // 1. Model field
@@ -1895,7 +1906,7 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     let model_style = if model_sel {
         Style::default().fg(Color::Black).bg(Color::Cyan).bold()
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(terminal_theme::body_text())
     };
     let (model_display, _) = modal.current_model_display();
     let model_text = format!(" < {} > ", model_display);
@@ -1909,9 +1920,9 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         ""
     };
     lines.push(Line::from(vec![
-        Span::styled("  Model:             ", if model_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled("  Model:             ", if model_sel { Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
         Span::styled(model_text, model_style),
-        Span::styled(model_hint, Style::default().fg(Color::Yellow)),
+        Span::styled(model_hint, Style::default().fg(terminal_theme::readable_foreground(Color::Yellow))),
     ]));
 
     // 2. Reasoning effort (Codex & Claude Code)
@@ -1920,14 +1931,14 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         let r_style = if r_sel {
             Style::default().fg(Color::Black).bg(Color::Cyan).bold()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(terminal_theme::body_text())
         };
         let r_text = format!(" < {} > ", format_reasoning_effort(&modal.agent.reasoning_effort));
         lines.push(Line::from(vec![
-            Span::styled("  Reasoning Effort:  ", if r_sel { Style::default().fg(Color::Cyan).bold() } else { Style::default().fg(Color::Gray) }),
+            Span::styled("  Reasoning Effort:  ", if r_sel { Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
             Span::styled(r_text, r_style),
             if r_sel {
-                Span::styled("  (Space/Arrows to cycle)", Style::default().fg(Color::DarkGray))
+                Span::styled("  (Space/Arrows to cycle)", Style::default().fg(terminal_theme::secondary_text()))
             } else {
                 Span::raw("")
             },
@@ -1939,22 +1950,22 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         let f_sel = modal.selected_field == AgentSettingsField::PriorityServiceTier;
         let f_mark = if modal.agent.priority_service_tier { "[x]" } else { "[ ]" };
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} Fast mode ", f_mark), if f_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-            Span::styled(" (Codex priority processing tier)", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("  {} Fast mode ", f_mark), if f_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+            Span::styled(" (Codex priority processing tier)", Style::default().fg(terminal_theme::secondary_text())),
         ]));
     }
 
     // Color (RGB / HSV) Section
-    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(terminal_theme::secondary_text()))));
 
     let hex_display = modal.agent.color.as_deref().unwrap_or("FFFFFF");
     let swatch_color = resolve_color(Some(hex_display), Color::White);
     lines.push(Line::from(vec![
-        Span::styled("  Preview: [", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Preview: [", Style::default().fg(terminal_theme::secondary_text())),
         Span::styled("██████████", Style::default().fg(swatch_color)),
-        Span::styled("] ", Style::default().fg(Color::DarkGray)),
-        Span::styled(hex_display, Style::default().fg(Color::White).bold()),
-        Span::styled(format!("  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(Color::DarkGray)),
+        Span::styled("] ", Style::default().fg(terminal_theme::secondary_text())),
+        Span::styled(hex_display, Style::default().fg(terminal_theme::body_text()).bold()),
+        Span::styled(format!("  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(terminal_theme::secondary_text())),
     ]));
 
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -1998,14 +2009,14 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         move |t| crate::app::hsv_to_rgb(fixed_h2, fixed_s2, ((t * 100.0).round() as i32).clamp(0, 100) as u8)));
 
     // Replies Section
-    lines.push(Line::from(Span::styled("  ── Replies ─────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ── Replies ─────────────────────────────────────────", Style::default().fg(terminal_theme::secondary_text()))));
 
     // Orchestrator
     let o_sel = modal.selected_field == AgentSettingsField::Orchestrator;
     let o_mark = if modal.agent.orchestrator { "[x]" } else { "[ ]" };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {} Coordinate this channel ", o_mark), if o_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-        Span::styled(" (supervisor reads all messages)", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {} Coordinate this channel ", o_mark), if o_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+        Span::styled(" (supervisor reads all messages)", Style::default().fg(terminal_theme::secondary_text())),
     ]));
 
     // Reply to every human message
@@ -2017,36 +2028,36 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         " (otherwise only when @mentioned)"
     };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {} Reply to every human message ", rep_mark), if rep_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-        Span::styled(rep_hint, Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {} Reply to every human message ", rep_mark), if rep_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+        Span::styled(rep_hint, Style::default().fg(terminal_theme::secondary_text())),
     ]));
 
     // Mentions Section
-    lines.push(Line::from(Span::styled("  ── Mentions ────────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ── Mentions ────────────────────────────────────────", Style::default().fg(terminal_theme::secondary_text()))));
 
     // Other agents
     let tag_sel = modal.selected_field == AgentSettingsField::TaggableByAgents;
     let tag_mark = if modal.agent.taggable_by_agents { "[x]" } else { "[ ]" };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {} Other agents can @mention ", tag_mark), if tag_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(format!("  {} Other agents can @mention ", tag_mark), if tag_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
     ]));
 
     // Other people
     let ping_sel = modal.selected_field == AgentSettingsField::PingableByOthers;
     let ping_mark = if modal.agent.pingable_by_others { "[x]" } else { "[ ]" };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {} Other people in vault can @mention ", ping_mark), if ping_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
+        Span::styled(format!("  {} Other people in vault can @mention ", ping_mark), if ping_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
     ]));
 
     // Execution Section
-    lines.push(Line::from(Span::styled("  ── Execution ───────────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ── Execution ───────────────────────────────────────", Style::default().fg(terminal_theme::secondary_text()))));
 
     // Yolo
     let yolo_sel = modal.selected_field == AgentSettingsField::Yolo;
     let yolo_mark = if modal.agent.yolo { "[x]" } else { "[ ]" };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {} Full host access (yolo mode) ", yolo_mark), if yolo_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(Color::White) }),
-        Span::styled(" (bypasses sandbox boundaries)", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {} Full host access (yolo mode) ", yolo_mark), if yolo_sel { Style::default().fg(Color::Black).bg(Color::Cyan).bold() } else { Style::default().fg(terminal_theme::body_text()) }),
+        Span::styled(" (bypasses sandbox boundaries)", Style::default().fg(terminal_theme::secondary_text())),
     ]));
 
     lines.push(Line::from(""));
@@ -2056,22 +2067,22 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     let cancel_sel = modal.selected_field == AgentSettingsField::Cancel;
     lines.push(Line::from(vec![
         Span::raw("    "),
-        Span::styled(" [ Save Settings (Enter / Ctrl+S) ] ", if save_sel { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(Color::Green) }),
+        Span::styled(" [ Save Settings (Enter / Ctrl+S) ] ", if save_sel { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(terminal_theme::readable_foreground(Color::Green)) }),
         Span::raw("   "),
-        Span::styled(" [ Cancel (Esc) ] ", if cancel_sel { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled(" [ Cancel (Esc) ] ", if cancel_sel { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
     ]));
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("  Controls: ", Style::default().fg(Color::DarkGray)),
-        Span::styled("↑/↓ Navigate  ←/→ Adjust Slider  Shift+←/→ ±10  Bracket keys ±5  Enter Select  Ctrl+S Save  Esc Cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Controls: ", Style::default().fg(terminal_theme::secondary_text())),
+        Span::styled("↑/↓ Navigate  ←/→ Adjust Slider  Shift+←/→ ±10  Bracket keys ±5  Enter Select  Ctrl+S Save  Esc Cancel", Style::default().fg(terminal_theme::secondary_text())),
     ]));
 
     if let Some(ref err) = modal.error_message {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("  Error: ", Style::default().fg(Color::Red).bold()),
-            Span::styled(err.as_str(), Style::default().fg(Color::Red)),
+            Span::styled("  Error: ", Style::default().fg(terminal_theme::readable_foreground(Color::Red)).bold()),
+            Span::styled(err.as_str(), Style::default().fg(terminal_theme::readable_foreground(Color::Red))),
         ]));
     }
 
@@ -2087,18 +2098,18 @@ fn render_user_settings_modal(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .title(Span::styled(
             format!(" Edit User: @{} ", modal.user.username),
-            Style::default().fg(Color::Cyan).bold(),
+            Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)).bold(),
         ))
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(terminal_theme::readable_foreground(Color::Cyan)));
     let selected = |field: UserSettingsField| modal.selected_field == field;
     let field_style = |field: UserSettingsField| {
         if selected(field) { Style::default().fg(Color::Black).bg(Color::Cyan).bold() }
-        else { Style::default().fg(Color::White) }
+        else { Style::default().fg(terminal_theme::body_text()) }
     };
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(" User: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("@{}", modal.user.username), Style::default().fg(Color::White).bold()),
+            Span::styled(" User: ", Style::default().fg(terminal_theme::secondary_text())),
+            Span::styled(format!("@{}", modal.user.username), Style::default().fg(terminal_theme::body_text()).bold()),
         ]),
         Line::from(""),
     ];
@@ -2108,13 +2119,13 @@ fn render_user_settings_modal(frame: &mut Frame, app: &App) {
         format!("  Display name: {}", modal.user.display_name)
     };
     lines.push(Line::from(Span::styled(display, field_style(UserSettingsField::DisplayName))));
-    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ── Color (RGB & HSV) ───────────────────────────────────", Style::default().fg(terminal_theme::secondary_text()))));
     let hex = modal.user.color.as_deref().unwrap_or("FFFFFF");
     let swatch = resolve_color(Some(hex), Color::White);
     lines.push(Line::from(vec![
-        Span::styled("  Preview: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Preview: ", Style::default().fg(terminal_theme::secondary_text())),
         Span::styled("██████████", Style::default().fg(swatch)),
-        Span::styled(format!("  {}  (R: {}, G: {}, B: {} | H: {}°, S: {}%, V: {}%)", hex, modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {}  (R: {}, G: {}, B: {} | H: {}, S: {}, V: {})", hex, modal.color_r, modal.color_g, modal.color_b, modal.color_h, modal.color_s, modal.color_v), Style::default().fg(terminal_theme::secondary_text())),
     ]));
     let width = area.width.saturating_sub(3) as usize;
     let (g, b) = (modal.color_g, modal.color_b);
@@ -2131,12 +2142,12 @@ fn render_user_settings_modal(frame: &mut Frame, app: &App) {
     lines.push(render_slider_line("V", modal.color_v as u16, 100, "%", selected(UserSettingsField::ColorV), Color::White, width, move |t| crate::app::hsv_to_rgb(h, s, ((t * 100.0).round() as i32).clamp(0, 100) as u8)));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("  Save Profile (Enter / Ctrl+S)  ", if selected(UserSettingsField::Save) { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(Color::Green) }),
-        Span::styled("  Cancel (Esc)", if selected(UserSettingsField::Cancel) { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Gray) }),
+        Span::styled("  Save Profile (Enter / Ctrl+S)  ", if selected(UserSettingsField::Save) { Style::default().fg(Color::Black).bg(Color::Green).bold() } else { Style::default().fg(terminal_theme::readable_foreground(Color::Green)) }),
+        Span::styled("  Cancel (Esc)", if selected(UserSettingsField::Cancel) { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(terminal_theme::secondary_text()) }),
     ]));
-    lines.push(Line::from(Span::styled("  ↑/↓ Navigate  ←/→ Adjust  Shift+←/→ ±10  Bracket keys ±5  Enter Edit/Save  Esc Cancel", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled("  ↑/↓ Navigate  ←/→ Adjust  Shift+←/→ ±10  Bracket keys ±5  Enter Edit/Save  Esc Cancel", Style::default().fg(terminal_theme::secondary_text()))));
     if let Some(error) = &modal.error_message {
-        lines.push(Line::from(Span::styled(format!("  Error: {}", error), Style::default().fg(Color::Red))));
+        lines.push(Line::from(Span::styled(format!("  Error: {}", error), Style::default().fg(terminal_theme::readable_foreground(Color::Red)))));
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -2389,7 +2400,7 @@ mod tests {
             let cell = &buffer[(x, 0)];
             assert!(cell.modifier.contains(Modifier::UNDERLINED));
             if cell.symbol() != " " {
-                assert_eq!(cell.fg, Color::Yellow);
+                assert_eq!(cell.fg, terminal_theme::readable_foreground(Color::Yellow));
                 assert_eq!(cell.underline_color, BORDER_COLOR);
                 title_cells += 1;
             }
@@ -2411,7 +2422,7 @@ mod tests {
         assert!(last.contains("last"), "{last}");
         let text_cell = &terminal.backend().buffer()[(3, 3)];
         assert_eq!(text_cell.symbol(), "l");
-        assert_eq!(text_cell.fg, Color::White);
+        assert_eq!(text_cell.fg, terminal_theme::body_text());
         assert_eq!(text_cell.underline_color, BORDER_COLOR);
         assert!(text_cell.modifier.contains(Modifier::UNDERLINED));
         let bounds = Rect::new(0, 0, 30, 4);
@@ -2419,6 +2430,43 @@ mod tests {
         awatch.set_bounds(bounds);
         assert_eq!(awatch.content_area(bounds).height, 3);
         assert!(buffer_borders(Rect::new(0, 0, 30, 2), bounds).contains(Borders::BOTTOM));
+    }
+
+    #[test]
+    fn empty_chat_status_uses_secondary_terminal_text() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.active_channel_id = Some("channel".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        terminal.draw(|frame| render_messages_stream(frame, &app, frame.area())).unwrap();
+        let cell = terminal.backend().buffer().content.iter()
+            .find(|cell| cell.symbol() == "N")
+            .expect("empty-chat status should render");
+        assert_eq!(cell.fg, terminal_theme::secondary_text());
+    }
+
+    #[test]
+    fn focused_user_selection_controls_foreground_and_background() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.active_pane = ActivePane::Users;
+        app.users.push(crate::api::VaultMember {
+            user_id: serde_json::json!(1),
+            username: "dark-user".into(),
+            display_name: "Dark User".into(),
+            role: "member".into(),
+            color: Some("000000".into()),
+        });
+        let width = 40;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 6)).unwrap();
+        terminal.draw(|frame| render_users_panel(frame, &app, frame.area())).unwrap();
+        let screen = rendered_text(&terminal);
+        let start = screen.find("Dark User").expect("selected user should render");
+        let buffer = terminal.backend().buffer();
+        for offset in 0.."Dark User".len() {
+            let index = start + offset;
+            let cell = &buffer[((index % width as usize) as u16, (index / width as usize) as u16)];
+            assert_eq!(cell.fg, Color::Black);
+            assert_eq!(cell.bg, Color::Cyan);
+        }
     }
 
     #[test]
@@ -2576,13 +2624,13 @@ mod tests {
         app.agents[0].color = Some("#00ff00".into());
         ensure_chat_cache(&app, 80);
         assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
-            Some(resolve_color(Some("#00ff00"), Color::Cyan)));
+            Some(terminal_theme::readable_foreground(resolve_color(Some("#00ff00"), Color::Cyan))));
 
         app.author = "chat2".into();
         app.author_color = "0000FF".into();
         ensure_chat_cache(&app, 80);
         assert_eq!(app.chat_cache.read().unwrap().lines[0].spans[0].style.fg,
-            Some(resolve_color(Some("0000FF"), Color::White)));
+            Some(terminal_theme::readable_foreground(resolve_color(Some("0000FF"), Color::White))));
     }
 
     #[test]

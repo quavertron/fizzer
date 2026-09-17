@@ -1,10 +1,10 @@
 //! Local history discovery is shared with Electron; only selected history goes to the server.
 use crossterm::event::KeyCode;
-use ratatui::{layout::{Constraint, Layout}, style::{Color, Style}, widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap}, Frame};
+use ratatui::{layout::{Constraint, Layout}, style::Style, widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap}, Frame};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use crate::{api::{CascadeClient, ChannelItem}, app::App, BackendEvent};
+use crate::{api::{CascadeClient, ChannelItem}, app::App, terminal_theme, BackendEvent};
 
 #[derive(Deserialize)]
 pub struct LocalSession { pub id: String, pub title: String, pub cwd: String }
@@ -117,7 +117,7 @@ pub fn render(frame: &mut Frame, app: &App, picker: &Picker, area: ratatui::layo
     frame.render_widget(Paragraph::new(format!("Copy history into {} ({}). Other vault members can read it.\nContinue in Fizzer after any turn still running elsewhere finishes.\n↑↓ select · Enter import and open · n/p pages · Esc close", app.vault_name, app.client.base_url)).wrap(Wrap { trim: true }), chunks[0]);
     let items: Vec<_> = picker.sessions.iter().map(|s| ListItem::new(format!("{}\n  {}", s.title, s.cwd))).collect();
     let mut state = ListState::default().with_selected(Some(picker.selected));
-    frame.render_stateful_widget(List::new(items).highlight_style(Style::default().bg(Color::DarkGray)).highlight_symbol("> "), chunks[1], &mut state);
+    frame.render_stateful_widget(List::new(items).highlight_style(terminal_theme::text_selection_style(Style::default())).highlight_symbol("> "), chunks[1], &mut state);
     let status = if picker.busy { "Loading / importing history…" } else if !picker.error.is_empty() { &picker.error } else if picker.sessions.is_empty() { "No local Codex sessions found." } else { "" };
     frame.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }), chunks[2]);
 }
