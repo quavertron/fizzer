@@ -1,3 +1,4 @@
+import { ChatReactions } from './ChatReactions';
 import { LoadingIndicator } from './LoadingIndicator';
 import { HtmlAttachment } from './HtmlAttachment';
 import type { AgentOwnership } from '../chat/agents';
@@ -87,6 +88,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   scrollRootRef,
   deferInitialBody = false,
   vaultId,
+  currentUserId,
   onHydrateMessage,
   traceContent,
   continuesPrevious = false,
@@ -129,6 +131,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   /** Defer the initial recent-history body to viewport observation, not older-page prepends. */
   deferInitialBody?: boolean;
   vaultId?: string;
+  currentUserId?: number;
   onHydrateMessage?: (message: ChatMessage) => void;
   /** A collapsed workflow trace carried by this agent row. */
   traceContent?: ReactNode;
@@ -334,6 +337,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                     && !isSteeringContinuationMessage(message)
                     && !(avatarKind === 'agent' && isLiveAgentStatus(message.status))
                     && <ChatMessageText messageId={message.id} body={message.body} streaming={message.status === 'running'} isAgent={avatarKind === 'agent'} mentionableAliases={mentionableAliases} notes={notes} onOpenNote={onOpenNote} onOpenSharedNote={onOpenSharedNote} />}
+                  {vaultId && currentUserId != null && message.seq != null && <ChatReactions key={`${message.id}:${currentUserId}`} message={message} vaultId={vaultId} userId={currentUserId} />}
                   {message.mission && (
                     <ChatMissionCard
                       mission={message.mission}
@@ -437,6 +441,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.onImageLoad === next.onImageLoad
   && prev.onAgentAvatarClick === next.onAgentAvatarClick
   && prev.scrollRootRef === next.scrollRootRef
+  && prev.currentUserId === next.currentUserId
   && prev.vaultId === next.vaultId
   && prev.onHydrateMessage === next.onHydrateMessage
   && prev.continuesPrevious === next.continuesPrevious

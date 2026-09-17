@@ -5,6 +5,7 @@ defmodule Cascade.Chat.Schema do
   alias Cascade.DB.Repo
 
   @message_columns [
+    {"reactions_json", "TEXT"},
     {"activity_at", "TEXT"},
     {"actor_user_id", "INTEGER REFERENCES users(id)"},
     {"status", "TEXT"},
@@ -90,7 +91,8 @@ defmodule Cascade.Chat.Schema do
       [18, "change_request_json", "TEXT", 0, nil, 0],
       [19, "mission_json", "TEXT", 0, nil, 0],
       [20, "mission_task_id", "TEXT", 0, nil, 0],
-      [21, "clarification_json", "TEXT", 0, nil, 0]
+      [21, "clarification_json", "TEXT", 0, nil, 0],
+      [22, "reactions_json", "TEXT", 0, nil, 0]
     ],
     "chat_agent_members" => [
       [0, "id", "TEXT", 0, nil, 1],
@@ -229,7 +231,7 @@ defmodule Cascade.Chat.Schema do
       activity_at TEXT, actor_user_id INTEGER REFERENCES users(id), status TEXT, agent_id TEXT,
       registration_id TEXT, run_id INTEGER, blocks_json TEXT, harness_log TEXT, images_json TEXT,
       attachments_json TEXT, reply_to_json TEXT, forwarded_from_json TEXT, change_request_json TEXT,
-      mission_json TEXT, mission_task_id TEXT, clarification_json TEXT
+      mission_json TEXT, mission_task_id TEXT, clarification_json TEXT, reactions_json TEXT
     )
     """
   end

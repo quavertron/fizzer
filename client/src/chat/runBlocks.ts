@@ -142,6 +142,9 @@ export function mergeRemoteChatMessage(local: ChatMessage, remote: ChatMessage, 
     return { ...local, seq: remote.seq ?? local.seq };
   }
   const next = { ...remote, seq: remote.seq ?? local.seq };
+  if ((local.reactions?.version ?? 0) > (remote.reactions?.version ?? -1)) {
+    next.reactions = local.reactions;
+  }
   if (remote.hasImages && !remote.images?.length && local.images?.length) {
     next.images = local.images;
     delete next.hasImages;

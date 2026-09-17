@@ -923,3 +923,30 @@ test('mission finish transports explicit verification pins without another task 
     assert.equal(bodies.length, 1);
   }
 });
+
+test('react uses configured agent identity and desired state without sending a message', async (t) => {
+  const requests: Array<{ method: string; url: string; body: unknown }> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push({ method: req.method!, url: req.url!, body: JSON.parse(raw) });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ message: { reactions: { version: 1, items: {} } } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reaction-helper-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ registrationId: 'owned-agent' }));
+  const common = [cli, 'react', '--url', `http://127.0.0.1:${address.port}`, '--token', 'test', '--vault', 'vault', '--channel', 'room', '--message-id', 'message', '--emoji', '👍'];
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  await execFileAsync(process.execPath, [...common, '--registration-id', 'spoofed'], { env });
+  await execFileAsync(process.execPath, [...common, '--remove'], { env });
+  assert.deepEqual(requests, [true, false].map(active => ({ method: 'PUT', url: '/api/vaults/vault/channels/room/messages/message/reactions', body: {registrationId: 'owned-agent', emoji: '👍', active} })));
+  fs.writeFileSync(config, '{}');
+  await assert.rejects(execFileAsync(process.execPath, common, { env }), /registered agent context/);
+  assert.equal(requests.length, 2);
+});

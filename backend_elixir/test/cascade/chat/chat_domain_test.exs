@@ -35,7 +35,8 @@ defmodule Cascade.ChatDomainTest do
       ["change_request_json", "TEXT", 0, nil, 0],
       ["mission_json", "TEXT", 0, nil, 0],
       ["mission_task_id", "TEXT", 0, nil, 0],
-      ["clarification_json", "TEXT", 0, nil, 0]
+      ["clarification_json", "TEXT", 0, nil, 0],
+      ["reactions_json", "TEXT", 0, nil, 0]
     ],
     "chat_agent_members" => [
       ["id", "TEXT", 0, nil, 1],
@@ -133,6 +134,67 @@ defmodule Cascade.ChatDomainTest do
     end)
 
     :ok
+  end
+
+  test "reactions persist, publish, isolate actors and do not dispatch" do
+    {vault, channel} = chat_vault(1, "Reactions", "Room")
+    {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    alice = %{id: 1, username: "alice", auth_version: 0}
+    bob = %{id: 2, username: "bob", auth_version: 0}
+    {:ok, message} = Messages.create(alice, vault.id, channel.id, %{body: "laugh"})
+    path = "/api/vaults/#{vault.id}/channels/#{channel.id}/messages/#{message.id}/reactions"
+    parent = self()
+    events = fn event -> send(parent, {:reaction_event, event}) end
+    token = Token.sign_user(alice)
+    assert chat_request(:put, path, token, %{emoji: "😂", active: true}, events: events).status == 200
+    assert_receive {:reaction_event, %{event: "vault:chatMessageUpdated", message: saved}}
+    assert saved.id == message.id
+    assert saved.reactions == %{"version" => 1, "items" => %{"😂" => ["user:1"]}}
+    assert {:ok, [listed]} = Messages.list(channel.id, 2)
+    assert listed.reactions == saved.reactions
+    assert chat_request(:put, path, token, %{emoji: "😂", active: true}).status == 200
+    assert {:ok, same} = Messages.get(channel.id, 1, message.id)
+    assert same.reactions == saved.reactions
+    assert chat_request(:put, path, Token.sign_user(bob), %{emoji: "😂", active: true, userId: 1}).status == 200
+    assert chat_request(:put, path, token, %{emoji: "😂", active: false, userId: 2}).status == 200
+    assert {:ok, remaining} = Messages.get(channel.id, 1, message.id)
+    assert remaining.reactions["items"] == %{"😂" => ["user:2"]}
+    assert remaining.seq == message.seq
+    assert remaining.body == message.body
+    assert chat_request(:put, path, token, %{emoji: "bad", active: true}).status == 400
+    assert chat_request(:put, path, token, %{emoji: "😂", active: "yes"}).status == 400
+    assert chat_request(:put, path, Token.sign_user(%{id: 3, username: "carol", auth_version: 0}), %{emoji: "😂", active: true}).status in [403, 404]
+    {other, elsewhere} = chat_vault(1, "Elsewhere", "Other")
+    assert {:error, _} = Messages.react(alice, other.id, channel.id, message.id, %{emoji: "😂", active: true}, :user)
+    assert {:error, _} = Messages.react(alice, other.id, elsewhere.id, message.id, %{emoji: "😂", active: true}, :user)
+    {:ok, identity} = Agents.upsert_identity(1, vault.id, %{agentId: "codex", mention: "ack"})
+    {:ok, agent} = Agents.add_to_channel(1, vault.id, channel.id, identity.id)
+    agent_token = Token.sign_agent(alice)
+    assert chat_request(:put, path, agent_token, %{emoji: "👍", active: true}).status == 400
+    assert chat_request(:put, path, Token.sign_agent(bob), %{emoji: "👍", active: true, registrationId: agent.id}).status == 403
+    assert chat_request(:put, path, agent_token, %{emoji: "👍", active: true, registrationId: agent.id}).status == 200
+    assert {:ok, reacted} = Messages.get(channel.id, 1, message.id)
+    assert reacted.reactions["items"]["👍"] == ["agent:" <> agent.id]
+    assert chat_request(:put, path, token, %{emoji: "👍", active: false, registrationId: agent.id}).status == 200
+    assert {:ok, unchanged} = Messages.get(channel.id, 1, message.id)
+    assert unchanged.reactions == reacted.reactions
+    assert chat_request(:put, path, agent_token, %{emoji: "👍", active: false, registrationId: agent.id}).status == 200
+    assert [0] = SQL.one("SELECT count(*) FROM chat_agent_dispatches WHERE message_id=?", [message.id])
+    # Concurrent duplicate desired-state writes remain one reaction.
+    1..8 |> Task.async_stream(fn _ -> chat_request(:put, path, token, %{emoji: "😂", active: true}) end) |> Enum.each(fn {:ok, response} -> assert response.status == 200 end)
+    assert {:ok, final} = Messages.get(channel.id, 1, message.id)
+    assert Enum.sort(final.reactions["items"]["😂"]) == ["user:1", "user:2"]
+    # Ordinary message edits cannot overwrite reaction state with a client payload.
+    assert {:ok, edited} = Messages.update(alice, vault.id, channel.id, message.id, %{body: "edited", reactions: %{}})
+    assert edited.reactions == final.reactions
+    Schema.ensure!()
+    assert {:ok, reloaded} = Messages.get(channel.id, 1, message.id)
+    assert reloaded.reactions == final.reactions
+    assert reloaded.seq == message.seq
+    {:ok, _} = VaultMembers.add(vault.id, 1, 3, "viewer")
+    assert chat_request(:put, path, Token.sign_user(%{id: 3, username: "carol", auth_version: 0}), %{emoji: "😂", active: true}).status == 403
+    assert :ok = VaultMembers.remove(vault.id, 1, 2)
+    assert chat_request(:put, path, Token.sign_user(bob), %{emoji: "😂", active: false}).status in [403, 404]
   end
 
   test "owner kick removes invited vault member while preserving history and other vaults" do
@@ -1316,7 +1378,7 @@ defmodule Cascade.ChatDomainTest do
 
   test "chat route catalog is complete and has no duplicates" do
     catalog = CascadeWeb.ChatRoutes.catalog()
-    assert length(catalog) == 41
+    assert length(catalog) == 42
     for suffix <- ["voice/join", "voice/leave", "voice/deafen", "html-assets-v1"] do
       assert {"POST", "/api/vaults/:vault_id/channels/:channel_id/" <> suffix} in catalog
     end

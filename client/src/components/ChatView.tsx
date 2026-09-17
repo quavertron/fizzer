@@ -1003,6 +1003,7 @@ export const ChatView = memo(function ChatView({
                         : undefined
                     }
                     scrollRootRef={messagesRef}
+                    currentUserId={currentUserId}
                     vaultId={vaultId}
                     onHydrateMessage={onHydrateMessage}
                     contextMenuMessage={contextMenuMessage || group.messages.find((message) => Boolean(message.mission))}

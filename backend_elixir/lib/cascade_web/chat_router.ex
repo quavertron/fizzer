@@ -336,6 +336,14 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  put "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id/reactions" do
+    authenticated(conn, :any, :vault, fn conn, user ->
+      updated(conn, fn ->
+        Messages.react(user, vault_id, channel_id, message_id, conn.body_params, access(conn))
+      end, vault_id, channel_id)
+    end)
+  end
+
   patch "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id" do
     authenticated(conn, :any, :vault, fn conn, user ->
       result = fn ->

@@ -25,6 +25,7 @@ export interface ChatForwardRef {
 }
 
 export interface ChatMessage {
+  reactions?: { version: number; items: Record<string, string[]> };
   id: string;
   channelId: string;
   author: string;

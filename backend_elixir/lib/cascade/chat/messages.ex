@@ -7,8 +7,8 @@ defmodule Cascade.Chat.Messages do
   alias Cascade.Evolution
 
   @relationships ~w(builds_on review_request question contradiction decision)
-  @list_columns "id,channel_id,vault_id,author,body,created_at,activity_at,actor_user_id,status,agent_id,registration_id,run_id,blocks_json,images_json,attachments_json,reply_to_json,forwarded_from_json,change_request_json,clarification_json,mission_json,mission_task_id,rowid,CASE WHEN harness_log IS NOT NULL AND length(harness_log)>0 THEN 1 ELSE 0 END"
-  @full_columns "id,channel_id,vault_id,author,body,created_at,activity_at,actor_user_id,status,agent_id,registration_id,run_id,blocks_json,harness_log,images_json,attachments_json,reply_to_json,forwarded_from_json,change_request_json,clarification_json,mission_json,mission_task_id,rowid,CASE WHEN harness_log IS NOT NULL AND length(harness_log)>0 THEN 1 ELSE 0 END"
+  @list_columns "id,channel_id,vault_id,author,body,created_at,activity_at,actor_user_id,status,agent_id,registration_id,run_id,blocks_json,images_json,attachments_json,reply_to_json,forwarded_from_json,change_request_json,clarification_json,mission_json,mission_task_id,rowid,CASE WHEN harness_log IS NOT NULL AND length(harness_log)>0 THEN 1 ELSE 0 END,reactions_json"
+  @full_columns "id,channel_id,vault_id,author,body,created_at,activity_at,actor_user_id,status,agent_id,registration_id,run_id,blocks_json,harness_log,images_json,attachments_json,reply_to_json,forwarded_from_json,change_request_json,clarification_json,mission_json,mission_task_id,rowid,CASE WHEN harness_log IS NOT NULL AND length(harness_log)>0 THEN 1 ELSE 0 END,reactions_json"
 
   def list(channel_id, user_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id) do
@@ -109,6 +109,47 @@ defmodule Cascade.Chat.Messages do
   rescue
     error in Exqlite.Error -> {:error, sqlite_message(error)}
   end
+
+  # Desired state (rather than a toggle operation) makes retries idempotent.
+  # The existing account-scoped agent credential may act only as its owned registrations.
+  def react(user, vault_id, channel_id, message_id, input, access) do
+    with {:ok, route} <- Channel.assert_vault_channel(vault_id, channel_id, user.id),
+         :ok <- dm_allowed(route.sourceChannelId, user.id),
+         {:ok, actor} <- reaction_actor(user, route, input, access),
+         emoji when emoji in ["😂", "👍", "❤️", "🎉", "👀", "😢"] <- map_value(input, "emoji"),
+         active when is_boolean(active) <- map_value(input, "active") do
+      SQL.transaction(fn ->
+        with {:ok, message} <- fetch(route, message_id) do
+          state = message.reactions
+          items = state["items"]
+          actors = Map.get(items, emoji, [])
+          next = if active, do: Enum.uniq(actors ++ [actor]), else: List.delete(actors, actor)
+          if next != actors do
+            items = if next == [], do: Map.delete(items, emoji), else: Map.put(items, emoji, next)
+            SQL.exec("UPDATE chat_messages SET reactions_json=? WHERE id=? AND channel_id=?", [
+              Jason.encode!(%{version: state["version"] + 1, items: items}), message_id, route.sourceChannelId
+            ])
+          end
+          {:ok, fetch!(route, message_id)}
+        end
+      end)
+    else
+      {:error, _} = error -> error
+      _ -> {:error, "Valid emoji and active boolean required"}
+    end
+  end
+
+  defp reaction_actor(user, route, input, :agent) do
+    with id when is_binary(id) and id != "" <- map_value(input, "registrationId"),
+         {:ok, identity} <- attribution(user, route, input, :agent) do
+      {:ok, "agent:" <> identity.registration_id}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, "Agent registration is required"}
+    end
+  end
+
+  defp reaction_actor(user, _route, _input, :user), do: {:ok, "user:#{user.id}"}
 
   def update(user, vault_id, channel_id, message_id, patch, opts \\ []) do
     access = Keyword.get(opts, :access, :user)
@@ -803,7 +844,8 @@ defmodule Cascade.Chat.Messages do
            mission,
            mission_task_id,
            rowid,
-           has_harness
+           has_harness,
+           reactions
          ],
          :full,
          local_channel_id
@@ -831,7 +873,8 @@ defmodule Cascade.Chat.Messages do
         mission: mission,
         mission_task_id: mission_task_id,
         rowid: rowid,
-        has_harness: has_harness
+        has_harness: has_harness,
+        reactions: reactions
       },
       :full,
       local_channel_id
@@ -862,7 +905,8 @@ defmodule Cascade.Chat.Messages do
            mission,
            mission_task_id,
            rowid,
-           has_harness
+           has_harness,
+           reactions
          ],
          :list,
          local_channel_id
@@ -890,7 +934,8 @@ defmodule Cascade.Chat.Messages do
         mission: mission,
         mission_task_id: mission_task_id,
         rowid: rowid,
-        has_harness: has_harness
+        has_harness: has_harness,
+        reactions: reactions
       },
       :list,
       local_channel_id
@@ -923,6 +968,7 @@ defmodule Cascade.Chat.Messages do
       clarification: decode(row.clarification),
       mission: decode(row.mission),
       missionTaskId: row.mission_task_id,
+      reactions: decode(row.reactions, %{"version" => 0, "items" => %{}}),
       seq: row.rowid
     }
     |> reject_nil_values()

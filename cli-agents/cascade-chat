@@ -44,6 +44,7 @@ Usage:
   cascade-chat mission update --task <id> --status <status> [--summary S | --summary-file PATH] [--review-outcome accepted|changes_requested] [--verification-passed true|false] [--finding]
   cascade-chat mission retry --task <id> [--summary S | --summary-file PATH]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
+  cascade-chat react --message-id ID --emoji 👍 [--remove]
   cascade-chat mission approve --mission <id> --expected-revisions '{"note-id":1}'
   cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
   cascade-chat mission note list --mission <id>
@@ -605,7 +606,7 @@ async function main() {
     process.exit(args.help ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
-  if (!['context', 'history', 'send', 'members', 'continuation', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
+  if (!['context', 'history', 'send', 'react', 'members', 'continuation', 'mission', 'avatar', 'distill', 'search', 'attachment'].includes(cmd)) {
     fail(`unknown command "${raw}". Run with --help.`);
   }
 
@@ -628,6 +629,16 @@ async function main() {
     }
     const result = await api(url, token, action === 'get' ? 'GET' : 'PUT', '/api/app-context', body);
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
+  if (cmd === 'react') {
+    const registrationId = configString(config, 'registrationId');
+    if (!registrationId) fail('react requires a registered agent context.');
+    if (!args['message-id'] || !args.emoji) fail('Use react --message-id ID --emoji 👍 [--remove].');
+    const result = await api(url, token, 'PUT',
+      `/api/vaults/${encodeURIComponent(vaultId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(args['message-id'])}/reactions`,
+      { registrationId, emoji: String(args.emoji), active: !args.remove });
+    process.stdout.write(JSON.stringify(result.message?.reactions || result) + '\n');
     return;
   }
   if (cmd === 'members') {

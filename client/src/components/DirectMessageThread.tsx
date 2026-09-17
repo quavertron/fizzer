@@ -207,6 +207,7 @@ export function DirectMessageThread({
         channelName={threadLabel}
         isLoadingMessages={loading}
         currentUser={currentUsername}
+        currentUserId={currentUser?.id}
         presence={applyLocalUserProfile(presence, currentUser)}
         availableAgents={NO_AGENTS}
         registeredAgents={NO_AGENTS}
