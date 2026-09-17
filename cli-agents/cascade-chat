@@ -776,7 +776,7 @@ async function main() {
         missions = missions.map((mission) => ({
           ...mission,
           tasks: (mission.tasks || []).filter((task) => requested.includes(task.status)),
-        }));
+        })).filter((mission) => mission.tasks.length > 0);
       }
       if (args.json || args.detail) process.stdout.write(JSON.stringify(missions) + '\n');
       else {

@@ -32,6 +32,19 @@ test('coordinator helper starts and delegates a mission with structured API call
       res.end(JSON.stringify({ missions: [{
         id: 'mission-1', title: 'Release', status: 'attention', coordinatorMention: 'sol',
         tasks: [{ id: 'task-1', title: 'Verify', status: 'running', assigneeMention: 'terra', attempt: 2, runId: 42 }],
+      }, {
+        id: 'mission-done', title: 'Done', status: 'completed',
+        tasks: [{ id: 'task-done', title: 'Done', status: 'completed' }],
+      }, {
+        id: 'mission-empty', title: 'Empty', status: 'active', tasks: [],
+      }, {
+        id: 'mission-missing', title: 'Missing tasks', status: 'active',
+      }, {
+        id: 'mission-blocked', title: 'Blocked', status: 'blocked',
+        tasks: [
+          { id: 'task-blocked', title: 'Blocked', status: 'blocked' },
+          { id: 'task-canceled', title: 'Canceled', status: 'canceled' },
+        ],
       }] }));
       return;
     }
@@ -130,7 +143,27 @@ test('coordinator helper starts and delegates a mission with structured API call
     cli, 'mission', 'list', ...common,
   ], { env: withCoordinator });
   assert.match(listed.stdout, /attention\s+mission-1/);
-  await execFileAsync(process.execPath, [cli, 'mission', 'list', '--status', 'active,blocked', '--task-status', 'running', '--json', ...common], { env: withCoordinator });
+  const list = async (...filters: string[]) => execFileAsync(process.execPath,
+    [cli, 'mission', 'list', ...filters, ...common], { env: withCoordinator });
+  const running = await list('--task-status', 'running', '--json');
+  assert.deepEqual(JSON.parse(running.stdout).map((mission: { id: string }) => mission.id), ['mission-1']);
+  assert.equal((await list('--task-status', 'running')).stdout, listed.stdout.split('\n').slice(0, 2).join('\n') + '\n');
+  for (const filter of ['open', 'running, blocked']) {
+    const filtered = JSON.parse((await list('--task-status', filter, '--json')).stdout);
+    assert.deepEqual(filtered.map((mission: { id: string }) => mission.id), ['mission-1', 'mission-blocked']);
+    assert.deepEqual(filtered.flatMap((mission: { tasks: Array<{ id: string }> }) => mission.tasks.map(task => task.id)), ['task-1', 'task-blocked']);
+  }
+  const intersection = JSON.parse((await list('--status', 'active,blocked', '--task-status', 'open', '--json')).stdout);
+  assert.deepEqual(intersection.map((mission: { id: string }) => mission.id), ['mission-blocked']);
+  assert.deepEqual(JSON.parse((await list('--status', 'active,blocked', '--task-status', 'running', '--json')).stdout), []);
+  assert.equal((await list('--task-status', 'pending')).stdout, '(no missions)\n');
+  const unfiltered = await list('--json');
+  assert.deepEqual(JSON.parse(unfiltered.stdout).map((mission: { id: string }) => mission.id),
+    ['mission-1', 'mission-done', 'mission-empty', 'mission-missing', 'mission-blocked']);
+  assert.equal((await list('--task-status', 'all', '--json')).stdout, unfiltered.stdout);
+  assert.equal((await list('--task-status', 'all')).stdout, listed.stdout);
+  await assert.rejects(list('--task-status', 'running,invalid'), /Invalid --task-status/);
+  await assert.rejects(list('--status', 'invalid', '--task-status', 'running'), /Invalid --status/);
   const detail = await execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', ...common], { env: withCoordinator });
   assert.equal(JSON.parse(detail.stdout)[0].tasks[0].runId, 42);
   await assert.rejects(execFileAsync(process.execPath, [cli, 'mission', 'list', '--detail', '--task-status', 'running', ...common], { env: withCoordinator }), /cannot be combined/);
