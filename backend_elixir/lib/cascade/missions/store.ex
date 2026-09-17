@@ -2528,9 +2528,14 @@ defmodule Cascade.Missions.Store do
   # Status/outcome readiness is separate: stages may be planned before review ends.
   defp validate_stage_dependencies(mission, purpose, dependencies) do
     by_id = Map.new(task_rows(mission), &{&1.id, &1})
-    if stage_structure?(purpose, dependencies, by_id),
+    valid = stage_structure?(purpose, dependencies, by_id) and
+      (purpose != "review" or Enum.any?(dependency_closure(dependencies, by_id), fn id ->
+        match?(%{purpose: p} when p in ~w(implementation fix), by_id[id])
+      end))
+
+    if valid,
       do: :ok,
-      else: {:error, "#{purpose} requires explicit predecessor dependencies (review with implementation/fix ancestry for integration; integration for verification)"}
+      else: {:error, "#{purpose} requires explicit predecessor dependencies (implementation/fix ancestry for review; review with implementation/fix ancestry for integration; integration for verification)"}
   end
 
   defp stage_structure?("integration", dependencies, by_id) do

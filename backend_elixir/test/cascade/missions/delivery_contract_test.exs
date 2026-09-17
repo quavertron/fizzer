@@ -374,6 +374,27 @@ defmodule Cascade.Missions.DeliveryContractTest do
         "Review own implementation through fix", "review", worker.id, depends_on: [fix.task.id])
   end
 
+  test "review declaration requires candidate ancestry before any task is persisted", ctx do
+    {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
+      Ecto.UUID.generate(), "Review candidate binding")
+    coordinator = created.mission.coordinatorRegistrationId
+    before = SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [created.mission.id])
+    assert {:error, reason} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Unbound review", "review", coordinator, anonymous: true)
+    assert reason =~ "predecessor"
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=?", [created.mission.id]) == before
+
+    {:ok, implementation} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Candidate", "implementation", coordinator, anonymous: true)
+    {:ok, review} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Bound review", "review", coordinator, anonymous: true, depends_on: [implementation.task.id])
+    {:ok, duplicate} = add_task(ctx, created.channelId, created.mission.id, coordinator,
+      "Bound review", "review", coordinator, anonymous: true, depends_on: [implementation.task.id])
+    assert duplicate.task.id == review.task.id
+    assert review.task.dependsOn == [implementation.task.id]
+    refute Enum.any?(Store.schedulable(created.mission.id).candidates, &(&1.taskId == review.task.id))
+  end
+
   test "planning research remains schedulable after approval", ctx do
     {:ok, created} = workspace_fixture(ctx, ctx.vault.id, ctx.coordinator_identity.id,
       Ecto.UUID.generate(), "Research crossing approval")
