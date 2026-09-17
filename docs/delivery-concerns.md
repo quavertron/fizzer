@@ -4,7 +4,17 @@ Delivery completes the accepted work; it need not propose another task. Retain
 meaningful observed friction in the existing completion summary/chat history,
 including evidence and whether it affects the result or is only worth revisiting.
 No friction is valid. A nonblocking observation needs neither a question nor a
-commitment. Recurrence can inform a later conversation, not autonomous work.
+commitment. At an ordinary delivery or conversation boundary, materially new
+retrieved evidence of recurring friction may surface even when earlier
+informational observations went unanswered. Cite actual distinct deliveries and
+their evidence; repeated mentions of one delivery are not recurrence, and an
+aggregate claim needs retrieved support. Silence alone is neither a trigger nor
+consent, acceptance or rejection. Unchanged concerns stay quiet: no periodic
+reminders, background scans or extra model calls. This may be an observation
+without a question, proposal or new task; it is not autonomous work. Unanswered
+actual questions/decisions remain pending, not answered or replaced by the
+observation. Explicit dismissal/Stop, user settings, scope and acceptance guards
+still win.
 
 During work, defer informational friction in the existing summary/assessment.
 Interrupt for material outcome changes or an actual human decision. Preserve
