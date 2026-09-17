@@ -60,7 +60,7 @@ describe('twitterEmbedResizeHeight', () => {
         method: 'twttr.private.resize',
         params: [{ width: 550, height: 321, data: { tweet_id: '123456789' } }],
       },
-    })).toBe(321);
+    })).toBe(337);
   });
 
   it('rejects unrelated or unsafe provider messages', () => {

@@ -1481,13 +1481,20 @@ button:focus-visible,
 .chat-media-embed.is-twitter > iframe {
   /* A compact fallback while X loads; `twttr.private.resize` replaces this
      with the post's exact rendered height once its cross-origin frame is ready. */
-  height: 360px;
+  height: 420px;
   min-height: 120px;
   max-height: none;
+  overflow: hidden;
+  scrollbar-width: none;
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 14px;
   background: #000;
   color-scheme: dark;
+}
+.chat-media-embed.is-twitter > iframe::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 .sidebar-footer {
   display: flex;

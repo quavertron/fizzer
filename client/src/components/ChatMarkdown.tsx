@@ -228,6 +228,7 @@ export function ChatMediaEmbed({ href, label }: { href: string; label: ReactNode
         src={media.embedUrl}
         title={media.title}
         loading="lazy"
+        scrolling={media.provider === 'twitter' ? 'no' : undefined}
         style={media.provider === 'twitter' && twitterHeight ? { height: `${twitterHeight}px` } : undefined}
         sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
         referrerPolicy="strict-origin-when-cross-origin"
