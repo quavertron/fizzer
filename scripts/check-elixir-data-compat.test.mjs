@@ -33,6 +33,32 @@ test('new tables roll forward without a data audit while destructive schema chan
   } finally { db.close(); }
 });
 
+test('note mentions permit only the pinned empty recipient column', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec("CREATE TABLE notes(id TEXT PRIMARY KEY); CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO notes VALUES ('note'); INSERT INTO users VALUES (1)");
+    const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/accounts/schema.ex', import.meta.url), 'utf8');
+    db.exec(schema.match(/CREATE TABLE IF NOT EXISTS community_note_activity \([\s\S]*?\n    \)/)[0]);
+    db.exec("INSERT INTO community_note_activity(note_id,actor_user_id,changed_at) VALUES ('note',1,'2026-09-17')");
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    db.exec("ALTER TABLE community_note_activity ADD COLUMN mentioned_user_ids TEXT NOT NULL DEFAULT '[]'");
+    const after = fingerprint();
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.deepEqual(db.prepare('SELECT * FROM community_note_activity').all(), [{id:1,note_id:'note',actor_user_id:1,changed_at:'2026-09-17',mentioned_user_ids:'[]'}]);
+    assert.notDeepEqual(compareSchemaFingerprints(after, before), []);
+    for (const mutate of [
+      sql => sql.replace("DEFAULT '[]'", "DEFAULT '[1]'"),
+      sql => sql.replace('mentioned_user_ids TEXT NOT NULL', 'mentioned_user_ids TEXT'),
+      sql => sql.replace('actor_user_id INTEGER NOT NULL', 'actor_user_id INTEGER'),
+    ]) {
+      const changed = structuredClone(after);
+      changed.objects.find(object => object.name === 'community_note_activity').sql = mutate(changed.objects.find(object => object.name === 'community_note_activity').sql);
+      assert.notDeepEqual(compareSchemaFingerprints(before, changed), []);
+    }
+  } finally { db.close(); }
+});
+
 test('profile colors permit only the additive column and pinned ledger entry', () => {
   const db = new Database(':memory:');
   try {

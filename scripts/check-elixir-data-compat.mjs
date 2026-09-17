@@ -63,6 +63,10 @@ const MIGRATION_LEDGER_ROW = {
 // still serving. Keep these exact and directional: an unrecognized DDL change
 // must be migrated separately before the replacement image is deployed.
 const ROLLING_SCHEMA_TRANSITIONS = new Map([
+  ['table:community_note_activity', new Map([
+    ['3b736c717051ec408859d5870b0e5e4844a9436cf50dc1acbbe1bf56e140dded',
+      '4a1baa5e4d397d52e55876fe34fc09cb8b5f9e93be0e4da7c79ea78c401a1779'],
+  ])],
   ['table:chat_agent_members', new Map([
     ['caa0376559c9e2b1327b414bea0b8c92c110f093b2d83277ffbc0778367cd59c',
       '47958f4df6d7c4133c1a4d0841d2f061a18aa79f9d62bf861b1d423eb18ef7a1'],
