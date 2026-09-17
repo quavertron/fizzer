@@ -113,7 +113,7 @@ defmodule CascadeWeb.VoiceHtmlTest do
              Voice.deafen(c.user, c.ctx.vault_id, c.note.id, "u#{c.user.id}-x", "true")
   end
 
-  test "roster avatars require matching server identity, metadata and authorized source", c do
+  test "roster profiles require matching server identity, metadata and authorized source", c do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, {_, port}} = :inet.sockname(socket)
     :gen_tcp.close(socket)
@@ -130,12 +130,22 @@ defmodule CascadeWeb.VoiceHtmlTest do
     })
 
     on_exit(fn -> Application.delete_env(:cascade_elixir, :voice_roster_fixture) end)
-    SQL.exec("UPDATE users SET avatar_url='owner-photo' WHERE id=?", [c.user.id])
+    SQL.exec("UPDATE users SET avatar_url='owner-photo',display_name='' WHERE id=?", [c.user.id])
+    Application.put_env(:cascade_elixir, :voice_roster_fixture, [])
+
+    for display_name <- [nil, "", "   "] do
+      assert {:ok, joined} =
+               Voice.join(Map.put(c.user, :display_name, display_name), c.ctx.vault_id, c.note.id)
+
+      assert {:ok, claims} = Joken.peek_claims(joined.token)
+      assert claims["name"] == c.user.username
+    end
+
     SQL.exec("UPDATE users SET avatar_url='outsider-photo' WHERE id=?", [c.other.id])
 
     peer = %{
       "identity" => "u#{c.user.id}-one",
-      "name" => "Same name",
+      "name" => "",
       "metadata" => Jason.encode!(%{user: c.user.id, vault: c.ctx.vault_id, channel: c.note.id})
     }
 
@@ -159,6 +169,19 @@ defmodule CascadeWeb.VoiceHtmlTest do
     Application.put_env(:cascade_elixir, :voice_roster_fixture, peers)
     assert {:ok, %{participants: roster}} = Voice.participants(c.user, c.ctx.vault_id, c.note.id)
     assert Enum.map(roster, & &1.avatarUrl) == ["owner-photo", "owner-photo", "", "", "", ""]
+
+    assert Enum.map(roster, & &1.name) == [
+             c.user.username,
+             c.user.username,
+             "Participant",
+             "Participant",
+             "Participant",
+             "Participant"
+           ]
+
+    SQL.exec("UPDATE users SET display_name='Updated name' WHERE id=?", [c.user.id])
+    assert {:ok, %{participants: renamed}} = Voice.participants(c.user, c.ctx.vault_id, c.note.id)
+    assert hd(renamed).name == "Updated name"
     assert {:error, :forbidden} = Voice.participants(c.other, c.ctx.vault_id, c.note.id)
     SQL.exec("UPDATE users SET avatar_url='' WHERE id=?", [c.user.id])
     assert {:ok, %{participants: cleared}} = Voice.participants(c.user, c.ctx.vault_id, c.note.id)

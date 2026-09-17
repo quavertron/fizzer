@@ -25,6 +25,17 @@ describe('dedicated voice channels', () => {
     expect(mergeRoster(prior, [{ ...peer, avatarUrl: '' }])[0].avatarUrl).toBe('');
     expect(mergeRoster(prior, [{ ...peer, identity: 'two' }])[0].avatarUrl).toBeUndefined();
   });
+  it('uses roster names for nameless SFU peers without exposing session IDs', () => {
+    const unnamed = { identity: 'u4-random-session-id', name: '', muted: false, deafened: false };
+    const profiles = [{ ...unnamed, name: 'diego', avatarUrl: 'photo' }];
+    const participants = mergeRoster(profiles, [unnamed, { ...unnamed, identity: 'u8-other-session', name: '   ' }]);
+    expect(participants.map(p => p.name)).toEqual(['diego', 'Participant']);
+    expect(participants[0].avatarUrl).toBe('photo');
+    const html = render(session({ participants }), createElement(VoiceParticipants, { channelId: 'room' }));
+    expect(html).toContain('diego');
+    expect(html).not.toContain('random-session-id');
+  });
+
   it('keeps existing text and ordinary notes distinct from the persisted voice type', () => {
     expect(isVoiceChannel(CHAT_NOTE_MARKER)).toBe(false);
     expect(isVoiceChannel('Meeting notes')).toBe(false);

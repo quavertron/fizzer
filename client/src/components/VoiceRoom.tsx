@@ -13,7 +13,10 @@ const endpoint = (vault: string, channel: string) => `/api/vaults/${encodeURICom
 const sameApi = (a: ApiOptions, b: ApiOptions) => a.origin === b.origin && a.token === b.token;
 // Only retain omitted fields for the exact SFU identity within this source room.
 export function mergeRoster(prior: Peer[], peers: Peer[]): Peer[] {
-  return peers.map(peer => ({ ...prior.find(p => p.identity === peer.identity), ...peer }));
+  return peers.map(peer => {
+    const profile = prior.find(p => p.identity === peer.identity);
+    return { ...profile, ...peer, name: peer.name?.trim() || profile?.name?.trim() || 'Participant' };
+  });
 }
 function pollRoster(path: string, options: ApiOptions, receive: (peers: Peer[]) => void, failed: (error: unknown) => void) {
   let disposed = false;
@@ -103,11 +106,10 @@ export function useVoiceSession(vaultId: string | null, userId?: number, vaultNa
     let profiles: Peer[] = [];
     const update = () => {
       if (!current()) return;
-      setParticipants([room.localParticipant, ...room.remoteParticipants.values()].map(p => ({
-        avatarUrl: profiles.find(profile => profile.identity === p.identity)?.avatarUrl,
-        identity: p.identity, name: p.name || p.identity, muted: !p.isMicrophoneEnabled,
+      setParticipants(mergeRoster(profiles, [room.localParticipant, ...room.remoteParticipants.values()].map(p => ({
+        identity: p.identity, name: p.name || '', muted: !p.isMicrophoneEnabled,
         speaking: p.isSpeaking, deafened: p.attributes['fizzer.deafened'] === 'true',
-      })));
+      }))));
     };
     room.on(RoomEvent.TrackSubscribed, track => {
       if (!current()) return;

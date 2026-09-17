@@ -66,7 +66,7 @@ defmodule Cascade.Chat.Voice do
          token:
            token(%{
              sub: identity,
-             name: user[:display_name] || user.username,
+             name: nonblank(user[:display_name]) || user.username,
              metadata: metadata,
              video: grant
            }),
@@ -95,16 +95,20 @@ defmodule Cascade.Chat.Voice do
         Channel.participant_snapshot(route.sourceVaultId, route.sourceChannelId,
           include_avatars: true
         ).users
-        |> Map.new(&{&1.id, &1.avatarUrl})
+        |> Map.new(&{&1.id, &1})
 
       {:ok,
        %{
          participants:
            Enum.map(result["participants"] || [], fn peer ->
+             profile = participant_profile(peer, route, profiles)
+
              %{
-               avatarUrl: participant_avatar(peer, route, profiles),
+               avatarUrl: profile[:avatarUrl] || "",
                identity: peer["identity"],
-               name: peer["name"],
+               name:
+                 nonblank(profile[:displayName]) || nonblank(profile[:username]) ||
+                   nonblank(peer["name"]) || "Participant",
                muted:
                  not Enum.any?(
                    peer["tracks"] || [],
@@ -117,14 +121,23 @@ defmodule Cascade.Chat.Voice do
     end
   end
 
-  defp participant_avatar(peer, route, profiles) do
+  defp participant_profile(peer, route, profiles) do
     with true <- authorized_peer?(room(route), peer),
          {:ok, %{"user" => user}} <- Jason.decode(peer["metadata"] || "") do
-      Map.get(profiles, user, "")
+      Map.get(profiles, user, %{})
     else
-      _ -> ""
+      _ -> %{}
     end
   end
+
+  defp nonblank(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      name -> name
+    end
+  end
+
+  defp nonblank(_), do: nil
 
   def deafen(user, vault, channel, identity, deafened) do
     with {:ok, route} <- authorized_route(vault, channel, user.id),
