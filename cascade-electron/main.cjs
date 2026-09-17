@@ -124,7 +124,7 @@ function buildApplicationMenu() {
   return Menu.buildFromTemplate([
     { role: 'appMenu' },
     { label: 'Vault', submenu: [{ label: 'Choose a vault', accelerator: 'CmdOrCtrl+Shift+V', click: () => {
-      if (embeddedBackend) void openInstance(embeddedBackend.origin, undefined, true);
+      if (embeddedBackend) void openInstance(embeddedBackend.origin);
     } }] },
     { role: 'editMenu' },
     { role: 'windowMenu' },
@@ -679,14 +679,14 @@ ipcMain.handle('desktop:instance', async () => ({
   origin: INSTANCE_ORIGIN,
 }));
 
-async function openInstance(origin, vaultId, chooser = false) {
+async function openInstance(origin, vaultId) {
   disconnectDesktopRunner();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win !== mainWindow) win.destroy();
   }
   const changedServer = INSTANCE_ORIGIN !== origin;
   INSTANCE_ORIGIN = origin;
-  APP_URL = rendererUrlForOrigin(origin) + (chooser ? '?chooser=1' : vaultId ? `?vault=${encodeURIComponent(vaultId)}` : '');
+  APP_URL = rendererUrlForOrigin(origin) + (vaultId ? `?vault=${encodeURIComponent(vaultId)}` : '');
   if (changedServer) {
     const previous = mainWindow;
     const bounds = previous.getBounds();
@@ -708,15 +708,26 @@ ipcMain.handle('desktop:rememberSession', async (event) => {
 
 ipcMain.handle('desktop:listConnections', async () => listConnections(
   process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'), loadRemoteVaults(),
+  { localOrigin: embeddedBackend?.origin || '' },
 ));
 ipcMain.handle('desktop:openConnection', async (_event, { id, origin }) => {
   try {
-    const selectedOrigin = parseInstanceOrigin(origin);
-    const record = loadRemoteVaults().find(v => v.id === id && v.origin === selectedOrigin);
+    const selectedOrigin = normalizeInstanceOrigin(origin);
+    const record = loadRemoteVaults().find(v => (!id || v.id === id) && v.origin === selectedOrigin);
     const stored = readSessions(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'));
-    const token = stored[selectedOrigin] || record?.token;
-    if (!token) throw new Error('Connect to this instance before opening it.');
-    await resumeInstanceSession(selectedOrigin, token, { cookies: instanceSession(selectedOrigin).cookies });
+    const token = stored[selectedOrigin]
+      || (selectedOrigin === embeddedBackend?.origin ? stored.local : '')
+      || record?.token;
+    // Probe before navigating so an unreachable address reports an error on the
+    // login screen instead of stranding the window on a failed load.
+    await remoteRequest(`${selectedOrigin}/api/session`, {});
+    if (token) {
+      try {
+        await resumeInstanceSession(selectedOrigin, token, { cookies: instanceSession(selectedOrigin).cookies });
+      } catch {
+        // A stale token just means the target serves its own login screen.
+      }
+    }
     await openInstance(selectedOrigin, id || undefined);
     return { success: true };
   } catch (error) {

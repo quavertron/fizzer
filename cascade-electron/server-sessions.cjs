@@ -43,13 +43,31 @@ function rememberSession(directory, key, token) {
   }
 }
 
-function listConnections(directory, vaults) {
-  const connections = vaults.map(({ id, name, origin }) => ({ id, name, origin }));
-  for (const origin of Object.keys(readSessions(directory))) {
-    if (origin === 'local' || connections.some(connection => connection.origin === origin)) continue;
-    connections.push({ id: '', name: 'Remote server', origin });
+function hostLabel(origin) {
+  try { return new URL(origin).host; } catch { return origin; }
+}
+
+// One row per server, not per vault: the login screen picks where to sign in.
+// `hasSession` means a stored token can resume without a password prompt.
+function listConnections(directory, vaults, { localOrigin = '' } = {}) {
+  const connections = new Map();
+  const add = (origin, { id = '', local = false, hasSession = false } = {}) => {
+    const entry = connections.get(origin) || { id: '', name: '', origin, local: false, hasSession: false };
+    if (id && !entry.id) entry.id = id;
+    entry.local = entry.local || local;
+    entry.hasSession = entry.hasSession || hasSession;
+    connections.set(origin, entry);
+  };
+  for (const vault of vaults) {
+    if (vault?.origin) add(vault.origin, { id: vault.id, hasSession: Boolean(vault.token) });
   }
-  return connections;
+  for (const key of Object.keys(readSessions(directory))) {
+    const origin = key === 'local' ? localOrigin : key;
+    if (origin) add(origin, { local: key === 'local', hasSession: true });
+  }
+  return [...connections.values()]
+    .map((entry) => ({ ...entry, name: entry.local ? 'This Mac' : hostLabel(entry.origin) }))
+    .sort((a, b) => Number(b.local) - Number(a.local) || a.name.localeCompare(b.name));
 }
 
 module.exports = { readSessions, rememberSession, listConnections };

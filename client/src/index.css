@@ -8999,6 +8999,52 @@ a.chat-mission-chip:hover { color: var(--text-primary); border-color: var(--acce
 .auth-panel button[type='submit'] { min-height: 46px; border-radius: 8px; }
 .auth-desktop-note { margin: 1px 0; font-size: 0.77rem; line-height: 1.55; }
 .auth-panel .link-button { min-height: 26px; font-size: 0.78rem; }
+/* Server picker on the desktop login screen. */
+.auth-servers { display: grid; gap: 8px; }
+.auth-servers-label {
+  color: hsl(224, 8%, 56%);
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+}
+.auth-servers-current {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.auth-server {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+}
+.auth-server:hover:not(:disabled) { border-color: var(--accent); }
+.auth-server:disabled { opacity: 0.6; cursor: default; }
+.auth-server small { color: var(--text-tertiary); font-size: 0.7rem; }
+.auth-server-add { display: grid; gap: 8px; }
+.auth-server-add div { display: flex; gap: 8px; }
+.auth-server-add div button {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--bg-deep);
+  font-weight: 700;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.auth-server-add div button + button { background: transparent; color: var(--text-secondary); }
+.auth-server-add-toggle { justify-self: start; }
 
 /* Settings: a wide, navigable control center with one readable content rail. */
 .account-settings {
