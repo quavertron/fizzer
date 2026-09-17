@@ -41,6 +41,18 @@ export function vaultOptionLabel(vault: Vault): string {
   return `${vault.name} · ${vaultDetailsLabel(vault)}`;
 }
 
+const VAULT_DND_TYPE = 'application/x-cascade-vault';
+const vaultOrderKey = (userId: number) => `cascade_vault_order:${userId}`;
+
+function readVaultOrder(userId: number): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(vaultOrderKey(userId)) || '[]');
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 const FOLDER_DND_TYPE = 'application/x-cascade-folder';
 const ROOT_DROP_ID = '__root__';
 
@@ -223,6 +235,24 @@ export const Sidebar = memo(function Sidebar({
   const [createError, setCreateError] = useState('');
   const createDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (createParent !== undefined) createDialog.current?.showModal(); }, [createParent]);
+  // Personal browser preference: never change the shared vault records/order.
+  const [vaultOrder, setVaultOrder] = useState(() => ({ userId: user.id, ids: readVaultOrder(user.id) }));
+  if (vaultOrder.userId !== user.id) {
+    setVaultOrder({ userId: user.id, ids: readVaultOrder(user.id) });
+  }
+  const orderedVaults = useMemo(() => {
+    const remaining = new Map(vaults.map((vault) => [vault.id, vault]));
+    const ordered: Vault[] = [];
+    for (const id of vaultOrder.ids) {
+      const vault = remaining.get(id);
+      if (vault) ordered.push(vault);
+      remaining.delete(id);
+    }
+    return [...ordered, ...remaining.values()];
+  }, [vaults, vaultOrder]);
+  const vaultDrag = useRef<{ id: string; userId: number } | null>(null);
+  const [vaultDrop, setVaultDrop] = useState<{ id: string; placement: 'before' | 'after' } | null>(null);
+
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   // When the context menu shows the "Move to…" folder picker for a note.
@@ -388,7 +418,7 @@ export const Sidebar = memo(function Sidebar({
       sidebar.removeEventListener('scroll', scheduleConnectorUpdate, true);
       window.removeEventListener('resize', scheduleConnectorUpdate);
     };
-  }, [activeNoteId, activeVaultId, selectionTargetId, expandedFolders, folders, notes, vaults, showAgentMemory, editingFolderId, editingNoteId]);
+  }, [activeNoteId, activeVaultId, selectionTargetId, expandedFolders, folders, notes, orderedVaults, showAgentMemory, editingFolderId, editingNoteId]);
 
   const visibleFolders = useMemo(() => {
     if (showAgentMemory) return folders;
@@ -634,6 +664,46 @@ export const Sidebar = memo(function Sidebar({
   }
 
   // ─── Drag and drop ──────────────────────────────────────
+  function vaultDragProps(vaultId: string) {
+    const placement = (event: React.DragEvent<HTMLElement>) => {
+      const box = event.currentTarget.getBoundingClientRect();
+      return event.clientY < box.top + box.height / 2 ? 'before' as const : 'after' as const;
+    };
+    const isVaultDrag = (event: React.DragEvent) => vaultDrag.current?.userId === user.id
+      && event.dataTransfer.types.includes(VAULT_DND_TYPE);
+    return {
+      draggable: true,
+      'data-vault-drop': vaultDrop?.id === vaultId ? vaultDrop.placement : undefined,
+      onDragStart: (event: React.DragEvent) => {
+        vaultDrag.current = { id: vaultId, userId: user.id };
+        event.dataTransfer.setData(VAULT_DND_TYPE, vaultId);
+        event.dataTransfer.effectAllowed = 'move';
+      },
+      onDragOver: (event: React.DragEvent<HTMLElement>) => {
+        if (!isVaultDrag(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setVaultDrop({ id: vaultId, placement: placement(event) });
+      },
+      onDragLeave: () => setVaultDrop(null),
+      onDragEnd: () => { vaultDrag.current = null; setVaultDrop(null); },
+      onDrop: (event: React.DragEvent<HTMLElement>) => {
+        if (!isVaultDrag(event)) return;
+        event.preventDefault();
+        const movingId = event.dataTransfer.getData(VAULT_DND_TYPE);
+        const ids = orderedVaults.map((vault) => vault.id);
+        if (movingId === vaultDrag.current?.id && movingId !== vaultId && ids.includes(movingId) && ids.includes(vaultId)) {
+          const next = ids.filter((id) => id !== movingId);
+          next.splice(sidebarInsertionIndex(ids, movingId, vaultId, placement(event)), 0, movingId);
+          setVaultOrder({ userId: user.id, ids: next });
+          try { localStorage.setItem(vaultOrderKey(user.id), JSON.stringify(next)); } catch { /* Keep the in-session order if storage is unavailable. */ }
+        }
+        vaultDrag.current = null;
+        setVaultDrop(null);
+      },
+    };
+  }
+
   function noteDragProps(noteId: string) {
     return {
       draggable: true,
@@ -997,7 +1067,7 @@ export const Sidebar = memo(function Sidebar({
           <Settings size={18} aria-hidden="true" />
         </button>
         <div className="vault-rail-list">
-          {vaults.map((vault) => {
+          {orderedVaults.map((vault) => {
             const vaultActivity = vault.id === activeVaultId && activeVaultHasTargetActivity
               ? null
               : activityKind(
@@ -1016,6 +1086,7 @@ export const Sidebar = memo(function Sidebar({
                 type="button"
                 key={vault.id}
                 className={`vault-rail-button${vault.id === activeVaultId ? ' is-active' : ''}`}
+                {...vaultDragProps(vault.id)}
                 data-vault-id={vault.id}
                 onClick={() => onSelectVault(vault.id)}
                 onContextMenu={(event) => openMenu(event, { x: 0, y: 0, kind: 'vault', id: vault.id })}
@@ -1080,9 +1151,9 @@ export const Sidebar = memo(function Sidebar({
               {vaultListLoading ? <LoadingIndicator label="Loading vaults" /> : !vaults.length && !vaultListError ? <p>No vaults yet. Create a vault or join with an invite link below.</p> : null}
               {vaultListError && <p role="alert">{vaultListError} <button type="button" onClick={onRetryVaults}>Retry</button></p>}
               <div className="vault-manager-grid" aria-label="Your vaults">
-                {vaults.map((vault) => (
+                {orderedVaults.map((vault) => (
                   <div className="vault-manager-row" key={vault.id}>
-                    <button type="button" aria-label={`Open ${vault.name}`} aria-current={vault.id === activeVaultId ? 'page' : undefined}
+                    <button type="button" {...vaultDragProps(vault.id)} aria-label={`Open ${vault.name}`} aria-current={vault.id === activeVaultId ? 'page' : undefined}
                       className={vault.id === activeVaultId ? 'is-active' : ''}
                       onClick={() => { onSelectVault(vault.id); setVaultMenuOpen(false); }}>
                       <span className="vault-manager-copy">

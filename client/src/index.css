@@ -652,6 +652,14 @@ button:focus-visible,
   color: var(--text-primary);
 }
 .vault-rail-button.is-active::before { width: 4px; height: auto; }
+.vault-rail-button[data-vault-drop="before"],
+.vault-manager-row > button[data-vault-drop="before"] {
+  box-shadow: inset 0 2px var(--accent);
+}
+.vault-rail-button[data-vault-drop="after"],
+.vault-manager-row > button[data-vault-drop="after"] {
+  box-shadow: inset 0 -2px var(--accent);
+}
 .vault-rail-initials {
   max-width: 34px;
   overflow: hidden;
