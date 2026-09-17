@@ -1129,3 +1129,36 @@ for (const table of ['chat_mission_interpretations', 'chat_coordinator_continuat
     }
   });
 }
+
+
+test('reaction migration permits only the nullable text column and preserves existing messages', () => {
+  const db = new Database(':memory:');
+  try {
+    db.pragma('foreign_keys = OFF');
+    const schema = fs.readFileSync(new URL('../backend_elixir/lib/cascade/chat/schema.ex', import.meta.url), 'utf8');
+    const sql = schema.match(/CREATE TABLE IF NOT EXISTS #\{name\} \([\s\S]*?\n    \)/)[0].replace('#{name}', 'chat_messages');
+    db.exec(sql.replace(', reactions_json TEXT', ''));
+    db.exec("INSERT INTO chat_messages(id, channel_id, vault_id, author, body) VALUES ('m', 'c', 'v', 'alice', 'existing')");
+    const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+    const before = fingerprint();
+    db.exec('ALTER TABLE chat_messages ADD COLUMN reactions_json TEXT');
+    const after = fingerprint();
+    assert.deepEqual(compareSchemaFingerprints(before, after), []);
+    assert.deepEqual(db.prepare('SELECT id,body,reactions_json FROM chat_messages').get(), { id: 'm', body: 'existing', reactions_json: null });
+    assert.notDeepEqual(compareSchemaFingerprints(after, before), []);
+    for (const mutate of [
+      s => s.replace('reactions_json TEXT', 'reactions_json INTEGER'),
+      s => s.replace('reactions_json TEXT', "reactions_json TEXT DEFAULT '{}'"),
+      s => s.replace('reactions_json TEXT', 'reactions_json TEXT NOT NULL'),
+      s => s.replace('author TEXT NOT NULL', 'author TEXT'),
+      s => s.replace('reactions_json TEXT', 'reactions_json TEXT, unrelated TEXT'),
+    ]) {
+      const changed = structuredClone(after);
+      changed.objects.find(o => o.name === 'chat_messages').sql = mutate(changed.objects.find(o => o.name === 'chat_messages').sql);
+      assert.notDeepEqual(compareSchemaFingerprints(before, changed), []);
+    }
+    const ledger = structuredClone(after);
+    ledger.migrations.push({ version: 99, name: 'unreviewed', checksum: 'unknown' });
+    assert.notDeepEqual(compareSchemaFingerprints(before, ledger), []);
+  } finally { db.close(); }
+});
