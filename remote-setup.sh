@@ -27,6 +27,24 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y docker.io docker-compose nginx certbot python3-certbot-nginx openssl curl
 
+# Install Mutagen for live workspace file mirroring
+if ! command -v mutagen >/dev/null 2>&1; then
+  MUTAGEN_VERSION="v0.18.0"
+  ARCH="$(uname -m)"
+  case "${ARCH}" in
+    x86_64) MUTAGEN_ARCH="amd64" ;;
+    aarch64|arm64) MUTAGEN_ARCH="arm64" ;;
+    *) echo "Warning: Mutagen binary not available for architecture: ${ARCH}" >&2; MUTAGEN_ARCH="" ;;
+  esac
+
+  if [[ -n "${MUTAGEN_ARCH}" ]]; then
+    echo "Installing Mutagen ${MUTAGEN_VERSION} (${MUTAGEN_ARCH})..."
+    curl -fsSL "https://github.com/mutagen-io/mutagen/releases/download/${MUTAGEN_VERSION}/mutagen_linux_${MUTAGEN_ARCH}_${MUTAGEN_VERSION}.tar.gz" \
+      | tar -xz -C /usr/local/bin mutagen
+    chmod 755 /usr/local/bin/mutagen
+  fi
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now docker 2>/dev/null || true
 fi
@@ -91,6 +109,7 @@ for attempt in {1..30}; do
     echo "Fizzer is healthy at ${PUBLIC_URL}"
     echo "Data directory: ${DATA_DIR}"
     echo "For local testing through SSH: ssh -N -L 3000:127.0.0.1:3000 root@SERVER_IP"
+    echo "For live folder mirroring: mutagen sync create --sync-mode=one-way-replica root@SERVER_IP:${DATA_DIR}/.cascade/vaults/<vault_id>/workspace ~/.fizzer/vaults/<vault_id>/replica"
     exit 0
   fi
   sleep 2
