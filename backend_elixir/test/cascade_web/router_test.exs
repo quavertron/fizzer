@@ -309,6 +309,57 @@ defmodule CascadeWeb.RouterTest do
     assert get_resp_header(asset, "cache-control") == ["public, max-age=31536000, immutable"]
   end
 
+  test "supports /api/vault/[A-F0-9]{8} and normalizes lowercase hex to uppercase", %{user_id: user_id} do
+    vault = Cascade.Content.Store.create_vault(user_id, %{name: "Routing Vault"})
+    prefix = vault.id |> String.replace("-", "") |> String.slice(0, 8) |> String.upcase()
+    lower_prefix = String.downcase(prefix)
+
+    try do
+      login = request(:post, "/api/auth/login", %{
+        username: @username, password: "correct horse battery staple"
+      })
+      token = Jason.decode!(login.resp_body)["token"]
+
+      auth_call = fn method, path ->
+        conn(method, path)
+        |> put_req_header("authorization", "Bearer " <> token)
+        |> put_req_header("x-cascade-browser", "1")
+        |> CascadeWeb.Router.call(@options)
+      end
+
+      # Old API still works
+      old_res = auth_call.(:get, "/api/vaults/#{vault.id}")
+      assert old_res.status == 200
+      assert Jason.decode!(old_res.resp_body)["vault"]["id"] == vault.id
+
+      # New API with uppercase 8-hex identifier
+      upper_res = auth_call.(:get, "/api/vault/#{prefix}")
+      assert upper_res.status == 200
+      assert Jason.decode!(upper_res.resp_body)["vault"]["id"] == vault.id
+
+      # New API with lowercase 8-hex identifier (normalized & resolved)
+      lower_res = auth_call.(:get, "/api/vault/#{lower_prefix}")
+      assert lower_res.status == 200
+      assert Jason.decode!(lower_res.resp_body)["vault"]["id"] == vault.id
+
+      # Sub-resources work with both uppercase and lowercase
+      notes_upper = auth_call.(:get, "/api/vault/#{prefix}/notes")
+      assert notes_upper.status == 200
+
+      notes_lower = auth_call.(:get, "/api/vault/#{lower_prefix}/notes")
+      assert notes_lower.status == 200
+
+      # Invalid hex paths (not 8 hex chars) return 404
+      bad_hex = auth_call.(:get, "/api/vault/not8hex/notes")
+      assert bad_hex.status == 404
+
+      bad_short = auth_call.(:get, "/api/vault/ABC/notes")
+      assert bad_short.status == 404
+    after
+      Cascade.Content.Store.delete_vault(vault.id, user_id)
+    end
+  end
+
   defp request(method, path, body \\ nil) do
     json_conn(method, path, body) |> CascadeWeb.Router.call(@options)
   end

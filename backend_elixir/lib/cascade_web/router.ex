@@ -26,6 +26,7 @@ defmodule CascadeWeb.Router do
 
   plug Plug.RequestId
   plug CascadeWeb.Security
+  plug :normalize_vault_routes
   plug :match
 
   @login_parser Plug.Parsers.init(
@@ -92,4 +93,22 @@ defmodule CascadeWeb.Router do
     error in [DBConnection.ConnectionError, Exqlite.Error] ->
       {:database_unavailable, Exception.message(error)}
   end
+
+  defp normalize_vault_routes(%Plug.Conn{path_info: ["api", "vault", hex | rest]} = conn, _opts) do
+    if Regex.match?(~r/^[A-Fa-f0-9]{8}$/, hex) do
+      upper = String.upcase(hex)
+      canonical_id = Cascade.Content.Store.resolve_vault_id(upper)
+      new_path_info = ["api", "vaults", canonical_id | rest]
+      new_request_path = "/api/vaults/" <> Enum.join([canonical_id | rest], "/")
+      %{conn | path_info: new_path_info, request_path: new_request_path}
+    else
+      conn
+    end
+  end
+
+  defp normalize_vault_routes(%Plug.Conn{path_info: ["api", "vault"]} = conn, _opts) do
+    %{conn | path_info: ["api", "vaults"], request_path: "/api/vaults"}
+  end
+
+  defp normalize_vault_routes(conn, _opts), do: conn
 end

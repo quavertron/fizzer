@@ -79,7 +79,7 @@ import type { DiscoveryTab } from './components/DiscoveryDmsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
-import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
+import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, getVaultShortId, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import { connectVaultSocket } from './socket';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
@@ -190,7 +190,18 @@ export default function App() {
 
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
-  const requestedVaultRef = useRef(new URLSearchParams(window.location.search).get('vault'));
+  const requestedVaultRef = useRef<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const vaultPathMatch = window.location.pathname.match(/^\/vault\/([a-fA-F0-9]{8})$/i);
+    if (vaultPathMatch) {
+      const hex = vaultPathMatch[1].toUpperCase();
+      if (vaultPathMatch[1] !== hex) {
+        window.history.replaceState(null, '', `/vault/${hex}${window.location.search}`);
+      }
+      return hex;
+    }
+    return new URLSearchParams(window.location.search).get('vault');
+  })();
   const [workspaceStore] = useState(() => new WorkspaceStore(persistedSessionRef.current));
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
@@ -299,6 +310,18 @@ export default function App() {
     // Point non-vault-scoped requests (notes/assets) at the open vault's origin.
     const entry = nextVaultId ? getVaultOrigin(nextVaultId) : undefined;
     setActiveVaultOrigin(entry?.origin, entry?.token);
+
+    if (typeof window !== 'undefined') {
+      if (nextVaultId) {
+        const targetPath = `/vault/${getVaultShortId(nextVaultId)}`;
+        if (window.location.pathname !== targetPath) {
+          window.history.pushState(null, '', targetPath);
+        }
+      } else if (window.location.pathname.startsWith('/vault/')) {
+        window.history.pushState(null, '', '/');
+      }
+    }
+
     if (workspaceStore.activeVaultId === nextVaultId) {
       ensureDesktopRunnerHost();
       return;
@@ -355,6 +378,26 @@ export default function App() {
     window.addEventListener('pagehide', persistWorkspaceSession);
     return () => window.removeEventListener('pagehide', persistWorkspaceSession);
   }, [persistWorkspaceSession]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const vaultPathMatch = window.location.pathname.match(/^\/vault\/([a-fA-F0-9]{8})$/i);
+      if (vaultPathMatch) {
+        const hex = vaultPathMatch[1].toUpperCase();
+        if (vaultPathMatch[1] !== hex) {
+          window.history.replaceState(null, '', `/vault/${hex}${window.location.search}`);
+        }
+        const target = vaults.find(
+          (v) => getVaultShortId(v.id) === hex || v.id.toUpperCase().startsWith(hex)
+        );
+        if (target && target.id !== activeVaultId) {
+          switchVaultWorkspace(target.id);
+        }
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [vaults, activeVaultId, switchVaultWorkspace]);
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -459,13 +502,21 @@ export default function App() {
       if (workspaceStore.epoch !== epoch) return;
       setVaults(nextVaults);
       const requestedVaultId = requestedVaultRef.current;
-      if (requestedVaultId && nextVaults.some(vault => vault.id === requestedVaultId)) {
-        switchVaultWorkspace(requestedVaultId);
-        requestedVaultRef.current = null;
+      let matchedRequested = false;
+      if (requestedVaultId) {
+        const found = nextVaults.find(vault =>
+          vault.id === requestedVaultId ||
+          getVaultShortId(vault.id) === requestedVaultId.toUpperCase()
+        );
+        if (found) {
+          switchVaultWorkspace(found.id);
+          requestedVaultRef.current = null;
+          matchedRequested = true;
+        }
       }
       const restoredVaultId = activeVaultIdRef.current;
       const restoredVaultValid = restoredVaultId && nextVaults.some((vault) => vault.id === restoredVaultId);
-      if (!restoredVaultValid) {
+      if (!restoredVaultValid && !matchedRequested) {
         switchVaultWorkspace(nextVaults[0]?.id ?? null);
       }
 

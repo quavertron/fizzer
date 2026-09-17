@@ -26,6 +26,27 @@ defmodule CascadeWeb.Static do
       conn.request_path in ["/", "/download"] ->
         serve_landing_or_app(conn, root)
 
+      match?([_, _], Regex.run(~r<^/vault/([a-fA-F0-9]{8})$>, conn.request_path)) ->
+        [_, hex] = Regex.run(~r<^/vault/([a-fA-F0-9]{8})$>, conn.request_path)
+        upper = String.upcase(hex)
+
+        if hex != upper do
+          qs = if conn.query_string != "", do: "?" <> conn.query_string, else: ""
+
+          redirected =
+            conn
+            |> put_resp_header("location", "/vault/" <> upper <> qs)
+            |> send_resp(301, "")
+            |> halt()
+
+          {:served, redirected}
+        else
+          serve_app(conn, root)
+        end
+
+      conn.request_path == "/vault" or String.starts_with?(conn.request_path, "/vault/") ->
+        :not_found
+
       true ->
         serve_asset_or_app(conn, root)
     end

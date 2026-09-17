@@ -132,7 +132,27 @@ defmodule Cascade.Content.Store do
     end
   end
 
+  def resolve_vault_id(id_or_prefix) when is_binary(id_or_prefix) do
+    if Regex.match?(~r/^[A-Fa-f0-9]{8}$/, id_or_prefix) do
+      normalized = String.upcase(id_or_prefix)
+
+      case Query.one(
+             "SELECT id FROM vaults WHERE UPPER(id) = ? OR UPPER(SUBSTR(id, 1, 8)) = ? LIMIT 1",
+             [normalized, normalized]
+           ) do
+        [vault_id] -> vault_id
+        _ -> normalized
+      end
+    else
+      id_or_prefix
+    end
+  end
+
+  def resolve_vault_id(other), do: other
+
   def get_vault(vault_id, user_id) do
+    vault_id = resolve_vault_id(vault_id)
+
     try do
       Query.map(
         """
@@ -157,6 +177,8 @@ defmodule Cascade.Content.Store do
   end
 
   def get_writable_vault(vault_id, user_id) do
+    vault_id = resolve_vault_id(vault_id)
+
     try do
       Query.map(
         """
@@ -176,6 +198,8 @@ defmodule Cascade.Content.Store do
   end
 
   def vault_role(vault_id, user_id) do
+    vault_id = resolve_vault_id(vault_id)
+
     case Query.one("SELECT role FROM vault_members WHERE vault_id = ? AND user_id = ?", [
            vault_id,
            user_id
@@ -1236,6 +1260,8 @@ defmodule Cascade.Content.Store do
   end
 
   def raw_vault(vault_id) do
+    vault_id = resolve_vault_id(vault_id)
+
     Query.map(
       "SELECT id, name, root_path, created_by, created_at, visibility, public_join_role, public_summary, public_topics, public_guidelines, public_home_note_id, public_join_policy FROM vaults WHERE id = ?",
       [vault_id],

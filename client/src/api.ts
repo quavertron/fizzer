@@ -181,18 +181,24 @@ export type RemoteVaultRecord = {
   role?: VaultRole | null;
 };
 
+export function getVaultShortId(vaultId: string): string {
+  return vaultId.replace(/-/g, '').slice(0, 8).toUpperCase();
+}
+
 const vaultOriginMap = new Map<string, { origin: string; token?: string }>();
 
 export function registerVaultOrigin(vaultId: string, origin: string, token?: string) {
   vaultOriginMap.set(vaultId, { origin, token });
+  vaultOriginMap.set(getVaultShortId(vaultId), { origin, token });
 }
 
 export function unregisterVaultOrigin(vaultId: string) {
   vaultOriginMap.delete(vaultId);
+  vaultOriginMap.delete(getVaultShortId(vaultId));
 }
 
 export function getVaultOrigin(vaultId: string) {
-  return vaultOriginMap.get(vaultId);
+  return vaultOriginMap.get(vaultId) || vaultOriginMap.get(getVaultShortId(vaultId));
 }
 
 // Origin/token of the vault currently open. Vault-scoped requests that aren't
@@ -267,10 +273,10 @@ export async function api<T>(path: string, options: ApiOptions = {}) {
   let targetToken = options.token;
 
   if (!targetOrigin) {
-    const match = /^\/api\/vaults\/([^/]+)/.exec(path);
+    const match = /^\/api\/vaults?\/([^/]+)/.exec(path);
     if (match) {
       const vaultId = match[1];
-      const entry = vaultOriginMap.get(vaultId);
+      const entry = getVaultOrigin(vaultId);
       if (entry) {
         targetOrigin = entry.origin;
         if (!targetToken) targetToken = entry.token;
