@@ -13,6 +13,20 @@ const message: ChatMessage = {
 };
 
 describe('reply preview control metadata', () => {
+  it.each(['', '-recovery'])('hides stored continuation reply previews%s, preserving human quotes', (suffix) => {
+    const preview = 'Resume the unfinished coordinator responsibility after handling the interruption.';
+    const replyTo = { messageId: `sys-continuation-registration-1-2${suffix}`,
+      author: 'Astra', mention: 'astra', preview };
+    for (const canJumpToReply of [true, false]) {
+      const props = { message: { ...message, replyTo }, canJumpToReply, onJumpToMessage() {} };
+      expect(renderToStaticMarkup(createElement(ChatQuoteRefs, props))).toBe('');
+      expect(renderToStaticMarkup(createElement(ChatQuoteRefs, {
+        ...props, message: { ...message, replyTo: { ...replyTo, messageId: 'human-message', author: 'Owner' } },
+      }))).toContain(preview);
+    }
+    expect(replyTo.preview).toBe(preview);
+  });
+
   it.each(['', 'Restore missing coordinator replies'])('omits the reported internal mission-root quote: %s', (preview) => {
     const replyTo = { messageId: 'sys-mission-root-1788700472038-e8bfmap',
       author: '', mention: '', preview, relationship: 'builds_on' as const };

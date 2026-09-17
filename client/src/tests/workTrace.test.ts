@@ -30,6 +30,32 @@ function msg(partial: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'author' |
 }
 
 describe('workTrace', () => {
+  it.each(['', '-recovery'])('omits persisted coordinator control rows%s without losing the execution row', (suffix) => {
+    const prompt = 'Resume the unfinished coordinator responsibility after handling the interruption.';
+    const control = msg({ id: `sys-continuation-registration-1-2${suffix}`, author: 'Astra',
+      registrationId: 'registration-1', agentId: 'codex', body: prompt });
+    const human = msg({ id: 'human-quote', author: 'Owner', body: prompt });
+    const run = msg({ id: 'agent-dispatch-1', author: 'Astra', registrationId: 'registration-1',
+      agentId: 'codex', body: 'Checking the current work.', runId: 42, status: 'running',
+      replyTo: { messageId: control.id, author: 'Astra', mention: 'astra', preview: prompt } });
+    const answer = msg({ id: 'public-answer', author: 'Astra', registrationId: 'registration-1',
+      agentId: 'codex', body: 'The work is complete.', runId: 43 });
+    const rows = [human, control, run, answer];
+    const snapshot = JSON.stringify(rows);
+    expect(isForcedWorkTraceLine(control)).toBe(true);
+    expect(segmentTranscript([control])).toEqual([]);
+    expect(segmentTranscript(rows)).toEqual(segmentTranscript([human, run, answer]));
+    expect(JSON.stringify(rows)).toBe(snapshot);
+    const segments = segmentTranscript(rows);
+    const visible = segments.flatMap((segment) => segment.kind === 'group' ? segment.group.messages
+      : [...segment.trace, ...segment.fullGroups.flatMap((group) => group.messages),
+        ...segment.updateGroups.flatMap((group) => group.messages)]);
+    expect(visible).toContain(run);
+    expect(visible).toContain(human);
+    expect(visible).toContain(answer);
+    expect(visible).not.toContain(control);
+  });
+
   it('omits empty history but gives useful trace-only rows a visible details control', () => {
     const rows = [
       msg({ id: 'human-empty', author: 'owner', body: ' \n' }),

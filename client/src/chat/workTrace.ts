@@ -40,8 +40,14 @@ export function isWorkTraceCarrier(message: Pick<ChatMessage, 'id' | 'body' | 'a
     && Boolean(message.agentId || message.registrationId);
 }
 
+/** Durable control-message identity, including already-stored recovery nudges. */
+function isCoordinatorContinuationPrompt(message: Pick<ChatMessage, 'id'>): boolean {
+  return String(message.id || '').startsWith('sys-continuation-');
+}
+
 export function isSystemCascadeMessage(message: Pick<ChatMessage, 'id' | 'author'>): boolean {
-  return message.author === 'Cascade' || String(message.id || '').startsWith('sys-mission-');
+  return message.author === 'Cascade' || String(message.id || '').startsWith('sys-mission-')
+    || isCoordinatorContinuationPrompt(message);
 }
 
 /** Message belongs in the agent work stream rather than human conversation. */
@@ -363,6 +369,9 @@ export function segmentTranscript(
     missionIdentities?: ReadonlyMap<string, MissionMessageIdentity>;
   },
 ): TranscriptSegment[] {
+  // Dispatch instructions remain in durable history, but are not public work
+  // updates. The separate agent-dispatch row retains execution, output and Stop.
+  messages = messages.filter((message) => !isCoordinatorContinuationPrompt(message));
   messages = messages.filter((message, index) => !isEmptyChatMessage(message)
     || (isWorkTraceCarrier(message) && messages[index + 1]
       && isSystemCascadeMessage(messages[index + 1]) && !isEmptyChatMessage(messages[index + 1])));

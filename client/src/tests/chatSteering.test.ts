@@ -87,6 +87,32 @@ describe('chat sticky bottom intent', () => {
 });
 
 describe('agent steering presentation', () => {
+  it('keeps continuation instructions out of chat and trace previews while retaining Stop and public output', () => {
+    const prompt = 'Resume the unfinished coordinator responsibility after handling the interruption.';
+    for (const suffix of ['', '-recovery']) {
+      const control = message(`sys-continuation-reg-sol-2${suffix}`, {
+        author: 'Sol', agentId: 'codex', registrationId: agent.id, body: prompt,
+      });
+      const replyTo = { messageId: control.id, author: 'Sol', mention: 'sol', preview: prompt };
+      for (const status of ['running', undefined] as const) {
+        const execution = message('agent-dispatch-continuation', {
+          author: 'Sol', agentId: 'codex', registrationId: agent.id, runId: 42,
+          status, body: 'The requested fix is ready.', replyTo,
+        });
+        chatMessageStore.set('channel', [control, execution]);
+        const html = renderToStaticMarkup(createElement(ChatView, {
+          channelId: 'channel', channelName: 'General', currentUser: 'owner',
+          presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [agent],
+          onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
+        }));
+        expect(html).not.toContain(prompt);
+        expect(html.includes('>Stop<')).toBe(status === 'running');
+        if (!status) expect(html).toContain(execution.body);
+        expect(chatMessageStore.getChannel('channel')).toEqual([control, execution]);
+      }
+    }
+  });
+
   it('omits interrupted progress rows while keeping the latest reply and Stop control', () => {
     const rows = [
       message('request', { body: '@sol fix the regression' }),
