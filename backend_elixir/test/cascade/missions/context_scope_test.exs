@@ -5,7 +5,8 @@ defmodule Cascade.Missions.ContextScopeTest do
   alias Cascade.Chat.{Agents, DispatchPrompt, Messages}
   alias Cascade.Content.Privacy
   alias Cascade.Content.Store, as: ContentStore
-  alias Cascade.Missions.{Context, Dispatches, Store}
+  alias Cascade.Missions.{Context, Dispatches, Scheduler, Store}
+  alias Cascade.Runs.Store, as: Runs
 
   setup do
     owner = Cascade.TestHelpers.owner_vault("context-scope")
@@ -37,15 +38,23 @@ defmodule Cascade.Missions.ContextScopeTest do
 
     {:ok, created} =
       Store.create(owner.user_id, owner.vault_id, channel.id, %{
-        rootMessageId: root.id,
-        coordinatorRegistrationId: coordinator.id,
-        title: "Context scope"
-      }, control_plane: true)
+          rootMessageId: root.id,
+          coordinatorRegistrationId: coordinator.id,
+          title: "Context scope"
+        }, control_plane: true)
 
     note = ContentStore.create_note(owner.vault_id, owner.user_id, %{title: "Brief", content: "public mission brief"})
     SQL.exec("INSERT INTO chat_mission_notes(mission_id,note_id,kind,position,revision) VALUES(?,?,?,?,?)", [created.mission.id, note.id, "brief", 0, Privacy.note_revision(note)])
 
-    %{owner: owner, channel: channel, coordinator: coordinator, worker: worker, root: root, mission: created.mission.id}
+    %{
+      owner: owner,
+      channel: channel,
+      coordinator: coordinator,
+      worker: worker,
+      root: root,
+      mission: created.mission.id,
+      note_revision: Privacy.note_revision(note)
+    }
   end
 
   test "a forged mission-prefixed message has no mission context", c do
@@ -105,6 +114,65 @@ defmodule Cascade.Missions.ContextScopeTest do
     assert Context.for_dispatch(dispatch, c.owner.user_id) =~ "Context scope"
   end
 
+  test "interpretation prompts include terminal summaries once while ordinary contexts keep them",
+       c do
+    summary =
+      ("unique terminal evidence " <> String.duplicate("summary payload ", 80))
+      |> String.trim_trailing()
+
+    {:ok, created} =
+      Store.add_task(c.owner.user_id, c.channel.id, c.mission, %{
+        title: "Research terminal evidence",
+        assignee: c.worker.id,
+        coordinatorRegistrationId: c.coordinator.id,
+        purpose: "research"
+      })
+
+    task = created.task
+    scheduled = Scheduler.schedule(c.mission)
+    [worker] = scheduled.dispatches
+    [wake] = scheduled.wakeDispatches
+
+    {:ok, run} =
+      Runs.start(c.owner.vault_id, nil, "Research terminal evidence", "codex",
+        owner_user_id: c.owner.user_id,
+        chat_dispatch_id: worker.dispatch.id,
+        conversation_id: worker.dispatch.conversationId
+      )
+
+    :ok = Dispatches.attach_run(worker.dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(worker.dispatch.id, run.id)
+
+    {:ok, _} =
+      Store.update_task(c.owner.user_id, c.channel.id, task.id, %{
+        status: "completed",
+        summary: summary,
+        finding: true
+      })
+
+    execution = %{
+      registration: c.coordinator,
+      target_channel_id: c.channel.id,
+      runner_user_id: c.owner.user_id,
+      agent: "codex",
+      vault: %{id: c.owner.vault_id}
+    }
+
+    prompt = DispatchPrompt.build(wake.dispatch, execution, nil).prompt
+
+    refute Context.for_dispatch(wake.dispatch, c.owner.user_id) =~ summary
+    assert length(:binary.matches(prompt, summary)) == 1
+    assert prompt =~ task.id
+    assert prompt =~ "completed"
+    assert prompt =~ c.note_revision
+
+    {:ok, root_dispatch} =
+      Dispatches.create(c.owner.user_id, c.channel.id, c.root, c.coordinator.id)
+
+    assert Context.for_dispatch(root_dispatch, c.owner.user_id) =~ summary
+    assert Context.for_dispatch(worker.dispatch, c.owner.user_id) =~ summary
+  end
+
   test "message attachments retain public filenames after whole-prompt redaction", c do
     message = %{body: "request\n:::private\nsecret\n:::", attachments: [%{name: "failure.log"}]}
     dispatch = %{message: message, messageId: "ordinary-message"}
@@ -121,7 +189,7 @@ defmodule Cascade.Missions.ContextScopeTest do
     assert result.prompt =~ "failure.log"
     refute result.prompt =~ "secret"
   end
- 
+
   test "trailing private attachment survives redaction when mission context is appended", c do
     {:ok, dispatch} = Dispatches.create(c.owner.user_id, c.channel.id, c.root, c.coordinator.id)
 

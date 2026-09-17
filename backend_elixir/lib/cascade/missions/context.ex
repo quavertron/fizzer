@@ -18,8 +18,9 @@ defmodule Cascade.Missions.Context do
       changes = note_changes(mission.id)
       awareness = pending_awareness(mission.id)
       tasks = task_evidence(mission.id)
+      compact_tasks = interpretation_dispatch?(dispatch, mission.id)
 
-      format(mission, task, notes, changes, awareness, tasks)
+      format(mission, task, notes, changes, awareness, tasks, compact_tasks)
     else
       _ -> ""
     end
@@ -103,6 +104,22 @@ defmodule Cascade.Missions.Context do
     else
       _ -> false
     end
+  end
+
+  defp interpretation_dispatch?(dispatch, mission_id) do
+    SQL.one(
+      """
+      SELECT 1
+      FROM chat_mission_interpretations i
+      JOIN chat_agent_dispatches d ON d.id=i.dispatch_id
+      JOIN chat_missions m ON m.id=i.mission_id
+      WHERE i.mission_id=? AND i.dispatch_id=?
+        AND d.channel_id=m.channel_id
+        AND d.registration_id=m.coordinator_registration_id
+      LIMIT 1
+      """,
+      [mission_id, field(dispatch, :id)]
+    ) == [1]
   end
 
   defp readable_notes?(mission_id, user_id) do
@@ -260,7 +277,7 @@ defmodule Cascade.Missions.Context do
     end)
   end
 
-  defp format(mission, task, notes, changes, awareness, tasks) do
+  defp format(mission, task, notes, changes, awareness, tasks, compact_tasks) do
     phase = normalize_phase(mission.phase)
     mission_brief = Privacy.redact_blocks(to_string(mission.objective || ""))
 
@@ -284,24 +301,7 @@ defmodule Cascade.Missions.Context do
         "- #{change.kind} #{change.title}: #{change.summary} (#{change.at})"
       end)
 
-    evidence_text =
-      tasks
-      |> Enum.map_join("\n", fn evidence ->
-        snapshot =
-          case evidence.briefRevisions do
-            revisions when map_size(revisions) > 0 -> " brief=#{inspect(revisions)}"
-            _ -> ""
-          end
-
-        review = if evidence.reviewOutcome, do: " reviewOutcome=#{evidence.reviewOutcome}", else: ""
-        verification =
-          if evidence.verificationPassed != nil,
-            do: " verificationPassed=#{evidence.verificationPassed}",
-            else: ""
-
-        "- #{evidence.id} [#{evidence.purpose}] #{evidence.status}: #{evidence.title} — #{evidence.summary}" <>
-          " (run=#{evidence.runId || "none"}#{review}#{verification}#{snapshot})"
-      end)
+    evidence_text = Enum.map_join(tasks, "\n", &format_evidence(&1, compact_tasks))
 
     task_text =
       if task do
@@ -342,6 +342,34 @@ defmodule Cascade.Missions.Context do
     #{if evidence_text == "", do: "(none)", else: evidence_text}
     """
     |> String.trim()
+  end
+
+  defp format_evidence(evidence, true) do
+    "- #{evidence.id} [#{evidence.purpose}] #{evidence.status}: #{evidence.title}" <>
+      " (assignee=#{evidence.assignee || "none"} parent=#{evidence.parent || "none"}" <>
+      " run=#{evidence.runId || "none"} workItem=#{evidence.workItemId || "none"}" <>
+      " briefNote=#{evidence.briefNoteId || "none"} brief=#{inspect(evidence.briefRevisions)}" <>
+      " reviewOutcome=#{evidence.reviewOutcome || "none"}" <>
+      " verificationPassed=#{if(evidence.verificationPassed == nil, do: "none", else: evidence.verificationPassed)}" <>
+      " updatedAt=#{evidence.updatedAt || "none"})"
+  end
+
+  defp format_evidence(evidence, false) do
+    snapshot =
+      case evidence.briefRevisions do
+        revisions when map_size(revisions) > 0 -> " brief=#{inspect(revisions)}"
+        _ -> ""
+      end
+
+    review = if evidence.reviewOutcome, do: " reviewOutcome=#{evidence.reviewOutcome}", else: ""
+
+    verification =
+      if evidence.verificationPassed != nil,
+        do: " verificationPassed=#{evidence.verificationPassed}",
+        else: ""
+
+    "- #{evidence.id} [#{evidence.purpose}] #{evidence.status}: #{evidence.title} — #{evidence.summary}" <>
+      " (run=#{evidence.runId || "none"}#{review}#{verification}#{snapshot})"
   end
 
   def delivery_guidance do
@@ -387,7 +415,6 @@ defmodule Cascade.Missions.Context do
   end
 
   defp task_role(_), do: "Complete the assigned task purpose and report concrete artifacts and evidence."
-
 
   defp mission_row([
          id,
