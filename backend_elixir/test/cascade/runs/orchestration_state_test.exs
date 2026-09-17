@@ -6,6 +6,7 @@ defmodule Cascade.Runs.OrchestrationStateTest do
 
   alias Cascade.Accounts.SQL
   alias Cascade.Auth.Token
+  alias Cascade.Realtime.Hub
   alias Cascade.Runs.{RunnerLifecycle, Store}
   alias CascadeWeb.DomainDispatch
 
@@ -274,6 +275,7 @@ defmodule Cascade.Runs.OrchestrationStateTest do
     before = SQL.one("SELECT * FROM delegated_runs WHERE run_id=?", [run.id])
     RunnerLifecycle.replay_delivery(run.id, context.user_id)
     assert SQL.one("SELECT * FROM delegated_runs WHERE run_id=?", [run.id]) == before
+    snapshot_startup_orphans()
     send(RunnerLifecycle, :orphan_reclaim)
     :sys.get_state(RunnerLifecycle)
     assert Store.get(run.id).status == "queued"
@@ -284,16 +286,59 @@ defmodule Cascade.Runs.OrchestrationStateTest do
            ]
   end
 
-  test "startup orphan recovery fails delegated runs that no desktop reclaims", context do
-    assert {:ok, run} = Store.start(context.vault_id, nil, "orphan after restart", "codex")
-    :ok = Store.record_delegated(run.id, context.user_id)
+  test "startup recovery ignores a delegated run created after initialization", context do
+    snapshot_startup_orphans()
+    register_online_runner(context.user_id, [])
+
+    assert {:ok, run} = Store.start(context.vault_id, nil, "created after init", "codex")
+    assert :ok = Store.record_delegated(run.id, context.user_id)
+
+    state = :sys.get_state(RunnerLifecycle)
+    assert get_in(state, [:runners, context.user_id, :metadata, :activeRunIds]) == []
+
+    send(RunnerLifecycle, :orphan_reclaim)
+    :sys.get_state(RunnerLifecycle)
+
+    assert Store.get(run.id).status == "queued"
+  end
+
+  test "startup recovery ignores a loose run created after initialization", context do
+    snapshot_startup_orphans()
+    assert {:ok, run} = Store.start(context.vault_id, nil, "loose after init", "codex")
+
+    send(RunnerLifecycle, :orphan_reclaim)
+    :sys.get_state(RunnerLifecycle)
+
+    assert Store.get(run.id).status == "queued"
+  end
+
+  test "startup recovery fails inherited orphans and preserves reclaimed work", context do
+    assert {:ok, delegated} =
+             Store.start(context.vault_id, nil, "delegated before init", "codex")
+
+    assert {:ok, reclaimed} =
+             Store.start(context.vault_id, nil, "reclaimed before init", "codex")
+
+    assert {:ok, loose} = Store.start(context.vault_id, nil, "loose before init", "codex")
+    assert :ok = Store.record_delegated(delegated.id, context.user_id)
+    assert :ok = Store.record_delegated(reclaimed.id, context.user_id)
+    snapshot_startup_orphans()
+    register_online_runner(context.user_id, [reclaimed.id])
 
     send(RunnerLifecycle, :orphan_reclaim)
 
     assert %{
              status: "failed",
              summary: "Desktop agent runner did not reclaim this run after server restart."
-           } = eventually_status(run.id, "failed")
+           } = eventually_status(delegated.id, "failed")
+
+    assert %{
+             status: "failed",
+             summary: "Server restarted while this run was in progress."
+           } = eventually_status(loose.id, "failed")
+
+    assert Store.get(reclaimed.id).status == "queued"
+    assert :sys.get_state(RunnerLifecycle).startup_orphans == MapSet.new()
   end
 
   test "runner callback registration is intentionally single-owned by DomainAdapter", context do
@@ -482,5 +527,43 @@ defmodule Cascade.Runs.OrchestrationStateTest do
         Process.sleep(10)
         eventually_status(run_id, expected, attempts - 1)
     end
+  end
+
+  defp snapshot_startup_orphans do
+    previous = :sys.get_state(RunnerLifecycle).startup_orphans
+
+    on_exit(fn ->
+      :sys.replace_state(RunnerLifecycle, &%{&1 | startup_orphans: previous})
+    end)
+
+    assert {:ok, initialized} = RunnerLifecycle.init(orphan_reclaim_ms: 3_600_000)
+    Process.cancel_timer(initialized.orphan_timer)
+    Process.cancel_timer(initialized.lease_timer)
+
+    :sys.replace_state(
+      RunnerLifecycle,
+      &Map.put(&1, :startup_orphans, initialized.startup_orphans)
+    )
+  end
+
+  defp register_online_runner(owner_id, active_ids) do
+    sid = "orphan-recovery-#{System.unique_integer([:positive])}"
+
+    assert {:ok, ^sid, pid} = Cascade.Realtime.start_session(sid: sid)
+
+    assert {:ok, ^active_ids} =
+             RunnerLifecycle.register(owner_id, sid, %{
+               activeRunIds: active_ids,
+               runnerInstanceId: sid
+             })
+
+    assert :ok = Hub.register_runner(owner_id, sid, "/runners", %{})
+
+    on_exit(fn ->
+      Hub.unregister_runner(owner_id, sid)
+
+      if Process.alive?(pid),
+        do: DynamicSupervisor.terminate_child(Cascade.Realtime.SessionSupervisor, pid)
+    end)
   end
 end

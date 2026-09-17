@@ -175,6 +175,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
       last_seen: %{},
       disconnect_timers: %{},
       run_leases: %{},
+      startup_orphans: startup_orphan_ids(),
       orphan_reclaim: Keyword.get(opts, :orphan_reclaim_ms, @orphan_reclaim),
       run_lease: Keyword.get(opts, :run_lease_ms, @orphan_reclaim)
     }
@@ -370,40 +371,48 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   @impl true
   def handle_info(:orphan_reclaim, state) do
-    summary = "Desktop agent runner did not reclaim this run after server restart."
-
-    Store.open_delegated()
-    |> Enum.reject(fn row ->
-      online?(row.owner_user_id) and
-        get_in(state, [:runners, row.owner_user_id, :metadata, :activeRunIds])
-        |> List.wrap()
-        |> Enum.member?(row.run_id)
-    end)
-    |> Enum.reject(fn row ->
-      not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))
-    end)
-    |> Enum.each(fn row ->
-      Store.finish(row.run_id, "failed", summary)
-      Store.publish(row.run_id, "status", %{status: "failed", summary: summary})
-    end)
-
+    delegated_summary = "Desktop agent runner did not reclaim this run after server restart."
     loose_summary = "Server restarted while this run was in progress."
 
-    sql_all_loose_runs()
-    |> Enum.each(fn run_id ->
-      Store.finish(run_id, "failed", loose_summary)
-      Store.publish(run_id, "status", %{status: "failed", summary: loose_summary})
+    Enum.each(state.startup_orphans, fn run_id ->
+      case Store.get(run_id) do
+        %{status: status} when status in ["queued", "running"] ->
+          case Store.delegated_owner(run_id) do
+            owner_id when is_integer(owner_id) ->
+              unless reclaimed?(run_id, owner_id, state) or
+                       not is_nil(Store.pending_delivery(run_id, owner_id)) do
+                Store.finish(run_id, "failed", delegated_summary)
+
+                Store.publish(run_id, "status", %{
+                  status: "failed",
+                  summary: delegated_summary
+                })
+              end
+
+            nil ->
+              Store.finish(run_id, "failed", loose_summary)
+              Store.publish(run_id, "status", %{status: "failed", summary: loose_summary})
+          end
+
+        _ ->
+          :ok
+      end
     end)
 
-    {:noreply, state}
+    {:noreply, %{state | startup_orphans: MapSet.new()}}
   end
 
-  defp sql_all_loose_runs do
-    Cascade.Accounts.SQL.all("""
-    SELECT id FROM runs WHERE status IN ('queued','running')
-    AND id NOT IN (SELECT run_id FROM delegated_runs)
-    """)
+  defp startup_orphan_ids do
+    Cascade.Accounts.SQL.all("SELECT id FROM runs WHERE status IN ('queued','running')")
     |> Enum.map(&hd/1)
+    |> MapSet.new()
+  end
+
+  defp reclaimed?(run_id, owner_id, state) do
+    online?(owner_id) and
+      get_in(state, [:runners, owner_id, :metadata, :activeRunIds])
+      |> List.wrap()
+      |> Enum.member?(run_id)
   end
 
   defp fail_runs(run_ids, reason) do
