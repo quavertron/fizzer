@@ -23,6 +23,7 @@ window.rooms=[];window.stops=0;window.disconnects=0;window.requests=[];
 window.roster=[{identity:'u7-fixture',name:'Alex',muted:false,deafened:false,avatarUrl:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>'}];
 window.fetch=async(url,opts)=>{
  window.requests.push({url,authorization:opts?.headers?.Authorization,credentials:opts?.credentials});
+ if(url.endsWith('/participants')&&window.offline)throw new TypeError('Failed to fetch');
  if(url.endsWith('/join')&&window.delayJoin)await new Promise(r=>window.releaseJoin=r);
  const participants=structuredClone(window.roster);
  if(url.endsWith('/participants')&&window.delayRoster)await new Promise(r=>window.releaseRoster=r);
@@ -43,6 +44,21 @@ try{
  const page=await browser.newPage();page.setDefaultTimeout(10000);
  await page.goto('http://127.0.0.1:'+server.address().port);await page.waitForFunction(()=>window.voice);
  await page.waitForFunction(()=>document.querySelector('.voice-avatar img'));checks.push('idle authorized avatar');
+ for(const failure of ['offline','denied']){
+  await page.evaluate(key=>{window[key]=true},failure);
+  await page.waitForFunction(()=>!document.querySelector('.voice-participants'));
+  assert.equal(await page.locator('.voice-roster-status').count(),0,'passive roster failure should stay quiet');
+  assert.equal(await page.locator('body').innerText(),'');
+  assert.equal(await page.evaluate(()=>rooms.length),0);
+  await page.evaluate(key=>{window[key]=false},failure);
+  await page.waitForFunction(()=>document.querySelector('.voice-avatar img'));
+ }
+ checks.push('passive network/access failures clear stale roster silently, recover on retry, and never join');
+ await page.evaluate(()=>{window.denied=true;return voice.join({id:'room',title:'Denied room'})});
+ await page.waitForFunction(()=>voice.channel===null&&voice.error);
+ assert.match(await page.locator('[role="alert"]').innerText(),/Click the room to retry/);
+ await page.evaluate(()=>{window.denied=false;voice.clearError();window.rooms=[];window.disconnects=0});
+ checks.push('explicit failed join retains actionable alert');
  await page.evaluate(()=>voice.join({id:'room',title:'Source room'}));await page.waitForFunction(()=>voice.status==='Connected'&&document.querySelector('.voice-avatar img'));
  await page.evaluate(()=>{window.roster=window.roster.map(({avatarUrl,...p})=>p)});await page.waitForTimeout(150);
  assert.ok(await page.locator('.voice-avatar img').count());
@@ -78,7 +94,7 @@ try{
  const stopped=await page.evaluate(()=>stops);await page.evaluate(()=>{setUser(undefined);});await page.waitForFunction(()=>voice.channel===null);await page.evaluate(()=>{window.delayCapture=false;releaseCapture()});await page.waitForFunction(s=>stops>s,stopped);checks.push('logout fences delayed capture');
  await page.evaluate(()=>setUser(7));await page.waitForFunction(()=>voice.channel===null);await page.waitForTimeout(50);
  await page.evaluate(()=>voice.join({id:'room',title:'Revoked'}));await page.waitForFunction(()=>voice.status==='Connected');
- await page.evaluate(()=>{window.denied=true});await page.waitForFunction(()=>voice.channel===null);assert.equal(await page.locator('[data-audio-host] audio').count(),0);checks.push('source authorization failure disconnects and clears audio');
+ await page.evaluate(()=>{window.denied=true});await page.waitForFunction(()=>voice.channel===null);assert.equal(await page.locator('[data-audio-host] audio').count(),0);assert.match(await page.locator('[role="alert"]').innerText(),/Voice access ended/);checks.push('source authorization failure disconnects, clears audio, and retains actionable alert');
  // A delayed old source roster must not hydrate a newly browsed same-ID room.
  await page.evaluate(()=>{window.denied=false;window.roster=[{identity:'u7-fixture',name:'Alex',muted:false,deafened:false,avatarUrl:'old-source-photo'}];window.delayRoster=true;window.releaseRoster=undefined;setVault('late-source')});
  await page.waitForFunction(()=>window.releaseRoster);

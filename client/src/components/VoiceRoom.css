@@ -19,7 +19,6 @@
 .voice-avatar { width: 20px; height: 20px; display: grid; place-items: center; flex-shrink: 0; border-radius: 50%; background: var(--bg-overlay); font-size: 10px; }
 .voice-participants .is-speaking .voice-avatar { outline: 2px solid #6dc9a5; }
 .voice-peer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.voice-roster-status { display: block; padding-left: 42px; font-size: 11px; color: var(--text-secondary); }
 .tree-item.is-voice-connected { color: #6dc9a5; background: var(--bg-raised); }
 .voice-create { margin: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); color: var(--text-primary); padding: 20px; width: min(380px, calc(100vw - 32px)); }
 .voice-create::backdrop { background: #0008; }

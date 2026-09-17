@@ -219,20 +219,19 @@ export function VoiceControls() {
 export function VoiceParticipants({ channelId }: { channelId: string }) {
   const voice = useVoice();
   const [roster, setRoster] = useState<{ key: string; peers: Peer[] }>({ key: '', peers: [] });
-  const [unavailable, setUnavailable] = useState(false);
   const connected = voice?.isCurrent(channelId);
   const vaultId = voice?.vaultId;
   const options = vaultId ? snapshotVaultApi(vaultId) : {};
   const rosterKey = JSON.stringify([vaultId, channelId, options.origin, options.token]);
   useEffect(() => {
-    setRoster({ key: rosterKey, peers: [] }); setUnavailable(false);
+    setRoster({ key: rosterKey, peers: [] });
     if (!vaultId || connected) return;
     return pollRoster(endpoint(vaultId, channelId), options, peers => {
-      setRoster(prior => ({ key: rosterKey, peers: mergeRoster(prior.key === rosterKey ? prior.peers : [], peers) })); setUnavailable(false);
-    }, () => { setRoster({ key: rosterKey, peers: [] }); setUnavailable(true); });
+      setRoster(prior => ({ key: rosterKey, peers: mergeRoster(prior.key === rosterKey ? prior.peers : [], peers) }));
+    }, () => { setRoster({ key: rosterKey, peers: [] }); });
   }, [vaultId, channelId, connected, rosterKey]);
   const peers = connected && voice ? voice.participants : roster.key === rosterKey ? roster.peers : [];
-  if (!peers.length) return unavailable && !connected ? <span className="voice-roster-status">Room status unavailable</span> : null;
+  if (!peers.length) return null;
   return <ul className="voice-participants" aria-label="Voice participants">{peers.map(p => <li key={p.identity} className={p.speaking && !p.muted ? 'is-speaking' : ''}>
     <span className="voice-avatar" aria-hidden="true">{p.avatarUrl ? <img src={p.avatarUrl} alt="" /> : p.name.slice(0, 1).toUpperCase()}</span>
     <span className="voice-peer-name">{p.name}</span>
