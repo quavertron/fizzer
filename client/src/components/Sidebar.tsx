@@ -56,7 +56,7 @@ interface SidebarProps {
   channelVaultIds: Readonly<Record<string, string>>;
   showAgentMemory: boolean;
   onSelectVault: (id: string) => void;
-  onCreateVault: (name: string) => Promise<boolean>;
+  onCreateVault: (name: string, markdownFiles?: readonly File[]) => Promise<boolean>;
   vaultListLoading?: boolean;
   vaultListError?: string;
   onRetryVaults?: () => void;
@@ -236,6 +236,7 @@ export const Sidebar = memo(function Sidebar({
   const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
   const [creatingVault, setCreatingVault] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
+  const [newVaultMarkdownFiles, setNewVaultMarkdownFiles] = useState<File[]>([]);
   const [creatingVaultBusy, setCreatingVaultBusy] = useState(false);
   const [vaultFormError, setVaultFormError] = useState('');
   const [joiningVault, setJoiningVault] = useState(false);
@@ -937,11 +938,12 @@ export const Sidebar = memo(function Sidebar({
     const name = newVaultName.trim();
     if (!name || creatingVaultBusy) return;
     setCreatingVaultBusy(true);
-    const created = await onCreateVault(name);
+    const created = await onCreateVault(name, newVaultMarkdownFiles);
     setCreatingVaultBusy(false);
-    if (!created) { setVaultFormError('Could not create vault. Check the name and try again.'); return; }
+    if (!created) { setVaultFormError('Could not create and import this vault.'); return; }
     setVaultFormError('');
     setNewVaultName('');
+    setNewVaultMarkdownFiles([]);
     setCreatingVault(false);
     setVaultMenuOpen(false);
   };
@@ -1125,13 +1127,27 @@ export const Sidebar = memo(function Sidebar({
                         if (event.key === 'Escape') {
                           setCreatingVault(false);
                           setNewVaultName('');
+                          setNewVaultMarkdownFiles([]);
                         }
                       }}
                     />
+                    <label htmlFor="vault-markdown-folder">Markdown folder <small>(optional)</small></label>
+                    <input
+                      id="vault-markdown-folder"
+                      type="file"
+                      accept=".md,text/markdown"
+                      multiple
+                      disabled={creatingVaultBusy}
+                      {...{ webkitdirectory: '', directory: '' }}
+                      onChange={(event) => setNewVaultMarkdownFiles(Array.from(event.target.files || []))}
+                    />
+                    {newVaultMarkdownFiles.length > 0 && (
+                      <small>{newVaultMarkdownFiles.filter((file) => file.name.toLowerCase().endsWith('.md')).length} Markdown files selected</small>
+                    )}
                     <div className="vault-manager-form-actions">
-                      <button type="button" onClick={() => { setCreatingVault(false); setNewVaultName(''); }}>Cancel</button>
+                      <button type="button" onClick={() => { setCreatingVault(false); setNewVaultName(''); setNewVaultMarkdownFiles([]); }}>Cancel</button>
                       <button type="button" disabled={!newVaultName.trim() || creatingVaultBusy} onClick={() => void submitNewVault()}>
-                        {creatingVaultBusy ? 'Creating' : 'Create'}
+                        {creatingVaultBusy ? 'Creating and importing…' : 'Create'}
                       </button>
                     </div>
                   </div>

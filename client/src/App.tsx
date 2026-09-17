@@ -116,6 +116,7 @@ import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide
 import { FizzerMark } from './components/FizzerMark';
 
 import { useDesktopStartup, rememberDesktopSession, acceptAndOpenRemoteInvite } from './desktopStartup';
+import { importMarkdownFolder } from './markdownFolderImport';
 
 /**
  * @file App.tsx — Root component for Cascade
@@ -567,17 +568,34 @@ export default function App() {
     };
   }, [loadCommunityUpdates, scheduleCommunityRefresh, user]);
 
-  const handleCreateVault = useCallback(async (name: string): Promise<boolean> => {
+  const handleCreateVault = useCallback(async (name: string, markdownFiles: readonly File[] = []): Promise<boolean> => {
     if (!name.trim()) return false;
+    let createdVault: Vault | null = null;
     try {
       const data = await api<{ vault: Vault }>('/api/vaults', {
         method: 'POST',
         body: JSON.stringify({ name: name.trim() }),
       });
+      createdVault = data.vault;
+      const imported = markdownFiles.length > 0
+        ? await importMarkdownFolder(data.vault.id, markdownFiles)
+        : null;
       setVaults((current) => [...current, data.vault]);
       switchVaultWorkspace(data.vault.id);
+      if (imported) {
+        setNotice(`Imported ${imported.notes} Markdown note${imported.notes === 1 ? '' : 's'} into ${imported.folders} folder${imported.folders === 1 ? '' : 's'}.`);
+      }
       return true;
     } catch (error) {
+      if (createdVault) {
+        try {
+          await api(`/api/vaults/${encodeURIComponent(createdVault.id)}`, { method: 'DELETE' });
+        } catch {
+          setVaults((current) => current.some((vault) => vault.id === createdVault!.id)
+            ? current
+            : [...current, createdVault!]);
+        }
+      }
       setNotice(error instanceof Error ? error.message : 'Could not create vault');
       return false;
     }
