@@ -409,8 +409,7 @@ defmodule Cascade.Missions.Execution do
   defp prepare_work_item(execution) do
     with {:ok, item} <- WorkItems.get(execution.runner_user_id, execution.work_item_id) do
       if item.workspaceMode == "isolated" do
-        preparation_dir =
-          workspace_source(item, execution)
+        {preparation_dir, prefer_upstream} = workspace_source(item, execution)
 
         if preparation_dir == "" do
           {:error, 409,
@@ -420,6 +419,8 @@ defmodule Cascade.Missions.Execution do
             workItemId: item.id,
             dir: preparation_dir,
             branch: item.branch,
+            startCommit: item.baseCommit,
+            preferUpstream: prefer_upstream,
             baseBranch: field(field(item, :gitState, %{}), :baseBranch),
             channelId: execution.target_channel_id
           }
@@ -461,9 +462,9 @@ defmodule Cascade.Missions.Execution do
            """,
            [item.id, execution.runner_user_id, item.vaultId, item.channelId]
          ) do
-      [path, _, _] when path not in [nil, ""] -> path
-      [_, _, "isolated"] -> ""
-      [_, repository, _] -> nonblank(repository, fallback)
+      [path, _, _] when path not in [nil, ""] -> {path, false}
+      [_, _, "isolated"] -> {"", false}
+      [_, repository, _] -> {nonblank(repository, fallback), false}
       _ -> dependency_workspace_source(item, execution, fallback)
     end
   end
@@ -483,9 +484,9 @@ defmodule Cascade.Missions.Execution do
         AND p.vault_id=? AND p.channel_id=? AND COALESCE(p.worktree_path,'')<>''
       """, [item.id, execution.runner_user_id, item.vaultId, item.channelId])
     case sources do
-      [[path]] -> path
-      [] -> fallback
-      _ -> ""
+      [[path]] -> {path, false}
+      [] -> {fallback, item.dependsOn == []}
+      _ -> {"", false}
     end
   end
 

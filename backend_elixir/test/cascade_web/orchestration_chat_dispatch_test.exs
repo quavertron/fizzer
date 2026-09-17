@@ -997,10 +997,14 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
        ctx do
     first = event!(ctx.sid, "run:delegate")
     Store.finish(first["runId"], "completed", "done")
-    {mission, _parent} = mission_task(ctx, "Parent", "isolated")
+    {mission, parent} = mission_task(ctx, "Parent", "isolated")
+    pin = String.duplicate("a", 40)
+    assert {:ok, _} = Cascade.WorkItems.update(ctx.owner.id, parent.workItemId, %{baseCommit: pin})
     Cascade.Missions.Scheduler.schedule(mission.mission.id)
     preparation = packet!(ctx.sid, "workspace:prepare")
     assert Enum.at(preparation.data, 1)["dir"] == "/owner/channel"
+    assert Enum.at(preparation.data, 1)["startCommit"] == pin
+    assert Enum.at(preparation.data, 1)["preferUpstream"] == true
 
     {:ok, identity} =
       Agents.upsert_identity(ctx.owner.id, ctx.owner_vault.id, %{
@@ -1022,7 +1026,7 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     delegated = event_for_dispatch!(ctx.sid, "run:delegate", independent.id)
     assert Store.find_by_chat_dispatch(independent.id).id == delegated["runId"]
 
-    prepared!(ctx.sid, preparation, "/parent/task", "parent-base")
+    prepared!(ctx.sid, preparation, "/parent/task", pin)
     parent_run = event!(ctx.sid, "run:delegate")
     assert parent_run["cwd"] == "/parent/task"
 
@@ -1038,6 +1042,8 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     Cascade.Missions.Scheduler.schedule(mission.mission.id)
     preparation = packet!(ctx.sid, "workspace:prepare")
     assert Enum.at(preparation.data, 1)["dir"] == "/parent/task"
+    assert Enum.at(preparation.data, 1)["startCommit"] == ""
+    assert Enum.at(preparation.data, 1)["preferUpstream"] == false
     prepared!(ctx.sid, preparation, "/child/task", "parent-tip")
     child_run = event!(ctx.sid, "run:delegate")
     assert child_run["cwd"] == "/child/task"
@@ -1046,6 +1052,24 @@ defmodule CascadeWeb.OrchestrationChatDispatchTest do
     refute child_run["prompt"] =~ "Guest private guidance."
     assert {:ok, child_item} = Cascade.WorkItems.get(ctx.owner.id, added.task.workItemId)
     assert child_item.baseCommit == "parent-tip"
+  end
+
+  test "a shared dependency without a worktree opts out of upstream advancement", ctx do
+    first = event!(ctx.sid, "run:delegate")
+    Store.finish(first["runId"], "completed", "done")
+    {mission, task} = mission_task(ctx, "Shared predecessor", "isolated")
+    assert {:ok, predecessor} = Cascade.WorkItems.create(ctx.owner.id, ctx.owner_vault.id, %{
+      title: "Shared source", workspaceMode: "shared"
+    })
+    assert {:ok, _} = Cascade.WorkItems.update(ctx.owner.id, task.workItemId, %{
+      dependsOn: [predecessor.id]
+    })
+    Cascade.Missions.Scheduler.schedule(mission.mission.id)
+    preparation = packet!(ctx.sid, "workspace:prepare")
+    assert Enum.at(preparation.data, 1)["dir"] == "/owner/channel"
+    assert Enum.at(preparation.data, 1)["preferUpstream"] == false
+    prepared!(ctx.sid, preparation, "/dependency/task", "shared-tip")
+    assert event!(ctx.sid, "run:delegate")["cwd"] == "/dependency/task"
   end
 
   test "workspace preparation preserves the bounded desktop ACK error", ctx do

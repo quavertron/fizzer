@@ -372,7 +372,7 @@ async function listWorkspaces(dir) {
  * Create an isolated workspace: a new branch off the current base, checked out
  * into a Cascade-managed directory outside the repository.
  */
-async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch, channelId, workItemId } = {}) {
+async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch, channelId, workItemId } = {}, startCommit) {
   const repo = await resolveRepo(dir);
   if (!repo.isRepo) return { ok: false, error: repo.error || 'Not a git repository' };
 
@@ -390,7 +390,7 @@ async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch,
   if (fs.existsSync(target)) return { ok: false, error: `Workspace directory already exists: ${target}` };
 
   const base = baseBranch || await defaultBaseBranch(repo.primaryRoot);
-  const start = await currentStartCommit(repo.root);
+  const start = startCommit ? { ok: true, stdout: startCommit } : await currentStartCommit(repo.root);
   if (!start.ok || !start.stdout) return { ok: false, error: 'Could not resolve current HEAD' };
 
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -428,7 +428,7 @@ async function createWorkspace({ dir, slug, branch: requestedBranch, baseBranch,
  * provider handoff resumes the registry-owned worktree. Existing branches that
  * are not owned by the same work item are refused rather than adopted.
  */
-async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId } = {}) {
+async function prepareWorkspace({ dir, branch, baseBranch, startCommit, preferUpstream = true, channelId, workItemId } = {}) {
   const itemId = String(workItemId || '').trim();
   const expectedBranch = String(branch || '').trim();
   if (!itemId) return { ok: false, error: 'Work item id is required' };
@@ -448,18 +448,24 @@ async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId
     if (status.branch !== expectedBranch || entry.branch !== expectedBranch) {
       return { ok: false, error: 'Owned workspace branch does not match the work item' };
     }
-    const moved = await rebaseUnusedWorkspace(entry, status);
-    if (!moved.ok) return moved;
+    const ownedRepo = await resolveRepo(entry.path);
+    if (path.resolve(ownedRepo.primaryRoot) !== path.resolve(entry.repoRoot)
+      || path.resolve(status.path) !== path.resolve(entry.path)) {
+      return { ok: false, error: 'Owned workspace belongs to another repository or path' };
+    }
+    if (startCommit && startCommit !== entry.baseCommit) {
+      return { ok: false, error: 'Requested start commit does not match the owned workspace base' };
+    }
     return {
       ok: true,
       resumed: true,
-      rebased: moved.rebased === true,
+      rebased: false,
       path: status.path,
       repository: entry.repoRoot,
       repo: entry.repo,
       branch: status.branch,
       baseBranch: entry.baseBranch,
-      baseCommit: moved.baseCommit,
+      baseCommit: entry.baseCommit,
     };
   }
 
@@ -479,6 +485,8 @@ async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId
 
   const name = normalizeSlug(expectedBranch.slice('cascade/'.length));
   if (!name) return { ok: false, error: 'Managed task branch has no usable workspace name' };
+  const start = await automaticStartCommit(repo, startCommit, preferUpstream);
+  if (!start.ok) return start;
   return createWorkspace({
     dir: repo.root,
     slug: name,
@@ -486,29 +494,27 @@ async function prepareWorkspace({ dir, branch, baseBranch, channelId, workItemId
     baseBranch,
     channelId,
     workItemId: itemId,
-  });
+  }, start.stdout);
 }
 
-/** Empty worker clones follow the requested source checkout; clones with work stay put. */
-async function rebaseUnusedWorkspace(entry, status) {
-  const unused = !status.dirty && (status.commits || []).length === 0
-    && (!status.head || status.head === entry.baseCommit);
-  if (!unused) return { ok: true, rebased: false, baseCommit: entry.baseCommit };
-
-  const repo = await resolveRepo(entry.sourceRoot || entry.repoRoot);
-  if (!repo.isRepo) return { ok: false, error: repo.error || 'Source workspace is not a git repository' };
-  if (path.resolve(repo.primaryRoot) !== path.resolve(entry.repoRoot)) {
-    return { ok: false, error: 'Source workspace belongs to another repository' };
+/** New automatic roots may use a locally known fast-forward upstream; never fetch. */
+async function automaticStartCommit(repo, startCommit, preferUpstream) {
+  if (startCommit) {
+    // Durable baseCommit is an exact object id, not a moving ref or revision expression.
+    if (typeof startCommit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(startCommit)) {
+      return { ok: false, error: 'Start commit must be an exact commit object id' };
+    }
+    const pinned = await git(['rev-parse', '--verify', '--end-of-options', `${startCommit}^{commit}`], repo.root);
+    return pinned.ok && pinned.stdout === startCommit
+      ? pinned : { ok: false, error: 'Start commit is unavailable or is not a commit' };
   }
-  const start = await currentStartCommit(repo.root);
-  if (!start.ok || !start.stdout) return { ok: false, error: 'Could not resolve current HEAD' };
-  if (start.stdout === entry.baseCommit) return { ok: true, rebased: false, baseCommit: entry.baseCommit };
-
-  const reset = await git(['reset', '--hard', start.stdout], entry.path);
-  if (!reset.ok) return { ok: false, error: reset.stderr || 'Could not move unused workspace onto current HEAD' };
-
-  rememberWorkspace({ ...entry, baseCommit: start.stdout });
-  return { ok: true, rebased: true, baseCommit: start.stdout };
+  const source = await currentStartCommit(repo.root);
+  if (!source.ok || !source.stdout) return { ok: false, error: 'Could not resolve current HEAD' };
+  if (preferUpstream !== true || !repo.isPrimary || repo.branch === 'HEAD') return source;
+  const upstream = await git(['rev-parse', '--verify', '@{upstream}^{commit}'], repo.root);
+  if (!upstream.ok) return source;
+  const ancestor = await git(['merge-base', '--is-ancestor', source.stdout, upstream.stdout], repo.root);
+  return ancestor.ok ? upstream : source;
 }
 
 /**

@@ -503,6 +503,8 @@ defmodule Cascade.Missions.NotificationsTest do
     {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
     {:ok, %{id: ack_id, data: ["workspace:prepare", payload]}} = SocketIO.decode(encoded)
     assert payload["dir"] == dir
+    assert payload["startCommit"] == ""
+    assert payload["preferUpstream"] == true
     module = Path.expand("../../../../cascade-electron/worktrees.cjs", __DIR__)
     script = "require(process.argv[1]).prepareWorkspace(JSON.parse(process.argv[2])).then(x=>console.log(JSON.stringify(x)))"
     {output, 0} = System.cmd("node", ["-e", script, module, Jason.encode!(payload)], env: [{"CASCADE_WORKTREE_ROOT", Path.join(dir,"isolated")}])
@@ -545,6 +547,8 @@ defmodule Cascade.Missions.NotificationsTest do
     {:ok, [%{data: encoded}]} = EngineIO.decode_payload(packet)
     {:ok, %{id: ack_id, data: ["workspace:prepare", payload]}} = SocketIO.decode(encoded)
     assert payload["dir"] == prepared["path"]
+    assert payload["startCommit"] == ""
+    assert payload["preferUpstream"] == false
     {output, 0} = System.cmd("node", ["-e", script, module, Jason.encode!(payload)], env: [{"CASCADE_WORKTREE_ROOT", Path.join(dir,"isolated")}])
     next_prepared = Jason.decode!(output)
     assert next_prepared["ok"] == true

@@ -167,7 +167,7 @@ test('mission worktrees start from current HEAD, not a stale local master', asyn
   assert.equal(head, current);
 });
 
-test('child workspaces use the requested worktree tip on creation and empty resume', async () => {
+test('child workspaces use the predecessor tip only on creation and never move on resume', async () => {
   const repo = makeRepo('parent-tip');
   const parent = await wt.createWorkspace({ dir: repo, slug: 'parent-tip' });
   const g = (...args) => execFileSync('git', args, { cwd: parent.path, stdio: 'pipe' }).toString().trim();
@@ -182,9 +182,9 @@ test('child workspaces use the requested worktree tip on creation and empty resu
   g('commit', '-am', 'newer parent change');
   const resumed = await wt.prepareWorkspace(options);
   assert.equal(resumed.ok, true, resumed.error);
-  assert.equal(resumed.rebased, true);
-  assert.equal(resumed.baseCommit, g('rev-parse', 'HEAD'));
-  assert.equal(fs.readFileSync(path.join(child.path, 'README.md'), 'utf8'), '# newer parent change\n');
+  assert.equal(resumed.rebased, false);
+  assert.equal(resumed.baseCommit, child.baseCommit);
+  assert.equal(fs.readFileSync(path.join(child.path, 'README.md'), 'utf8'), '# parent change\n');
   assert.equal(fs.readFileSync(path.join(repo, 'README.md'), 'utf8'), '# repo\n');
 
   fs.writeFileSync(path.join(child.path, 'worker.txt'), 'uncommitted worker progress\n');
@@ -197,7 +197,7 @@ test('child workspaces use the requested worktree tip on creation and empty resu
   assert.equal(fs.readFileSync(path.join(child.path, 'worker.txt'), 'utf8'), 'uncommitted worker progress\n');
 });
 
-test('unused prepared worktrees move onto current HEAD instead of staying misbased', async () => {
+test('clean registered worktrees keep their base even when the source advances', async () => {
   const repo = makeRepo('rebase-empty');
   const branch = 'cascade/mission-a/task-1';
   const first = await wt.prepareWorkspace({
@@ -218,10 +218,10 @@ test('unused prepared worktrees move onto current HEAD instead of staying misbas
     workItemId: 'work-item-stale',
   });
   assert.equal(prepared.ok, true, prepared.error);
-  assert.equal(prepared.rebased, true);
-  assert.equal(prepared.baseCommit, current);
+  assert.equal(prepared.rebased, false);
+  assert.equal(prepared.baseCommit, first.baseCommit);
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: prepared.path }).toString().trim();
-  assert.equal(head, current);
+  assert.equal(head, first.baseCommit);
 });
 
 test('prepared worktrees with worker commits keep their original base', async () => {
@@ -438,4 +438,86 @@ test('prune with force clears dirty and unpushed workspaces but keeps their bran
   // The checkout is gone; the commit is still reachable in the primary repo.
   const stillThere = execFileSync('git', ['rev-parse', 'cascade/force-unpushed'], { cwd: repo }).toString().trim();
   assert.equal(stillThere, kept);
+});
+
+test('automatic new roots select only a fast-forward configured upstream; manual creation stays exact', async () => {
+  const repo = makeRepo('upstream-policy');
+  const g = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim();
+  const old = g('rev-parse', 'HEAD');
+  g('checkout', '-b', 'upstream-feature');
+  fs.writeFileSync(path.join(repo, 'README.md'), '# newer upstream\n');
+  g('commit', '-am', 'upstream');
+  const newer = g('rev-parse', 'HEAD');
+  g('checkout', 'main');
+  g('remote', 'add', 'fixture', 'https://invalid.example/repo.git');
+  g('update-ref', 'refs/remotes/fixture/feature', newer);
+  g('branch', '--set-upstream-to=fixture/feature');
+  fs.writeFileSync(path.join(repo, 'dirty.txt'), 'primary edits');
+  let n = 0;
+  const prepare = (options = {}) => {
+    const id = `upstream-${++n}`;
+    return wt.prepareWorkspace({ dir: repo, branch: `cascade/${id}`, workItemId: id, ...options });
+  };
+  const fresh = await prepare({ baseBranch: 'unrelated-integration-metadata' });
+  assert.equal(fresh.ok, true, fresh.error);
+  assert.equal(fresh.baseCommit, newer);
+  assert.equal(g('rev-parse', 'HEAD'), old);
+  assert.equal(fs.readFileSync(path.join(repo, 'dirty.txt'), 'utf8'), 'primary edits');
+  const manual = await wt.createWorkspace({ dir: repo, slug: 'manual-upstream' });
+  assert.equal(manual.baseCommit, old);
+  const pinned = await prepare({ startCommit: old });
+  assert.equal(pinned.ok, true, pinned.error);
+  assert.equal(pinned.baseCommit, old);
+  assert.equal((await prepare({ preferUpstream: false })).baseCommit, old); // shared predecessor
+  for (const pin of ['HEAD', '--help', 'deadbeef', 'f'.repeat(40), g('rev-parse', 'HEAD:README.md')]) {
+    const rejected = await prepare({ startCommit: pin });
+    assert.equal(rejected.ok, false, pin);
+    assert.match(rejected.error, /Start commit/);
+  }
+  // A tracked feature branch uses its own configured upstream, never origin/master.
+  g('checkout', '-b', 'owner-feature');
+  g('branch', '--set-upstream-to=fixture/feature');
+  assert.equal((await prepare({ startCommit: old })).baseCommit, old);
+  assert.equal((await prepare()).baseCommit, newer);
+  g('checkout', '--detach', old);
+  assert.equal((await prepare()).baseCommit, old);
+  g('checkout', 'main');
+  fs.writeFileSync(path.join(repo, 'README.md'), '# divergent local\n');
+  g('commit', '-am', 'diverged');
+  const diverged = g('rev-parse', 'HEAD');
+  assert.equal((await prepare()).baseCommit, diverged);
+  g('update-ref', 'refs/remotes/fixture/feature', old);
+  assert.equal((await prepare()).baseCommit, diverged); // ahead
+  g('branch', '--unset-upstream');
+  assert.equal((await prepare()).baseCommit, diverged);
+});
+
+test('registered resumes validate pin, branch and repository ownership without moving the checkout', async (t) => {
+  const repo = makeRepo('immutable-resume');
+  const options = { dir: repo, branch: 'cascade/immutable-resume', workItemId: 'immutable-resume' };
+  const first = await wt.prepareWorkspace(options);
+  assert.equal(first.ok, true, first.error);
+  const g = (...args) => execFileSync('git', args, { cwd: first.path, stdio: 'pipe' }).toString().trim();
+  for (const state of ['clean', 'dirty', 'committed']) {
+    if (state === 'dirty') fs.writeFileSync(path.join(first.path, 'progress.txt'), 'progress');
+    if (state === 'committed') { g('add', '.'); g('commit', '-m', 'progress'); }
+    const head = g('rev-parse', 'HEAD');
+    const before = g('status', '--porcelain');
+    const resumed = await wt.prepareWorkspace({ ...options, startCommit: first.baseCommit });
+    assert.equal(resumed.ok, true, resumed.error);
+    assert.equal(resumed.baseCommit, first.baseCommit);
+    const mismatch = await wt.prepareWorkspace({ ...options, startCommit: 'f'.repeat(40) });
+    assert.equal(mismatch.ok, false);
+    assert.match(mismatch.error, /does not match/);
+    assert.equal(g('rev-parse', 'HEAD'), head);
+    assert.equal(g('status', '--porcelain'), before);
+  }
+  assert.match((await wt.prepareWorkspace({ ...options, branch: 'cascade/wrong' })).error, /branch does not match/);
+  const file = path.join(wt.workspacesRoot(), 'workspaces.json');
+  const original = fs.readFileSync(file, 'utf8');
+  t.after(() => fs.writeFileSync(file, original));
+  const registry = JSON.parse(original);
+  registry.find(entry => entry.workItemId === options.workItemId).repoRoot = makeRepo('other-owner');
+  fs.writeFileSync(file, JSON.stringify(registry));
+  assert.match((await wt.prepareWorkspace(options)).error, /another repository/);
 });

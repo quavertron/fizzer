@@ -123,7 +123,7 @@ defmodule Cascade.WorkItemsTest do
     assert stopped.leaseHolder == nil
   end
 
-  test "unused isolated workspaces can rebind onto a newer base commit", context do
+  test "isolated workspace bases are immutable even without Git evidence", context do
     assert {:ok, item} =
              WorkItems.create(context.user_id, context.vault_id, %{
                title: "Fresh worker",
@@ -143,10 +143,18 @@ defmodule Cascade.WorkItemsTest do
     assert {:ok, bound} = WorkItems.bind_workspace(context.user_id, item.id, binding)
     assert bound.baseCommit == old
 
-    assert {:ok, moved} =
+    assert {:error, "Prepared base commit does not match this work item"} =
              WorkItems.bind_workspace(context.user_id, item.id, %{binding | baseCommit: new})
 
-    assert moved.baseCommit == new
+    assert {:ok, unchanged} = WorkItems.get(context.user_id, item.id)
+    assert unchanged.baseCommit == old
+
+    assert {:ok, pinned} = WorkItems.create(context.user_id, context.vault_id, %{
+      title: "Owner exact source", workspaceMode: "isolated", baseCommit: old
+    })
+    assert {:error, "Prepared base commit does not match this work item"} =
+             WorkItems.bind_workspace(context.user_id, pinned.id, %{binding | baseCommit: new})
+    assert {:ok, %{baseCommit: ^old}} = WorkItems.bind_workspace(context.user_id, pinned.id, binding)
   end
 
   test "review evidence is tied to the bound base and reported head", context do

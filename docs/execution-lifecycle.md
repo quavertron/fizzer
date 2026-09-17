@@ -59,3 +59,34 @@ recovery remains bounded; no universal recovery classification is claimed.
 
 Use normal Actions deployment and verify the exact serving revision and health.
 No owner-policy/cap changes, desktop restart or live model workload is required.
+
+## Automatic workspace baselines
+
+Native `workspace:prepare` transports the durable WorkItem's nonempty `baseCommit`
+as `startCommit`. Before first preparation, an explicit historical revision or
+owner-constrained branch is represented by its **full commit object ID** in that
+existing field (40 lowercase hex characters for SHA-1, 64 for SHA-256). Creation
+and the existing WorkItem update API accept it. Resolve a requested branch to its
+exact commit before storing it; branch names, revision expressions and prose are
+not pins. Invalid/unavailable IDs fail preparation. `baseBranch` remains integration
+metadata. Binding and Git reports reject a different recorded base.
+
+For a new unpinned root only, preparation uses the source primary branch's
+configured upstream when its locally known tip is a descendant of source HEAD.
+This neither fetches nor promises remote freshness. Ahead, diverged, detached,
+untracked and nonprimary sources retain source HEAD. Execution sends
+`preferUpstream: false` for parent/dependency sources, including shared sources
+without an isolated path. Exact pins take precedence over this flag. Manual
+workspace creation still starts at source HEAD.
+
+A registry-owned workspace always resumes in place, whether clean, dirty,
+committed or active. Its recorded branch/path/repository/base must match; a
+mismatch fails rather than moving it. There is no automatic clean-workspace reset
+or backend exception permitting an unused workspace's base to change. Existing
+admission, Stop, tenancy and lease checks still own permission to execute.
+
+`cascade-chat mission update --summary-file PATH` (or `-` for stdin) passes literal
+multiline text through the existing summary field. It conflicts with `--summary`;
+status, review outcome and verification outcome remain explicit. The server's
+existing summary length/normalization rules and completion authority still apply.
+The same input is available on `mission retry`; neither command invents evidence.

@@ -172,8 +172,7 @@ defmodule Cascade.WorkItems do
            same_or_blank(
              item.baseCommit,
              values.baseCommit,
-             "Prepared base commit does not match this work item",
-             rebindable_base?(item)
+             "Prepared base commit does not match this work item"
            ),
          :ok <-
            same_or_blank(
@@ -188,7 +187,7 @@ defmodule Cascade.WorkItems do
              "Prepared path does not match this work item"
            ) do
       base_commit =
-        if item.baseCommit in [nil, ""] or rebindable_base?(item),
+        if item.baseCommit in [nil, ""],
           do: values.baseCommit,
           else: item.baseCommit
 
@@ -880,26 +879,12 @@ defmodule Cascade.WorkItems do
 
   defp holder_can_release(_item, _holder), do: :ok
 
-  defp same_or_blank(existing, next, message, allow_rebind \\ false),
+  defp same_or_blank(existing, next, message),
     do:
-      if(existing in [nil, ""] or existing == next or allow_rebind,
+      if(existing in [nil, ""] or existing == next,
         do: :ok,
         else: {:error, message}
       )
-
-  defp rebindable_base?(item) do
-    item.verification in [nil, ""] and item.status in ~w(open leased in_progress) and
-      unused_git_state?(item.gitState)
-  end
-
-  defp unused_git_state?(nil), do: true
-
-  defp unused_git_state?(state) when is_map(state) do
-    field(state, :dirty) != true and integer(field(state, :ahead)) == 0 and
-      integer(field(state, :changedFiles)) == 0
-  end
-
-  defp unused_git_state?(_), do: false
 
   defp review_evidence_error(item, input) do
     base = clean(field(input, :baseCommit), 80)

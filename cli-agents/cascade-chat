@@ -41,8 +41,8 @@ Usage:
   cascade-chat mission child --task T --message P [--mission current] [--effort E]
   cascade-chat mission join            inspect child results; end turn to wait and resume for integration
   cascade-chat mission steer --task <id> --message <instruction>
-  cascade-chat mission update --task <id> --status <status> [--summary S] [--review-outcome accepted|changes_requested] [--verification-passed true|false] [--finding]
-  cascade-chat mission retry --task <id> [--summary S]
+  cascade-chat mission update --task <id> --status <status> [--summary S | --summary-file PATH] [--review-outcome accepted|changes_requested] [--verification-passed true|false] [--finding]
+  cascade-chat mission retry --task <id> [--summary S | --summary-file PATH]
   cascade-chat mission link-recovery --task <original-id> --source-task <recovery-id> --source-run <id> --target-run <id> --target-attempt <n> --objective <original-objective> --verification <observed-evidence>
   cascade-chat mission approve --mission <id> --expected-revisions '{"note-id":1}'
   cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
@@ -75,6 +75,7 @@ Usage:
                             active,reviewing,attention,blocked,completed,canceled or open|all
   --finding                 request coordinator interpretation of a significant finding or question
   --summary <text>          concise task/mission outcome
+  --summary-file <path|->   literal task summary from file or stdin (update/retry)
   --verification <text>     coordinator-observed checks and artifact/live evidence required to finish
   --after <task-id,...>     wait for these mission tasks to complete
   --priority <-100..100>    schedule higher-priority ready work first
@@ -990,6 +991,13 @@ async function main() {
         if (!['true', 'false'].includes(normalized)) fail('mission update --verification-passed must be true|false.');
         verificationPassed = normalized === 'true';
       }
+      let summary = String(args.summary || '').trim();
+      if (args['summary-file'] !== undefined) {
+        if (args.summary !== undefined) fail('Use only one of --summary and --summary-file.');
+        const source = args['summary-file'];
+        if (typeof source !== 'string' || !source) fail('--summary-file requires a path or - for stdin.');
+        summary = source === '-' ? await readStdin() : fs.readFileSync(source, 'utf8');
+      }
       const result = await api(
         url,
         token,
@@ -997,7 +1005,7 @@ async function main() {
         `/api/vaults/${vaultId}/channels/${channelId}/missions/tasks/${encodeURIComponent(taskId)}`,
         {
           status,
-          summary: String(args.summary || '').trim(),
+          summary,
           ...(args.finding ? { finding: true } : {}),
           ...(reviewOutcome !== undefined ? { reviewOutcome } : {}),
           ...(verificationPassed !== undefined ? { verificationPassed } : {}),

@@ -841,3 +841,49 @@ test('search keeps ranked excerpts and identifies full messages beyond history p
   assert.equal(requests.length, 3);
   assert.match((await run('search', '--help')).stdout, /history --channel <channelId> --message-id <id>/);
 });
+
+test('mission summary-file preserves literal file/stdin text and validates inputs before PATCH', async (t) => {
+  const bodies: Record<string, unknown>[] = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    bodies.push(JSON.parse(raw));
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ mission: { id: 'mission-1' } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const address = server.address(); assert(address && typeof address === 'object');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-summary-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = path.join(dir, 'helper.json');
+  fs.writeFileSync(config, '{}');
+  const env = { ...process.env, CASCADE_HELPER_CONFIG: config };
+  const common = ['--url', `http://127.0.0.1:${address.port}`, '--token', 'token', '--vault', 'vault', '--channel', 'channel'];
+  const args = [cli, 'mission', 'update', '--task', 'task', '--status', 'completed', ...common];
+  const summary = '  Evidence:\n`literal` $(no-shell) \\n "quotes"\nsecond line\n';
+  const file = path.join(dir, 'summary.txt');
+  fs.writeFileSync(file, summary);
+  await execFileAsync(process.execPath, [...args, '--summary-file', file, '--review-outcome', 'accepted', '--verification-passed', 'false'], { env });
+  assert.deepEqual(bodies.pop(), { status: 'completed', summary, reviewOutcome: 'accepted', verificationPassed: false });
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(process.execPath, [...args, '--summary-file', '-'], { env }, error => error ? reject(error) : resolve());
+    child.stdin!.end(summary);
+  });
+  assert.deepEqual(bodies.pop(), { status: 'completed', summary });
+  fs.writeFileSync(file, '');
+  await execFileAsync(process.execPath, [...args, '--summary-file', file], { env });
+  assert.deepEqual(bodies.pop(), { status: 'completed', summary: '' });
+  for (const [extra, expected] of [
+    [['--summary', '', '--summary-file', file], /only one/],
+    [['--summary-file'], /requires a path/],
+    [['--summary-file', path.join(dir, 'missing')], /ENOENT/],
+    [['--summary-file', dir], /EISDIR/],
+    [['--summary-file', file, '--review-outcome', 'automatic'], /accepted\|changes_requested/],
+    [['--summary-file', file, '--verification-passed', 'maybe'], /true\|false/],
+    [['--summary-file', file, '--status', 'done'], /needs --status/],
+  ] as [string[], RegExp][]) {
+    await assert.rejects(execFileAsync(process.execPath, [...args, ...extra], { env }), expected);
+    assert.equal(bodies.length, 0);
+  }
+});
