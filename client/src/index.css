@@ -2627,7 +2627,6 @@ button:focus-visible,
   color: var(--text-tertiary);
   cursor: pointer;
 }
-.kanban-portability,
 .kanban-archive-count {
   color: var(--text-tertiary);
   font: 0.625rem var(--font-mono);
@@ -3107,7 +3106,6 @@ button:focus-visible,
   .kanban-view { padding: 8px 10px 24px; }
   .kanban-toolbar { top: -8px; flex-wrap: wrap; }
   .kanban-search { width: min(100%, 260px); }
-  .kanban-portability { display: none; }
   .kanban-add-column { flex-basis: 100%; max-width: none; margin-left: 0; }
   .kanban-board {
     grid-template-columns: minmax(0, 1fr);

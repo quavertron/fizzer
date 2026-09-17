@@ -553,9 +553,6 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
             </button>
           )}
         </div>
-        <span className="kanban-portability">
-          {board.hasObsidianMarker ? 'Obsidian board' : 'Markdown board'}
-        </span>
         {showSuperkanbanToggle && (
           <button
             type="button"
