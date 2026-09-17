@@ -6,6 +6,18 @@
 import type { CSSProperties } from 'react';
 import type { ChatAgentRegistration, VaultAgent } from './types';
 
+/** Human invocation rule from Cascade.Missions.Dispatches.allowed?/3.
+ * Use registration ownership, never display names or profile-management rights. */
+export function canInvokeAgent(
+  registration: Pick<ChatAgentRegistration, 'ownerUserId' | 'pingableByOthers'>,
+  currentUserId?: number,
+): boolean {
+  return registration.pingableByOthers === true
+    || (currentUserId != null && registration.ownerUserId === currentUserId);
+}
+
+export const UNAVAILABLE_AGENT_MENTION = 'This agent is unavailable to you';
+
 export type AgentOwnership = 'owned' | 'other' | 'unknown';
 
 /** Ownership is presentation metadata, never permission to invoke an agent. */

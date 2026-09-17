@@ -73,6 +73,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   planUsage,
   latestRunningMessageId,
   mentionableAliases,
+  unavailableAliases,
   notes,
   onOpenNote,
   onOpenSharedNote,
@@ -111,6 +112,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   latestRunningMessageId?: string;
   runningSiblingCount: number;
   mentionableAliases: string[];
+  unavailableAliases?: string[];
   notes: NoteSummary[];
   onOpenNote?: (id: string) => void;
   onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
@@ -336,7 +338,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                   {message.body
                     && !isSteeringContinuationMessage(message)
                     && !(avatarKind === 'agent' && isLiveAgentStatus(message.status))
-                    && <ChatMessageText messageId={message.id} body={message.body} streaming={message.status === 'running'} isAgent={avatarKind === 'agent'} mentionableAliases={mentionableAliases} notes={notes} onOpenNote={onOpenNote} onOpenSharedNote={onOpenSharedNote} />}
+                    && <ChatMessageText messageId={message.id} body={message.body} streaming={message.status === 'running'} isAgent={avatarKind === 'agent'} mentionableAliases={mentionableAliases} unavailableAliases={unavailableAliases} notes={notes} onOpenNote={onOpenNote} onOpenSharedNote={onOpenSharedNote} />}
                   {vaultId && currentUserId != null && message.seq != null && <ChatReactions key={`${message.id}:${currentUserId}`} message={message} vaultId={vaultId} userId={currentUserId} />}
                   {message.mission && (
                     <ChatMissionCard
@@ -426,6 +428,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.latestRunningMessageId === next.latestRunningMessageId
   && prev.runningSiblingCount === next.runningSiblingCount
   && prev.mentionableAliases === next.mentionableAliases
+  && prev.unavailableAliases === next.unavailableAliases
   // Same trick as ChatMessageText: note churn only invalidates groups that
   // actually render an embed.
   && (prev.notes === next.notes || !groupHasDocEmbed(next.group))

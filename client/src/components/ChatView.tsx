@@ -1,5 +1,5 @@
 import { LoadingIndicator } from './LoadingIndicator';
-import { agentOwnership } from '../chat/agents';
+import { agentOwnership, canInvokeAgent } from '../chat/agents';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -483,6 +483,10 @@ export const ChatView = memo(function ChatView({
     }
     return Array.from(aliases);
   }, [humanUsers, registeredAgents]);
+  const unavailableAliases = useMemo(() => registeredAgents
+    .filter((registration) => !canInvokeAgent(registration, currentUserId))
+    .map((registration) => normalizeMention(registration.mention || registration.agentId)),
+  [registeredAgents, currentUserId]);
   const openSharedNote = useCallback(async (messageId: string, title: string) => {
     return await onOpenSharedNote?.(channelId, messageId, title) ?? null;
   }, [channelId, onOpenSharedNote]);
@@ -986,6 +990,7 @@ export const ChatView = memo(function ChatView({
                     runningSiblingCount={runState?.count || 0}
                     missionIdentities={missionIdentities}
                     mentionableAliases={mentionableAliases}
+                    unavailableAliases={unavailableAliases}
                     notes={notes}
                     onOpenNote={onOpenNote}
                     onOpenSharedNote={openSharedNote}
@@ -1113,6 +1118,7 @@ export const ChatView = memo(function ChatView({
           directMessage={directMessage}
           notes={notes}
           mentionableAliases={mentionableAliases}
+          unavailableAliases={unavailableAliases}
           registeredAgents={registeredAgents}
           onSendMessage={sendMessage}
         />

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
 
 // Exercise the composer's rendered controls and async handlers without a DOM.
-const hooks = vi.hoisted(() => ({ slots: [] as any[], cursor: 0, effects: [] as (() => void)[] }));
+const hooks = vi.hoisted(() => ({ slots: [] as any[], cursor: 0, effects: [] as (() => void)[], handle: null as any }));
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useState(initial: any) {
@@ -22,7 +22,7 @@ vi.mock('react', async (original) => ({
     if (!previous || deps.some((value, i) => value !== previous.deps[i])) hooks.slots[index] = { callback, deps };
     return hooks.slots[index].callback;
   },
-  useImperativeHandle: () => {},
+  useImperativeHandle: (_ref: any, create: () => any) => { hooks.handle = create(); },
   useEffect: effect,
   useLayoutEffect: effect,
 }));
@@ -40,10 +40,10 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 import { api } from '../api';
 import { ChatComposer, CHAT_MEDIA_LIMIT, CHAT_MEDIA_MAX_BYTES } from '../components/ChatComposer';
 const send = vi.fn();
-function render(channelId = 'channel-a') {
+function render(channelId = 'channel-a', overrides: Record<string, unknown> = {}) {
   hooks.cursor = 0;
   const tree = (ChatComposer as any).render({ channelId, channelName: channelId, notes: [],
-    mentionableAliases: [], registeredAgents: [], onSendMessage: send }, null);
+    mentionableAliases: [], registeredAgents: [], onSendMessage: send, ...overrides }, null);
   hooks.effects.splice(0).forEach((run) => run());
   return tree;
 }
@@ -169,4 +169,37 @@ describe('composer media uploads', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+});
+
+it('skips unavailable Tab completions and updates after eligibility changes', () => {
+  const props = { mentionableAliases: ['blocked', 'available', 'alice'], unavailableAliases: ['blocked'] };
+  const tab = (value: string, overrides = props) => {
+    byType(render('channel-a', overrides), 'textarea')[0].props.onKeyDown({
+      key: 'Tab', preventDefault() {}, currentTarget: { value, selectionStart: value.length },
+    });
+    return byType(render('channel-a', overrides), 'textarea')[0].props.value;
+  };
+  expect(tab('@')).toBe('@available ');
+  expect(tab('@available ')).toBe('@alice ');
+  expect(tab('@', { ...props, unavailableAliases: [] })).toBe('@blocked ');
+  // A cached cycle must not insert a handle that became unavailable.
+  expect(tab('@blocked ')).toBe('@blocked ');
+  expect(tab('@')).toBe('@available ');
+});
+
+it('disables unavailable reply notification but preserves quotes and available replies', () => {
+  vi.stubGlobal('window', { setTimeout: () => 1, clearTimeout() {} });
+  const props = { registeredAgents: [{ mention: 'blocked' }], unavailableAliases: ['blocked'] };
+  render('channel-a', props);
+  hooks.handle.startReply({ messageId: 'quoted', mention: 'blocked', preview: 'quote' });
+  const tree = render('channel-a', props);
+  const toggle = button(tree, 'This agent is unavailable to you');
+  expect(toggle.props.disabled).toBe(true);
+  expect(toggle.props['aria-pressed']).toBe(false);
+  byType(tree, 'textarea')[0].props.onChange({ target: { value: 'reply' } });
+  byType(render('channel-a', props), 'textarea')[0].props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  expect(send.mock.calls[0][3]).toMatchObject({ messageId: 'quoted', mention: '', preview: 'quote' });
+  hooks.handle.startReply({ messageId: 'quoted', mention: 'blocked', preview: 'quote' });
+  const allowed = render('channel-a', { ...props, unavailableAliases: [] });
+  expect(button(allowed, 'Turn off notification for @blocked').props.disabled).toBe(false);
 });

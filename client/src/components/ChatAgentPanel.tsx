@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import { ChevronRight, X } from 'lucide-react';
 import { formatChatTime } from '../chat/time';
 import { createChatAgentRegistrationId } from '../chat/shared';
-import { agentOwnerStyle, agentOwnership, eligibleAgentProfiles, vaultAgentMembershipPayload } from '../chat/agents';
+import { canInvokeAgent, UNAVAILABLE_AGENT_MENTION, agentOwnerStyle, agentOwnership, eligibleAgentProfiles, vaultAgentMembershipPayload } from '../chat/agents';
 import { normalizeMention } from '../chat/mentions';
 import type {
   ChatAgentOption,
@@ -635,7 +635,8 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                     <strong>{agent.registration.displayName || agent.label}</strong>
                     {planUsage && <PlanUsageMeters usage={planUsage} decal />}
                   </div>
-                  <span className="chat-user-handle">@{agent.registration.mention || agent.id}</span>
+                  <span className={`chat-user-handle${canInvokeAgent(agent.registration, currentUserId) ? '' : ' is-unavailable'}`}
+                    title={canInvokeAgent(agent.registration, currentUserId) ? undefined : UNAVAILABLE_AGENT_MENTION}>@{agent.registration.mention || agent.id}</span>
                   <span className="chat-user-role">{selectedModel || 'no model'}</span>
                   <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>
                 </div>

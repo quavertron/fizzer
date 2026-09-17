@@ -1,3 +1,4 @@
+import { UNAVAILABLE_AGENT_MENTION } from '../chat/agents';
 import { LoadingIndicator } from './LoadingIndicator';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -41,7 +42,7 @@ export function SafeMarkdownImage({ src = '', alt = '' }: { src?: string; alt?: 
     : <a href={src} target={CHAT_EXTERNAL_TARGET} rel="noopener noreferrer">External image{alt ? `: ${alt}` : ''}</a>;
 }
 
-function formatChatMentions(text: string, aliases: string[]): ReactNode[] {
+function formatChatMentions(text: string, aliases: string[], unavailableAliases: string[]): ReactNode[] {
   const mentionable = [...new Set(
     aliases.map((alias) => normalizeMention(alias)).filter(Boolean),
   )];
@@ -58,7 +59,9 @@ function formatChatMentions(text: string, aliases: string[]): ReactNode[] {
     if (match.index > lastIndex) {
       nodes.push(text.slice(lastIndex, match.index));
     }
-    nodes.push(<span key={key++} className="chat-mention">{match[0]}</span>);
+    const unavailable = unavailableAliases.includes(normalizeMention(match[0].replace(/^@\s*/, '')));
+    nodes.push(<span key={key++} className={`chat-mention${unavailable ? ' is-unavailable' : ''}`}
+      title={unavailable ? UNAVAILABLE_AGENT_MENTION : undefined}>{match[0]}</span>);
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < text.length) {
@@ -342,6 +345,7 @@ export const ChatMessageText = memo(function ChatMessageText({
   streaming = false,
   isAgent = false,
   mentionableAliases,
+  unavailableAliases = [],
   notes = [],
   onOpenNote,
   onOpenSharedNote,
@@ -351,6 +355,7 @@ export const ChatMessageText = memo(function ChatMessageText({
   streaming?: boolean;
   isAgent?: boolean;
   mentionableAliases: string[];
+  unavailableAliases?: string[];
   notes?: NoteSummary[];
   onOpenNote?: (id: string) => void;
   onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
@@ -377,7 +382,7 @@ export const ChatMessageText = memo(function ChatMessageText({
       );
       return wikiNodes.flatMap((node) => (
         typeof node === 'string'
-          ? formatChatMentions(node, mentionableAliases)
+          ? formatChatMentions(node, mentionableAliases, unavailableAliases)
           : [node]
       ));
     };
@@ -388,7 +393,7 @@ export const ChatMessageText = memo(function ChatMessageText({
     }
     if (typeof children === 'string') return decorate(children);
     return children;
-  }, [mentionableAliases, messageId, notes, previewLocalNote, previewSharedNote, onOpenSharedNote]);
+  }, [mentionableAliases, unavailableAliases, messageId, notes, previewLocalNote, previewSharedNote, onOpenSharedNote]);
 
   const formattedBody = useMemo(() => {
     // Raw <svg>…</svg> is escaped by react-markdown, so (agents only) lift it
@@ -489,6 +494,7 @@ export const ChatMessageText = memo(function ChatMessageText({
   &&
   prev.body === next.body
   && aliasesEqual(prev.mentionableAliases, next.mentionableAliases)
+  && aliasesEqual(prev.unavailableAliases ?? [], next.unavailableAliases ?? [])
   // Notes list only matters for bodies with `![[…]]` embeds or `[[…]]` cites.
   && (prev.notes === next.notes || !bodyHasNoteRefs(next.body))
   && prev.onOpenNote === next.onOpenNote

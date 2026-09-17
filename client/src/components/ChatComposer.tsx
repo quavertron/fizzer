@@ -1,3 +1,4 @@
+import { UNAVAILABLE_AGENT_MENTION } from '../chat/agents';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { ImagePlus, Paperclip, Send, Smile, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -88,6 +89,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
   directMessage?: boolean;
   notes: NoteSummary[];
   mentionableAliases: string[];
+  unavailableAliases?: string[];
   registeredAgents: ChatAgentRegistration[];
   onSendMessage: (channelId: string, body: string, media?: ChatMediaAttachment[], replyTo?: ChatReplyRef) => void;
 }>(function ChatComposer({
@@ -96,12 +98,15 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
   directMessage = false,
   notes,
   mentionableAliases,
+  unavailableAliases = [],
   registeredAgents,
   onSendMessage,
 }, ref) {
   const [draft, setDraft] = useState('');
   const [replyTarget, setReplyTarget] = useState<ChatReplyRef | null>(null);
   const [replyNotifiesAgent, setReplyNotifiesAgent] = useState(true);
+  const replyUnavailable = !!replyTarget && unavailableAliases.includes(normalizeMention(replyTarget.mention));
+  const notifyReply = replyNotifiesAgent && !replyUnavailable;
   const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([]);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [mediaError, setMediaError] = useState('');
@@ -293,7 +298,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     const media = mediaRef.current;
     if ((!body && media.length === 0) || media.some((item) => !item.uploadedUrl)) return;
     const reply = replyTarget
-      ? prepareReplyForSend(replyTarget, replyNotifiesAgent)
+      ? prepareReplyForSend(replyTarget, notifyReply)
       : undefined;
     onSendMessage(channelId, body, media.map((item) => ({
       name: item.name, media_type: item.media_type, data: '', url: item.uploadedUrl!,
@@ -313,6 +318,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
     const cycle = mentionCycleRef.current;
     const cycleToken = cycle ? `@${cycle.matches[cycle.index]} ` : '';
     const canCycle = Boolean(cycle
+      && cycle.matches.every((alias) => !unavailableAliases.includes(normalizeMention(alias)))
       && cursor === cycle.start + cycleToken.length
       && value.slice(cycle.start, cursor) === cycleToken);
     let next: { matches: string[]; index: number; start: number };
@@ -323,7 +329,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
       if (!match) return false;
       const start = cursor - match[0].length;
       const partial = match[1].toLowerCase();
-      const matches = mentionableAliases.filter((alias) => alias.toLowerCase().startsWith(partial));
+      const matches = mentionableAliases.filter((alias) => alias.toLowerCase().startsWith(partial) && !unavailableAliases.includes(normalizeMention(alias)));
       if (matches.length === 0) return false;
       next = { matches, index: 0, start };
     }
@@ -486,12 +492,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, {
             {registeredAgents.some((agent) => normalizeMention(agent.mention) === normalizeMention(replyTarget.mention)) && (
               <button
                 type="button"
-                className={`chat-reply-mention-toggle${replyNotifiesAgent ? ' active' : ''}`}
-                aria-pressed={replyNotifiesAgent}
-                title={replyNotifiesAgent ? `Turn off notification for @${replyTarget.mention}` : `Notify @${replyTarget.mention}`}
+                className={`chat-reply-mention-toggle${notifyReply ? ' active' : ''}`}
+                aria-pressed={notifyReply}
+                disabled={replyUnavailable}
+                title={replyUnavailable ? UNAVAILABLE_AGENT_MENTION : replyNotifiesAgent ? `Turn off notification for @${replyTarget.mention}` : `Notify @${replyTarget.mention}`}
                 onClick={() => setReplyNotifiesAgent((value) => !value)}
               >
-                @{replyNotifiesAgent ? 'ON' : 'OFF'}
+                @{notifyReply ? 'ON' : 'OFF'}
               </button>
             )}
             <button

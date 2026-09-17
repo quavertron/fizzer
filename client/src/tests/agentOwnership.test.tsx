@@ -110,3 +110,18 @@ describe('agent ownership presentation', () => {
     expect(members.every((member) => member.pingableByOthers)).toBe(true);
   });
 });
+
+it('mutes unavailable roster handles without disabling another owner’s shared agent mention', () => {
+  const profiles = [profile('mine'), profile('blocked', { ownerUserId: 2 }), profile('shared', { ownerUserId: 2 })];
+  const members = profiles.map((identity) => ({ ...registration(identity), pingableByOthers: identity.id === 'shared' }));
+  const html = renderToStaticMarkup(createElement(ChatAgentPanel, {
+    channelId: 'chat', currentUser: 'alice', currentUserId: 1, vaultAgents: profiles,
+    availableAgents: [], registeredAgents: members,
+    registeredAgentRows: members.map((member) => ({ id: 'codex', label: member.displayName, models: [], registration: member })),
+    canManageRegistration: () => false,
+    onRegisterAgent() {}, onRemoveAgent() {}, async onInviteUser() {}, onExpandRail() {}, onChromeChange() {},
+  }));
+  expect(html).toContain('class="chat-user-handle is-unavailable" title="This agent is unavailable to you">@blocked');
+  expect(html).toContain('class="chat-user-handle">@mine');
+  expect(html).toContain('class="chat-user-handle">@shared');
+});
