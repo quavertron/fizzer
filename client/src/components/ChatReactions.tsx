@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { chatMessageStore } from '../chat/messageStore';
 import type { ChatMessage } from '../chat/types';
@@ -8,10 +8,22 @@ const choices = [['😂', 'Laugh'], ['👍', 'Thumbs up'], ['❤️', 'Heart'], 
 
 export function ChatReactions({ message, vaultId, userId }: { message: ChatMessage; vaultId: string; userId: number }) {
   const [open, setOpen] = useState(false);
+  const [revealed, setRevealed] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const busy = useRef(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const items = message.reactions?.items || {};
+  const hasItems = choices.some(([emoji]) => items[emoji]?.length);
+  useEffect(() => {
+    const chunk = rootRef.current?.closest('.chat-message-chunk');
+    if (!chunk) return;
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || event.pointerType === 'pen') setRevealed(true);
+    };
+    chunk.addEventListener('pointerup', onPointerUp);
+    return () => chunk.removeEventListener('pointerup', onPointerUp);
+  }, []);
   const toggle = async (emoji: string) => {
     if (busy.current) return;
     busy.current = true;
@@ -34,7 +46,11 @@ export function ChatReactions({ message, vaultId, userId }: { message: ChatMessa
       setPending(false);
     }
   };
-  return <div className="chat-reactions" onClick={event => event.stopPropagation()}>
+  return <div
+    ref={rootRef}
+    className={`chat-reactions${hasItems ? ' has-items' : ''}${open ? ' is-open' : ''}${revealed ? ' is-revealed' : ''}`}
+    onClick={event => event.stopPropagation()}
+  >
     {choices.filter(([emoji]) => open || items[emoji]?.length).map(([emoji, label]) => {
       const count = items[emoji]?.length || 0;
       const own = items[emoji]?.includes(`user:${userId}`) || false;
@@ -42,7 +58,7 @@ export function ChatReactions({ message, vaultId, userId }: { message: ChatMessa
         aria-label={`${label}${count ? `, ${count}` : ''}${own ? ', your reaction' : ''}`}
         onClick={() => void toggle(emoji)}>{emoji}{count > 0 && <span>{count}</span>}</button>;
     })}
-    <button type="button" aria-label="Add reaction" aria-expanded={open} disabled={pending}
+    <button type="button" className="chat-reactions-add" aria-label="Add reaction" aria-expanded={open} disabled={pending}
       onClick={() => setOpen(!open)}>☺+</button>
     {error && <span role="alert">{error}</span>}
   </div>;

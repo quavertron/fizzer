@@ -1,4 +1,14 @@
-.chat-reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.chat-reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chat-reactions.has-items,
+.chat-reactions.is-open,
+.chat-reactions.is-revealed,
+.chat-message-chunk:hover .chat-reactions,
+.chat-message-chunk:focus-within .chat-reactions { margin-top: 4px; }
+.chat-reactions .chat-reactions-add { display: none; }
+.chat-message-chunk:hover .chat-reactions .chat-reactions-add,
+.chat-message-chunk:focus-within .chat-reactions .chat-reactions-add,
+.chat-reactions.is-open .chat-reactions-add,
+.chat-reactions.is-revealed .chat-reactions-add { display: inline-flex; }
 .chat-reactions button { display: inline-flex; align-items: center; gap: 4px; min-width: 32px; min-height: 32px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-raised); color: var(--text-secondary); cursor: pointer; }
 .chat-reactions button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-subtle); color: var(--text-primary); }
 .chat-reactions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
