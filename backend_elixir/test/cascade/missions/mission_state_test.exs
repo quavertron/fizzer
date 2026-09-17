@@ -549,9 +549,11 @@ defmodule Cascade.Missions.MissionStateTest do
 
 
 
-  for completion_state <- [:handled, :raced, :pending] do
+  for completion_state <- [:handled, :raced, :pending],
+      concern <- ["", " Nonblocking friction: deployment took two hours (release log start 09:00, health verified 11:00). The result is verified; release latency is worth revisiting, not new accepted work."] do
   @completion_state completion_state
-  test "approved delivery is canonical with #{@completion_state} interpretation evidence", ctx do
+  @concern concern
+  test "approved delivery is canonical with #{@completion_state} interpretation evidence and concern present=#{@concern != ""}", ctx do
     state = approved_workspace(ctx, "Complete delivery")
     assert state.mission.phase == "executing"
     assert is_binary(state.mission.approvedAt)
@@ -636,7 +638,7 @@ defmodule Cascade.Missions.MissionStateTest do
     completion = %{
       coordinatorRegistrationId: state.coordinator_id,
       status: "completed",
-      summary: "Delivered the approved change.",
+      summary: "Delivered the approved change." <> @concern,
       verification: "Independent review, integration, and verification evidence recorded."
     }
     before_ack = SQL.one("SELECT handled_fingerprint,pending_fingerprint,state_json FROM chat_mission_interpretations WHERE mission_id=?", [state.mission.id])
@@ -651,6 +653,9 @@ defmodule Cascade.Missions.MissionStateTest do
     assert {:ok, finished} = Store.finish(ctx.user.id, state.channel_id, state.mission.id, completion)
 
     assert finished.mission.status == "completed"
+    assert finished.mission.summary == completion.summary
+    assert SQL.one("SELECT summary FROM chat_mission_events WHERE source_key=?",
+      ["mission-completed:#{state.mission.id}"]) == [completion.summary]
     assert finished.mission.phase == "closed"
     assert Enum.map(finished.mission.tasks, & &1.purpose) ==
              ["implementation", "review", "integration", "verification"]
@@ -677,6 +682,7 @@ defmodule Cascade.Missions.MissionStateTest do
       assert projection.mission.status == "completed"
       assert {:ok, root} = Store.root_message(projection)
       assert root.mission["status"] == "completed"
+      assert root.mission["summary"] == completion.summary
     end
     assert SQL.all("SELECT id FROM chat_agent_dispatches WHERE channel_id=? ORDER BY id", [state.channel_id]) == before
     refute [state.mission.id, ctx.user.id] in Scheduler.maintenance_missions()

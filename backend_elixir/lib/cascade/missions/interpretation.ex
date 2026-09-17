@@ -1226,6 +1226,7 @@ defmodule Cascade.Missions.Interpretation do
 
   defp publication_guidance do
     """
+    #{Cascade.Missions.Context.delivery_guidance()}
     Save durable understanding separately from publication. Routine progress, retries and intermediate verification belong in the run trace; coalesce related evidence. Include body only for direct answers, actionable owner blockers, significant findings or corrections, and one concise outcome; status or assessment changes alone do not warrant chat. Read recent chat before publishing: if someone already published the outcome, save its reference and acknowledge quietly unless a question or significant changed conclusion remains. Explain material changes to prior public claims honestly; include correctsMessageId for a prior mission explanation. Ordinary pending-to-delivered progress is not a correction. Do not hide real failures or leave owner questions unanswered: publish failures that change the outcome, require owner action or correct a public claim; keep bounded recovery in trace. Otherwise omit body and set noMaterialChange:true even when the saved assessment or evidence changes. This acknowledges the batch while retaining questions, commitments and evidence. After successful helper or API acknowledgment, end with [no-reply] unless a separate direct owner answer remains; never repeat a published body or narrate acknowledgment.
     """
   end

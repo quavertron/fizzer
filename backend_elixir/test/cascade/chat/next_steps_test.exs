@@ -119,14 +119,19 @@ defmodule Cascade.Chat.NextStepsTest do
     assert SQL.one("SELECT id FROM chat_messages WHERE id=?", [fresh.id]) == nil
   end
 
-  test "enabled checkpoints require creative suggestions after active answers", c do
+  test "enabled ideas remain available but delivery never requires a new proposal", c do
     enable(c)
     prompt = context(c)
     assert prompt =~ "fizzer-next:#{c.source.id}"
-    assert prompt =~ "must offer exactly one new bounded work suggestion"
-    assert prompt =~ "after answering every active user request"
+    assert prompt =~ "offer one new bounded work suggestion"
+    assert prompt =~ "after answering active user requests"
+    assert prompt =~ "Delivery of accepted work is not an idea checkpoint"
+    assert prompt =~ "No friction is a valid outcome"
+    assert prompt =~ "ordinary completion summary/reply without a suggestion marker"
+    assert prompt =~ "unchanged friction is not another nagging proposal"
+    refute prompt =~ "must offer exactly one"
     assert prompt =~ "label speculative benefits honestly"
-    assert prompt =~ "explicit Stop overrides"
+    assert prompt =~ "and explicit Stop"
     refute prompt =~ "If there is no grounded suggestion"
     assert prompt =~ "proportionate read-only discovery"
     assert prompt =~ "An observed defect or proven need is not required"
@@ -196,7 +201,7 @@ defmodule Cascade.Chat.NextStepsTest do
       prompt = Cascade.Runs.Store.get(run.id).prompt
       assert prompt =~ "fizzer-next:#{dispatch.messageId}"
 
-      assert length(String.split(prompt, "must offer exactly one new bounded work suggestion")) ==
+      assert length(String.split(prompt, "offer one new bounded work suggestion")) ==
                2
 
       assert prompt =~ "verify concrete repository claims against current permitted source"
@@ -234,7 +239,7 @@ defmodule Cascade.Chat.NextStepsTest do
   test "default off and disablement suppress a generated suggestion at publication", c do
     assert proposal(c).body == ""
     enable(c)
-    assert context(c) =~ "must offer exactly one"
+    assert context(c) =~ "offer one"
     enable(c, false)
     assert proposal(c).body == ""
     assert context(c) =~ "overrides earlier suggestion settings"
@@ -334,7 +339,7 @@ defmodule Cascade.Chat.NextStepsTest do
 
     age(first)
     prompt = NextSteps.context(c.channel.id, c.member.id, decline.id)
-    assert prompt =~ "must offer exactly one"
+    assert prompt =~ "offer one"
     assert prompt =~ "Should fixing it be next?"
     assert prompt =~ "I need the editor stable for a demo"
     assert proposal(c).body == ""
@@ -350,7 +355,7 @@ defmodule Cascade.Chat.NextStepsTest do
       Messages.create(c.user, c.vault_id, c.channel.id, %{body: "What does a checkpoint mean?"})
 
     prompt = NextSteps.context(c.channel.id, c.member.id, fresh.id)
-    assert prompt =~ "must offer exactly one"
+    assert prompt =~ "offer one"
     assert prompt =~ "An ignored proposal is not acceptance"
 
     input = %{
@@ -602,7 +607,7 @@ defmodule Cascade.Chat.NextStepsTest do
         body: "A new build error is now blocking the release."
       })
 
-    assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "must offer exactly one"
+    assert NextSteps.context(c.channel.id, c.member.id, fresh.id) =~ "offer one"
     assert proposal(c).body == ""
     assert proposal(%{c | source: fresh}).body != ""
   end
@@ -648,7 +653,7 @@ defmodule Cascade.Chat.NextStepsTest do
     enable(c)
     Schema.ensure!()
     assert checks(c) == [[source, "enable", "pending"]]
-    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "must offer exactly one"
+    assert NextSteps.context(c.channel.id, c.member.id, source) =~ "offer one"
     assert SQL.one("SELECT COUNT(*) FROM chat_missions WHERE channel_id=?", [c.channel.id]) == [0]
     enable(c, false)
     assert {:ok, []} = Dispatches.list_pending(c.user.id, c.channel.id)
@@ -957,7 +962,7 @@ defmodule Cascade.Chat.NextStepsTest do
 
     assert NextSteps.context(c.channel.id, c.member.id, source) =~ "Do not offer a new"
     assert proposal(%{c | source: %{id: source}}).body == ""
-    assert context(c) =~ "must offer exactly one"
+    assert context(c) =~ "offer one"
     assert proposal(c).body != ""
 
     SQL.exec("UPDATE chat_missions SET status='completed' WHERE id=?", [mission.mission.id])
