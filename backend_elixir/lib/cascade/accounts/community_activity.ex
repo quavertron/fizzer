@@ -29,15 +29,63 @@ defmodule Cascade.Accounts.CommunityActivity do
   def record_note_change(
         note_id,
         actor_user_id,
-        changed_at \\ DateTime.utc_now() |> DateTime.to_iso8601()
+        changed_at \\ DateTime.utc_now() |> DateTime.to_iso8601(),
+        content_change \\ nil
       ) do
+    mentioned = added_mentions(note_id, actor_user_id, content_change)
+
     SQL.exec(
-      "INSERT INTO community_note_activity (note_id,actor_user_id,changed_at) VALUES (?,?,?)",
-      [note_id, actor_user_id, changed_at]
+      "INSERT INTO community_note_activity (note_id,actor_user_id,changed_at,mentioned_user_ids) VALUES (?,?,?,?)",
+      [note_id, actor_user_id, changed_at, Jason.encode!(mentioned)]
     )
 
     :ok
   end
+
+  defp added_mentions(note_id, actor_user_id, {before, after_content}) do
+    added = MapSet.difference(mention_names(after_content), mention_names(before))
+
+    SQL.all(
+      """
+      SELECT member.user_id,u.username FROM notes n
+      JOIN vault_members member ON member.vault_id=n.vault_id
+      JOIN users u ON u.id=member.user_id
+      JOIN vault_members actor ON actor.vault_id=n.vault_id AND actor.user_id=?
+      WHERE n.id=? AND member.user_id!=? AND n.is_archived=0
+        AND n.content NOT LIKE 'cascade://chat-channel%'
+      """,
+      [actor_user_id, note_id, actor_user_id]
+    )
+    |> Enum.filter(fn [_id, username] -> MapSet.member?(added, String.downcase(username)) end)
+    |> Enum.map(&hd/1)
+  end
+
+  defp added_mentions(_, _, _), do: []
+
+  # Use the existing Markdown parser so code and link destinations never become mentions.
+  defp mention_names(content) do
+    content
+    |> String.replace(~r/\\@/, " ")
+    |> String.replace(~r/\[\[[^\]\n]*\]\]/, " ")
+    |> MDEx.parse_document!()
+    |> mention_text()
+    |> Enum.flat_map(fn text ->
+      text = String.replace(text, ~r/https?:\/\/[^\s<>]+/, " ")
+
+      Regex.scan(
+        ~r/(?<![\p{L}\p{N}_@\\.\/:+%?=&#-])@([A-Za-z0-9_][A-Za-z0-9_-]*)(?![A-Za-z0-9_-])/u,
+        text
+      )
+      |> Enum.map(fn [_, name] -> String.downcase(name) end)
+    end)
+    |> MapSet.new()
+  end
+
+  defp mention_text(%MDEx.Text{literal: text}), do: [text]
+  defp mention_text(%MDEx.Image{}), do: []
+  defp mention_text(%MDEx.Link{}), do: []
+  defp mention_text(%{nodes: nodes}), do: Enum.flat_map(nodes, &mention_text/1)
+  defp mention_text(_), do: []
 
   def list(user, requested_limit \\ @default_limit, include_agent_memory \\ false) do
     limit = bounded_limit(requested_limit)
@@ -211,7 +259,8 @@ defmodule Cascade.Accounts.CommunityActivity do
       SQL.all(
         """
         SELECT n.id,n.vault_id,v.name,n.title,n.content_preview,u.username,
-          COALESCE(NULLIF(u.display_name,''),u.username),activity.changed_at,activity.id
+          COALESCE(NULLIF(u.display_name,''),u.username),activity.changed_at,activity.id,
+          EXISTS (SELECT 1 FROM json_each(activity.mentioned_user_ids) WHERE value=membership.user_id)
         FROM community_note_activity activity JOIN notes n ON n.id=activity.note_id
         JOIN vaults v ON v.id=n.vault_id
         JOIN vault_members membership ON membership.vault_id=n.vault_id AND membership.user_id=?
@@ -226,7 +275,9 @@ defmodule Cascade.Accounts.CommunityActivity do
           AND (SELECT COUNT(*) FROM vault_members members WHERE members.vault_id=n.vault_id)>1
           AND activity.id=(SELECT newer.id FROM community_note_activity newer
             WHERE newer.note_id=n.id AND newer.actor_user_id!=?
-            ORDER BY julianday(newer.changed_at) DESC,newer.id DESC LIMIT 1)
+            ORDER BY (julianday(newer.changed_at)>julianday(COALESCE(state.read_at,membership.created_at))
+              AND EXISTS (SELECT 1 FROM json_each(newer.mentioned_user_ids) WHERE value=membership.user_id)) DESC,
+              julianday(newer.changed_at) DESC,newer.id DESC LIMIT 1)
           AND julianday(activity.changed_at)>julianday(COALESCE(state.read_at,membership.created_at))
           AND n.content_preview NOT LIKE 'cascade://chat-channel%'
           AND n.content NOT LIKE 'cascade://chat-channel%'
@@ -243,11 +294,22 @@ defmodule Cascade.Accounts.CommunityActivity do
       )
 
     Enum.reduce(rows, {[], empty_counts()}, fn
-      [note_id, vault_id, vault_name, title, preview, actor, actor_name, changed_at, activity_id],
+      [
+        note_id,
+        vault_id,
+        vault_name,
+        title,
+        preview,
+        actor,
+        actor_name,
+        changed_at,
+        activity_id,
+        mentioned
+      ],
       {items, counts} ->
         item = %{
           id: "note:#{note_id}:#{activity_id}",
-          kind: "note",
+          kind: if(mentioned == 1, do: "mention", else: "note"),
           vaultId: vault_id,
           vaultName: vault_name,
           targetId: note_id,

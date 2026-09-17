@@ -336,6 +336,109 @@ defmodule Cascade.AccountsDomainTest do
     assert {"GET", "/api/diagnostics/android-battery"} in routes
   end
 
+  test "note mentions survive autosaves and rename, and respect read watermarks" do
+    Cascade.Content.Activity.install()
+    vault = Store.create_vault(1, %{name: "Mentions"})
+    assert {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+
+    SQL.exec("UPDATE vault_members SET created_at='2000-01-01T00:00:00Z' WHERE vault_id=?", [
+      vault.id
+    ])
+
+    bob = %{id: 2, username: "bob"}
+
+    note =
+      Store.create_note(vault.id, 1, %{title: "Plan", content: "Hello @BOB and @alice and @carol"})
+
+    assert [item] = CommunityActivity.list(bob).groups |> Enum.flat_map(& &1.items)
+    assert item.kind == "mention"
+    assert item.targetId == note.id
+    refute Map.has_key?(item, :messageId)
+
+    assert SQL.one("SELECT mentioned_user_ids FROM community_note_activity WHERE note_id=?", [
+             note.id
+           ]) == ["[2]"]
+
+    Store.update_note(note.id, note.content, 1)
+    Store.update_note(note.id, note.content <> "!", 1)
+    Store.rename_note(note.id, "Renamed", 1)
+    assert mention_count(note.id) == 1
+    assert [item] = CommunityActivity.list(bob).groups |> Enum.flat_map(& &1.items)
+    assert item.kind == "mention"
+    assert item.targetTitle == "Renamed"
+    assert CommunityActivity.mark_read(2, note.id)
+    assert CommunityActivity.list(bob).counts.total == 0
+    Store.update_note(note.id, note.content <> "!!", 1)
+    assert [item] = CommunityActivity.list(bob).groups |> Enum.flat_map(& &1.items)
+    assert item.kind == "note"
+  end
+
+  test "mention deltas exclude literal Markdown, outsiders, self, and failed writes" do
+    Cascade.Content.Activity.install()
+    vault = Store.create_vault(1, %{name: "Mentions boundaries"})
+    assert {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    note = Store.create_note(vault.id, 1, %{title: "Literals", content: "plain"})
+
+    literals = ~S"""
+    a@bob.example a.@bob.example \@bob `@bob` ``@bob`` ``code ` @bob`` [site](https://x/@bob) https://x/@bob
+    ```text
+    @bob
+    ```
+    ~~~
+    @bob
+    ~~~
+    > ```
+    > @bob
+    > ```
+
+        @bob
+
+    [@bob](relative) ![@bob](image) [[@bob]] ?who=@bob
+
+    [reference]: /relative?member=@bob
+
+    @bob-other @carol @alice
+    """
+
+    Store.update_note(note.id, literals, 1)
+    assert mention_count(note.id) == 0
+
+    assert {:error, %{error: "revision_conflict"}} =
+             Store.update_note(note.id, "@bob", 1, expected_revision: "stale")
+
+    assert mention_count(note.id) == 0
+    Store.update_note(note.id, "@bob", 1)
+    assert mention_count(note.id) == 1
+    SQL.exec("DELETE FROM vault_members WHERE vault_id=? AND user_id=2", [vault.id])
+    assert CommunityActivity.list(%{id: 2, username: "bob"}).counts.total == 0
+    Store.update_note(note.id, "none", 1)
+    Store.update_note(note.id, "@bob", 1)
+    assert mention_count(note.id) == 1
+  end
+
+  test "unrelated actors cannot create mentions, and removed mentions can be added again" do
+    Cascade.Content.Activity.install()
+    vault = Store.create_vault(1, %{name: "Mention actor"})
+    assert {:ok, _} = VaultMembers.add(vault.id, 1, 2, "editor")
+    note = Store.create_note(vault.id, 1, %{title: "Plan", content: "@bob"})
+    Store.update_note(note.id, "none", 1)
+    Store.update_note(note.id, "@bob", 3)
+    assert mention_count(note.id) == 1
+    Store.update_note(note.id, "none", 1)
+    Store.update_note(note.id, "@bob", 1)
+    assert mention_count(note.id) == 2
+  end
+
+  defp mention_count(note_id) do
+    [count] =
+      SQL.one(
+        "SELECT COUNT(*) FROM community_note_activity WHERE note_id=? AND mentioned_user_ids!='[]'",
+        [note_id]
+      )
+
+    count
+  end
+
   defp request(method, path, body, token) do
     json_conn(method, path, body, token)
     |> CascadeWeb.AccountRouter.call(@router_options)

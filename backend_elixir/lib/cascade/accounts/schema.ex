@@ -232,6 +232,8 @@ defmodule Cascade.Accounts.Schema do
       "CREATE INDEX IF NOT EXISTS community_note_activity_note_idx ON community_note_activity(note_id, changed_at DESC, id DESC)"
     )
 
+    SQL.ensure_column("community_note_activity", "mentioned_user_ids", "TEXT NOT NULL DEFAULT '[]'")
+
     if not read_state_existed?, do: Cascade.Accounts.CommunityActivity.seed_existing_as_read!()
   end
 

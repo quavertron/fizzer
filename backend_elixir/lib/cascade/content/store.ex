@@ -591,7 +591,7 @@ defmodule Cascade.Content.Store do
     )
 
     reindex_links(id, vault_id, content)
-    notify_mutation(id, user_id, :create)
+    notify_mutation(id, user_id, :create, {"", content})
     maybe_invalidate_presence_channels(nil, content)
     get_note(id)
   end
@@ -698,7 +698,7 @@ defmodule Cascade.Content.Store do
 
       {:ok, {:ok, note, before, after_content, _mission_linked, changed?}} ->
         if changed? do
-          notify_mutation(note_id, actor_user_id, :content)
+          notify_mutation(note_id, actor_user_id, :content, {before, after_content})
           maybe_invalidate_presence_channels(before, after_content)
         end
 
@@ -1835,8 +1835,11 @@ defmodule Cascade.Content.Store do
     notify_mutation(note_id, actor_user_id, kind)
   end
 
-  defp notify_mutation(note_id, actor_user_id, kind) do
+  defp notify_mutation(note_id, actor_user_id, kind, content_change \\ nil) do
     case Application.get_env(:cascade_elixir, :note_mutation_sink) do
+      function when is_function(function, 4) and is_integer(actor_user_id) ->
+        function.(note_id, actor_user_id, kind, content_change)
+
       function when is_function(function, 3) and is_integer(actor_user_id) ->
         function.(note_id, actor_user_id, kind)
 

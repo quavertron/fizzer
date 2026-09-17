@@ -6,12 +6,21 @@ defmodule Cascade.Content.Activity do
   alias Cascade.WikiMaintenance
 
   def install do
-    Application.put_env(:cascade_elixir, :note_mutation_sink, &note_mutation/3)
+    Application.put_env(:cascade_elixir, :note_mutation_sink, &note_mutation/4)
   end
 
-  def note_mutation(note_id, actor_user_id, _kind)
+  def note_mutation(note_id, actor_user_id, kind),
+    do: note_mutation(note_id, actor_user_id, kind, nil)
+
+  def note_mutation(note_id, actor_user_id, _kind, content_change)
       when is_binary(note_id) and is_integer(actor_user_id) do
-    CommunityActivity.record_note_change(note_id, actor_user_id)
+    CommunityActivity.record_note_change(
+      note_id,
+      actor_user_id,
+      DateTime.utc_now() |> DateTime.to_iso8601(),
+      content_change
+    )
+
     WikiMaintenance.note_changed(note_id)
 
     case SQL.one("SELECT vault_id FROM notes WHERE id=?", [note_id]) do
@@ -22,5 +31,5 @@ defmodule Cascade.Content.Activity do
     _ -> :ok
   end
 
-  def note_mutation(_note_id, _actor_user_id, _kind), do: :ok
+  def note_mutation(_note_id, _actor_user_id, _kind, _content_change), do: :ok
 end
