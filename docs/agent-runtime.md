@@ -24,6 +24,18 @@ desktop.
 Provider credentials are not stored on the Cascade server. Authentication is
 owned by the local CLI or provider SDK on the desktop that executes the run.
 
+### Codex via OpenRouter
+
+Give a Codex agent a model of the form `openrouter/<provider>/<model>` (for
+example `openrouter/openai/gpt-4o-mini` or `openrouter/anthropic/claude-3.5-sonnet`)
+to run it through OpenRouter instead of the default provider. The runner strips
+the `openrouter/` prefix, points Codex at OpenRouter's OpenAI-compatible
+Responses API (`https://openrouter.ai/api/v1`), and reads the key from
+`OPENROUTER_API_KEY`, falling back to the `~/openrouter` file. OpenRouter runs
+always take the direct `codex exec` path (the persistent app server cannot carry
+the provider override). Codex ≥0.154 dropped `wire_api="chat"`, which is why the
+Responses wire API is used.
+
 ## Chat run lifecycle
 
 Chat agent registrations have a stable Cascade conversation ID. The server maps

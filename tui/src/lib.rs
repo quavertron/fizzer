@@ -27,7 +27,7 @@ use crossterm::{
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, window_size, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
@@ -948,6 +948,11 @@ async fn run_app(
     native_runner: &mut Option<tokio::process::Child>,
 ) -> Result<()> {
     let mut vector_display = purrvect::Display::new();
+    // Track terminal cell pixel geometry so inline diagrams re-rasterize on zoom.
+    // Font-size zoom changes pixels-per-cell without changing the row/column grid,
+    // so crossterm emits no Resize event and the upload cache would otherwise keep
+    // showing a stale, mis-scaled raster. We watch the reported pixel size instead.
+    let mut last_window_px = window_size().map(|w| (w.width, w.height)).unwrap_or((0, 0));
     let mut runner_connection = None;
     let mut event_stream = EventStream::new();
     // Start the first poll one full period out so its ~5 concurrent sync requests
@@ -982,6 +987,16 @@ async fn run_app(
             }
         }
         terminal.draw(|frame| ui::render(frame, app))?;
+        // If the terminal was zoomed (cell pixel size changed, possibly with no
+        // Resize event because the grid dimensions held), drop the uploaded images
+        // so sync re-transmits them and the terminal re-rasterizes at the new size.
+        if let Ok(win) = window_size() {
+            let px = (win.width, win.height);
+            if px != (0, 0) && px != last_window_px {
+                vector_display.clear(terminal.backend_mut())?;
+                last_window_px = px;
+            }
+        }
         vector_display.sync(terminal.backend_mut())?;
 
         if app.should_quit {
@@ -2164,7 +2179,7 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
                     let messages_area = if view == ActivePane::ChatMessages { area } else { app.panes.borrow().rect(ActivePane::ChatMessages) };
                     ui::ensure_chat_cache(app, messages_area.width.saturating_sub(4).max(1) as usize);
                     let visible = messages_area.height.saturating_sub(2) as usize;
-                    app.scroll_chat_view(up, 3, visible);
+                    app.scroll_chat_view(up, 1, visible);
                     if up && app.scroll_offset.saturating_add(visible) >= app.chat_cache.read().unwrap().lines.len() { spawn_older_messages(app, tx); }
                 }
                 _ => {}

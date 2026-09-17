@@ -83,10 +83,16 @@ Agent execution still requires the desktop app (or another compatible runner)
 and a locally installed, authenticated agent CLI.
 
 For the native terminal app, install Rust and run `npm run tui`. Its binary is
-named `fizzer`. It opens the vault chooser without requiring authentication,
-discovers a running desktop's local backend, and preserves explicit URL overrides
-and saved remote connections. Select a vault to start working; identity and the
-TUI-managed runner connection follow the selected server.
+named `fizzer`. The command automatically starts the local Elixir backend in the
+background (logged to `tui/backend.log`), or use `npm run tui-only` to connect to
+an already-running backend. It opens the vault chooser without requiring
+authentication, discovers a running desktop's local backend, and preserves
+explicit URL overrides and saved remote connections. Select a vault to start
+working; identity and the TUI-managed runner connection follow the selected server.
+The TUI features smooth 1-line chat scrolling and inline SVG/Mermaid diagram rendering
+with terminal cell aspect-ratio preservation and zoom re-rasterization. Supported
+agent runtimes include Claude Code (with headless OAuth forwarding), Codex (with native
+and OpenRouter routing), and Antigravity (with live language server discovery).
 
 ### Self-host a private instance
 

@@ -1144,9 +1144,9 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     }
                 }
               },
-              crate::purrvect::InlinePart::Svg(svg) => {
+              crate::purrvect::InlinePart::Svg { svg, width, height } => {
                 svg_index += 1;
-                let rows = 12u16;
+                let rows = height.unwrap_or(12);
                 let mut start_line = None;
                 for row_index in 0..rows {
                     let marks_message = marker_pending;
@@ -1158,7 +1158,7 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                     start_line.get_or_insert(row);
                     if marks_message { message_markers.push((row, m_idx)); }
                 }
-                inline_svgs.push(InlineSvgBlock { start_line: start_line.unwrap_or(0), rows,
+                inline_svgs.push(InlineSvgBlock { start_line: start_line.unwrap_or(0), rows, width,
                     image_id: crate::purrvect::image_id(&msg.id, svg_index, &svg), svg: svg.into_owned() });
               }
             }}
@@ -1296,15 +1296,37 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(paragraph, area);
 
+    let viewport_end = scroll_y + visible_lines;
     for svg in &cache.inline_svgs {
-        let rows = (svg.rows as usize).min(visible_lines) as u16;
+        let rows = svg.rows;
         let end = svg.start_line + usize::from(rows);
-        if svg.start_line >= scroll_y && end <= scroll_y + visible_lines {
-            let y = area.y + 1 + (svg.start_line - scroll_y) as u16;
+        // Clip to the viewport rather than requiring the whole diagram to fit:
+        // a partially scrolled image is drawn as the band that is on screen.
+        let top = svg.start_line.max(scroll_y);
+        let bottom = end.min(viewport_end);
+        if bottom > top {
+            let skipped = (top - svg.start_line) as u16;
+            let shown = (bottom - top) as u16;
+            let y = area.y + 1 + (top - scroll_y) as u16;
             let x = area.x + 3;
-            let instance_id = svg.image_id ^ (u32::from(x) << 16);
+            // The crop is part of the identity; otherwise scrolling would reuse
+            // the previously uploaded band under the same id.
+            let instance_id = svg.image_id
+                ^ (u32::from(x) << 16)
+                ^ (u32::from(skipped) << 8)
+                ^ u32::from(shown);
+            let max_cols = body_wrap_width.min(u16::MAX as usize) as u16;
+            // An explicit width wins; otherwise derive columns from the row count
+            // and the terminal's real cell aspect so the diagram is not stretched.
+            let cols = match svg.width {
+                Some(w) => w.min(max_cols),
+                None => crate::purrvect::columns_for_rows(&svg.svg, rows)
+                    .map_or(max_cols, |c| c.min(max_cols)),
+            };
+            let body = crate::purrvect::crop_svg_rows(&svg.svg, skipped, shown, rows)
+                .unwrap_or_else(|| svg.svg.clone());
             crate::purrvect::place(crate::purrvect::Placement { image_id: instance_id.max(1),
-                area: Rect::new(x, y, body_wrap_width.min(u16::MAX as usize) as u16, rows), svg: svg.svg.clone() });
+                area: Rect::new(x, y, cols, shown), svg: body });
         }
     }
 

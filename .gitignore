@@ -49,6 +49,7 @@ bin/fizzer
 bin/fizzer.exe
 target/
 tui/target/
+tui/backend.log
 bin/fizzer-tui
 bin/fizzer-tui.exe
 bin/cascade-tui

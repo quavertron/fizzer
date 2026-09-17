@@ -1379,6 +1379,42 @@ function persistentCodexEnabled(): boolean {
   return process.env.RUNNER_CODEX_PERSISTENT !== '0' && path.basename(getCliAgentBin('codex')) === 'codex';
 }
 
+// ── OpenRouter routing for Codex ──────────────────────────────────
+// A model of the form `openrouter/<provider>/<model>` (e.g.
+// `openrouter/openai/gpt-4o-mini`) runs Codex against OpenRouter's
+// OpenAI-compatible API instead of the default provider. Codex ≥0.154 dropped
+// `wire_api="chat"`, so we target OpenRouter's Responses endpoint
+// (`/api/v1/responses`). The key comes from OPENROUTER_API_KEY or `~/openrouter`.
+const OPENROUTER_MODEL_PREFIX = 'openrouter/';
+
+/** The real model id if `model` opts into OpenRouter, else undefined. */
+function openRouterModel(model?: string): string | undefined {
+  const trimmed = model?.trim();
+  return trimmed?.startsWith(OPENROUTER_MODEL_PREFIX)
+    ? trimmed.slice(OPENROUTER_MODEL_PREFIX.length)
+    : undefined;
+}
+
+/** OpenRouter API key from the environment or `~/openrouter`. */
+function openRouterApiKey(): string | undefined {
+  const fromEnv = process.env.OPENROUTER_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return fs.readFileSync(path.join(os.homedir(), 'openrouter'), 'utf8').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Codex `-c` overrides that define and select the OpenRouter provider.
+const OPENROUTER_PROVIDER_ARGS = [
+  '-c', 'model_providers.openrouter.name="OpenRouter"',
+  '-c', 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"',
+  '-c', 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"',
+  '-c', 'model_providers.openrouter.wire_api="responses"',
+  '-c', 'model_provider="openrouter"',
+];
+
 /**
  * Runs the Codex CLI (`codex exec --json`) and translates its rich JSONL
  * event stream into Anthropic-style content blocks.
@@ -1411,8 +1447,9 @@ async function runCodex(
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access',
   env?: NodeJS.ProcessEnv,
 ): Promise<CliAgentResult> {
+  const openRouterModelId = openRouterModel(model);
   const { paths: imagePaths, cleanup } = writeTempImages(images);
-  if (persistentCodexEnabled()) {
+  if (persistentCodexEnabled() && !openRouterModelId) {
     try {
       return await codexAppServer.run({
         prompt,
@@ -1436,7 +1473,15 @@ async function runCodex(
   // session id on resume) or it swallows them. `codex exec resume` rejects
   // --sandbox, so the sandbox mode is set via -c instead.
   const imageArgs = imagePaths.flatMap((p) => ['-i', p]);
-  const modelArgs = model ? ['--model', model] : [];
+  const effectiveModel = openRouterModelId ?? model;
+  const modelArgs = effectiveModel ? ['--model', effectiveModel] : [];
+  const providerArgs = openRouterModelId ? OPENROUTER_PROVIDER_ARGS : [];
+  let codexEnv = env;
+  if (openRouterModelId) {
+    const key = openRouterApiKey();
+    if (!key) throw new Error('OpenRouter API key not found. Set OPENROUTER_API_KEY or create ~/openrouter.');
+    codexEnv = { ...(env ?? {}), OPENROUTER_API_KEY: key };
+  }
   const normalizedEffort = typeof reasoningEffort === 'string'
     ? reasoningEffort.trim().toLowerCase()
     : '';
@@ -1449,8 +1494,8 @@ async function runCodex(
     ? ['-c', 'sandbox_workspace_write.network_access=true']
     : [];
   const buildArgs = (resume?: string) => (resume
-    ? ['exec', 'resume', '--json', '--skip-git-repo-check', '-c', `sandbox_mode=${sandboxMode}`, ...sandboxConfigArgs, ...reasoningEffortArgs, ...serviceTierArgs, ...modelArgs, resume, prompt, ...imageArgs]
-    : ['exec', '--json', '--skip-git-repo-check', '--sandbox', sandboxMode, ...sandboxConfigArgs, ...reasoningEffortArgs, ...serviceTierArgs, ...modelArgs, prompt, ...imageArgs]);
+    ? ['exec', 'resume', '--json', '--skip-git-repo-check', '-c', `sandbox_mode=${sandboxMode}`, ...sandboxConfigArgs, ...providerArgs, ...reasoningEffortArgs, ...serviceTierArgs, ...modelArgs, resume, prompt, ...imageArgs]
+    : ['exec', '--json', '--skip-git-repo-check', '--sandbox', sandboxMode, ...sandboxConfigArgs, ...providerArgs, ...reasoningEffortArgs, ...serviceTierArgs, ...modelArgs, prompt, ...imageArgs]);
 
   let summary = '';
   let sessionId: string | undefined;
@@ -1459,7 +1504,7 @@ async function runCodex(
   const emittedTool = new Set<string>();
   const isToolItem = (type: string) => type !== 'agent_message' && type !== 'reasoning';
 
-  if (model) emitCascadeStats(emit, { model });
+  if (effectiveModel) emitCascadeStats(emit, { model: effectiveModel });
 
   // Build a friendly tool_use block from a Codex item.
   const toolUseBlock = (item: any) => {
@@ -1561,7 +1606,7 @@ async function runCodex(
   const drive = (attemptArgs: string[]) => driveProcess(
     getCliAgentBin('codex'), attemptArgs, cwd, onLine,
     () => summary || '',
-    'Codex', runId, emit, env, collectStderr,
+    'Codex', runId, emit, codexEnv, collectStderr,
   );
   const retryFresh = async () => {
     if (resumeId && env?.CASCADE_IMPORTED_CODEX_SESSION === resumeId) {
@@ -1911,6 +1956,9 @@ export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = p
     }
     if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
   } catch { /* Report a missing workspace before launch. */ }
+
+  if (base.ANTIGRAVITY_HOME) env.ANTIGRAVITY_HOME = base.ANTIGRAVITY_HOME;
+  if (base.ANTIGRAVITY_BIN) env.ANTIGRAVITY_BIN = base.ANTIGRAVITY_BIN;
 
   if (base.ANTIGRAVITY_PROJECT_ID && !env.ANTIGRAVITY_PROJECT_ID) {
     env.ANTIGRAVITY_PROJECT_ID = base.ANTIGRAVITY_PROJECT_ID;

@@ -657,7 +657,7 @@ async fn mouse_wheel_over_composer_scrolls_chat_messages_window() {
     };
     handle_pane_mouse(&mut app, mouse, &tx);
     let scrolled = app.window_states.get(&messages_id).map(|s| s.scroll).unwrap_or(0);
-    assert_eq!(scrolled, 3, "Mouse wheel over composer should scroll ChatMessages pane");
+    assert_eq!(scrolled, 1, "Mouse wheel over composer should scroll ChatMessages pane");
 }
 
 #[test]

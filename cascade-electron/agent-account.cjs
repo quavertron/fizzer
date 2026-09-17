@@ -2,7 +2,9 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+// DO NOT REMOVE spawnSync: launchArguments() uses it synchronously to discover Antigravity's
+// live language server port & CSRF token before dropping privileges to the fizzer account.
+const { spawn, spawnSync } = require('node:child_process');
 const readline = require('node:readline');
 const { startReadOnlyApi } = require('./agent-account-api.cjs');
 const writeAccess = require('./agent-write-access.cjs');
@@ -83,15 +85,32 @@ function launchArguments(node, worker, socket) {
               }
             } catch {}
           }
-          break;
+          if (providerBinaries.some(value => value.startsWith('ANTIGRAVITY_LS_ADDRESS='))) break;
         }
       } catch {}
     }
+  }
+  // Claude runs as the fizzer account with a locked-down env and no login
+  // keychain, so subscription OAuth can't be read from the Keychain. Forward an
+  // explicit auth token/key instead: from the desktop env if present, otherwise
+  // from a persisted file in the human's state dir. Without this the worker's
+  // `claude` reports "Not logged in".
+  const authEnv = [];
+  for (const name of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+    let value = process.env[name];
+    if (!value) {
+      try {
+        const file = path.join(stateDirectory(), name === 'ANTHROPIC_API_KEY' ? 'anthropic-api-key' : 'claude-oauth-token');
+        if (fs.existsSync(file)) value = fs.readFileSync(file, 'utf-8').trim();
+      } catch {}
+    }
+    if (value) authEnv.push(`${name}=${value}`);
   }
   return ['-n', '-H', '-u', 'fizzer', '--', '/usr/bin/env',
     `PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
     'ELECTRON_RUN_AS_NODE=1', 'FIZZER_AGENT_ACCOUNT_CHILD=1',
     `FIZZER_BRIDGE_SOCKET=${socket}`, `FIZZER_ALOCK_BIN=${installedAlock}`,
+    ...authEnv,
     ...providerBinaries,
     node, worker];
 }

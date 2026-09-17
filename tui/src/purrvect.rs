@@ -44,6 +44,111 @@ pub fn is_kitty_terminal() -> bool {
         .any(|name| identity.contains(name))
 }
 
+/// Terminal cell aspect when the terminal will not report pixel geometry.
+/// Monospace cells are about 2.2x taller than they are wide across common fonts.
+pub const FALLBACK_CELL_ASPECT: f32 = 2.2;
+
+/// Height/width of one terminal cell, in pixels.
+///
+/// Terminals report pixel geometry over TIOCGWINSZ (what `\e[16t` also answers
+/// with). It changes when the font or zoom level changes, so this is queried
+/// live rather than cached, and falls back to a typical monospace ratio when
+/// the terminal reports nothing.
+pub fn cell_aspect() -> f32 {
+    let Ok(size) = crossterm::terminal::window_size() else {
+        return FALLBACK_CELL_ASPECT;
+    };
+    if size.width == 0 || size.height == 0 || size.columns == 0 || size.rows == 0 {
+        return FALLBACK_CELL_ASPECT;
+    }
+    let cell_w = f32::from(size.width) / f32::from(size.columns);
+    let cell_h = f32::from(size.height) / f32::from(size.rows);
+    if cell_w <= 0.0 || cell_h <= 0.0 {
+        return FALLBACK_CELL_ASPECT;
+    }
+    cell_h / cell_w
+}
+
+/// Intrinsic width/height ratio of an SVG, from viewBox or width/height attrs.
+pub fn svg_aspect(svg: &str) -> Option<f32> {
+    let head = &svg[..svg.find('>').map_or(svg.len(), |i| i + 1).min(svg.len())];
+    let attr = |name: &str| -> Option<f32> {
+        let key = format!("{name}=\"");
+        let start = head.find(&key)? + key.len();
+        let rest = &head[start..];
+        let end = rest.find('"')?;
+        let raw = rest[..end].trim().trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%');
+        raw.parse::<f32>().ok()
+    };
+    if let Some(view_box) = {
+        let key = "viewBox=\"";
+        head.find(key).and_then(|i| {
+            let rest = &head[i + key.len()..];
+            rest.find('"').map(|e| rest[..e].to_string())
+        })
+    } {
+        let nums: Vec<f32> = view_box
+            .split(|c: char| c == ',' || c.is_ascii_whitespace())
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| t.parse::<f32>().ok())
+            .collect();
+        if nums.len() == 4 && nums[2] > 0.0 && nums[3] > 0.0 {
+            return Some(nums[2] / nums[3]);
+        }
+    }
+    match (attr("width"), attr("height")) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
+        _ => None,
+    }
+}
+
+/// Columns an SVG needs to fill `rows` without distortion.
+pub fn columns_for_rows(svg: &str, rows: u16) -> Option<u16> {
+    let aspect = svg_aspect(svg)?;
+    let cols = f32::from(rows) * aspect * cell_aspect();
+    if !cols.is_finite() || cols < 1.0 {
+        return None;
+    }
+    Some(cols.round().clamp(1.0, 4096.0) as u16)
+}
+
+/// Crop an SVG to a horizontal band of its rows.
+///
+/// A diagram scrolled half off-screen would otherwise be dropped entirely, so
+/// the viewBox is narrowed to the slice that is actually visible and placed in
+/// that many rows. Returns None when the whole thing is visible (no crop
+/// needed) or the viewBox cannot be parsed.
+pub fn crop_svg_rows(svg: &str, skip_rows: u16, visible_rows: u16, total_rows: u16) -> Option<String> {
+    if total_rows == 0 || visible_rows == 0 || (skip_rows == 0 && visible_rows >= total_rows) {
+        return None;
+    }
+    let head_end = svg.find('>')?;
+    let head = &svg[..head_end];
+    let key = "viewBox=\"";
+    let open = head.find(key)? + key.len();
+    let close = open + head[open..].find('"')?;
+    let nums: Vec<f32> = head[open..close]
+        .split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.parse::<f32>().ok())
+        .collect();
+    if nums.len() != 4 || nums[3] <= 0.0 {
+        return None;
+    }
+    let (x, y, w, h) = (nums[0], nums[1], nums[2], nums[3]);
+    let per_row = h / f32::from(total_rows);
+    let top = y + per_row * f32::from(skip_rows);
+    let height = per_row * f32::from(visible_rows.min(total_rows));
+    if !(height > 0.0) {
+        return None;
+    }
+    let mut out = String::with_capacity(svg.len() + 16);
+    out.push_str(&svg[..open]);
+    out.push_str(&format!("{x} {top} {w} {height}"));
+    out.push_str(&svg[close..]);
+    Some(out)
+}
+
 pub fn image_id(message_id: &str, index: usize, svg: &str) -> u32 {
     let mut hash = Sha256::new();
     hash.update(message_id.as_bytes());
@@ -234,7 +339,7 @@ pub enum InlinePart<'a> {
     },
 }
 
-fn parse_fence_dimensions(header: &str) -> Option<(&str, Option<u16>, Option<u16>)> {
+fn parse_fence_dimensions(header: &str) -> Option<(&str, Option<u16>, Option<u16>, Option<&str>)> {
     let mut parts = header.split_whitespace();
     let lang = parts.next()?;
     if !lang.eq_ignore_ascii_case("svg") && !lang.eq_ignore_ascii_case("mermaid") {
@@ -242,9 +347,25 @@ fn parse_fence_dimensions(header: &str) -> Option<(&str, Option<u16>, Option<u16
     }
     let mut width = None;
     let mut height = None;
+    // Path to read the SVG/mermaid source from, instead of the fence body.
+    let mut file = None;
     let mut iter = parts.peekable();
     while let Some(tok) = iter.next() {
         let lower = tok.to_ascii_lowercase();
+        // Paths are case-sensitive, so take them from the original token.
+        if lower == "--file" || lower == "--src" || lower == "-f" {
+            file = iter.next();
+            continue;
+        }
+        if let Some(rest) = lower
+            .strip_prefix("file=")
+            .or_else(|| lower.strip_prefix("src="))
+            .or_else(|| lower.strip_prefix("--file="))
+            .or_else(|| lower.strip_prefix("--src="))
+        {
+            file = Some(&tok[tok.len() - rest.len()..]);
+            continue;
+        }
         if lower == "--height" || lower == "-h" || lower == "--rows" || lower == "-r" {
             if let Some(val) = iter.next() {
                 if let Ok(h) = val.parse::<u16>() {
@@ -281,7 +402,22 @@ fn parse_fence_dimensions(header: &str) -> Option<(&str, Option<u16>, Option<u16
             height = Some(n.clamp(1, 100));
         }
     }
-    Some((lang, width, height))
+    Some((lang, width, height, file))
+}
+
+/// Read SVG or mermaid source for a fence that used `file=<path>`.
+/// Returns None if the path is missing, unreadable, oversized, or not UTF-8,
+/// which makes the fence fall back to rendering nothing rather than erroring.
+fn read_fence_file(path: &str) -> Option<String> {
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let expanded = match path.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+        None => PathBuf::from(path),
+    };
+    if std::fs::metadata(&expanded).ok()?.len() > MAX_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(&expanded).ok()
 }
 
 fn render_mermaid(source: &str) -> Option<String> {
@@ -339,32 +475,28 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
             match body {
                 Some(body) if count >= 3 => {
                     let header = input[after..body].trim();
-                    if let Some((lang, width, height)) = parse_fence_dimensions(header) {
-                        if lang.eq_ignore_ascii_case("svg") {
-                            Some((
-                                start,
-                                cursor,
-                                InlinePart::Svg {
-                                    svg: Cow::Borrowed(&input[body..close]),
-                                    width,
-                                    height,
-                                },
-                            ))
-                        } else if lang.eq_ignore_ascii_case("mermaid") {
-                            render_mermaid(&input[body..close]).map(|svg| {
-                                (
-                                    start,
-                                    cursor,
-                                    InlinePart::Svg {
+                    if let Some((lang, width, height, file)) = parse_fence_dimensions(header) {
+                        // `file=<path>` pulls the source off disk; the fence body is
+                        // then ignored, so the block can be left empty.
+                        let source = match file {
+                            Some(path) => read_fence_file(path).map(Cow::Owned),
+                            None => Some(Cow::Borrowed(&input[body..close])),
+                        };
+                        source
+                            .and_then(|source| {
+                                if lang.eq_ignore_ascii_case("svg") {
+                                    Some(InlinePart::Svg { svg: source, width, height })
+                                } else if lang.eq_ignore_ascii_case("mermaid") {
+                                    render_mermaid(&source).map(|svg| InlinePart::Svg {
                                         svg: Cow::Owned(svg),
                                         width,
                                         height,
-                                    },
-                                )
+                                    })
+                                } else {
+                                    None
+                                }
                             })
-                        } else {
-                            None
-                        }
+                            .map(|part| (start, cursor, part))
                     } else {
                         None
                     }
@@ -433,7 +565,7 @@ mod tests {
             split_inline_svgs(body).as_slice(),
             [
                 InlinePart::Text("Example `<svg>...</svg>`, then "),
-                InlinePart::Svg(svg),
+                InlinePart::Svg { svg, .. },
                 InlinePart::Text(" end")
             ] if svg == "<svg><circle/></svg>"
         ));
@@ -470,7 +602,7 @@ mod tests {
         let svg: Vec<_> = split_inline_svgs(body)
             .into_iter()
             .filter_map(|part| match part {
-                InlinePart::Svg(value) => Some(value),
+                InlinePart::Svg { svg, .. } => Some(svg),
                 InlinePart::Text(_) => None,
             })
             .collect();
@@ -484,7 +616,7 @@ mod tests {
         let svgs: Vec<_> = parts
             .into_iter()
             .filter_map(|p| match p {
-                InlinePart::Svg(s) => Some(s),
+                InlinePart::Svg { svg, .. } => Some(svg),
                 InlinePart::Text(_) => None,
             })
             .collect();
@@ -499,12 +631,52 @@ mod tests {
     }
 
     #[test]
+    fn reads_svg_and_mermaid_fences_from_a_file() {
+        let dir = std::env::temp_dir().join("fizzer-fence-file-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg_path = dir.join("shape.svg");
+        let mmd_path = dir.join("chart.mmd");
+        std::fs::write(&svg_path, "<svg><rect id=\"from-disk\"/></svg>").unwrap();
+        std::fs::write(&mmd_path, "flowchart LR\nA[Start] --> B[Done]").unwrap();
+
+        // The fence body is ignored when file= is given, so it can be empty.
+        let body = format!(
+            "```svg file={} width=40\n```\n```mermaid file={}\n```",
+            svg_path.display(),
+            mmd_path.display()
+        );
+        let svgs: Vec<_> = split_inline_svgs(&body)
+            .into_iter()
+            .filter_map(|part| match part {
+                InlinePart::Svg { svg, width, .. } => Some((svg.into_owned(), width)),
+                InlinePart::Text(_) => None,
+            })
+            .collect();
+
+        assert_eq!(svgs.len(), 2);
+        assert_eq!(svgs[0].0, "<svg><rect id=\"from-disk\"/></svg>");
+        assert_eq!(svgs[0].1, Some(40));
+        assert!(svgs[1].0.starts_with("<svg"));
+        assert!(svgs[1].0.contains("Start") && svgs[1].0.contains("Done"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_fence_file_renders_nothing() {
+        let body = "```svg file=/nonexistent/fizzer/nope.svg\n```";
+        assert!(split_inline_svgs(body)
+            .iter()
+            .all(|part| matches!(part, InlinePart::Text(_))));
+    }
+
+    #[test]
     fn renders_mermaid_fences_as_svg() {
         let body = "before\n```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```\nafter";
         let parts = split_inline_svgs(body);
         assert!(matches!(
             parts.as_slice(),
-            [InlinePart::Text("before\n"), InlinePart::Svg(svg), InlinePart::Text("\nafter")]
+            [InlinePart::Text("before\n"), InlinePart::Svg { svg, .. }, InlinePart::Text("\nafter")]
                 if svg.starts_with("<svg") && svg.contains("Start") && svg.contains("Done")
         ));
     }

@@ -97,6 +97,25 @@ test('launch passes the human Antigravity executable to the fizzer account', () 
   }
 });
 
+test('launch discovers and passes Antigravity language server address and CSRF token', () => {
+  const oldAddress = process.env.ANTIGRAVITY_LS_ADDRESS;
+  const oldToken = process.env.ANTIGRAVITY_CSRF_TOKEN;
+  delete process.env.ANTIGRAVITY_LS_ADDRESS;
+  delete process.env.ANTIGRAVITY_CSRF_TOKEN;
+  try {
+    const args = account.launchArguments('/usr/bin/node', '/tmp/worker.cjs', '/tmp/socket');
+    assert.ok(Array.isArray(args));
+    if (process.platform === 'darwin') {
+      const hasLs = args.some(v => v.startsWith('ANTIGRAVITY_LS_ADDRESS='));
+      const hasCsrf = args.some(v => v.startsWith('ANTIGRAVITY_CSRF_TOKEN='));
+      assert.equal(hasLs, hasCsrf);
+    }
+  } finally {
+    if (oldAddress !== undefined) process.env.ANTIGRAVITY_LS_ADDRESS = oldAddress;
+    if (oldToken !== undefined) process.env.ANTIGRAVITY_CSRF_TOKEN = oldToken;
+  }
+});
+
 test('missing vault reports terminal failure before worker startup', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'missing-vault-'));
   const events = [];
@@ -145,7 +164,7 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
   const fakeFs = Object.create(fs);
   fakeFs.existsSync = target => target === '/usr/local/libexec/fizzer/alock' || fs.existsSync(target);
   const context = { module: { exports: {} }, __dirname, process, setTimeout, clearTimeout,
-    require: name => name === 'node:child_process' ? { spawn } : name === 'node:fs' ? fakeFs : require(name) };
+    require: name => name === 'node:child_process' ? { spawn, spawnSync: () => ({ stdout: '' }) } : name === 'node:fs' ? fakeFs : require(name) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'agent-account.cjs'), 'utf8'), context);
   try {
     const events = [];
