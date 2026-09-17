@@ -53,9 +53,7 @@ export function twitterEmbedResizeHeight(data: unknown): number | null {
   if (!details || typeof details !== 'object') return null;
   const height = (details as { height?: unknown }).height;
   if (typeof height !== 'number' || !Number.isFinite(height) || height < 120 || height > 1600) return null;
-  // X's reported height is often a couple of pixels short of the painted card,
-  // which leaves a persistent inner scrollbar in the iframe. Pad and clamp.
-  return Math.min(1600, Math.ceil(height) + 16);
+  return Math.ceil(height);
 }
 
 /** Convert an allow-listed public media URL into a sandboxable player URL. */
