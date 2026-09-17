@@ -443,6 +443,20 @@ export const Sidebar = memo(function Sidebar({
 
   const listedNotes = useMemo(() => notes.filter((note) => note.is_listed !== 0), [notes]);
 
+  const runningFolders = useMemo(() => {
+    const parents = new Map(visibleFolders.map((folder) => [folder.id, folder.parent_id]));
+    const running = new Set<string>();
+    for (const note of listedNotes) {
+      if (agentActivity[note.id] !== 'running') continue;
+      let folderId = note.folder_id;
+      while (folderId && parents.has(folderId) && !running.has(folderId)) {
+        running.add(folderId);
+        folderId = parents.get(folderId) ?? null;
+      }
+    }
+    return running;
+  }, [agentActivity, listedNotes, visibleFolders]);
+
   const notesByFolder = useMemo(() => {
     const map = new Map<string | null, NoteSummary[]>();
     for (const note of listedNotes) {
@@ -935,6 +949,7 @@ export const Sidebar = memo(function Sidebar({
             <span className={`tree-chevron ${isExpanded ? 'expanded' : ''}`}><ChevronRight size={14} /></span>
             <span className="tree-icon">{isExpanded ? <FolderOpen size={16} /> : <FolderIcon size={16} />}</span>
             <span className="tree-label">{folder.name}</span>
+            {!isExpanded && runningFolders.has(folder.id) && activityDot('agent-running')}
             {childCount > 0 && <span className="tree-count">{childCount}</span>}
           </button>
         )}
