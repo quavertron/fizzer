@@ -85,6 +85,7 @@ import type { LayoutNode } from './layout/tree';
 import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import { connectVaultSocket } from './socket';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
+import { ServerPicker } from './components/ServerPicker';
 import {
   agentsAfterLoadFailure,
   agentLabel,
@@ -2625,8 +2626,8 @@ export default function App() {
           <div className="auth-intro">
             <span className="surface-kicker">Shared intelligence</span>
             <strong>{inDesktopApp ? (['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) ? 'Connect to local server' : 'Connect to remote server') : authMode === 'register' ? 'Create your workspace' : authMode === 'reset' ? 'Recover your account' : 'Welcome back'}</strong>
-            <p>{inDesktopApp ? `Your account applies to vaults on ${window.location.host}.` : 'One calm place for your team, notes, and local agents.'}</p>
           </div>
+          <ServerPicker />
           {authMode === 'reset' ? (
             <>
               <p className="auth-hint">Paste the reset token the server owner gave you, then choose a new password.</p>
