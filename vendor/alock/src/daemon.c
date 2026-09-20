@@ -8,6 +8,7 @@
 #include <dtob.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <poll.h>
 #include <unistd.h>
 #include <stdlib.h>

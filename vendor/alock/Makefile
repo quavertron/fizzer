@@ -1,5 +1,5 @@
 CC      = cc
-CFLAGS  = -std=c11 -Wall -Wextra -O2 -Isrc -Ilibdtob/lib
+CFLAGS  = -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O2 -Isrc -Ilibdtob/lib
 OBJDIR  = obj
 BIN     ?= alock
 
