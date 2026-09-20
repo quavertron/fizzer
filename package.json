@@ -76,6 +76,7 @@
     "verify:client-runtime": "node scripts/verify-client-runtime.mjs",
     "verify:client-performance": "node scripts/verify-client-performance.mjs",
     "start": "npm --prefix cascade-electron run start",
+    "alt-profile": "CASCADE_USER_DATA_DIR=\"$HOME/.fizzer-profiles/alt/electron\" CASCADE_DATA_DIR=\"$HOME/.fizzer-profiles/alt/data\" CASCADE_AGENT_STATE_DIR=\"$HOME/.fizzer-profiles/alt/agents\" npm start",
     "package": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run package",
     "make": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run make",
     "build:electron": "npm run build && npm run build:desktop-runtime && cd cascade-electron && npm run package",
