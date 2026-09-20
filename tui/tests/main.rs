@@ -529,25 +529,27 @@ async fn rearranged_panes_target_clicks_and_wheel_using_rendered_rectangles() {
     panes::prepare(&app, area);
     app.panes.borrow_mut().action(HypertileAction::MoveFocused { direction: ratatui::layout::Direction::Horizontal, towards: Towards::End, scope: MoveScope::Window });
     panes::prepare(&app, area);
+    let screen = Rect::new(0, 0, 200, 100);
     let channels = app.panes.borrow().rect(ActivePane::ChatSelector);
     assert!(channels.x > 0);
     let (tx, _) = mpsc::unbounded_channel();
     let mouse = crossterm::event::MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: channels.x + 1, row: channels.y + 2, modifiers: KeyModifiers::NONE };
-    handle_pane_mouse(&mut app, mouse, &tx);
+    handle_pane_mouse(&mut app, mouse, &tx, screen);
     assert_eq!(app.active_pane, ActivePane::ChatMessages);
     assert_eq!(app.active_channel_id.as_deref(), Some("two"));
     app.panes.borrow_mut().focus(ActivePane::ChatSelector);
     panes::activate_focused(&mut app);
     assert_eq!(app.selected_channel_idx, 1);
-    handle_pane_mouse(&mut app, crossterm::event::MouseEvent { kind: MouseEventKind::ScrollUp, ..mouse }, &tx);
+    handle_pane_mouse(&mut app, crossterm::event::MouseEvent { kind: MouseEventKind::ScrollUp, ..mouse }, &tx, screen);
     assert_eq!(app.selected_channel_idx, 0);
     app.show_vaults = true;
-    handle_pane_mouse(&mut app, mouse, &tx);
+    handle_pane_mouse(&mut app, mouse, &tx, screen);
     assert_eq!(app.selected_channel_idx, 0, "vault chooser must not click through");
 }
 
 #[test]
 fn moved_chat_hit_testing_tracks_wrap_width_cursor_scroll_and_unicode_cells() {
+    let screen = Rect::new(0, 0, 200, 100);
     let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
     app.active_pane = ActivePane::ChatMessages;
     app.active_channel_id = Some("chat".into());
@@ -555,18 +557,18 @@ fn moved_chat_hit_testing_tracks_wrap_width_cursor_scroll_and_unicode_cells() {
     let area = Rect::new(32, 8, 26, 9);
     ui::ensure_chat_cache(&app, 22);
     app.chat_cursor = Some(0);
-    assert_eq!(chat_offset_at_position(&app, area.y + 1, area.x + 1, area), Some(0));
-    assert_eq!(chat_offset_at_position(&app, area.y, area.x + 1, area), None);
-    assert_eq!(chat_offset_at_position(&app, area.bottom() - 1, area.x + 1, area), None);
+    assert_eq!(chat_offset_at_position(&app, area.y + 1, area.x + 1, area, screen), Some(0));
+    assert_eq!(chat_offset_at_position(&app, area.y, area.x + 1, area, screen), None);
+    assert_eq!(chat_offset_at_position(&app, area.bottom() - 1, area.x + 1, area, screen), None);
     app.chat_cursor = None;
     app.scroll_offset = 2;
     let cache = app.chat_cache.read().unwrap();
     let top = ui::chat_scroll_top(&app, &cache, 7);
     let start = cache.line_offsets[top].0;
     drop(cache);
-    assert_eq!(chat_offset_at_position(&app, area.y + 1, area.x + 1, area), Some(start));
+    assert_eq!(chat_offset_at_position(&app, area.y + 1, area.x + 1, area, screen), Some(start));
     let narrow = Rect::new(32, 8, 9, 9);
-    let _ = chat_offset_at_position(&app, narrow.y + 1, narrow.x + 1, narrow);
+    let _ = chat_offset_at_position(&app, narrow.y + 1, narrow.x + 1, narrow, screen);
     assert_eq!(app.chat_cache.read().unwrap().wrap_width, 5);
     // Force a line containing a wide character to verify cell-to-character mapping.
     {
@@ -576,8 +578,8 @@ fn moved_chat_hit_testing_tracks_wrap_width_cursor_scroll_and_unicode_cells() {
         cache.chat_text = "界ab".into();
         cache.char_count = 3;
     }
-    assert_eq!(chat_offset_at_position(&app, narrow.y + 1, narrow.x + 2, narrow), Some(0));
-    assert_eq!(chat_offset_at_position(&app, narrow.y + 1, narrow.x + 3, narrow), Some(1));
+    assert_eq!(chat_offset_at_position(&app, narrow.y + 1, narrow.x + 2, narrow, screen), Some(0));
+    assert_eq!(chat_offset_at_position(&app, narrow.y + 1, narrow.x + 3, narrow, screen), Some(1));
 }
 
 #[test]
@@ -655,7 +657,7 @@ async fn mouse_wheel_over_composer_scrolls_chat_messages_window() {
         row: composer.y + 1,
         modifiers: KeyModifiers::NONE,
     };
-    handle_pane_mouse(&mut app, mouse, &tx);
+    handle_pane_mouse(&mut app, mouse, &tx, area);
     let scrolled = app.window_states.get(&messages_id).map(|s| s.scroll).unwrap_or(0);
     assert_eq!(scrolled, 1, "Mouse wheel over composer should scroll ChatMessages pane");
 }

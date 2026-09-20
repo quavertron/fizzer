@@ -28,7 +28,7 @@ function resolveWorkspace(selected) {
   }
   return fs.realpathSync(expanded);
 }
-const installedAlock = '/usr/local/libexec/fizzer/alock';
+const installedAlock = process.env.FIZZER_ALOCK_BIN || '/usr/local/libexec/fizzer/alock';
 function stateDirectory() { return process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'); }
 function enabled() { return ['darwin', 'linux'].includes(process.platform) && fs.existsSync(path.join(stateDirectory(), 'agent-writes-enabled')); }
 function shouldOffer() { return ['darwin', 'linux'].includes(process.platform) && !enabled() && !fs.existsSync(path.join(stateDirectory(), 'agent-writes-declined')); }
@@ -114,10 +114,13 @@ function launchArguments(node, worker, socket) {
     ...providerBinaries,
     node, worker];
 }
-async function startBridge(root, directory, index = 0) {
+async function startBridge(root, directory, index = 0, remote) {
   if (!fs.existsSync(installedAlock)) throw new Error('Agent write setup is incomplete: rerun the installer.');
   const socket = path.join(directory, `socket-${index}`);
-  const child = spawn(installedAlock, ['bridge', 'serve', '--root', root, '--user', 'fizzer', '--socket', socket, '--turn'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const args = ['account', 'serve', '--root', root, '--user', 'fizzer', '--socket', socket, '--control-stdin'];
+  if (remote) args.push('--remote-url', remote.url, '--header-file', remote.header);
+  const child = spawn(installedAlock, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stdin.on('error', () => {});
   let errors = '';
   child.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4000); });
   await new Promise((resolve, reject) => {
@@ -126,7 +129,7 @@ async function startBridge(root, directory, index = 0) {
     child.once('error', failed);
     child.once('exit', code => failed(new Error(`Agent write bridge exited (${code}): ${errors}`)));
     child.stdout.on('data', chunk => {
-      if (String(chunk).includes('Bridge ready:')) { clearTimeout(timer); resolve(); }
+      if (String(chunk).includes('"ready":true')) { clearTimeout(timer); resolve(); }
     });
   });
   return { child, socket, error: () => errors };
@@ -152,6 +155,17 @@ async function run(opts, sendEvent, api) {
     for (const allowedRoot of writeAccess.roots(opts, api, root)) {
       bridges.push({ ...await startBridge(allowedRoot, directory, bridges.length), root: allowedRoot });
     }
+    if (api?.url && api?.token && opts.vaultId &&
+        (opts.remoteVault === true || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(api.origin || api.url).hostname))) {
+      const mirrorHost = require('./vault-mirror.cjs').mirrors();
+      const mirror = mirrorHost.watch({ origin: api.origin || api.url, token: api.token, vaultId: opts.vaultId });
+      await mirrorHost.reconcile(mirror);
+      const header = path.join(directory, 'remote-authorization');
+      fs.writeFileSync(header, `Authorization: Bearer ${api.token}\n`, { mode: 0o600, flag: 'wx' });
+      const url = `${new URL(api.url).origin}/api/vaults/${encodeURIComponent(opts.vaultId)}/alock`;
+      bridges.push({ ...await startBridge(root, directory, bridges.length, { url, header }),
+        root: 'remote-vault', remote: true, vaultId: opts.vaultId, mirrorRoot: mirror.root });
+    }
     const bridge = bridges[0];
     contextApi = await startReadOnlyApi(api, opts.vaultId);
     // The worker is plain Node code. Do not pass Electron's process.execPath
@@ -169,6 +183,10 @@ async function run(opts, sendEvent, api) {
       try {
         const message = JSON.parse(line);
         if (message.event) {
+          if (message.event.type === 'assistant-turn-end') {
+            for (const bridge of bridges) bridge.child.stdin.write('conclude\n');
+            return;
+          }
           sequence = Math.max(sequence, Number(message.event.seq) || 0);
           if (message.event.type === 'status') {
             const value = JSON.parse(message.event.payload_json)?.status;
@@ -196,7 +214,7 @@ async function run(opts, sendEvent, api) {
     });
     worker.stdin.on('error', () => {});
     worker.stdin.end(JSON.stringify({ opts, api: contextApi.config, root,
-      grants: bridges.map(({ root, socket }) => ({ root, socket })) }));
+      grants: bridges.map(({ root, socket, remote, vaultId, mirrorRoot }) => ({ root, socket, remote, vaultId, mirrorRoot })) }));
     return await completion;
   } catch (error) {
     if (!terminalStatus) status('failed', error.message);

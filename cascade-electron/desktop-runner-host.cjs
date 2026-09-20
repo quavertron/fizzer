@@ -232,7 +232,7 @@ async function connectDesktopRunner(token, nextApiBase) {
     helperUrl = nextBase;
   }
 
-  setNoteApiConfig({ url: helperUrl, token: authToken });
+  setNoteApiConfig({ url: helperUrl, token: authToken, origin: nextBase });
   // Explicit local opt-in; never add browser-CSRF privilege to the TCP proxy.
   if (process.env.FIZZER_LOCAL_AGENT_SETUP === '1' && nextBase === 'https://cscd.online' && !localAgentSetup) {
     try {
@@ -247,6 +247,7 @@ async function connectDesktopRunner(token, nextApiBase) {
 }
 
 async function disconnectDesktopRunner() {
+  await require('./vault-mirror.cjs').closeMirrors();
   if (localAgentSetup) {
     await localAgentSetup.close();
     localAgentSetup = null;

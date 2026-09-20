@@ -29,6 +29,18 @@ COPY --from=dependency-manifests /manifests/client/package.json ./client/
 COPY package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 
+# Persistent DTOB/HTTP vault writer: Rust policy and transport, C file operations.
+FROM rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS alock-build
+WORKDIR /build
+COPY vendor/alock/ alock/
+COPY vendor/nab/ nab/
+COPY vendor/libdtob/ libdtob/
+RUN ln -s ../libdtob alock/libdtob && ln -s ../nab alock/nab && \
+    make -C libdtob libdtob.a CC=cc 'CFLAGS=-O2 -std=c11 -D_POSIX_C_SOURCE=200809L -Ilib -Isrc'
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    make -C alock CC=cc
+
 # Compile an OTP release with ERTS included so the runtime image does not need
 # Mix, Hex, source code, or a host Elixir installation.
 FROM elixir:1.20.2-slim@sha256:e500da1777164f9be05f7ffc0fe06cdb692f453bf7d651755e72310ec8a92eed AS elixir-build
@@ -69,8 +81,10 @@ ENV NODE_ENV=production \
     CASCADE_VAULTS_BASE_DIR=/data/.cascade/vaults \
     CASCADE_QMD_DIR=/data/.cascade/qmd \
     HOME=/data \
+    FIZZER_ALOCK_BIN=/usr/local/libexec/fizzer/alock \
     RELEASE_DISTRIBUTION=none
 
+COPY --from=alock-build /build/alock/alock /usr/local/libexec/fizzer/alock
 COPY --chown=node:node --from=qmd-deps /app/node_modules ./node_modules
 COPY --chown=node:node --from=elixir-build /build/release-artifact ./release
 COPY --chown=node:node --from=client-build /client/dist ./client/dist

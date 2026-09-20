@@ -258,6 +258,16 @@ pub(crate) fn buffer_borders(area: Rect, bounds: Rect) -> Borders {
     }
 }
 
+/// Content rect of the chat messages pane.
+///
+/// `buffer_borders` drops the bottom border when the pane sits on the last row,
+/// so the content is one row taller there than a uniform 1-cell inset implies.
+/// Hit-testing must use this same rect as the renderer or clicks resolve to the
+/// wrong line.
+pub(crate) fn chat_inner(area: Rect, bounds: Rect) -> Rect {
+    Block::default().borders(buffer_borders(area, bounds)).inner(area)
+}
+
 fn render_main_area(frame: &mut Frame, app: &mut App) {
     crate::panes::prepare(app, frame.area());
     crate::panes::activate_focused(app);
@@ -1251,7 +1261,7 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
         .title(Span::styled(active_title, Style::default().fg(if is_focused { FOCUS_COLOR } else { Color::White }).bold()))
         .border_style(Style::default().fg(border_color));
 
-    let visible_lines = messages_block.inner(area).height as usize;
+    let visible_lines = chat_inner(area, frame.area()).height as usize;
     let total_lines = cache.lines.len();
 
     let scroll_y = chat_scroll_top(app, &cache, visible_lines);
@@ -2566,6 +2576,25 @@ mod tests {
             assert!(footer.contains("C-x") || footer.contains(" buffer"),
                 "Emacs legend should remain visible at width {width}: {footer}");
         }
+    }
+
+    #[test]
+    fn chat_inner_keeps_the_bottom_row_when_the_border_is_dropped() {
+        let screen = Rect::new(0, 0, 80, 24);
+        // Pane flush with the bottom of the screen: no bottom border is drawn,
+        // so the content is one row taller than a uniform inset would give.
+        let flush = Rect::new(0, 0, 80, 24);
+        assert_eq!(chat_inner(flush, screen).height, flush.height - 1);
+        assert_ne!(
+            chat_inner(flush, screen).height,
+            flush.inner(ratatui::layout::Margin::new(1, 1)).height,
+            "a plain 1-cell inset must not be used for hit-testing"
+        );
+
+        // A pane that does not touch the bottom keeps all four borders.
+        let inset = Rect::new(0, 0, 80, 10);
+        assert_eq!(chat_inner(inset, screen).height, inset.height - 2);
+        assert_eq!(chat_inner(inset, screen), inset.inner(ratatui::layout::Margin::new(1, 1)));
     }
 
     #[test]

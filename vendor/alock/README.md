@@ -1,5 +1,9 @@
 # alock
 
+The Rust-controlled separate-account local/remote flow is documented in
+[ACCOUNT_FLOW.md](ACCOUNT_FLOW.md), including persistent DTOB/HTTP daemons,
+assistant-turn locks and configured syntax checkers.
+
 Cooperative file locking for concurrent AI agents. When several agents edit the
 same file, alock stops them from clobbering each other's byte ranges and keeps
 every agent's locks pointing at the right place as the file shifts underneath

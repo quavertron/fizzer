@@ -275,10 +275,10 @@ static int next_sequence(const char *dir, unsigned long long *next) {
     return failed ? -1 : 0;
 }
 
-int history_record_turn(const char *turn, int defer, const char *file, const char *author, const char *operation,
+static int history_record_impl(const char *turn, int defer, const char *file, const char *author, const char *operation,
                    const void *before, size_t before_size, const void *after, size_t after_size,
-                   char *error, size_t error_size) {
-    int enabled = history_enabled(error, error_size);
+                   char *error, size_t error_size, int required) {
+    int enabled = required ? 1 : history_enabled(error, error_size);
     if (enabled <= 0) return enabled;
     if (!history_author_valid(author)) { snprintf(error, error_size, "--author is required (1-32 bytes, no control characters)"); return -1; }
     char dir[PATH_MAX], lock[PATH_MAX], event[PATH_MAX], ready[PATH_MAX], item[PATH_MAX], meta[256];
@@ -302,6 +302,18 @@ done:
     if (fd >= 0) close(fd);
     if (failed) snprintf(error, error_size, "File changed but nab history failed; saved snapshots (if written) remain in the alock state directory for retry");
     return failed ? -1 : 0;
+}
+
+int history_record_turn(const char *turn, int defer, const char *file, const char *author, const char *operation,
+                   const void *before, size_t before_size, const void *after, size_t after_size,
+                   char *error, size_t error_size) {
+    return history_record_impl(turn, defer, file, author, operation, before, before_size, after, after_size, error, error_size, 0);
+}
+
+int history_record_account(const char *file, const char *author, const char *operation,
+                   const void *before, size_t before_size, const void *after, size_t after_size,
+                   char *error, size_t error_size) {
+    return history_record_impl("", 0, file, author, operation, before, before_size, after, after_size, error, error_size, 1);
 }
 
 int history_record(const char *file, const char *author, const char *operation,

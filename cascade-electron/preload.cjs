@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rememberServerSession: () => ipcRenderer.invoke('desktop:rememberSession'),
   acceptRemoteInvite: ({ inviteUrl, username, password }) => ipcRenderer.invoke('desktop:acceptRemoteInvite', { inviteUrl, username, password }),
   getRemoteVaults: () => ipcRenderer.invoke('desktop:getRemoteVaults'),
+  requestVaultMirror: (vaultId) => ipcRenderer.invoke('desktop:mirrorVault', { vaultId }),
   listConnections: () => ipcRenderer.invoke('desktop:listConnections'),
   openConnection: ({ id, origin }) => ipcRenderer.invoke('desktop:openConnection', { id, origin }),
   saveRemoteVaults: (vaults) => ipcRenderer.invoke('desktop:saveRemoteVaults', vaults),

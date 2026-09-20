@@ -13,12 +13,14 @@ export function stageAgentAccountSetup(destination, binary = process.env.FIZZER_
   }
   const probe = spawnSync(binary, ['bridge', '--help'], { encoding: 'utf8' });
   const help = `${probe.stdout || ''}${probe.stderr || ''}`;
-  if (!help.includes('alock bridge mkdir') || !help.includes('--author NAME') || !help.includes('--replace-symlink') || !help.includes('--delete') || !help.includes('--turn')) {
+  const accountProbe = spawnSync(binary, ['account', '--help'], { encoding: 'utf8' });
+  const accountHelp = `${accountProbe.stdout || ''}${accountProbe.stderr || ''}`;
+  if (!help.includes('alock bridge mkdir') || !help.includes('--author NAME') || !help.includes('--replace-symlink') || !help.includes('--delete') || !help.includes('--turn') || !accountHelp.includes('alock account http-serve') || !accountHelp.includes('--persistent')) {
     throw new Error('Packaging requires the current native helper bundle. Run npm run build:agent-tools.');
   }
   fs.mkdirSync(destination, { recursive: true });
   const tools = path.dirname(binary);
-  for (const name of ['alock', 'nab', 'awatch', 'purrvect', 'DEPENDENCIES.json']) {
+  for (const name of ['alock', 'nab', 'awatch', 'purrvect', 'rclone', 'DEPENDENCIES.json']) {
     fs.copyFileSync(path.join(tools, name), path.join(destination, name));
     if (name !== 'DEPENDENCIES.json') fs.chmodSync(path.join(destination, name), 0o755);
   }

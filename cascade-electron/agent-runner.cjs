@@ -187,7 +187,8 @@ function chatTriggeringMessageId(opts) {
 }
 
 /** Set the live API target/token the wrapper should use (call on runner connect). */
-function setNoteApiConfig({ url, token } = {}) {
+function setNoteApiConfig({ url, token, origin } = {}) {
+  noteApi.origin = origin || url;
   if (typeof url === 'string') {
     noteApi.url = url.trim().replace(/\/$/, '');
     noteApi.configured = true;
@@ -856,7 +857,7 @@ async function runClaudeLocally(opts, emit) {
       }
 
       // The complete assistant message duplicates the streamed deltas above.
-      if (message.type === 'assistant') continue;
+      if (message.type === 'assistant') { emit('assistant-turn-end', {}); continue; }
 
       // Tool results and other non-streamed messages → harness + structured events.
       if (message.type === 'user' && message.message?.content) {
@@ -941,6 +942,7 @@ async function startLocalAgentRun(opts, sendEvent) {
 
   let seq = 0;
   const emit = (type, payload) => {
+    if (type === 'assistant-turn-end' && process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1') return;
     sendEvent({
       runId,
       seq: ++seq,
@@ -1093,6 +1095,7 @@ async function reapOrphanedLocalAgentRuns() {
 }
 
 async function shutdownLocalAgentHost() {
+  await require('./vault-mirror.cjs').closeMirrors();
   const mod = await loadCliAgentModule();
   mod.shutdownPersistentCliAgents?.();
 }

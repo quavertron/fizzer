@@ -423,6 +423,19 @@ int bridge_serve(const char *root_path, const char *socket_path, uid_t peer) {
     return bridge_serve_turn(root_path, socket_path, peer, 0);
 }
 
+/* C filesystem/peer primitives shared with the Rust account controller. */
+int account_target(const char *root, const char *relative, char *out) {
+    return target_path(root, relative, out);
+}
+int account_safe(const char *path) {
+    struct stat st;
+    return parents_safe(path) && (lstat(path, &st) < 0 ? errno == ENOENT : protected_path(path, 0));
+}
+int account_peer(int fd, unsigned uid) {
+    uid_t peer;
+    return peer_uid(fd, &peer) == 0 && peer == (uid_t)uid;
+}
+
 int bridge_serve_turn(const char *root_path, const char *socket_path, uid_t peer, int batching) {
     char root[PATH_MAX], parent[PATH_MAX];
     struct stat st;

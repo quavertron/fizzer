@@ -1,5 +1,47 @@
 # Agent-account setup (macOS and Linux)
 
+## Current regular-file edit flow
+
+New desktop and TUI-managed runs use the Rust-controlled `alock account` flow.
+See [the native flow specification](../vendor/alock/ACCOUNT_FLOW.md) for its
+commands, syntax checker configuration and DTOB wire fields. Ordinary range
+locks survive commits until each assistant turn concludes; explicitly requested
+persistent locks survive conclude until their original deadline (at most ten
+minutes). Codex turn-completion and Claude assistant-message boundaries send
+conclude directly to the running bridge over its control pipe.
+
+Configured syntax checkers gate commits. Invalid local proposals remain in the
+agent's temp file; invalid remote proposals are saved as remote pending files.
+Conclude never records invalid syntax. Concurrent accepted edits checkpoint nab
+individually; solo edits checkpoint at conclude. This account flow requires its
+checkpoints independently of the legacy optional-history preference.
+
+For remote servers, the human runner also provides a remote-vault bridge. It
+forwards DTOB over an in-process HTTP connection to Fizzer's authenticated
+`/api/vaults/:id/alock/:operation` endpoints. Fizzer checks the user's vault write
+access and forwards to a persistent native HTTP daemon. Neither forwarding hop
+launches a shell or a process per request. The remote daemon is authoritative.
+Staging supplies the content SHA-256 via `--base FILE` or `--sha256 HASH`.
+The Docker image bundles the native helper. Other server installations must
+install it themselves; `FIZZER_ALOCK_BIN` selects its path.
+An explicit `remoteVault: true` runner option also enables this for a server
+accessed through a loopback tunnel. Otherwise non-loopback server origins select
+the additional remote bridge automatically.
+
+Server-to-client mirrors use a persistent rclone daemon, triggered through the
+existing vault socket; see [vault mirroring](vault-mirroring.md). The bridge itself
+only refreshes the agent-owned temporary proposal after acceptance. All proposed
+changes continue to POST through alock; mirrors never upload. Remote grants
+include `mirrorRoot` for baseline reads. The account flow covers regular-file edits and
+creation with existing parents; the legacy bridge operations described below
+remain separate compatibility APIs.
+
+Source builds now also require Rust/Cargo. Update the installed native helper
+before launching new runs. Existing native daemons must drain before a new
+binary can serve the account command. Account setup, access grants and
+credential handling below remain applicable; references below to the old
+`bridge` command and bridge-run batching describe that compatibility interface.
+
 On macOS and Linux, desktop setup is available explicitly in Account settings →
 Preferences → Agent file-write coordination (alock). It never opens at startup.
 The dialog only displays or copies a terminal command; it does not install,

@@ -20,7 +20,7 @@ executables plus purrvect's runtime libraries to `.native-tools/`. It preserves
 upstream relative paths with temporary symlinks, not additional vendored codecs.
 No source checkout or user library installation is modified by the build.
 
-Prerequisites: Node, Go, make, C/C++ compilers, CMake, pkg-config, ThorVG >= 1.0.7.
+Prerequisites: Node, Go, Rust/Cargo, make, C/C++ compilers, CMake, pkg-config, ThorVG >= 1.0.7.
 Go module versions/checksums remain in awatch/go.mod and go.sum. System C runtimes
 are provided by the target OS. Build packages on the target OS/architecture.
 Electron and npm/TUI packaging use this same helper bundle; installers place it

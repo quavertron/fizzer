@@ -8,6 +8,8 @@ defmodule CascadeWeb.Router do
 
   def domains do
     [
+      {CascadeWeb.MirrorRouter, CascadeWeb.MirrorRouter},
+      {CascadeWeb.AlockRouter, CascadeWeb.AlockRouter},
       {CascadeWeb.SystemRoutes, CascadeWeb.SystemRouter},
       {CascadeWeb.AccountRoutes, CascadeWeb.AccountRouter,
        Cascade.Realtime.Events.account_options() ++

@@ -81,6 +81,7 @@ import * as Layout from './layout/tree';
 import type { LayoutNode } from './layout/tree';
 import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, getVaultShortId, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import { connectVaultSocket } from './socket';
+import { attachVaultMirror } from './vaultMirror';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
   agentsAfterLoadFailure,
@@ -190,7 +191,7 @@ export default function App() {
 
   // App data state
   const [vaults, setVaults] = useState<Vault[]>([]);
-  const requestedVaultRef = useRef<string | null>(() => {
+  const requestedVaultRef = useRef<string | null>((() => {
     if (typeof window === 'undefined') return null;
     const vaultPathMatch = window.location.pathname.match(/^\/vault\/([a-fA-F0-9]{8})$/i);
     if (vaultPathMatch) {
@@ -201,7 +202,7 @@ export default function App() {
       return hex;
     }
     return new URLSearchParams(window.location.search).get('vault');
-  })();
+  })());
   const [workspaceStore] = useState(() => new WorkspaceStore(persistedSessionRef.current));
   const [loadVaultDataInflight] = useState(() => new Map<string, Promise<void>>());
   const workspaceRevision = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getSnapshot);
@@ -1905,6 +1906,7 @@ export default function App() {
     const activeVault = vaults.find((v) => v.id === activeVaultId);
     const controller = new AbortController();
     const socket = connectVaultSocket(activeVault?.origin, activeVault?.token);
+    const detachMirror = attachVaultMirror(socket, activeVaultId);
     vaultSocketRef.current = socket;
     const joinActiveVault = () => {
       socket.emit('joinVault', activeVaultId);
@@ -2087,6 +2089,7 @@ export default function App() {
     socket.on('vault:chatPresence', handleChatPresence);
     socket.on('vault:userProfileUpdated', handleUserProfileUpdated);
     return () => {
+      detachMirror();
       controller.abort();
       if (socketVaultReloadTimerRef.current != null) {
         window.clearTimeout(socketVaultReloadTimerRef.current);

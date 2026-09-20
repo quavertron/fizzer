@@ -14,6 +14,7 @@
 #include "history.h"
 #include "bridge.h"
 #include "cli.h"
+#include "account.h"
 #include <dtob.h>
 #include <dirent.h>
 #include <errno.h>
@@ -455,6 +456,7 @@ int main(int argc, char **argv) {
 
     const char *cmd = argv[1];
 
+    if (strcmp(cmd, "account") == 0)       return account_cli(argc, argv);
     if (strcmp(cmd, "bridge") == 0)        return cmd_bridge(argc, argv);
 
     if (strcmp(cmd, "acquire") == 0)       return cmd_acquire(argc, argv);

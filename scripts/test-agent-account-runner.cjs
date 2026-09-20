@@ -33,8 +33,8 @@ if (process.getuid() !== ${expectedUid}) throw new Error('Wrong agent UID');
 try { fs.writeFileSync('note.txt', 'bypass'); throw new Error('Direct write unexpectedly succeeded'); }
 catch (error) { if (!['EACCES', 'EPERM'].includes(error.code)) throw error; }
 function bridge(args) {
-  if (['commit', 'mkdir'].includes(args[0])) args.push('--author', 'fizzer-test');
-  const result = spawnSync(process.env.FIZZER_ALOCK_BIN, ['bridge', ...args, '--socket', process.env.FIZZER_BRIDGE_SOCKET], {encoding:'utf8'});
+  if (['stage', 'commit'].includes(args[0])) args.push('--author', 'fizzer-test');
+  const result = spawnSync(process.env.FIZZER_ALOCK_BIN, ['account', ...args, '--socket', process.env.FIZZER_BRIDGE_SOCKET], {encoding:'utf8'});
   if (result.status !== 0) throw new Error(result.stderr);
   return JSON.parse(result.stdout);
 }
@@ -42,7 +42,7 @@ const stage = bridge(['stage', '--path', 'note.txt']);
 try {
   fs.writeFileSync(stage.file, 'through alock\\n');
   bridge(['commit', '--ticket', stage.ticket, '--file', stage.file]);
-} finally { fs.unlinkSync(stage.file); }
+} finally { fs.unlinkSync(stage.file); fs.unlinkSync(stage.file + '.alock'); }
 console.log(JSON.stringify({type:'result', subtype:'success', result:'permissions and bridge verified', session_id:'disposable-test'}));
 `, { mode: 0o755 });
     process.env.CLAUDE_BIN = fake;

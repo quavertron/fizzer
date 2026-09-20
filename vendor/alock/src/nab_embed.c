@@ -18,8 +18,12 @@ static size_t trit_decode_into(const uint8_t *data, size_t size, uint8_t *out) {
 #include "../nab/src/nab.c"
 #undef main
 
-void alock_nab_key(const char *file, char out[65]) {
+void alock_content_hash(const void *content, size_t size, char out[65]) {
     uint8_t hash[32];
-    sha256_hash((const uint8_t *)file, strlen(file), hash);
+    sha256_hash((const uint8_t *)content, size, hash);
     for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", hash[i]);
+}
+
+void alock_nab_key(const char *file, char out[65]) {
+    alock_content_hash(file, strlen(file), out);
 }

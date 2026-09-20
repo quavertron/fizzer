@@ -79,6 +79,13 @@ export function buildAgentTools(destination = path.join(root, '.native-tools')) 
       '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON', '-DCMAKE_INSTALL_RPATH=$ORIGIN', '-DBUILD_SHARED_LIBS=OFF'], temporary);
     run('cmake', ['--build', 'purrvect-build', '--parallel', '2'], temporary);
     fs.mkdirSync(destination, { recursive: true });
+    run(process.execPath, [path.join(root, 'scripts/prepare-rclone.mjs'), destination], root);
+    const rustMetadata = spawnSync('cargo', ['metadata', '--locked', '--format-version', '1',
+      '--manifest-path', path.join(temporary, 'alock/control/Cargo.toml')], { encoding: 'utf8' });
+    if (rustMetadata.status !== 0) throw new Error(rustMetadata.stderr || 'Cannot inspect Rust helper dependencies');
+    for (const dependency of JSON.parse(rustMetadata.stdout).packages) {
+      copyNotices(path.dirname(dependency.manifest_path), `rust-${dependency.name}-${dependency.version}`, destination);
+    }
     const modules = spawnSync('go', ['list', '-m', '-f', '{{.Path}}\t{{.Dir}}', 'all'],
       { cwd: path.join(temporary, 'awatch'), encoding: 'utf8' });
     if (modules.status !== 0) throw new Error(modules.stderr);

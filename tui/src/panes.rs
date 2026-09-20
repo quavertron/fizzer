@@ -1114,13 +1114,14 @@ mod tests {
             kind: crossterm::event::MouseEventKind::ScrollUp, column: rect.x + 2,
             row: rect.y + 2, modifiers: KeyModifiers::NONE,
         };
-        crate::handle_pane_mouse(&mut app, mouse, &tx);
+        let screen = Rect::new(0, 0, 140, 42);
+        crate::handle_pane_mouse(&mut app, mouse, &tx, screen);
         assert_eq!(app.panes.borrow().focused_id(), first);
         assert_eq!(app.scroll_offset, 0);
         assert!(app.window_states[&second].scroll > 0);
         crate::handle_pane_mouse(&mut app, crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), ..mouse
-        }, &tx);
+        }, &tx, screen);
         assert_eq!(app.panes.borrow().focused_id(), second);
         assert_eq!(app.loaded_window, Some(second));
         assert!(app.chat_cursor.is_some());

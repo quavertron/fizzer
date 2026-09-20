@@ -1973,7 +1973,7 @@ async fn run_app(
                             continue;
                         }
 
-                        handle_pane_mouse(app, mouse, &tx);
+                        handle_pane_mouse(app, mouse, &tx, Rect::new(0, 0, term_width, term_height));
 
                     }
                     _ => {}
@@ -2084,8 +2084,10 @@ fn apply_channels(app: &mut App, channels: Vec<ChannelItem>) {
     };
 }
 
-fn chat_offset_at_position(app: &App, row: u16, column: u16, area: Rect) -> Option<usize> {
-    let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+fn chat_offset_at_position(app: &App, row: u16, column: u16, area: Rect, bounds: Rect) -> Option<usize> {
+    // Must match the renderer's rect exactly; a uniform 1-cell inset is wrong
+    // for a pane on the last row, where the bottom border is omitted.
+    let inner = ui::chat_inner(area, bounds);
     if !inner.contains((column, row).into()) { return None; }
     ui::ensure_chat_cache(app, area.width.saturating_sub(4).max(1) as usize);
     let cache = app.chat_cache.read().unwrap();
@@ -2105,7 +2107,7 @@ fn chat_offset_at_position(app: &App, row: u16, column: u16, area: Rect) -> Opti
     Some(start + offset)
 }
 
-fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mpsc::UnboundedSender<BackendEvent>) {
+fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mpsc::UnboundedSender<BackendEvent>, bounds: Rect) {
     if app.show_vaults || app.vault_action.is_some() || app.codex_import.is_some() || app.panes.borrow().picker.is_some() { return; }
     let Some((id, area)) = app.panes.borrow().window_at(mouse.column, mouse.row) else { return; };
     let previous = app.panes.borrow().focused_id();
@@ -2152,7 +2154,7 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
                 ActivePane::Agents if row / 2 < app.agents.len() => app.selected_agent_idx = row / 2,
                 ActivePane::Users if row / 2 < app.users.len() => app.selected_user_idx = row / 2,
                 ActivePane::ChatMessages => {
-                    if let Some(offset) = chat_offset_at_position(app, mouse.row, mouse.column, area) {
+                    if let Some(offset) = chat_offset_at_position(app, mouse.row, mouse.column, area, bounds) {
                         if mouse.modifiers.contains(KeyModifiers::SHIFT) { app.chat_selection_anchor.get_or_insert(app.chat_cursor.unwrap_or(offset)); }
                         else { app.chat_selection_anchor = Some(offset); }
                         app.chat_cursor = Some(offset);
@@ -2162,7 +2164,7 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
             }
         }
         MouseEventKind::Drag(MouseButton::Left) if view == ActivePane::ChatMessages && app.loaded_window == Some(id) => {
-            if let Some(offset) = chat_offset_at_position(app, mouse.row, mouse.column, area) {
+            if let Some(offset) = chat_offset_at_position(app, mouse.row, mouse.column, area, bounds) {
                 app.chat_selection_anchor.get_or_insert(app.chat_cursor.unwrap_or(offset));
                 app.chat_cursor = Some(offset);
             }

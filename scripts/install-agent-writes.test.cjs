@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const installer = path.resolve(__dirname, '../install-agent-writes.sh');
-const help = 'alock bridge serve --turn\nalock bridge mkdir --author NAME --replace-symlink --delete';
+const help = 'alock bridge serve --turn\nalock bridge mkdir --author NAME --replace-symlink --delete\nalock account http-serve --persistent';
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'install-agent-writes-'));
@@ -17,7 +17,7 @@ function fixture() {
     return target;
   };
   const binary = write('alock', `#!/bin/sh\ncat <<'HELP'\n${help}\nHELP\n`, 0o755);
-  for (const name of ['nab', 'awatch', 'purrvect']) write(name, '#!/bin/sh\nexit 0\n', 0o755);
+  for (const name of ['nab', 'awatch', 'purrvect', 'rclone']) write(name, '#!/bin/sh\nexit 0\n', 0o755);
   const startup = write('mock-shell', `
 sudo() { printf '%s\\n' "$*" >> "$MOCK_LOG"; }
 git() {
@@ -61,10 +61,14 @@ test('source checkout builds all bundled projects without sibling repositories',
     const entry = f.write('fresh/install-agent-writes.sh', fs.readFileSync(installer));
     const root = path.resolve(__dirname, '..');
     f.write('fresh/scripts/build-agent-tools.mjs', fs.readFileSync(path.join(__dirname, 'build-agent-tools.mjs')));
+    f.write('fresh/scripts/prepare-rclone.mjs', fs.readFileSync(path.join(__dirname, 'prepare-rclone.mjs')));
     fs.cpSync(path.join(root, 'vendor'), path.join(f.directory, 'fresh/vendor'), { recursive: true });
+    fs.cpSync(path.join(root, 'tui/vendor/purrvect'), path.join(f.directory, 'fresh/tui/vendor/purrvect'), { recursive: true });
     for (const name of ['GOMODCACHE', 'GOCACHE']) {
       f.env[name] = spawnSync('go', ['env', name], { encoding: 'utf8' }).stdout.trim();
     }
+    f.env.RUSTUP_HOME = process.env.RUSTUP_HOME || path.join(os.homedir(), '.rustup');
+    f.env.CARGO_HOME = process.env.CARGO_HOME || path.join(os.homedir(), '.cargo');
     f.run([], entry);
     const calls = fs.readFileSync(path.join(f.directory, 'calls'), 'utf8');
     assert.doesNotMatch(calls, /clone|submodules/);

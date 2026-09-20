@@ -49,7 +49,7 @@ if [[ ${1:-} == --privileged ]]; then
   install -d -m 755 -o root "$prefix"
   [[ ! -L $prefix/alock ]] || fail 'Refusing an installed alock symlink.'
   tools_dir=$(dirname "$binary")
-  for tool in alock awatch nab purrvect; do
+  for tool in alock awatch nab purrvect rclone; do
     [[ -f $tools_dir/$tool && ! -L $prefix/$tool ]] || fail "Missing tool or unsafe destination: $tool"
     install -m 755 -o root "$tools_dir/$tool" "$prefix/$tool"
   done
@@ -102,8 +102,10 @@ help=$("$binary" bridge --help 2>&1 || true)
 [[ $help == *'--author NAME'* ]] || fail 'alock needs mandatory-author support; rebuild from current source.'
 [[ $help == *'--replace-symlink'* && $help == *'--delete'* ]] || fail 'alock needs deletion and symlink support; rebuild from current source.'
 [[ $help == *'--turn'* ]] || fail 'alock needs turn-aware history support; rebuild from current source.'
+account_help=$("$binary" account --help 2>&1 || true)
+[[ $account_help == *'alock account http-serve'* && $account_help == *'--persistent'* ]] || fail 'alock needs the Rust account flow and persistent DTOB/HTTP support; rebuild from current source.'
 binary=$(cd "$(dirname "$binary")" && pwd)/$(basename "$binary")
-for tool in awatch nab purrvect; do
+for tool in awatch nab purrvect rclone; do
   [[ -x $(dirname "$binary")/$tool ]] || fail "The helper bundle is missing $tool; run npm run build:agent-tools."
 done
 echo 'This creates a fizzer account, installs alock, and lets your account launch agents as fizzer.'

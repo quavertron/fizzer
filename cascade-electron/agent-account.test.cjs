@@ -136,6 +136,7 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
   const previousData = process.env.CASCADE_DATA_DIR;
   process.env.CASCADE_DATA_DIR = root;
   const calls = [];
+  const concludes = [];
   function spawn(command, args) {
     calls.push({ command, args });
     const child = new EventEmitter();
@@ -147,7 +148,10 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
         child.emit('exit', child.exitCode); child.emit('close', child.exitCode);
       }
     };
-    if (command.endsWith('/alock')) setImmediate(() => child.stdout.write('Bridge ready: socket\n'));
+    if (command.endsWith('/alock')) {
+      child.stdin.on('data', chunk => concludes.push(String(chunk)));
+      setImmediate(() => child.stdout.write('{"ready":true}\n'));
+    }
     else {
       let input = '';
       child.stdin.on('data', chunk => { input += chunk; });
@@ -155,6 +159,8 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
         assert.equal(JSON.parse(input).opts.runId, 123);
         assert.equal(JSON.parse(input).opts.cwd, fs.realpathSync(root));
         assert.equal(JSON.parse(input).root, fs.realpathSync(root));
+        child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
         child.stdout.write(JSON.stringify({ result: { sessionId: 'test-session' } }) + '\n');
         child.kill();
       }));
@@ -174,7 +180,8 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
       assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
     } else assert.equal((await completion).sessionId, 'test-session');
     assert.equal(calls[0].command, '/usr/local/libexec/fizzer/alock');
-    assert.ok(calls[0].args.includes('--turn'));
+    assert.deepEqual(Array.from(calls[0].args.slice(0, 2)), ['account', 'serve']);
+    assert.deepEqual(concludes, ['conclude\n', 'conclude\n']);
     assert.equal(calls[0].args[calls[0].args.indexOf('--root') + 1], fs.realpathSync(root));
     assert.equal(calls[1].command, '/usr/bin/sudo');
     assert.ok(calls[1].args.includes('fizzer'));

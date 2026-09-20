@@ -89,10 +89,11 @@ an already-running backend. It opens the vault chooser without requiring
 authentication, discovers a running desktop's local backend, and preserves
 explicit URL overrides and saved remote connections. Select a vault to start
 working; identity and the TUI-managed runner connection follow the selected server.
-The TUI features smooth 1-line chat scrolling and inline SVG/Mermaid diagram rendering
-with terminal cell aspect-ratio preservation and zoom re-rasterization. Supported
-agent runtimes include Claude Code (with headless OAuth forwarding), Codex (with native
-and OpenRouter routing), and Antigravity (with live language server discovery).
+The TUI features smooth 1-line chat scrolling, border-aware mouse selection
+hit-testing, and inline SVG/Mermaid diagram rendering with terminal cell
+aspect-ratio preservation and zoom re-rasterization. Supported agent runtimes
+include Claude Code (with headless OAuth forwarding), Codex (with native and
+OpenRouter routing), and Antigravity (with live language server discovery).
 
 ### Self-host a private instance
 

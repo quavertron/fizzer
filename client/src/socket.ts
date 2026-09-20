@@ -22,6 +22,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /** Events emitted by the server on the `/vault` namespace. */
 type ServerEvents = {
+  'vault:filesChanged': (data: { vaultId: string }) => void;
   /** A relevant terminal message, note mutation, deletion, or read-state change occurred. */
   'community:changed': (data: Record<string, never>) => void;
   /** The vault's label changed; everyone in it should update the switcher. */

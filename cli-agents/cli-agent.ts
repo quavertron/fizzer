@@ -323,7 +323,7 @@ export function cancelCliAgentRun(runId: number): boolean {
 // TYPES
 // ═══════════════════════════════════════════════════════════════
 
-export type AgentEmit = (type: 'text' | 'user' | 'harness' | 'session' | 'timing', payload: unknown) => void;
+export type AgentEmit = (type: 'text' | 'user' | 'harness' | 'session' | 'timing' | 'assistant-turn-end', payload: unknown) => void;
 export type CliImage = { media_type: string; data: string };
 
 /** Runner-clock observations, not provider queue or model execution measurements. */
@@ -1269,6 +1269,7 @@ class CodexAppServerClient {
     else if (message.method === 'item/completed') this.emitItem(turn, params.item, true);
     else if (message.method === 'thread/tokenUsage/updated') emitCascadeStats(turn.emit, statsFromUsageBlob(params.tokenUsage || params.usage));
     else if (message.method === 'turn/completed') {
+      turn.emit('assistant-turn-end', {});
       const status = params.turn?.status;
       turn.timing.complete(status || 'failed', observation);
       this.finishTurn(turnId, status === 'completed' ? undefined : new Error(params.turn?.error?.message || `Codex turn ${status || 'failed'}.`));
@@ -1527,6 +1528,7 @@ async function runCodex(
   const onLine = (line: string) => {
     const ev = JSON.parse(line);
     const item = ev.item;
+    if (ev.type === 'turn.completed') emit('assistant-turn-end', {});
     // Usage can appear on turn.completed or nested event_msg token_count payloads.
     if (ev.type === 'turn.completed' && ev.usage && typeof ev.usage === 'object') {
       turnCount += 1;

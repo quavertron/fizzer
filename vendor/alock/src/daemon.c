@@ -4,6 +4,7 @@
 #include "history.h"
 #include "turns.h"
 #include "events.h"
+#include "account.h"
 #include <dtob.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -109,6 +110,11 @@ static void awatch_lock_notify(const char *agent, const char *file,
     close(fd);
 }
 
+
+void account_notify(const char *file, uint32_t start, uint32_t end, const char *author,
+                    const void *before, size_t before_size, const void *after, size_t after_size) {
+    awatch_notify(author, author, file, start, end, before, before_size, after, after_size);
+}
 
 static LockTable lt;
 static char current_turn[TURN_ID_SIZE];
@@ -686,6 +692,7 @@ static void handle_client(int client_fd) {
     current_turn[0] = 0;
     dtob_kvset_str(req, "turn", current_turn, sizeof(current_turn));
 
+    account_expire(&lt);
     turn_expire(release_turn_locks);
     lock_expire(&lt);
     reap_stages();
@@ -696,6 +703,7 @@ static void handle_client(int client_fd) {
         dtob_kvset_put(resp, "author_required", dtob_uint(1));
         dtob_kvset_put(resp, "file_operations", dtob_uint(1));
         dtob_kvset_put(resp, "turns", dtob_uint(1));
+        dtob_kvset_put(resp, "account_flow", dtob_uint(1));
         dtob_kvset_put(resp, "pid", dtob_uint((uint64_t)getpid()));
         dtob_kvset_put(resp, "nab", dtob_uint(1));
     }
@@ -706,6 +714,7 @@ static void handle_client(int client_fd) {
         resp = failed ? make_error("turn lifecycle failed; pending history retained") : dtob_kvset();
         if (!failed) dtob_kvset_put(resp, "ok", dtob_uint(1));
     }
+    else if (strcmp(cmd, "account") == 0)       resp = account_request(req, &lt);
     else if (strcmp(cmd, "acquire") == 0)       resp = handle_acquire(req);
     else if (strcmp(cmd, "write") == 0)         resp = handle_write(req);
     else if (strcmp(cmd, "check") == 0)         resp = handle_check(req);
@@ -741,12 +750,13 @@ static void daemon_run(int listen_fd) {
     time_t last_activity = time(NULL);
     while (1) {
         int ret = poll(&pfd, 1, 1000);
+        account_expire(&lt);
         turn_expire(release_turn_locks);
 
         if (ret == 0) {
             lock_expire(&lt);
             reap_stages();
-            if (lt.count == 0 && !turns_active() && time(NULL) - last_activity >= EXPIRE_INTERVAL_MS / 1000) break;
+            if (lt.count == 0 && !turns_active() && !account_active() && time(NULL) - last_activity >= EXPIRE_INTERVAL_MS / 1000) break;
             continue;
         }
 

@@ -54,6 +54,11 @@ setNoteApiConfig({ url: API_BASE, token });
 const activeRuns = new Map();
 const triggeringDispatches = new Set();
 let runnerSocket = null;
+let vaultSocket = null;
+const mirrorEntries = new Map();
+const remoteMirroring = process.env.FIZZER_REMOTE_MIRROR === '1' ||
+  !['localhost', '127.0.0.1', '[::1]'].includes(new URL(API_BASE).hostname);
+const { mirrors, closeMirrors } = require('../cascade-electron/vault-mirror.cjs');
 
 function log(msg, ...args) {
   const ts = new Date().toISOString().slice(11, 19);
@@ -88,6 +93,24 @@ function connect() {
       runnerInstanceId,
     });
   });
+
+  if (remoteMirroring) {
+    // Multiplex the vault namespace on the existing runner transport.
+    vaultSocket = runnerSocket.io.socket('/vault', { auth: { token } });
+    vaultSocket.on('connect', () => {
+      for (const [id, entry] of mirrorEntries) {
+        vaultSocket.emit('joinVault', id);
+        mirrors().notify(entry);
+      }
+    });
+    for (const event of ['vault:filesChanged', 'vault:noteChanged', 'vault:noteCreated', 'vault:noteDeleted']) {
+      vaultSocket.on(event, data => {
+        const entry = mirrorEntries.get(data?.vaultId);
+        if (entry) mirrors().notify(entry);
+      });
+    }
+    vaultSocket.connect();
+  }
 
   runnerSocket.on('runner:registered', (data) => {
     log('Successfully registered with backend. Desktop runner is ONLINE.', data);
@@ -177,6 +200,12 @@ async function checkPendingDispatches() {
     if (!Array.isArray(vaults)) return;
 
     for (const vault of vaults) {
+      if (remoteMirroring && !mirrorEntries.has(vault.id)) {
+        const entry = mirrors().watch({ origin: API_BASE, token, vaultId: vault.id });
+        mirrorEntries.set(vault.id, entry);
+        if (vaultSocket?.connected) vaultSocket.emit('joinVault', vault.id);
+        mirrors().notify(entry);
+      }
       const notesRes = await fetch(`${API_BASE}/api/vaults/${vault.id}/notes`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -257,6 +286,8 @@ const dispatchInterval = setInterval(() => {
 async function cleanup() {
   log('Shutting down runner daemon...');
   clearInterval(dispatchInterval);
+  vaultSocket?.disconnect();
+  await closeMirrors();
   if (runnerSocket) {
     runnerSocket.disconnect();
     runnerSocket = null;
@@ -269,4 +300,3 @@ process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
 connect();
-

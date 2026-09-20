@@ -680,7 +680,7 @@ ipcMain.handle('desktop:instance', async () => ({
 }));
 
 async function openInstance(origin, vaultId, chooser = false) {
-  disconnectDesktopRunner();
+  await disconnectDesktopRunner();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win !== mainWindow) win.destroy();
   }
@@ -727,6 +727,22 @@ ipcMain.handle('desktop:openConnection', async (_event, { id, origin }) => {
 ipcMain.handle('desktop:getRemoteVaults', async () => {
   // Workspace data must never merge identities from other instances.
   return [];
+});
+
+ipcMain.handle('desktop:mirrorVault', async (event, { vaultId } = {}) => {
+  if (event.senderFrame !== event.sender.mainFrame || !isSameOrigin(event.senderFrame.url, INSTANCE_ORIGIN)) {
+    throw new Error('Mirror requests require the selected instance window');
+  }
+  if (INSTANCE_ORIGIN === embeddedBackend?.origin ||
+      ['localhost', '127.0.0.1', '[::1]'].includes(new URL(INSTANCE_ORIGIN).hostname)) return { skipped: true };
+  const cookies = await instanceSession(INSTANCE_ORIGIN).cookies.get({ url: INSTANCE_ORIGIN });
+  const token = cookies.find(cookie => cookie.name === (INSTANCE_ORIGIN.startsWith('https:') ? '__Host-cascade_session' : 'cascade_session'))?.value;
+  if (!token) throw new Error('Sign in before mirroring a vault');
+  const host = require('./vault-mirror.cjs').mirrors();
+  const entry = host.watch({ origin: INSTANCE_ORIGIN, token, vaultId });
+  await host.start();
+  host.notify(entry);
+  return { root: entry.root };
 });
 
 ipcMain.handle('desktop:saveRemoteVaults', async (_event, vaults) => {
