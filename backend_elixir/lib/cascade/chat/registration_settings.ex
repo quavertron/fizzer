@@ -7,7 +7,7 @@ defmodule Cascade.Chat.RegistrationSettings do
   def execution(user_id, vault_id, channel_id, registration_id) do
     with {:ok, route} <- Cascade.Chat.Channel.assert_vault_channel(vault_id, channel_id, user_id),
          [id, identity, agent, profile, model, prompt, cwd, yolo] <- SQL.one("SELECT m.id,va.id,m.agent_id,va.hermes_profile,m.model,m.context_prompt,m.cwd,m.yolo FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id WHERE m.id=? AND m.channel_id=? AND m.vault_id=? AND va.owner_user_id=? AND (va.identity_scope!='session' OR julianday(va.expires_at)>julianday('now')) AND NOT EXISTS(SELECT 1 FROM vault_agent_exclusions x WHERE x.vault_id=m.vault_id AND x.vault_agent_id=va.id)", [registration_id, route.sourceChannelId, route.sourceVaultId, user_id]) do
-      {:ok, %{contract: "registration_execution_select_only_v1", registrationId: id, vaultAgentId: identity, ownerUserId: user_id, vaultId: vault_id, channelId: channel_id, agentId: agent, hermesProfile: profile, model: model, contextPrompt: prompt, cwd: cwd, yolo: yolo == 1}}
+      {:ok, %{contract: "registration_execution_select_only_v1", registrationId: id, vaultAgentId: identity, ownerUserId: user_id, vaultId: vault_id, channelId: channel_id, agentId: agent, hermesProfile: profile, model: model, contextPrompt: prompt, cwd: cwd, yolo: yolo == 1, missionsEnabled: Cascade.Chat.Delegation.enabled?(id)}}
     else
       _ -> {:error, 404, "Registration not found"}
     end
@@ -18,7 +18,7 @@ defmodule Cascade.Chat.RegistrationSettings do
          [model, effort, prompt, final, yolo, taggable, reply, orchestrator, pingable, ambient, suggestions, cwd, conversation] <-
            SQL.one("SELECT model,reasoning_effort,context_prompt,final_reply_only,yolo,taggable_by_agents,reply_to_every_message,orchestrator,pingable_by_others,ambient_group_chat,next_step_suggestions,cwd,conversation_id FROM chat_agent_members WHERE id=? AND channel_id=?", [binding.id, binding.sourceChannelId]) do
       settings = %{"model" => model || "", "reasoningEffort" => effort || "", "contextPrompt" => prompt || "", "finalReplyOnly" => final == 1}
-      protected = %{yolo: yolo == 1, taggableByAgents: taggable == 1, replyToEveryMessage: reply == 1, orchestrator: orchestrator == 1, pingableByOthers: pingable == 1, ambientGroupChat: ambient == 1, nextStepSuggestions: suggestions == 1, cwd: cwd, conversationId: conversation}
+      protected = %{missionsEnabled: Cascade.Chat.Delegation.enabled?(registration_id), yolo: yolo == 1, taggableByAgents: taggable == 1, replyToEveryMessage: reply == 1, orchestrator: orchestrator == 1, pingableByOthers: pingable == 1, ambientGroupChat: ambient == 1, nextStepSuggestions: suggestions == 1, cwd: cwd, conversationId: conversation}
       revision = :crypto.hash(:sha256, :erlang.term_to_binary({binding, settings, protected})) |> Base.encode16(case: :lower)
       {:ok, %{contract: "registration_settings_v1", registration: binding, settings: settings, protected: protected, revision: revision}}
     else

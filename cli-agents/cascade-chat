@@ -48,6 +48,7 @@ Usage:
   cascade-chat mission approve --mission <id> --expected-revisions '{"note-id":1}'
   cascade-chat mission note create --mission <id> --kind milestone|feature --title T --content TEXT [--parent-note-id <id>]
   cascade-chat mission note list --mission <id>
+  cascade-chat mission cancel --mission <id> [--summary S]    Stop existing mission work
   cascade-chat mission finish --mission <id> --verification <observed-evidence> [--summary S]
     [--verified-integrations-file <json-array> --objective <exact-objective>]
   cascade-chat avatar --file <path>     upload this agent's profile picture
@@ -598,11 +599,18 @@ function formatHuman(messages) {
   }).join('\n\n');
 }
 
+function capabilityHelp(help, config) {
+  if (config.missionsEnabled !== false && process.env.CASCADE_MISSIONS_ENABLED !== '0') return help;
+  return 'Missions and delegation are disabled for this agent. Direct work, no-invoke conversation, inspection, result updates, join and Stop remain available. The server checks the current setting.\n\n'
+    + help.split('\n').filter(line => !/cascade-chat (mission (start|delegate|child |retry)|send --to)|create a typed single-agent handoff/.test(line)).join('\n');
+}
+
 async function main() {
+  const config = readHelperConfig();
   const raw = args._[0];
   if (!raw && !args.help && args.json) fail('missing command. Run with --help.');
   if (!raw || args.help) {
-    process.stdout.write((args.help ? commandHelp(args) : USAGE) + '\n');
+    process.stdout.write(capabilityHelp(args.help ? commandHelp(args) : USAGE, config) + '\n');
     process.exit(args.help ? 0 : 1);
   }
   const cmd = raw === 'attachments' ? 'attachment' : raw;
@@ -610,7 +618,6 @@ async function main() {
     fail(`unknown command "${raw}". Run with --help.`);
   }
 
-  const config = readHelperConfig();
   const vaultId = optionString(args, 'vault', 'CASCADE_NOTE_VAULT', config, 'vaultId');
   const channelId = optionString(args, 'channel', 'CASCADE_CHAT_CHANNEL', config, 'chatChannelId');
   if (cmd !== 'context' && !vaultId) fail('missing vault. Pass --vault or set CASCADE_NOTE_VAULT.');
@@ -655,6 +662,7 @@ async function main() {
       agentId: agent.agentId,
       model: agent.model || '',
       orchestrator: agent.orchestrator === true,
+      missionsEnabled: agent.missionsEnabled !== false,
       taggableByAgents: agent.taggableByAgents === true,
     }));
     if (args.json) process.stdout.write(JSON.stringify(members) + '\n');

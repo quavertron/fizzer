@@ -224,7 +224,7 @@ function isExpiredJwt(token) {
   return false;
 }
 
-function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMessageId, chatAuthor, agentId, agentMemoryKey, registrationId, workItemId } = {}) {
+function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMessageId, chatAuthor, agentId, agentMemoryKey, registrationId, workItemId, helperToken, missionsEnabled } = {}) {
   let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
   if (!token || isExpiredJwt(token)) {
     try {
@@ -237,7 +237,8 @@ function writeHelperConfig({ runId, vaultId, channelId, messageId, triggeringMes
   }
   const payload = {
     url: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    token,
+    token: helperToken || token,
+    missionsEnabled: missionsEnabled !== false,
     vaultId: vaultId || process.env.CASCADE_NOTE_VAULT || '',
     chatChannelId: channelId || process.env.CASCADE_CHAT_CHANNEL || '',
     chatMessageId: messageId || process.env.CASCADE_CHAT_MESSAGE || '',
@@ -291,6 +292,8 @@ function buildRunHelperEnv(opts) {
     agentMemoryKey,
     registrationId,
     workItemId,
+    helperToken: opts?.helperToken,
+    missionsEnabled: opts?.missionsEnabled,
   });
   let token = noteApi.configured ? noteApi.token : (noteApi.token || process.env.CASCADE_NOTE_TOKEN || '');
   if (process.env.CASCADE_NOTE_TOKEN !== '' && (!token || isExpiredJwt(token))) {
@@ -304,7 +307,8 @@ function buildRunHelperEnv(opts) {
   }
   const env = {
     CASCADE_NOTE_URL: noteApi.configured ? noteApi.url : (noteApi.url || process.env.CASCADE_NOTE_URL || 'https://cscd.online'),
-    CASCADE_NOTE_TOKEN: token,
+    CASCADE_NOTE_TOKEN: opts?.helperToken || token,
+    CASCADE_MISSIONS_ENABLED: opts?.missionsEnabled === false ? '0' : '1',
     ...(noteApi.configured ? { CASCADE_NOTE_USER: '', CASCADE_NOTE_PASS: '' } : {}),
     CASCADE_HELPER_CONFIG: configPath,
     CASCADE_HELPER_DIR: resolveWrapperDir(),

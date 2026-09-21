@@ -80,6 +80,40 @@ defmodule Cascade.Missions.ChildrenTest do
     }
   end
 
+  test "disabled worker cannot create children, pending children defer, existing results still integrate", ctx do
+    {mission, parent, run} = parent(ctx)
+    disable = fn registration, enabled ->
+      SQL.exec("UPDATE vault_agents SET missions_enabled=? WHERE id=?", [enabled, registration.vaultAgentId])
+    end
+    disable.(ctx.worker, 0)
+    assert {:error, reason} = Children.add(ctx.user.id, ctx.channel.id, mission.id, %{title: "Denied"}, run.id)
+    assert reason =~ "disabled"
+    assert SQL.one("SELECT count(*) FROM chat_mission_tasks WHERE parent_task_id=?", [parent.id]) == [0]
+    disable.(ctx.worker, 1)
+    {:ok, child} = Children.add(ctx.user.id, ctx.channel.id, mission.id, %{title: "Existing child"}, run.id)
+    disable.(ctx.worker, 0)
+    assert Scheduler.schedule(mission.id).dispatches == []
+    assert SQL.one("SELECT status,dispatch_id FROM chat_mission_tasks WHERE id=?", [child.task.id]) == ["pending", nil]
+    disable.(ctx.worker, 1)
+    [%{dispatch: dispatch}] = Scheduler.schedule(mission.id).dispatches
+    child_run = start(ctx, dispatch)
+    disable.(ctx.worker, 0)
+    disable.(ctx.coordinator, 0)
+    assert {:ok, _} = Children.join(ctx.user.id, ctx.channel.id, run.id)
+    :ok = RunStore.finish(run.id, "completed", "Integrate after child")
+    {:ok, _} = Scheduler.settle_run(run.id, "completed", "Integrate after child")
+    :ok = RunStore.finish(child_run.id, "completed", "Existing artifact")
+    {:ok, joined} = Scheduler.settle_run(child_run.id, "completed", "Existing artifact")
+    [%{dispatch: continuation}] = joined.scheduled.dispatches
+    assert {:ok, _} = Dispatches.for_execution(continuation.id)
+    assert continuation.message.missionTaskId == parent.id
+    integration = start(ctx, continuation)
+    :ok = RunStore.finish(integration.id, "completed", "Integrated")
+    assert {:ok, _} = Scheduler.settle_run(integration.id, "completed", "Integrated")
+    assert SQL.one("SELECT status FROM chat_mission_tasks WHERE id=?", [parent.id]) == ["completed"]
+    assert {:error, _} = Store.update_task(ctx.user.id, ctx.channel.id, parent.id, %{status: "pending"})
+  end
+
   test "research children retain the server-owned parent purpose", ctx do
     {mission, parent, run} = parent(ctx)
     SQL.exec("UPDATE chat_mission_tasks SET purpose='research' WHERE id=?", [parent.id])

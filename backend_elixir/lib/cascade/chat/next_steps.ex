@@ -241,7 +241,8 @@ For owner feedback on a recorded proposal, prefix your ordinary reply with <!-- 
             owner,
             route.localChannelId,
             message,
-            registration_id
+            registration_id,
+            existing_work: true
           )
 
         if dispatch_ready?(dispatch),

@@ -133,6 +133,8 @@ async function ensureHelperProxy(remoteBase) {
       const init = {
         method,
         headers: forwardRequestHeaders(req.headers),
+        // Helpers must never fall back to the signed-in browser identity.
+        credentials: 'omit',
       };
       // Only attach a body when non-empty. Empty Buffer / content-length:0 on
       // GET makes Chromium net.fetch fail with ERR_INVALID_ARGUMENT.

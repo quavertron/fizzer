@@ -641,10 +641,15 @@ defmodule Cascade.ChatDomainTest do
 
     SQL.ensure_column("vault_agents", "color", "TEXT NOT NULL DEFAULT 'FFFFFF'")
     SQL.exec("UPDATE vault_agents SET color='56CD78' WHERE id='old-a'")
+    SQL.ensure_column("vault_agents", "missions_enabled", "INTEGER NOT NULL DEFAULT 1")
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id='old-b'")
     assert :ok = Schema.ensure!()
     assert [["old-a", 1, "sol", "56CD78"]] = SQL.all("SELECT id,owner_user_id,mention,color FROM vault_agents")
     assert SQL.all("SELECT DISTINCT vault_agent_id FROM chat_agent_members") == [["old-a"]]
     assert SQL.table_sql("vault_agents") =~ "UNIQUE(owner_user_id,mention)"
+    assert SQL.one("SELECT missions_enabled FROM vault_agents WHERE id='old-a'") == [0]
+    assert :ok = Schema.ensure!()
+    assert SQL.one("SELECT missions_enabled FROM vault_agents WHERE id='old-a'") == [0]
   end
 
   test "linked projections keep chronological rows separate with truthful human and agent attribution" do

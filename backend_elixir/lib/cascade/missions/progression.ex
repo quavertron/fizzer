@@ -27,7 +27,7 @@ defmodule Cascade.Missions.Progression do
       ORDER BY r.created_at,r.id
       """, [mission_id, mission_id])
     |> Enum.each(fn [mission, owner, channel, coordinator, review, reviewer, summary, implementer, review_anonymous, implementation_anonymous] ->
-      if ExecutionAdmission.workflow_allowed?(mission) and not Cascade.Missions.Interpretation.migration_decision_pending?(mission) do
+      if Cascade.Chat.Delegation.mission_enabled?(mission) and ExecutionAdmission.workflow_allowed?(mission) and not Cascade.Missions.Interpretation.migration_decision_pending?(mission) do
         [count] = SQL.one("SELECT COUNT(*) FROM chat_mission_events WHERE mission_id=? AND kind='automatic_review_repair'", [mission])
         if count < 2 do
           {:ok, fix} = Store.add_task(owner, channel, mission, %{
@@ -85,7 +85,7 @@ defmodule Cascade.Missions.Progression do
         AND NOT EXISTS (SELECT 1 FROM chat_mission_events done WHERE done.task_id=t.id AND done.kind='startup_recovered')
       """, [mission_id, mission_id])
     |> Enum.each(fn [mission, owner, channel, task, run] ->
-      if ExecutionAdmission.workflow_allowed?(mission) and
+      if Cascade.Chat.Delegation.task_enabled?(task) and ExecutionAdmission.workflow_allowed?(mission) and
            not Cascade.Missions.Interpretation.migration_decision_pending?(mission) do
         case Store.update_task(owner, channel, task, %{status: "pending",
           summary: "Recover confirmed pre-provider startup interruption; preserve existing workspace and accepted scope."}) do

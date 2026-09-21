@@ -272,7 +272,7 @@ defmodule CascadeWeb.ChatRouter do
                                 access: access(conn)
                               ),
                             {:ok, dispatches} <-
-                              Dispatches.create_for_message(user.id, channel_id, message) do
+                              Dispatches.create_for_message(user.id, channel_id, message, Auth.source_options(conn)) do
                          {:ok, %{message: message, agents: members, dispatches: dispatches}}
                        end
 
@@ -352,7 +352,7 @@ defmodule CascadeWeb.ChatRouter do
                  access: access(conn)
                ),
              {:ok, all_dispatches} <-
-               Dispatches.create_for_message(user.id, channel_id, message) do
+               Dispatches.create_for_message(user.id, channel_id, message, Auth.source_options(conn)) do
           {:ok,
            %{
              message: message,
@@ -523,7 +523,7 @@ defmodule CascadeWeb.ChatRouter do
                  dispatch:
                    callback(conn, :dispatch) ||
                      fn %{message: message, targetRegistrationId: target} ->
-                       Dispatches.create(user.id, channel_id, message, target)
+                       Dispatches.create(user.id, channel_id, message, target, Auth.source_options(conn))
                      end
                )
              end,
@@ -917,7 +917,17 @@ defmodule CascadeWeb.ChatRouter do
   defp serialized_mutation_and_emit(conn, mutation, intent)
        when is_function(mutation, 0) and is_function(intent, 1) do
     OrderedPublisher.mutate(fn ->
-      case mutation.() do
+      result = try do
+        Cascade.Accounts.SQL.transaction(fn ->
+          case mutation.() do
+            {:error, _} = error -> throw({:chat_mutation_rejected, error})
+            result -> result
+          end
+        end)
+      catch
+        {:chat_mutation_rejected, error} -> error
+      end
+      case result do
         {:ok, value} = result ->
           case intent.(value) do
             %{} = event -> OrderedPublisher.chat(callback(conn, :events), event)

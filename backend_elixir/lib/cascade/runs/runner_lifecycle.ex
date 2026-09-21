@@ -43,9 +43,19 @@ defmodule Cascade.Runs.RunnerLifecycle do
     with {:ok, %{sid: sid}} <- Hub.runner(owner_id),
          {:ok, _pid} <- Cascade.Realtime.lookup(sid),
          run_id when is_integer(run_id) <- field(payload, :runId),
-         true <- delivery_allowed?(run_id, owner_id) do
+         true <- delivery_authorized?(run_id, owner_id) do
       if Store.record_delegated(run_id, owner_id, payload) == :ok do
-        Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
+        if Cascade.Chat.Delegation.delivery_enabled?(run_id) do
+          Cascade.Accounts.SQL.exec("UPDATE chat_agent_dispatches SET error=NULL WHERE run_id=? AND error=?", [run_id, Cascade.Chat.Delegation.reason()])
+          {:ok, user} = Cascade.Auth.Accounts.fetch_by_id(owner_id)
+          # Mint at delivery, not in persisted/replayable run payloads.
+          token = Cascade.Auth.Token.sign_run_agent(user, run_id)
+          source = Cascade.Chat.Delegation.run_source(owner_id, run_id)
+          payload = Map.merge(payload, %{helperToken: token, missionsEnabled: source != nil and Cascade.Chat.Delegation.enabled?(source["registrationId"])})
+          Cascade.Realtime.emit(sid, "/runners", "run:delegate", [payload])
+        else
+          Cascade.Chat.Delegation.defer_delivery(run_id)
+        end
         true
       else
         false
@@ -59,7 +69,11 @@ defmodule Cascade.Runs.RunnerLifecycle do
 
   # A delivery is revocable until transport handoff. Do not use for_execution/1:
   # a claimed dispatch already has a run and must not be admitted a second time.
-  def delivery_allowed?(run_id, owner_id) when is_integer(run_id) and is_integer(owner_id) do
+  def delivery_allowed?(run_id, owner_id) do
+    delivery_authorized?(run_id, owner_id) and Cascade.Chat.Delegation.delivery_enabled?(run_id)
+  end
+
+  defp delivery_authorized?(run_id, owner_id) when is_integer(run_id) and is_integer(owner_id) do
     case Cascade.Accounts.SQL.one(
            "SELECT chat_dispatch_id,owner_user_id FROM runs WHERE id=? AND status IN ('queued','running')",
            [run_id]
@@ -76,9 +90,12 @@ defmodule Cascade.Runs.RunnerLifecycle do
     _ -> false
   end
 
-  def delivery_allowed?(_, _), do: false
+  defp delivery_authorized?(_, _), do: false
 
   def replay_delivery(run_id, owner_id) do
+    if not Cascade.Chat.Delegation.delivery_enabled?(run_id),
+      do: Cascade.Chat.Delegation.defer_delivery(run_id)
+
     if online?(owner_id) and delivery_allowed?(run_id, owner_id) do
       case Store.pending_delivery(run_id, owner_id) do
         [_payload, attempts] when attempts >= 5 ->

@@ -950,3 +950,20 @@ test('react uses configured agent identity and desired state without sending a m
   await assert.rejects(execFileAsync(process.execPath, common, { env }), /registered agent context/);
   assert.equal(requests.length, 2);
 });
+
+test('disabled helper help retains reporting and inspection while hiding delegated commands', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-capability-help-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const config = path.join(directory, 'helper.json');
+  fs.writeFileSync(config, JSON.stringify({ missionsEnabled: false }));
+  const { stdout } = await execFileAsync(process.execPath, [cli, '--help'], {
+    env: { ...process.env, CASCADE_HELPER_CONFIG: config, CASCADE_MISSIONS_ENABLED: '0' },
+  });
+  assert.match(stdout, /Missions and delegation are disabled/);
+  assert.match(stdout, /cascade-chat mission update/);
+  assert.match(stdout, /cascade-chat mission join/);
+  assert.match(stdout, /cascade-chat mission cancel/);
+  assert.match(stdout, /cascade-chat history/);
+  assert.doesNotMatch(stdout, /cascade-chat mission (start|delegate|child |retry)/);
+  assert.doesNotMatch(stdout, /cascade-chat send --to/);
+});

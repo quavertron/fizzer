@@ -20,7 +20,7 @@ defmodule Cascade.Missions.Context do
       tasks = task_evidence(mission.id)
       compact_tasks = interpretation_dispatch?(dispatch, mission.id)
 
-      format(mission, task, notes, changes, awareness, tasks, compact_tasks)
+      format(mission, task, notes, changes, awareness, tasks, compact_tasks, Cascade.Chat.Delegation.enabled?(field(field(dispatch, :registration, %{}), :id)))
     else
       _ -> ""
     end
@@ -277,7 +277,7 @@ defmodule Cascade.Missions.Context do
     end)
   end
 
-  defp format(mission, task, notes, changes, awareness, tasks, compact_tasks) do
+  defp format(mission, task, notes, changes, awareness, tasks, compact_tasks, missions_enabled) do
     phase = normalize_phase(mission.phase)
     mission_brief = Privacy.redact_blocks(to_string(mission.objective || ""))
 
@@ -329,7 +329,7 @@ defmodule Cascade.Missions.Context do
     Mission summary: #{mission.summary}
     Mission brief: #{mission_brief}
     #{approval}
-    #{workflow_guidance(phase, task)}
+    #{if missions_enabled, do: workflow_guidance(phase, task), else: Cascade.Chat.Delegation.guidance()}
     #{delivery_guidance()}
     #{task_text}
     Linked notes are authoritative. Preserve their hierarchy, current revisions, and the Open questions section; do not replace them with an inferred schema.

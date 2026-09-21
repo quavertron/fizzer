@@ -122,6 +122,68 @@ defmodule CascadeWeb.OrchestrationMissionExecutionTest do
     }
   end
 
+  test "disabling the source during final admission defers without a run or provider packet", ctx do
+    {:ok, source} = Agents.upsert_member(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{agentId: "codex", mention: "delegating-source"})
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{body: "Investigate", registrationId: source.id}, access: :agent)
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    assert {:ok, _} = Dispatches.for_execution(dispatch.id)
+    publisher = Process.whereis(Cascade.Realtime.OrderedPublisher)
+    :sys.suspend(publisher)
+    task = Task.async(fn -> CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id) end)
+    try do
+      eventually(fn -> pending_dispatch_starts(publisher) == 1 end)
+      SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [source.vaultAgentId])
+    after
+      :sys.resume(publisher)
+    end
+    assert {:busy, reason} = Task.await(task)
+    assert reason =~ "disabled"
+    refute Store.find_by_chat_dispatch(dispatch.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+    assert SQL.one("SELECT run_id,failed_at FROM chat_agent_dispatches WHERE id=?", [dispatch.id]) == [nil, nil]
+    # Enabling resumes the same dispatch, not a replacement or another task.
+    SQL.exec("UPDATE vault_agents SET missions_enabled=1 WHERE id=?", [source.vaultAgentId])
+    assert {:ok, _} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+  end
+
+  test "disabled source holds queued transport and replay without canceling the run", ctx do
+    alias Cascade.Runs.RunnerLifecycle
+    {:ok, source} = Agents.upsert_member(ctx.owner.id, ctx.owner_vault.id, ctx.owner_channel.id, %{agentId: "codex", mention: "queued-source"})
+    {:ok, message} = Messages.create(ctx.owner, ctx.owner_vault.id, ctx.owner_channel.id, %{body: "Investigate", registrationId: source.id}, access: :agent)
+    {:ok, dispatch} = Dispatches.create(ctx.owner.id, ctx.owner_channel.id, message, ctx.registration.id)
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(dispatch.id)
+    pending = Store.pending_delivery(run.id, ctx.owner.id)
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [source.vaultAgentId])
+    refute RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    refute queued_runner_packets(ctx.sid) =~ "run:delegate"
+    for _ <- 1..2, do: RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    assert Store.pending_delivery(run.id, ctx.owner.id) == pending
+    assert Store.get(run.id).status == "queued"
+    assert SQL.one("SELECT error FROM chat_agent_dispatches WHERE id=?", [dispatch.id]) == [Cascade.Chat.Delegation.reason()]
+    SQL.exec("UPDATE vault_agents SET missions_enabled=1 WHERE id=?", [source.vaultAgentId])
+    RunnerLifecycle.replay_delivery(run.id, ctx.owner.id)
+    assert queued_runner_packets(ctx.sid) =~ "run:delegate"
+    assert SQL.one("SELECT error FROM chat_agent_dispatches WHERE id=?", [dispatch.id]) == [nil]
+    Store.mark_running(run.id)
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [source.vaultAgentId])
+    assert RunnerLifecycle.delivery_allowed?(run.id, ctx.owner.id)
+    assert Store.get(run.id).status == "running"
+  end
+
+  test "runner transport receives a server-bound helper credential without persisting the bearer", ctx do
+    SQL.exec("UPDATE chat_agent_dispatches SET failed_at=NULL,error=NULL WHERE id=?", [ctx.dispatch.id])
+    assert {:ok, run} = CascadeWeb.OrchestrationController.execute_dispatch(ctx.dispatch.id)
+    packets = queued_runner_packets(ctx.sid)
+    assert [_, token] = Regex.run(~r/"helperToken":"([^"]+)"/, packets)
+    assert {:ok, claims} = Token.verify(token)
+    assert claims.access == "agent"
+    assert claims.agent_source == %{"runId" => run.id, "registrationId" => ctx.registration.id, "vaultAgentId" => ctx.registration.vaultAgentId}
+    [encoded, _] = Store.pending_delivery(run.id, ctx.owner.id)
+    refute String.contains?(encoded, token)
+    refute String.contains?(encoded, "helperToken")
+  end
+
   test "resumed Codex dispatch retains a bounded cold baseline before any replacement inference", ctx do
     SQL.exec("UPDATE chat_agent_members SET context_prompt=? WHERE id=?", ["COLD_BASELINE_SOURCE_CONSTRAINT", ctx.registration.id])
     SQL.exec("UPDATE vault_agents SET context_prompt=? WHERE id=(SELECT vault_agent_id FROM chat_agent_members WHERE id=?)", ["COLD_BASELINE_SOURCE_CONSTRAINT", ctx.registration.id])

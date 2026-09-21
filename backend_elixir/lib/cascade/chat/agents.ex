@@ -19,7 +19,7 @@ defmodule Cascade.Chat.Agents do
           SELECT va.id,va.vault_id,va.agent_id,va.display_name,va.avatar_url,va.color,va.mention,
             va.model,va.cwd,va.context_prompt,va.hermes_profile,va.hermes_safe_mode,
             va.identity_scope,va.expires_at,
-            va.owner_user_id,u.username,va.created_at,va.updated_at
+            va.owner_user_id,u.username,va.created_at,va.updated_at,va.missions_enabled
           FROM vault_agents va LEFT JOIN users u ON u.id=va.owner_user_id
           WHERE va.owner_user_id=? OR (
             (va.vault_id=? OR EXISTS(
@@ -60,8 +60,8 @@ defmodule Cascade.Chat.Agents do
 
       existing =
         SQL.one(
-          "SELECT owner_user_id,avatar_url,identity_scope,expires_at,color FROM vault_agents WHERE id=? AND (owner_user_id=? OR vault_id=?)",
-          [id, user_id, vault_id]
+          "SELECT owner_user_id,avatar_url,identity_scope,expires_at,color FROM vault_agents WHERE id=?",
+          [id]
         )
 
       cond do
@@ -171,7 +171,7 @@ defmodule Cascade.Chat.Agents do
             SELECT m.id,m.vault_agent_id,va.owner_user_id,m.agent_id,m.display_name,m.avatar_url,va.color,
               m.mention,m.model,m.reasoning_effort,m.priority_service_tier,m.cwd,m.context_prompt,
               m.taggable_by_agents,m.reply_to_every_message,m.orchestrator,m.pingable_by_others,
-              m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode,m.next_step_suggestions FROM chat_agent_members m
+              m.ambient_group_chat,m.final_reply_only,m.yolo,m.conversation_id,va.hermes_profile,va.hermes_safe_mode,m.next_step_suggestions,va.missions_enabled FROM chat_agent_members m
             JOIN vault_agents va ON va.id=m.vault_agent_id
             WHERE m.channel_id=? ORDER BY m.created_at,m.rowid
           """,
@@ -299,6 +299,7 @@ defmodule Cascade.Chat.Agents do
           # agent must have it persisted here (add_to_channel otherwise only
           # writes the channel registration).
           if user_id == owner_id do
+            persist_missions(identity_id, flags)
             requested_color =
               value(flags, "color", existing_color) |> to_string() |> String.trim() |> String.upcase()
 
@@ -623,6 +624,8 @@ defmodule Cascade.Chat.Agents do
         ]
       )
 
+      persist_missions(id, input)
+
       SQL.exec(
         """
         UPDATE chat_agent_members SET agent_id=?,display_name=?,avatar_url=?,mention=?,updated_at=datetime('now')
@@ -638,6 +641,14 @@ defmodule Cascade.Chat.Agents do
     end)
 
     get(user_id, vault_id, id)
+  end
+
+  defp persist_missions(id, input) do
+    case fetch(input, "missionsEnabled") do
+      {:ok, enabled} when is_boolean(enabled) ->
+        SQL.exec("UPDATE vault_agents SET missions_enabled=?,updated_at=datetime('now') WHERE id=?", [bool_int(enabled), id])
+      _ -> :ok
+    end
   end
 
   defp identity([
@@ -658,7 +669,8 @@ defmodule Cascade.Chat.Agents do
          owner_id,
          owner_username,
          created_at,
-         updated_at
+         updated_at,
+         missions_enabled
        ]) do
     %{
       id: id,
@@ -678,7 +690,8 @@ defmodule Cascade.Chat.Agents do
       ownerUserId: owner_id,
       ownerUsername: owner_username || "",
       createdAt: created_at,
-      updatedAt: updated_at
+      updatedAt: updated_at,
+      missionsEnabled: missions_enabled != 0
     }
   end
 
@@ -706,7 +719,8 @@ defmodule Cascade.Chat.Agents do
          conversation_id,
          hermes_profile,
          hermes_safe_mode,
-         next_step_suggestions
+         next_step_suggestions,
+         missions_enabled
        ]) do
     %{
       id: id,
@@ -726,6 +740,7 @@ defmodule Cascade.Chat.Agents do
       replyToEveryMessage: reply_every != 0,
       orchestrator: orchestrator != 0,
       nextStepSuggestions: next_step_suggestions != 0,
+      missionsEnabled: missions_enabled != 0,
       pingableByOthers: pingable != 0,
       ambientGroupChat: ambient != 0,
       finalReplyOnly: final_reply_only != 0,

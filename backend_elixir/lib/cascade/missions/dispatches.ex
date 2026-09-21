@@ -8,7 +8,7 @@ defmodule Cascade.Missions.Dispatches do
 
   @ambient_hops 15
 
-  def create_for_message(user_id, channel_id, message) do
+  def create_for_message(user_id, channel_id, message, opts \\ []) do
     if String.starts_with?(to_string(field(message, :id, "")), "sys-") do
       {:ok, []}
     else
@@ -22,8 +22,16 @@ defmodule Cascade.Missions.Dispatches do
         # Sender attribution is not an invocation target. Unregistered external
         # agents are valid authors; only an actual leading mention names a target.
         requested = leading_mention(field(message, :body, ""))
+        source_permission = source_check(message, opts)
 
         cond do
+          present?(requested) and source_permission != :ok ->
+            source_permission
+
+          not present?(requested) and source_permission != :ok ->
+            # Conversation can be retained without ambient/automatic invocation.
+            {:ok, []}
+
           present?(requested) and
               not Enum.any?(members, fn registration ->
                 String.downcase(Schema.normalize_mention(registration.mention, registration.agentId)) ==
@@ -33,7 +41,7 @@ defmodule Cascade.Missions.Dispatches do
 
           true ->
             Enum.reduce_while(targets, {:ok, []}, fn registration, {:ok, dispatches} ->
-              case create(user_id, channel_id, message, registration.id) do
+              case create(user_id, channel_id, message, registration.id, opts) do
                 {:ok, dispatch} -> {:cont, {:ok, dispatches ++ [dispatch]}}
                 {:error, _} = error -> {:halt, error}
               end
@@ -46,24 +54,30 @@ defmodule Cascade.Missions.Dispatches do
   defdelegate retract_pending_reply(dispatch_id), to: Cascade.Chat.PendingReply, as: :retract
 
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
+    existing_work = Keyword.get(opts, :existing_work, false)
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
          {:ok, members} <- Agents.list_members(channel_id, user_id),
          registration when not is_nil(registration) <-
            Enum.find(members, &(&1.id == registration_id)),
-         true <- allowed?(user_id, registration, message) do
+         true <- allowed?(user_id, registration, message),
+         :ok <- if(existing_work, do: :ok, else: source_check(message, opts)) do
       Cascade.Chat.NextSteps.user_return(route.sourceChannelId, registration.id, message.id)
 
       effort = opts |> Keyword.get(:reasoning_effort, "") |> clean(20) |> String.downcase()
 
       SQL.transaction(fn ->
+        case if(existing_work, do: :ok, else: source_check(message, opts)) do
+          :ok -> :ok
+          {:error, reason} -> raise ArgumentError, reason
+        end
         conversation_id = admission_conversation(registration.id, message)
 
         SQL.exec(
           """
           INSERT OR IGNORE INTO chat_agent_dispatches
             (id,message_id,channel_id,registration_id,reasoning_effort,
-             requester_user_id,requester_channel_id,conversation_id,target_owner_user_id,target_identity_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?)
+             requester_user_id,requester_channel_id,conversation_id,target_owner_user_id,target_identity_id,delegating_identity_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)
           """,
           [
             Ecto.UUID.generate(),
@@ -75,7 +89,8 @@ defmodule Cascade.Missions.Dispatches do
             channel_id,
             conversation_id,
             registration.ownerUserId,
-            registration.vaultAgentId
+            registration.vaultAgentId,
+            Cascade.Chat.Delegation.dispatch_source(source_message(message, opts), existing_work)
           ]
         )
       end)
@@ -102,6 +117,18 @@ defmodule Cascade.Missions.Dispatches do
     end
   rescue
     error in Exqlite.Error -> {:error, Exception.message(error)}
+  end
+
+  defp source_check(message, opts) do
+    with :ok <- Cascade.Chat.Delegation.message_check(source_message(message, opts)),
+         do: Cascade.Chat.Delegation.message_check(message)
+  end
+
+  defp source_message(message, opts) do
+    case Keyword.fetch(opts, :source_registration) do
+      {:ok, registration} -> %{registrationId: registration, agentId: "agent"}
+      :error -> message
+    end
   end
 
   def list_pending(user_id, channel_id) do
@@ -163,7 +190,14 @@ defmodule Cascade.Missions.Dispatches do
        (r.status='queued' AND lease.run_id IS NULL AND r.started_at < datetime('now','-30 seconds')))
     ORDER BY m.rowid,d.rowid
     """)
-    |> Enum.filter(fn [id, _, _, _] -> Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id) end)
+    |> Enum.filter(fn [id, _, _, _] ->
+      if Cascade.Chat.Delegation.dispatch_enabled?(id) do
+        Cascade.Missions.ExecutionAdmission.dispatch_allowed?(id)
+      else
+        retry(id, Cascade.Chat.Delegation.reason())
+        false
+      end
+    end)
     |> Enum.map(fn [id, registration_id, task_id, owner_id] ->
       %{
         id: id,
@@ -178,6 +212,15 @@ defmodule Cascade.Missions.Dispatches do
   end
 
   def for_execution(dispatch_id) do
+    if not Cascade.Chat.Delegation.dispatch_enabled?(dispatch_id) do
+      retry(dispatch_id, Cascade.Chat.Delegation.reason())
+      {:deferred, Cascade.Chat.Delegation.reason()}
+    else
+      admitted_by_operator(dispatch_id)
+    end
+  end
+
+  defp admitted_by_operator(dispatch_id) do
     if Cascade.Missions.ExecutionAdmission.dispatch_allowed?(dispatch_id),
       do: admitted_for_execution(dispatch_id),
       else: {:deferred, "Dispatch is outside the operator's exact execution admission."}
@@ -362,6 +405,7 @@ defmodule Cascade.Missions.Dispatches do
   def waiting_kind(error, failed_at) do
     cond do
       not is_nil(failed_at) -> "dispatch-attention"
+      error == Cascade.Chat.Delegation.reason() -> "delegation-disabled"
       String.starts_with?(error || "", "Mission task needs a repository cwd") -> "workspace-preparation"
       String.contains?(error || "", "session is busy") -> "capacity"
       true -> "provider"
@@ -369,9 +413,10 @@ defmodule Cascade.Missions.Dispatches do
   end
 
   def retry(dispatch_id, error) do
-    SQL.exec("UPDATE chat_agent_dispatches SET error=? WHERE id=? AND run_id IS NULL", [
+    SQL.exec("UPDATE chat_agent_dispatches SET error=? WHERE id=? AND run_id IS NULL AND error IS NOT ?", [
       error,
-      dispatch_id
+      dispatch_id,
+      error
     ])
   end
 

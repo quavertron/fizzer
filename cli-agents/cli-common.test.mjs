@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { parseArgs } from './cli-common.mjs';
+import { parseArgs, resolveToken } from './cli-common.mjs';
 
 const exec = promisify(execFile);
 const helpers = { chat: ['history'], note: ['list'], scratchpad: ['journal'] };
@@ -80,3 +80,18 @@ for (const [helper, command] of Object.entries(helpers)) {
     });
   });
 }
+
+
+test('expired bound helper credentials do not fall back to a broader config bearer', () => {
+  const prior = process.env.CASCADE_NOTE_TOKEN;
+  const expired = `header.${Buffer.from(JSON.stringify({ exp: 1, agentSource: { runId: 7 } })).toString('base64url')}.signature`;
+  try {
+    process.env.CASCADE_NOTE_TOKEN = expired;
+    assert.equal(resolveToken(undefined, 'broader-config-token'), expired);
+    delete process.env.CASCADE_NOTE_TOKEN;
+    assert.equal(resolveToken(undefined, expired), expired);
+  } finally {
+    if (prior === undefined) delete process.env.CASCADE_NOTE_TOKEN;
+    else process.env.CASCADE_NOTE_TOKEN = prior;
+  }
+});

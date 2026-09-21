@@ -536,7 +536,6 @@ defmodule CascadeWeb.MissionRouterTest do
         controlPlane: true
       })
 
-    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
     base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
     mission_id = created.mission.id
 
@@ -557,12 +556,15 @@ defmodule CascadeWeb.MissionRouterTest do
 
     {:ok, worker_run} =
       RunStore.start(ctx.vault.id, nil, "worker clone", "codex",
+        owner_user_id: ctx.user.id,
         conversation_id: "http-worker-#{task_id}",
         chat_dispatch_id: dispatch.id
       )
 
     :ok = Dispatches.attach_run(dispatch.id, worker_run.id)
     {:ok, _} = Store.attach_run(dispatch.id, worker_run.id)
+
+    ctx = %{ctx | token: Token.sign_run_agent(ctx.user, worker_run.id)}
 
     nested_task =
       request(
@@ -601,7 +603,6 @@ defmodule CascadeWeb.MissionRouterTest do
   end
 
   test "worker HTTP child and join routes preserve identity and reject cross-task updates", ctx do
-    ctx = %{ctx | token: Token.sign_agent(ctx.user)}
     base = "/api/vaults/#{ctx.vault.id}/channels/#{ctx.channel.id}"
 
     {:ok, created} =
@@ -622,10 +623,12 @@ defmodule CascadeWeb.MissionRouterTest do
     [%{dispatch: dispatch}] = Scheduler.schedule(created.mission.id).dispatches
 
     {:ok, run} =
-      RunStore.start(ctx.vault.id, nil, "parent", "codex", chat_dispatch_id: dispatch.id)
+      RunStore.start(ctx.vault.id, nil, "parent", "codex", owner_user_id: ctx.user.id, chat_dispatch_id: dispatch.id)
 
     :ok = Dispatches.attach_run(dispatch.id, run.id)
     {:ok, _} = Store.attach_run(dispatch.id, run.id)
+
+    ctx = %{ctx | token: Token.sign_run_agent(ctx.user, run.id)}
 
     response =
       request(
@@ -648,8 +651,8 @@ defmodule CascadeWeb.MissionRouterTest do
     assert child["workspaceMode"] == "isolated"
     assert child["assigneeMention"] == ctx.worker.mention <> "·sub"
 
-    assert request(ctx, :post, base <> "/missions/current/children", %{title: "No run"}).status ==
-             400
+    assert request(%{ctx | token: Token.sign_agent(ctx.user)}, :post, base <> "/missions/current/children", %{title: "No run"}).status ==
+             403
 
     assert request(
              ctx,
@@ -687,8 +690,8 @@ defmodule CascadeWeb.MissionRouterTest do
                run.id
              ).status == 400
 
-      assert request(ctx, :post, base <> "/missions/" <> endpoint, %{title: "Missing run"}).status ==
-               400
+      assert request(%{ctx | token: Token.sign_agent(ctx.user)}, :post, base <> "/missions/" <> endpoint, %{title: "Missing run"}).status ==
+               if(endpoint == "current/children", do: 403, else: 400)
 
       assert request(
                ctx,
@@ -696,7 +699,7 @@ defmodule CascadeWeb.MissionRouterTest do
                base <> "/missions/" <> endpoint,
                %{title: "Unknown run"},
                999_999_999
-             ).status == 400
+             ).status == 403
 
       assert request(
                foreign,
@@ -715,20 +718,22 @@ defmodule CascadeWeb.MissionRouterTest do
       SQL.one("SELECT dispatch_id FROM chat_mission_tasks WHERE id=?", [child["id"]])
 
     {:ok, child_run} =
-      RunStore.start(ctx.vault.id, nil, "child", "codex", chat_dispatch_id: child_dispatch_id)
+      RunStore.start(ctx.vault.id, nil, "child", "codex", owner_user_id: ctx.user.id, chat_dispatch_id: child_dispatch_id)
 
     :ok = Dispatches.attach_run(child_dispatch_id, child_run.id)
     {:ok, _} = Store.attach_run(child_dispatch_id, child_run.id)
 
+    child_ctx = %{ctx | token: Token.sign_run_agent(ctx.user, child_run.id)}
+
     assert request(
-             ctx,
+             child_ctx,
              :post,
              base <> "/missions/current/children",
              %{title: "Recursive child"},
              child_run.id
            ).status == 400
 
-    child_join = request(ctx, :post, base <> "/missions/children/join", %{}, child_run.id)
+    child_join = request(child_ctx, :post, base <> "/missions/children/join", %{}, child_run.id)
     assert json(child_join)["children"] == []
     :ok = RunStore.finish(child_run.id, "completed", "Child HTTP artifact verified")
     {:ok, _} = Scheduler.settle_run(child_run.id, "completed", "Child HTTP artifact verified")
@@ -776,11 +781,12 @@ defmodule CascadeWeb.MissionRouterTest do
 
     {:ok, coordinator_run} =
       RunStore.start(ctx.vault.id, nil, "coordinator", "codex",
+        owner_user_id: ctx.user.id,
         chat_dispatch_id: coordinator_dispatch.id
       )
 
     assert request(
-             ctx,
+             %{ctx | token: Token.sign_run_agent(ctx.user, coordinator_run.id)},
              :patch,
              base <> "/missions/tasks/#{unrelated.task.id}",
              %{status: "canceled"},

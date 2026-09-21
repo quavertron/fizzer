@@ -53,7 +53,7 @@ defmodule CascadeWeb.MissionRouter do
       }
 
       opts =
-        [agent: conn.assigns.auth_access == "agent"] ++
+        Auth.source_options(conn) ++ [agent: conn.assigns.auth_access == "agent"] ++
           case run_id(conn) do
             nil -> []
             id -> [current_run_id: id]
@@ -136,7 +136,7 @@ defmodule CascadeWeb.MissionRouter do
         reviewRequested: js_truthy?(body(conn, "reviewRequested", false)),
         controlPlane: js_truthy?(body(conn, "controlPlane", false))
       }
-      opts = [agent: conn.assigns.auth_access == "agent", control_plane: input.controlPlane] ++
+      opts = Auth.source_options(conn) ++ [agent: conn.assigns.auth_access == "agent", control_plane: input.controlPlane] ++
         case run_id(conn) do
           nil -> []
           id -> [current_run_id: id]
@@ -283,7 +283,7 @@ defmodule CascadeWeb.MissionRouter do
         workspaceMode: string_body(conn, "workspaceMode", "shared")
       }
 
-      task_opts = if run_id(conn), do: [current_run_id: run_id(conn)], else: []
+      task_opts = Auth.source_options(conn) ++ if(run_id(conn), do: [current_run_id: run_id(conn)], else: [])
 
       with {:ok, added} <- Store.add_task(user.id, channel_id, mission_id, input, task_opts),
            {:ok, scheduled} <- safe_schedule(added.update.mission.id, conn),
@@ -379,7 +379,7 @@ defmodule CascadeWeb.MissionRouter do
                task_id,
                run_id(conn)
              ),
-           {:ok, update} <- Store.update_task(user.id, channel_id, task_id, input),
+           {:ok, update} <- Store.update_task(user.id, channel_id, task_id, input, Auth.source_options(conn)),
            :ok <- cancel_runs(conn, Map.get(update, :canceledTaskRunIds, []), []),
            {:ok, _scheduled} <- safe_schedule(update.mission.id, conn),
            {:ok, latest} <- Store.get(user.id, channel_id, update.mission.id) do

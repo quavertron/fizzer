@@ -91,6 +91,7 @@ defmodule Cascade.Auth.Session do
          token: token,
          user: user,
          access: claims.access,
+         agent_source: claims.agent_source,
          expires_at: expires_at
        }}
     else

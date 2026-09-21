@@ -27,6 +27,22 @@ defmodule Cascade.Chat.DispatchPromptTest do
     Map.merge(owner, %{channel_id: channel_id, execution: execution})
   end
 
+  test "live disabled setting removes orchestration mandates from fresh and resumed prompts", c do
+    registration = c.execution.registration
+    SQL.exec("UPDATE chat_agent_members SET orchestrator=1 WHERE id=?", [registration.id])
+    trigger = message(c, "Do this direct work")
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [registration.vaultAgentId])
+    for resume <- [nil, "existing-session"] do
+      result = build(c, trigger, %{orchestrator: true}, resume)
+      assert result.prompt =~ "Missions and delegation are disabled"
+      assert result.prompt =~ "Do this direct work"
+      refute result.prompt =~ "For substantial work, delegate"
+      refute result.prompt =~ "mission delegate --task"
+    end
+    SQL.exec("UPDATE vault_agents SET missions_enabled=1 WHERE id=?", [registration.vaultAgentId])
+    assert build(c, trigger, %{orchestrator: true}).prompt =~ "mission delegate --task"
+  end
+
   test "builds identity, strips only registered mentions, and preserves filenames and private boundaries",
        c do
     {:ok, _} =

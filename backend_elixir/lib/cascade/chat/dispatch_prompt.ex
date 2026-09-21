@@ -39,6 +39,7 @@ defmodule Cascade.Chat.DispatchPrompt do
     user_id = execution.runner_user_id
     {:ok, route} = Channel.assert_channel(channel_id, user_id)
     registration = execution.registration || field(dispatch, :registration)
+    registration = Map.put(registration, :missionsEnabled, Cascade.Chat.Delegation.enabled?(text(registration, :id)))
     message = field(dispatch, :message) |> Privacy.sanitize_json()
     {:ok, registrations} = Agents.list_members(channel_id, user_id)
     registrations = [registration | registrations]
@@ -169,7 +170,10 @@ defmodule Cascade.Chat.DispatchPrompt do
     role =
       cond do
         task != "" ->
-          "You are the worker assigned to Fizzer mission task #{task}. Work the assigned purpose and return concrete artifacts, changed files, and evidence to the mission coordinator. #{Cascade.Missions.Children.guidance(task)} Record progress with `cascade-chat mission update --task #{task} --status running --summary \"<progress and evidence reference>\"`. For a review task, include `--review-outcome accepted` or `--review-outcome changes_requested`; for verification, include `--verification-passed true` or `--verification-passed false`. If blocked, record the concrete dependency or observable blocker with status blocked. Use the available tools and helpers needed for the assigned work; do not silently change mission scope."
+          "You are the worker assigned to Fizzer mission task #{task}. Work the assigned purpose and return concrete artifacts, changed files, and evidence to the mission coordinator. #{if field(registration, :missionsEnabled) == false, do: Cascade.Chat.Delegation.guidance(), else: Cascade.Missions.Children.guidance(task)} Record progress with `cascade-chat mission update --task #{task} --status running --summary \"<progress and evidence reference>\"`. For a review task, include `--review-outcome accepted` or `--review-outcome changes_requested`; for verification, include `--verification-passed true` or `--verification-passed false`. If blocked, record the concrete dependency or observable blocker with status blocked. Use the available tools and helpers needed for the assigned work; do not silently change mission scope."
+
+        field(registration, :missionsEnabled) == false ->
+          Cascade.Chat.Delegation.guidance()
 
         String.starts_with?(text(message, :id), ["sys-mission-", "sys-next-"]) ->
           ""

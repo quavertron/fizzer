@@ -11,6 +11,11 @@ defmodule Cascade.Auth.Token do
   def sign_user(user), do: sign(user, "user", @user_session_max_age_seconds)
   def sign_agent(user), do: sign(user, "agent", @agent_session_max_age_seconds)
 
+  def sign_run_agent(user, run_id) do
+    source = Cascade.Chat.Delegation.run_source(user.id, run_id)
+    sign(user, "agent", @agent_session_max_age_seconds, source)
+  end
+
   def verify(token) when is_binary(token) do
     case verify_with_expiration(token) do
       {:ok, identity, _expires_at} -> {:ok, identity}
@@ -32,7 +37,7 @@ defmodule Cascade.Auth.Token do
 
   def verify_with_expiration(_token), do: {:error, :invalid_or_expired}
 
-  defp sign(user, access, ttl_seconds) do
+  defp sign(user, access, ttl_seconds, source \\ nil) do
     now = System.system_time(:second)
 
     claims = %{
@@ -40,6 +45,7 @@ defmodule Cascade.Auth.Token do
       "username" => user.username,
       "authVersion" => Map.get(user, :auth_version, 0),
       "access" => access,
+      "agentSource" => source,
       "iat" => now,
       "exp" => now + ttl_seconds
     }
@@ -68,7 +74,14 @@ defmodule Cascade.Auth.Token do
     access = Map.get(claims, "access", "user")
 
     if is_integer(auth_version) and access in ["user", "agent"] do
-      {:ok, %{id: id, username: username, auth_version: auth_version, access: access}}
+      {:ok,
+       %{
+         id: id,
+         username: username,
+         auth_version: auth_version,
+         access: access,
+         agent_source: claims["agentSource"]
+       }}
     else
       {:error, :invalid_identity}
     end

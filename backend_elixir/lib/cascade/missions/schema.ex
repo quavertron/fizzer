@@ -63,6 +63,7 @@ defmodule Cascade.Missions.Schema do
           {"requester_channel_id", "TEXT"},
           {"target_owner_user_id", "INTEGER REFERENCES users(id)"},
           {"target_identity_id", "TEXT"},
+          {"delegating_identity_id", "TEXT"},
           {"conversation_id", "TEXT"},
           {"error", "TEXT"},
           {"failed_at", "TEXT"}

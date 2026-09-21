@@ -139,12 +139,19 @@ export function readHelperConfig() {
   }
 }
 
+// Inspect only to prevent an expired run bearer from silently falling back to
+// an owner-wide disk credential. Signature and expiry are enforced by the API.
+function runBoundToken(token) {
+  try { return !!JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).agentSource; }
+  catch { return false; }
+}
+
 export function resolveToken(argsToken, configToken) {
   if (argsToken) return String(argsToken).trim();
   const envToken = String(process.env.CASCADE_NOTE_TOKEN || '').trim();
-  if (envToken && !isExpiredJwt(envToken)) return envToken;
+  if (envToken && (runBoundToken(envToken) || !isExpiredJwt(envToken))) return envToken;
   const cfgToken = String(configToken || '').trim();
-  if (cfgToken && !isExpiredJwt(cfgToken)) return cfgToken;
+  if (cfgToken && (runBoundToken(cfgToken) || !isExpiredJwt(cfgToken))) return cfgToken;
   const diskToken = readDiskToken();
   if (diskToken) return diskToken;
   const explicit = envToken || cfgToken;

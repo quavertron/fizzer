@@ -351,7 +351,7 @@ defmodule Cascade.Chat.Continuations do
             Jason.encode!(
               Cascade.Content.Privacy.sanitize_json(Map.put(public(state), :sources, sources))
             ) <>
-            "\nHandle the latest message promptly, then preserve earlier unfinished work unless the owner cancels or replaces it. Keep this coordinator turn narrow and short; delegate long work. Reconcile mission history, existing dispatches, artifacts and already-completed tool actions before acting; never blindly replay a delegation. If only waiting on workers, record waiting and let their meaningful events wake interpretation. Before ending, use `cascade-chat continuation --status completed|canceled|waiting|pending --revision #{state.revision} --summary <remaining responsibility or disposition>`. Completed means all these responsibilities were handled; canceled requires owner cancellation; pending requests one continuation after this turn. An interruption alone never cancels work. If the installed helper lacks continuation, use GET/POST /api/vaults/<vaultId>/channels/<chatChannelId>/continuation with the same JSON fields. Read the per-run CASCADE_HELPER_CONFIG for url and bearer token and send X-Cascade-Run-Id from CASCADE_RUN_ID; never print credentials."
+            "\nHandle the latest message promptly, then preserve earlier unfinished work unless the owner cancels or replaces it. #{if Cascade.Chat.Delegation.enabled?(s.registration), do: "Keep this coordinator turn narrow and short; delegate long work.", else: Cascade.Chat.Delegation.guidance()} Reconcile mission history, existing dispatches, artifacts and already-completed tool actions before acting; never blindly replay a delegation. If only waiting on workers, record waiting and let their meaningful events wake interpretation. Before ending, use `cascade-chat continuation --status completed|canceled|waiting|pending --revision #{state.revision} --summary <remaining responsibility or disposition>`. Completed means all these responsibilities were handled; canceled requires owner cancellation; pending requests one continuation after this turn. An interruption alone never cancels work. If the installed helper lacks continuation, use GET/POST /api/vaults/<vaultId>/channels/<chatChannelId>/continuation with the same JSON fields. Read the per-run CASCADE_HELPER_CONFIG for url and bearer token and send X-Cascade-Run-Id from CASCADE_RUN_ID; never print credentials."
         else
           ""
         end
@@ -484,12 +484,12 @@ defmodule Cascade.Chat.Continuations do
             id: message_id,
             registrationId: s.registration,
             body:
-              "Resume the unfinished coordinator responsibility after handling the interruption. Inspect the durable continuation context and current work. Complete a short next action or delegate longer work. If only waiting on workers, record waiting; do not poll or duplicate dispatches."
+              "Resume the unfinished coordinator responsibility after handling the interruption. Inspect the durable continuation context and current work. #{if Cascade.Chat.Delegation.enabled?(s.registration), do: "Complete a short next action or delegate longer work.", else: Cascade.Chat.Delegation.guidance()} If only waiting on workers, record waiting; do not poll or duplicate dispatches."
           },
           access: :agent
         )
 
-      {:ok, dispatch} = Dispatches.create(s.owner, route.localChannelId, message, s.registration)
+      {:ok, dispatch} = Dispatches.create(s.owner, route.localChannelId, message, s.registration, existing_work: true)
       put(s, %{state | status: "pending", dispatch: dispatch.id})
 
       OrderedPublisher.chat(Cascade.Realtime.Events, %{

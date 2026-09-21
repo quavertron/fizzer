@@ -312,14 +312,21 @@ defmodule Cascade.Missions.Scheduler do
     {:ok, route} = Store.owner_route(wake.createdBy, wake.vaultId, wake.channelId)
 
     body =
-      if Map.has_key?(wake, :interpretation) do
-        "Reviewing updates for mission #{wake.mission.id}: #{wake.mission.title}"
-      else
-        """
-        @#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.
-        #{Cascade.Missions.Authority.context(wake.mission.id)}
-        Continue this existing mission; do not create a replacement. Read the latest owner messages first. If still authorized, delegate the missing implementation tasks and continue delivery. Honor Stop and changed scope. Inspect existing artifacts and work before retrying any operation; do not duplicate side effects. This is one setup recovery attempt, not permission to keep retrying.
-        """
+      cond do
+        not Cascade.Chat.Delegation.enabled?(wake.coordinatorRegistrationId) ->
+          Cascade.Chat.Delegation.guidance() <>
+            "\nInspect and integrate existing mission results; report remaining deferred work. " <>
+            Cascade.Missions.Authority.context(wake.mission.id)
+
+        Map.has_key?(wake, :interpretation) ->
+          "Reviewing updates for mission #{wake.mission.id}: #{wake.mission.title}"
+
+        true ->
+          """
+          @#{wake.mission.coordinatorMention} Mission #{wake.mission.id} (“#{wake.mission.title}”) was started but no tasks were delegated. Its coordinator turn ended; recover the interrupted setup.
+          #{Cascade.Missions.Authority.context(wake.mission.id)}
+          Continue this existing mission; do not create a replacement. Read the latest owner messages first. If still authorized, delegate the missing implementation tasks and continue delivery. Honor Stop and changed scope. Inspect existing artifacts and work before retrying any operation; do not duplicate side effects. This is one setup recovery attempt, not permission to keep retrying.
+          """
       end
 
     with {:ok, carrier} <-
@@ -359,7 +366,8 @@ defmodule Cascade.Missions.Scheduler do
              wake.createdBy,
              route.localChannelId,
              message,
-             wake.coordinatorRegistrationId
+             wake.coordinatorRegistrationId,
+             existing_work: true
            ) do
       unless SQL.one("SELECT id FROM chat_mission_events WHERE source_key=?", ["coordinator-dispatch:" <> dispatch.id]) do
         Store.record_event(wake.mission.id, %{kind: "coordinator_dispatch", summary: dispatch.id, source_key: "coordinator-dispatch:" <> dispatch.id})

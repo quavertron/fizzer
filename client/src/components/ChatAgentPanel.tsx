@@ -420,6 +420,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           yolo: false,
           hermesProfile: va.hermesProfile || '',
           hermesSafeMode: va.hermesSafeMode === true,
+          missionsEnabled: va.missionsEnabled,
           conversationId: '',
         });
       }
@@ -479,6 +480,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           contextPrompt: agentForm.contextPrompt.trim(),
           hermesProfile: agentForm.hermesProfile.trim(),
           hermesSafeMode: agentForm.hermesSafeMode,
+          missionsEnabled: agentForm.missionsEnabled,
           identityScope,
           expiresAt: identityScope === 'session'
             ? new Date(Date.now() + sessionLeaseMinutes * 60_000).toISOString()
@@ -497,6 +499,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
           contextPrompt: agentForm.contextPrompt.trim(),
           hermesProfile: agentForm.hermesProfile.trim(),
           hermesSafeMode: agentForm.hermesSafeMode,
+          missionsEnabled: agentForm.missionsEnabled,
           identityScope,
           expiresAt: identityScope === 'session'
             ? new Date(Date.now() + sessionLeaseMinutes * 60_000).toISOString()
@@ -529,6 +532,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
             contextPrompt: agentForm.contextPrompt.trim(),
             hermesProfile: agentForm.hermesProfile.trim(),
             hermesSafeMode: agentForm.hermesSafeMode,
+            missionsEnabled: agentForm.missionsEnabled,
             identityScope,
             expiresAt: identityScope === 'session'
               ? new Date(Date.now() + sessionLeaseMinutes * 60_000).toISOString()
@@ -900,6 +904,13 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               />
             )}
             </div>
+            <ChatAgentToggle
+              checked={agentForm.missionsEnabled !== false}
+              disabled={agentPanelMode !== 'create' && !canManageRegistration(agentForm)}
+              onChange={(event) => setAgentForm((value) => ({ ...value, missionsEnabled: event.target.checked }))}
+              name="Missions and delegation"
+              hint="Allow this agent to open missions and delegate new work wherever it is registered. Existing work can finish."
+            />
             {(agentPanelMode === 'edit-member' || agentPanelMode === 'create') && (
               <>
             <div className="chat-agent-group">

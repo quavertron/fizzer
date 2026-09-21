@@ -1967,6 +1967,7 @@ export default function App() {
                   model: agent.model,
                   cwd: agent.cwd,
                   contextPrompt: agent.contextPrompt,
+                  missionsEnabled: agent.missionsEnabled ?? registration.missionsEnabled,
                 }
               : registration
           ));

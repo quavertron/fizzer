@@ -141,3 +141,33 @@ and loopback HTTP fixtures, including durable replay and mixed-version refusal.
 These tests do not establish signed-in Chromium compatibility, deployed API
 writes, desktop activation, or phone readiness. Record release-specific counts,
 preexisting failures, workflow URL, and exact deployed revision separately.
+
+## Missions and delegation capability
+
+The agent settings toggle **Missions and delegation** belongs to the agent
+identity (`vaultAgentId`). It defaults on and is shared by that identity's
+registrations, including anonymous mission workers. Only a human owner can edit
+it. Ordinary profile updates that omit it preserve its value.
+
+New missions, delegated tasks, children, retries, automatic repair and agent
+handoffs require the source identity to be enabled. The destination can still
+receive human direct work or another enabled agent's work while its own toggle
+is off. Queued work is retained with a disabled-source reason and checked again
+at execution admission. Stop fences remain in effect after re-enabling. Running
+results, child-result integration, inspection and Stop remain available.
+
+The desktop receives a short-lived, run-bound helper bearer minted from the
+server's owned run and dispatch. The helper env and per-run config use that
+bearer; it is not stored in the replay payload. The helper proxy omits browser
+cookies, and expired bound credentials do not fall back to broader disk tokens. A client-supplied run header or
+registration cannot change its source identity. Generic `/api/auth/agent-token`
+bearers retain notes, inspection and no-invoke access but cannot authorize a new
+delegated invocation. An older desktop that does not pass the run-bound bearer
+must be updated before its agents can delegate; the server fails closed.
+
+Fizzer enforces this capability at its HTTP and execution boundaries. Provider
+native subagent tools, arbitrary external processes, and tools outside Fizzer's
+API are **not** controlled by that HTTP policy. Disabled prompts instruct agents
+to work directly and avoid native delegation, and helper help omits delegation
+commands; those are guidance, not a provider sandbox. This does not isolate
+credentials from other processes with access to the same OS account/filesystem.

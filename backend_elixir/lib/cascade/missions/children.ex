@@ -185,12 +185,20 @@ defmodule Cascade.Missions.Children do
           [id]
         )
 
+        [attempt] = SQL.one("SELECT attempt FROM chat_mission_tasks WHERE id=?", [id])
+        Store.record_event(mission_for_task(id), %{task_id: id, kind: "child_results_resume", source_key: "child-results-resume:#{id}:#{attempt}"})
+
         SQL.exec(
           "UPDATE chat_mission_tasks SET child_result_delivered=1 WHERE parent_task_id=?",
           [id]
         )
       end
     end)
+  end
+
+  defp mission_for_task(id) do
+    [mission] = SQL.one("SELECT mission_id FROM chat_mission_tasks WHERE id=?", [id])
+    mission
   end
 
   # Keep results in their owning task/work item. Dispatch messages snapshot the

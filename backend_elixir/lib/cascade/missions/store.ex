@@ -1,6 +1,7 @@
 defmodule Cascade.Missions.Store do
   @moduledoc "Authoritative mission/task state machine and materialized chat projection."
 
+  alias Cascade.Chat.Delegation
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Messages}
   alias Cascade.WorkItems
@@ -45,6 +46,7 @@ defmodule Cascade.Missions.Store do
              channel_id,
              field(input, :coordinatorRegistrationId)
            ),
+         :ok <- Delegation.check(coordinator.id),
          :ok <- reject_worker_control(opts, :start),
          {:ok, root} <- Messages.get(channel_id, user_id, field(input, :rootMessageId)),
          title when title != "" <- clean(field(input, :title), 180) do
@@ -52,6 +54,8 @@ defmodule Cascade.Missions.Store do
 
       result =
         SQL.transaction(fn ->
+          Delegation.check_actor!(opts)
+          Delegation.check!(coordinator.id)
           existing =
             SQL.one(
               "SELECT id,coordinator_registration_id FROM chat_missions WHERE channel_id=? AND root_message_id=?",
@@ -147,6 +151,7 @@ defmodule Cascade.Missions.Store do
          identity_id when identity_id != "" <-
            clean(field(input, :coordinatorIdentityId), 120),
          true <- SQL.one("SELECT id FROM chat_agent_members WHERE channel_id=? AND vault_agent_id=?", [route.sourceChannelId, identity_id]) == [coordinator.id],
+         :ok <- Delegation.check(coordinator.id),
          :ok <- reject_worker_control(opts, :start),
          brief when brief != "" <-
            clean(nonblank(field(input, :briefContent), title), 12_000) do
@@ -160,6 +165,8 @@ defmodule Cascade.Missions.Store do
 
       try do
         SQL.transaction(fn ->
+          Delegation.check_actor!(opts)
+          Delegation.check!(coordinator.id)
           if is_nil(ContentStore.get_writable_vault(vault_id, user_id)),
             do: raise("Vault not found")
 
@@ -547,6 +554,7 @@ defmodule Cascade.Missions.Store do
          :ok <- validate_task_purpose(mission, purpose),
          {:ok, coordinator} <- assert_coordinator(user_id, channel_id, coordinator_id),
          true <- mission.coordinator_registration_id == coordinator.id,
+         :ok <- Delegation.check(Delegation.source(coordinator.id, Keyword.get(opts, :parent_task_id))),
          :ok <- reject_worker_control(opts, :delegate),
          {:ok, assignee} <-
            find_assignee(user_id, channel_id, nonblank(field(input, :assignee), coordinator.id)),
@@ -567,6 +575,8 @@ defmodule Cascade.Missions.Store do
 
       result =
         SQL.transaction(fn ->
+          Delegation.check_actor!(opts)
+          Delegation.check!(Delegation.source(coordinator.id, Keyword.get(opts, :parent_task_id)))
           # Recheck under the write lock: Stop or a historical fence may have
           # arrived while this delegation was waiting to commit.
           current = mission_row(mission.id)
@@ -725,7 +735,7 @@ defmodule Cascade.Missions.Store do
             """,
             [mission.channel_id]
           )
-          |> Enum.filter(fn [_registration, id, status] -> status == "running" or Cascade.Missions.ExecutionAdmission.task_allowed?(id) end)
+          |> Enum.filter(fn [_registration, id, status] -> status == "running" or (Cascade.Missions.ExecutionAdmission.task_allowed?(id) and Delegation.task_admitted?(id)) end)
           |> Enum.map(&hd/1)
           |> MapSet.new()
 
@@ -737,6 +747,7 @@ defmodule Cascade.Missions.Store do
           |> Enum.filter(fn {task, _index} ->
             task.status == "pending" and is_nil(task.dispatch_id) and
               Cascade.Missions.ExecutionAdmission.task_allowed?(task.id) and
+              Delegation.task_ready?(task.id) and
               task_schedulable?(mission, task, by_id) and
               not Cascade.Missions.Children.joining?(task.id)
           end)
@@ -925,7 +936,7 @@ defmodule Cascade.Missions.Store do
     error -> {:error, Exception.message(error)}
   end
 
-  def update_task(user_id, channel_id, task_id, input) do
+  def update_task(user_id, channel_id, task_id, input, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),
          row when not is_nil(row) <- task_with_mission(task_id),
          :ok <- authorize_task_row(row, route, user_id),
@@ -941,6 +952,9 @@ defmodule Cascade.Missions.Store do
         status == "pending" and row.status == "running" ->
           {:error, "Task is still running; cancel or wait for it before retrying"}
 
+        retrying and not Delegation.task_enabled?(task_id) ->
+          {:error, Delegation.reason()}
+
         retrying and active_run?(row.run_id) ->
           {:error, "Task run is still active; cancel or wait for it before retrying"}
 
@@ -951,6 +965,8 @@ defmodule Cascade.Missions.Store do
                 do: raise("Join and integrate child results before completing the parent")
 
               if retrying do
+                Delegation.check_actor!(opts)
+                unless Delegation.task_enabled?(task_id), do: raise(ArgumentError, Delegation.reason())
                 SQL.exec(
                   "DELETE FROM chat_agent_dispatches WHERE run_id IS NULL AND id=?",
                   [row.dispatch_id]
@@ -2707,6 +2723,8 @@ defmodule Cascade.Missions.Store do
         %{kind: "dependency", detail: "Required accepted review/integration stage is missing"}
       Cascade.Missions.Children.joining?(task.id) ->
         %{kind: "dependency", detail: "Waiting for child task results"}
+      not Delegation.task_admitted?(task.id) ->
+        %{kind: "delegation-disabled", detail: Delegation.reason()}
       task.dispatch_id != nil ->
         case SQL.one("SELECT error,failed_at FROM chat_agent_dispatches WHERE id=?", [task.dispatch_id]) do
           [error, failed] when is_binary(error) and error != "" ->

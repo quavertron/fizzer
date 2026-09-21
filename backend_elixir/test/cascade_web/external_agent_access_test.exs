@@ -248,10 +248,12 @@ defmodule CascadeWeb.ExternalAgentAccessTest do
     foreign_token = Token.sign_agent(%{id: foreign.user_id, username: foreign.username})
     assert (json_conn(:post, wrong_channel, payload, foreign_token) |> route()).status == 404
 
-    unsafe = api(:post, channel, payload, token)
-    assert length(unsafe["dispatches"]) == 1
-    mentioned = api(:post, channel, %{payload | body: "@fixture normal mention"}, token)
-    assert length(mentioned["dispatches"]) == 1
+    # An unbound helper can still converse, but neither automatic replies nor
+    # explicit mentions can use owner-wide credentials to delegate as a sibling.
+    unbound = api(:post, channel, payload, token)
+    assert unbound["dispatches"] == []
+    mentioned = json_conn(:post, channel, %{payload | body: "@fixture normal mention"}, token) |> route()
+    assert mentioned.status == 400
     assert SQL.one("SELECT count(*) FROM runs") == runs_before
   end
 

@@ -228,6 +228,8 @@ export interface ChatAgentRegistration {
   hermesProfile: string;
   /** Start Hermes without user config, memory, plugins, or MCP integrations. */
   hermesSafeMode: boolean;
+  /** Identity-wide permission to open missions and delegate work; defaults on. */
+  missionsEnabled?: boolean;
   /** Conversation id linking this member's runs into one resumable session.
    * Empty for a not-yet-persisted member; the server assigns/preserves it. */
   conversationId: string;
@@ -246,6 +248,8 @@ export interface VaultAgent {
   contextPrompt: string;
   hermesProfile: string;
   hermesSafeMode: boolean;
+  /** Identity-wide permission to open missions and delegate work; defaults on. */
+  missionsEnabled?: boolean;
   identityScope: 'network' | 'vault' | 'session';
   expiresAt?: string | null;
   ownerUserId: number;

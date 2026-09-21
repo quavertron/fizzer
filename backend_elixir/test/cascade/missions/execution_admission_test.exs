@@ -25,6 +25,28 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     %{user: user, vault: owner.vault_id, channel: channel.id, worker: worker, coordinator: coordinator, root: root, mission: mission.mission.id, task: task, old: old, binding: binding, policy: policy}
   end
 
+  test "disabled source defers the one automatic startup retry without retry spin", c do
+    Application.delete_env(:cascade_elixir, :execution_admission)
+    SQL.exec("UPDATE chat_mission_tasks SET status='canceled' WHERE id=?", [c.old])
+    [item] = Scheduler.schedule(c.mission).dispatches
+    {:ok, run} = Cascade.Runs.Store.start(c.vault, nil, "Inert interrupted startup", "codex", owner_user_id: c.user.id, chat_dispatch_id: item.dispatch.id)
+    :ok = Dispatches.attach_run(item.dispatch.id, run.id)
+    {:ok, _} = Store.attach_run(item.dispatch.id, run.id)
+    Store.record_event(c.mission, %{task_id: c.task, run_id: run.id, kind: "startup_interrupted", source_key: "startup-interrupted:#{run.id}"})
+    :ok = Cascade.Runs.Store.finish(run.id, "failed", "Interrupted before provider startup")
+    {:ok, _} = Store.settle_run(run.id, "failed", "Interrupted before provider startup")
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [c.coordinator.vaultAgentId])
+    for _ <- 1..2 do
+      assert Scheduler.schedule(c.mission).dispatches == []
+      assert SQL.one("SELECT status,attempt FROM chat_mission_tasks WHERE id=?", [c.task]) == ["failed", 0]
+    end
+    assert SQL.one("SELECT count(*) FROM chat_mission_events WHERE task_id=? AND kind='startup_recovered'", [c.task]) == [0]
+    SQL.exec("UPDATE vault_agents SET missions_enabled=1 WHERE id=?", [c.coordinator.vaultAgentId])
+    assert length(Scheduler.schedule(c.mission).dispatches) == 1
+    assert SQL.one("SELECT status,attempt FROM chat_mission_tasks WHERE id=?", [c.task]) == ["pending", 1]
+    assert SQL.one("SELECT count(*) FROM chat_mission_events WHERE task_id=? AND kind='startup_recovered'", [c.task]) == [1]
+  end
+
   test "confirmed startup interruption keeps durable ownership and retries once, not on a claimed blocker", c do
     workflow = %{"missionId" => c.mission, "vaultId" => c.vault,
       "channelId" => c.channel, "rootMessageId" => c.root.id}
@@ -224,6 +246,10 @@ defmodule Cascade.Missions.ExecutionAdmissionTest do
     {:ok, review} = Store.add_task(c.user.id, c.channel, c.mission, %{title: "Review", assignee: reviewer.id, coordinatorRegistrationId: c.coordinator.id, purpose: "review", workspaceMode: "isolated", dependsOn: [c.task]})
     {:ok, integration} = Store.add_task(c.user.id, c.channel, c.mission, %{title: "Integrate", assignee: c.worker.id, coordinatorRegistrationId: c.coordinator.id, purpose: "integration", workspaceMode: "isolated", dependsOn: [review.task.id]})
     SQL.exec("UPDATE chat_mission_tasks SET status='completed',review_outcome='changes_requested',summary='Fix crossing geometry' WHERE id=?", [review.task.id])
+    SQL.exec("UPDATE vault_agents SET missions_enabled=0 WHERE id=?", [c.coordinator.vaultAgentId])
+    for _ <- 1..2, do: SQL.transaction(fn -> Cascade.Missions.Progression.reconcile(c.mission) end)
+    assert SQL.one("SELECT COUNT(*) FROM chat_mission_tasks WHERE mission_id=? AND purpose='fix'", [c.mission]) == [0]
+    SQL.exec("UPDATE vault_agents SET missions_enabled=1 WHERE id=?", [c.coordinator.vaultAgentId])
     config = Application.get_all_env(:cascade_elixir) |> :erlang.term_to_binary() |> Base.encode64()
     paths = :code.get_path() |> Enum.flat_map(&["-pa", to_string(&1)])
     script = Path.expand("../../support/progression_process_probe.exs", __DIR__)

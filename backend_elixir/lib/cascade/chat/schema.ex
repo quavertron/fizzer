@@ -51,6 +51,7 @@ defmodule Cascade.Chat.Schema do
   ]
 
   @identity_columns [
+    {"missions_enabled", "INTEGER NOT NULL DEFAULT 1"},
     {"agent_id", "TEXT NOT NULL DEFAULT 'agent'"},
     {"display_name", "TEXT NOT NULL DEFAULT ''"},
     {"avatar_url", "TEXT NOT NULL DEFAULT ''"},
@@ -266,7 +267,7 @@ defmodule Cascade.Chat.Schema do
       hermes_safe_mode INTEGER NOT NULL DEFAULT 0, identity_scope TEXT NOT NULL DEFAULT 'network',
       expires_at TEXT, owner_user_id INTEGER REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      color TEXT NOT NULL DEFAULT 'FFFFFF',
+      color TEXT NOT NULL DEFAULT 'FFFFFF', missions_enabled INTEGER NOT NULL DEFAULT 1,
       UNIQUE(owner_user_id,mention)
     )
     """
@@ -470,7 +471,7 @@ defmodule Cascade.Chat.Schema do
               SQL.exec(create_table_sql("vault_agents", "vault_agents_owner_scoped"))
 
               SQL.exec(
-                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,created_at,updated_at,color FROM vault_agents"
+                "INSERT INTO vault_agents_owner_scoped SELECT id,vault_id,agent_id,display_name,avatar_url,mention,model,cwd,context_prompt,hermes_profile,hermes_safe_mode,identity_scope,expires_at,owner_user_id,created_at,updated_at,color,missions_enabled FROM vault_agents"
               )
 
               SQL.exec("DROP TABLE vault_agents")
@@ -507,6 +508,7 @@ defmodule Cascade.Chat.Schema do
         )
 
       Enum.each(losers, fn [loser | _] ->
+        SQL.exec("UPDATE vault_agents SET missions_enabled=MIN(missions_enabled,(SELECT missions_enabled FROM vault_agents WHERE id=?)) WHERE id=?", [loser, winner])
         SQL.exec(
           "DELETE FROM chat_agent_members WHERE vault_agent_id=? AND channel_id IN (SELECT channel_id FROM chat_agent_members WHERE vault_agent_id=?)",
           [loser, winner]

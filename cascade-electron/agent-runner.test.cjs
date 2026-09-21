@@ -80,6 +80,20 @@ test('durable work item identity reaches both the provider env and helper contex
   }
 });
 
+test('run-bound helper token and capability reach both env and per-run config', () => {
+  const runId = 91992;
+  const env = buildRunHelperEnv({ runId, helperToken: 'bound-fixture-token', missionsEnabled: false });
+  try {
+    const helper = JSON.parse(fs.readFileSync(env.CASCADE_HELPER_CONFIG, 'utf8'));
+    assert.equal(env.CASCADE_NOTE_TOKEN, 'bound-fixture-token');
+    assert.equal(helper.token, 'bound-fixture-token');
+    assert.equal(env.CASCADE_MISSIONS_ENABLED, '0');
+    assert.equal(helper.missionsEnabled, false);
+  } finally {
+    cleanupRunHelperConfig(runId);
+  }
+});
+
 test('Cascade helpers are pre-authorized by command name and discovered paths', () => {
   const rules = helperAllowedTools();
   assert.ok(rules.includes('Bash(cascade-note *)'));

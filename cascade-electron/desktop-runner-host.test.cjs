@@ -12,11 +12,11 @@ test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes
   const realHome = os.homedir;
   const load = Module._load;
   const previous = process.env.FIZZER_LOCAL_AGENT_SETUP;
-  let headers;
+  let headers, credentials;
   os.homedir = () => directory;
   Module._load = function (name, ...args) {
     if (name === 'electron') return { net: { fetch: async (_url, init) => {
-      headers = init.headers; return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+      headers = init.headers; credentials = init.credentials; return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
     } } };
     if (name === './agent-runner.cjs') return { setNoteApiConfig() {} };
     return load.call(this, name, ...args);
@@ -36,6 +36,7 @@ test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes
   assert.equal(response.status, 200);
   assert.equal(headers['x-cascade-browser'], undefined);
   assert.equal(headers.origin, undefined);
+  assert.equal(credentials, 'omit');
   await host.connectDesktopRunner('fixture-only', 'http://127.0.0.1:9999');
   assert.equal(fs.existsSync(endpoint), false);
   await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
