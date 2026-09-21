@@ -1,0 +1,15 @@
+{
+  "id": "alock",
+  "name": "alock",
+  "description": "Cooperative file locking for concurrent AI agents",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": ["alock_edit", "alock_write"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

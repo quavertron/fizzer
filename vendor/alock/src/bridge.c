@@ -6,7 +6,6 @@
 #include "ipc.h"
 #include "cli.h"
 #include <dtob.h>
-#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -30,6 +29,8 @@
 #endif
 
 #define CONTENT_LIMIT (4u * 1024 * 1024)
+/* Encoded envelope: content + argument + DTOB keys and type tags. */
+#define FRAME_LIMIT (CONTENT_LIMIT + PATH_MAX + 4096u)
 #define TICKETS 32
 #ifndef BRIDGE_LEASE_SECONDS
 #define BRIDGE_LEASE_SECONDS 60
@@ -40,8 +41,10 @@
 #define TOKEN_LEN 48
 enum { REPLY_OK, STAGE, COMMIT, ABORT, MKDIR, STAGE_DELETE, COMMIT_DELETE,
        STAGE_REPLACE_LINK, STAGE_LINK, REPLY_ERROR = 255 };
-/* Wire v1: ALB1 + three network-order u32s (op, argument bytes, content
- * bytes), then argument and opaque content. No untrusted recursive decoder. */
+/* Messages are DTOB kv-sets {op, argument, content} behind a 4-byte
+ * little-endian length prefix, matching the framing the daemon IPC already
+ * uses. Lengths are re-checked against PATH_MAX/CONTENT_LIMIT after decoding,
+ * so a hostile peer still cannot grow argument or content past their caps. */
 typedef struct {
     unsigned op;
     char argument[PATH_MAX];
@@ -65,47 +68,63 @@ static double now(void) {
     return t.tv_sec + t.tv_nsec / 1e9;
 }
 
-/* Absolute deadlines also bound a client trickling one byte at a time. */
-static int transfer(int fd, void *data, size_t size, int sending, double deadline) {
-    uint8_t *p = data;
-    while (size && !stopping) {
-        int ms = (int)((deadline - now()) * 1000);
-        if (ms <= 0) return -1;
-        struct pollfd pollfd = {fd, sending ? POLLOUT : POLLIN, 0};
-        int ready = poll(&pollfd, 1, ms);
-        if (ready < 0 && errno == EINTR) continue;
-        if (ready <= 0) return -1;
-        ssize_t n = sending ? send(fd, p, size, 0) : recv(fd, p, size, 0);
-        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n <= 0) return -1;
-        p += n; size -= (size_t)n;
-    }
-    return size ? -1 : 0;
-}
-
 static int send_frame(int fd, unsigned op, const char *arg, const void *body, size_t size) {
     size_t len = strlen(arg);
     if (len >= PATH_MAX || size > CONTENT_LIMIT) return -1;
-    uint32_t header[] = {htonl(0x414c4231), htonl(op), htonl((uint32_t)len), htonl((uint32_t)size)};
-    double deadline = now() + 10;
-    return transfer(fd, header, sizeof(header), 1, deadline) ||
-           transfer(fd, (void *)arg, len, 1, deadline) ||
-           transfer(fd, (void *)body, size, 1, deadline);
+    DtobValue *message = dtob_kvset();
+    if (!message) return -1;
+    dtob_kvset_put(message, "op", dtob_uint(op));
+    dtob_kvset_put(message, "argument", dtob_raw((const uint8_t *)arg, len));
+    dtob_kvset_put(message, "content", dtob_raw(body ? body : (const uint8_t *)"", size));
+    size_t encoded_size = 0;
+    uint8_t *encoded = dtob_encode(message, &encoded_size);
+    dtob_free(message);
+    if (!encoded || !encoded_size || encoded_size > FRAME_LIMIT) { free(encoded); return -1; }
+    uint8_t header[4] = {(uint8_t)encoded_size, (uint8_t)(encoded_size >> 8),
+                         (uint8_t)(encoded_size >> 16), (uint8_t)(encoded_size >> 24)};
+    long long deadline = ipc_now_ms() + 10000;
+    int failed = ipc_transfer(fd, header, sizeof(header), 1, deadline, &stopping) ||
+                 ipc_transfer(fd, encoded, encoded_size, 1, deadline, &stopping);
+    free(encoded);
+    return failed ? -1 : 0;
 }
 
 static int recv_frame(int fd, Frame *frame) {
-    uint32_t header[4];
-    double deadline = now() + 10;
-    if (transfer(fd, header, sizeof(header), 0, deadline)) return -1;
-    size_t len = ntohl(header[2]), size = ntohl(header[3]);
-    if (ntohl(header[0]) != 0x414c4231 || len >= sizeof(frame->argument) || size > CONTENT_LIMIT) return -1;
-    frame->op = ntohl(header[1]); frame->size = size;
-    frame->content = malloc(size + 1);
-    if (!frame->content) return -1;
-    if (transfer(fd, frame->argument, len, 0, deadline) || memchr(frame->argument, 0, len) ||
-        transfer(fd, frame->content, size, 0, deadline)) return -1;
-    frame->argument[len] = 0;
-    return 0;
+    uint8_t header[4];
+    long long deadline = ipc_now_ms() + 10000;
+    if (ipc_transfer(fd, header, sizeof(header), 0, deadline, &stopping)) return -1;
+    size_t encoded_size = (size_t)header[0] | ((size_t)header[1] << 8) |
+                          ((size_t)header[2] << 16) | ((size_t)header[3] << 24);
+    if (!encoded_size || encoded_size > FRAME_LIMIT) return -1;
+    uint8_t *encoded = malloc(encoded_size);
+    if (!encoded) return -1;
+    if (ipc_transfer(fd, encoded, encoded_size, 0, deadline, &stopping)) { free(encoded); return -1; }
+    DtobValue *message = dtob_decode(encoded, encoded_size);
+    free(encoded);
+    if (!message) return -1;
+
+    /* Absent keys decode as empty, matching zero-length argument/content. */
+    size_t len = 0, size = 0;
+    const uint8_t *argument = dtob_kvset_raw(message, "argument", &len);
+    const uint8_t *content = dtob_kvset_raw(message, "content", &size);
+    if (!argument) len = 0;
+    if (!content) size = 0;
+    int ok = 0;
+    if (len < sizeof(frame->argument) && size <= CONTENT_LIMIT &&
+        !(len && memchr(argument, 0, len))) {
+        frame->content = malloc(size + 1);
+        if (frame->content) {
+            if (size) memcpy(frame->content, content, size);
+            frame->content[size] = 0;
+            if (len) memcpy(frame->argument, argument, len);
+            frame->argument[len] = 0;
+            frame->op = (unsigned)dtob_kvset_uint(message, "op");
+            frame->size = size;
+            ok = 1;
+        }
+    }
+    dtob_free(message);
+    return ok ? 0 : -1;
 }
 
 static int nonblocking(int fd) {

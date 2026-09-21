@@ -446,7 +446,8 @@ static DtobValue *handle_stage(DtobValue *req) {
         if (line == le) { end = i + 1; break; }
         if (++line == ls) s.start = i + 1;
     }
-    if (ls > line && s.start == s.size && ls != line) {
+    int eof_insert = s.size > 0 && s.base[s.size - 1] != '\n' && ls == line + 1;
+    if (ls > line && s.start == s.size && !eof_insert) {
         free(s.base); return make_error("stage range starts beyond EOF");
     }
     s.length = end - s.start;

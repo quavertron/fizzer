@@ -13,7 +13,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-static long long milliseconds(void) {
+long long ipc_now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
@@ -24,16 +24,18 @@ static long long deadline(int fd, int writing) {
     socklen_t size = sizeof(tv);
     getsockopt(fd, SOL_SOCKET, writing ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, &size);
     long long timeout = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-    return milliseconds() + (timeout ? timeout : 10000);
+    return ipc_now_ms() + (timeout ? timeout : 10000);
 }
 
-static int transfer(int fd, void *data, size_t size, int writing, long long until) {
+int ipc_transfer(int fd, void *data, size_t size, int writing, long long until,
+                 volatile sig_atomic_t *abort) {
     unsigned char *p = data;
     int type;
     socklen_t type_size = sizeof(type);
     int is_socket = getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &type_size) == 0;
     while (size) {
-        long long left = until - milliseconds();
+        if (abort && *abort) return -1;
+        long long left = until - ipc_now_ms();
         if (left <= 0) return -1;
         struct pollfd wait = {fd, writing ? POLLOUT : POLLIN, 0};
         int ready = poll(&wait, 1, (int)left);
@@ -99,13 +101,14 @@ int ipc_send(int fd, const uint8_t *data, size_t len) {
         (hdr >> 16) & 0xff, (hdr >> 24) & 0xff
     };
     long long until = deadline(fd, 1);
-    return transfer(fd, buf, 4, 1, until) || transfer(fd, (void *)data, len, 1, until) ? -1 : 0;
+    return ipc_transfer(fd, buf, 4, 1, until, NULL) ||
+           ipc_transfer(fd, (void *)data, len, 1, until, NULL) ? -1 : 0;
 }
 
 uint8_t *ipc_recv(int fd, size_t *out_len) {
     uint8_t hdr[4];
     long long until = deadline(fd, 0);
-    if (transfer(fd, hdr, 4, 0, until)) return NULL;
+    if (ipc_transfer(fd, hdr, 4, 0, until, NULL)) return NULL;
 
     uint32_t len = (uint32_t)hdr[0]
                  | ((uint32_t)hdr[1] << 8)
@@ -116,7 +119,7 @@ uint8_t *ipc_recv(int fd, size_t *out_len) {
     uint8_t *buf = malloc(len);
     if (!buf) return NULL;
 
-    if (transfer(fd, buf, len, 0, until)) { free(buf); return NULL; }
+    if (ipc_transfer(fd, buf, len, 0, until, NULL)) { free(buf); return NULL; }
 
     *out_len = len;
     return buf;

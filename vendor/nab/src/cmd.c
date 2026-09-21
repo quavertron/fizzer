@@ -27,6 +27,7 @@ static int cmd_patch(const char *nab_filename, const char *submission_filename, 
     uint64_t patches_base = 0;
 
     int needs_migration = 0;
+    size_t migration_from = 0, migration_to = 0;
 
     if (is_new) {
         full = 1;
@@ -60,10 +61,11 @@ static int cmd_patch(const char *nab_filename, const char *submission_filename, 
         DEBUG_TIME_PRINT(meta_trailer, "read_metadata_trailer", " (%zu entries, %zu bytes)", metadata->num_elements, meta_raw_len);
 
         if (needs_migration) {
-            fprintf(stderr, "migrating schema: %zu -> %zu metadata fields\n", file_meta->num_codes, cur_meta->num_codes);
+            migration_from = file_meta->num_codes;
             /* merge file's types into th so unknown fields are preserved */
             merge_types_header(&th, &file_th);
             DtobCustomType *merged_meta = dtob_types_get(&th, NAB_METADATA);
+            migration_to = merged_meta->num_codes;
             /* pad every old entry to the merged schema */
             for (size_t i = 0; i < metadata->num_elements; i++)
                 pad_metadata_entry(metadata->elements[i].data.val, &th, merged_meta);
@@ -79,7 +81,7 @@ static int cmd_patch(const char *nab_filename, const char *submission_filename, 
         const DtobValue *last_pid = dgsvfn(&th, last_entry, "patch_id");
         if (last_pid && last_pid->data && last_pid->data_len >= 32 &&
             memcmp(last_pid->data, sha256, 32) == 0) {
-            DEBUG_TIME_PRINT(total, "total elapsed", " (no-op: identical to v%llu)", (unsigned long long)index);
+            DEBUG_TIME_PRINT(total, "total elapsed", " (no-op: identical to v%llu)", (unsigned long long)(index - 1));
             dtob_free(metadata);
             free(newd);
             dtob_types_cleanup(&th);
@@ -226,6 +228,7 @@ static int cmd_patch(const char *nab_filename, const char *submission_filename, 
             dtob_types_cleanup(&th);
             return 1;
         }
+        fprintf(stderr, "migrated schema: %zu -> %zu metadata fields\n", migration_from, migration_to);
     } else {
         /* append mode: overwrite from the cut point onward */
         off_t cut_point = (off_t)(patches_base + byte_start_pos);
@@ -300,11 +303,17 @@ static int rebuild_to_stream(const char *path, int ver, FILE *out, int emit_outp
     if (!metadata) { fprintf(stderr, "failed to decode metadata\n"); dtob_types_cleanup(&th); return 1; }
     DEBUG_TIME_PRINT(meta_trailer, "read_metadata_trailer", " (%zu entries, %zu bytes)", metadata->num_elements, meta_raw_len);
 
-    size_t target = (ver <= 0) ? metadata->num_elements : (size_t)ver;
-    if (target == 0 || target > metadata->num_elements) {
-        fprintf(stderr, "version %zu out of range (1-%zu)\n", target, metadata->num_elements);
+    if (metadata->num_elements == 0) {
+        fprintf(stderr, "nab: archive has no revisions\n");
         dtob_free(metadata); dtob_types_cleanup(&th); return 1;
     }
+    size_t version = ver < 0 ? metadata->num_elements - 1 : (size_t)ver;
+    if (version >= metadata->num_elements) {
+        fprintf(stderr, "version %zu out of range (0-%zu)\n", version, metadata->num_elements - 1);
+        dtob_free(metadata); dtob_types_cleanup(&th); return 1;
+    }
+    /* Replay takes an exclusive end, while CLI versions are indices. */
+    size_t target = version + 1;
     DtobValue *target_entry = metadata->elements[target-1].data.val;
 
     uint64_t last_full = dtob_extract_u64(dgsvfn(&th, target_entry, "last_full_patch"));

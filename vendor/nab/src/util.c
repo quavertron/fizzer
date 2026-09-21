@@ -284,6 +284,7 @@ static types_header_result read_types_header(const char *path) {
     free(buf); close(fd);
     return fail;
 }
+
 /* Read metadata from end of file. Scans backward for the metadata open_arr
  * (pattern: C0 01 followed by NAB_METADATA code C0 15). Doubling window from EOF. */
 metadata_result get_metadata(const char *path) {

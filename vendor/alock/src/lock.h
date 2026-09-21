@@ -17,6 +17,8 @@ typedef struct {
     char     agent[128];
     char     display_agent[128];
     char     file[4096];
+    dev_t    dev;
+    ino_t    ino;
     off_t    byte_start;
     size_t   length;
     uint32_t line_start;    /* original lines (informational only) */
@@ -34,6 +36,9 @@ typedef struct {
 } LockTable;
 
 void locktable_init(LockTable *lt);
+
+/* check whether a lock matches a target path (by dev/ino if available, else path) */
+int lock_matches_file(const Lock *l, const char *file);
 
 /* acquire a lock on a byte range. returns lock id or -1 on conflict. */
 int lock_acquire(LockTable *lt, const char *agent, const char *file,

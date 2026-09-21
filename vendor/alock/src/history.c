@@ -115,26 +115,6 @@ static int location(const char *file, char out[PATH_MAX]) {
     return 0;
 }
 
-static int copy(const char *source, const char *destination) {
-    int fd = open(source, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) return errno == ENOENT ? 0 : -1;
-    struct stat st;
-    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != getuid()) { close(fd); return -1; }
-    FILE *out = fopen(destination, "wx");
-    if (!out) { close(fd); return -1; }
-    fchmod(fileno(out), 0600);
-    char buf[65536];
-    ssize_t n;
-    int failed = 0;
-    while ((n = read(fd, buf, sizeof(buf))) != 0) {
-        if (n < 0) { if (errno == EINTR) continue; failed = 1; break; }
-        if (fwrite(buf, 1, (size_t)n, out) != (size_t)n) { failed = 1; break; }
-    }
-    close(fd);
-    if (fflush(out) || fsync(fileno(out))) failed = 1;
-    if (fclose(out)) failed = 1;
-    return failed ? -1 : 0;
-}
 
 static int patch(const char *source, const char *archive, const char *author) {
     char *argv[] = {"nab", "patch", (char *)source, (char *)archive, "--author", (char *)author, NULL};
@@ -146,23 +126,6 @@ static int archive_path(const char *file, char out[PATH_MAX]) {
     const char *name = strrchr(file, '/');
     if (!name || !name[1]) return -1;
     return snprintf(out, PATH_MAX, "%.*s/.%s.nab", (int)(name - file), file, name + 1) >= PATH_MAX ? -1 : 0;
-}
-
-/* Copy beside the destination before renaming: state may be on another volume. */
-static int publish(const char *source, const char *archive) {
-    char temp[PATH_MAX];
-    if (snprintf(temp, sizeof(temp), "%s.XXXXXX", archive) >= (int)sizeof(temp)) return -1;
-    int fd = mkstemp(temp);
-    if (fd < 0) return -1;
-    close(fd);
-    unlink(temp);
-    int failed = copy(source, temp) || rename(temp, archive);
-    if (failed) unlink(temp);
-    else {
-        char *slash = strrchr(temp, '/');
-        if (slash) { *slash = 0; failed = sync_directory(temp[0] ? temp : "/"); }
-    }
-    return failed ? -1 : 0;
 }
 
 static int pending_entry(const struct dirent *entry) {
@@ -195,26 +158,31 @@ static int replay(const char *dir, const char *file) {
                     strcmp(author, next_author) || strcmp(batch, next_batch)) break;
                 last++;
             }
-            char event[PATH_MAX], before[PATH_MAX], after[PATH_MAX], meta[PATH_MAX], temp[PATH_MAX], archive[PATH_MAX];
+            char event[PATH_MAX], before[PATH_MAX], after[PATH_MAX], meta[PATH_MAX], archive[PATH_MAX];
             if (snprintf(event, sizeof(event), "%s/%s", dir, entries[i]->d_name) >= (int)sizeof(event) ||
                 snprintf(before, sizeof(before), "%s/before", event) >= (int)sizeof(before) ||
                 snprintf(after, sizeof(after), "%s/%s/after", dir, entries[last]->d_name) >= (int)sizeof(after) ||
                 snprintf(meta, sizeof(meta), "%s/meta", event) >= (int)sizeof(meta) ||
-                snprintf(temp, sizeof(temp), "%s/archive", event) >= (int)sizeof(temp) ||
                 archive_path(file, archive)) { failed = 1; }
             else {
-                unlink(temp);
-                char legacy[PATH_MAX];
                 struct stat st;
-                const char *source = archive;
-                if (lstat(archive, &st) && errno == ENOENT) {
-                    if (snprintf(legacy, sizeof(legacy), "%s/history.nab", dir) >= (int)sizeof(legacy)) failed = 1;
-                    source = legacy;
+                int archive_exists = 0;
+                if (lstat(archive, &st) == 0) {
+                    if (!S_ISREG(st.st_mode) || st.st_uid != getuid()) { failed = 1; break; }
+                    archive_exists = 1;
+                } else if (errno != ENOENT) {
+                    failed = 1;
                 }
-                if (!failed && (copy(source, temp) ||
-                    (access(temp, F_OK) && patch(before, temp, "alock:baseline")) ||
-                    patch(after, temp, trim(author)) || publish(temp, archive))) failed = 1;
-                if (!failed) unlink(temp);
+                if (!failed) {
+                    if (!archive_exists && patch(before, archive, "alock:baseline")) failed = 1;
+                    if (!failed && patch(after, archive, trim(author))) failed = 1;
+                    if (!failed && !archive_exists) {
+                        char dir_path[PATH_MAX];
+                        snprintf(dir_path, sizeof(dir_path), "%s", archive);
+                        char *slash = strrchr(dir_path, '/');
+                        if (slash) { *slash = 0; if (sync_directory(dir_path[0] ? dir_path : "/")) failed = 1; }
+                    }
+                }
                 for (int k = i; !failed && k <= last; k++) {
                     char audit[PATH_MAX], item[PATH_MAX], retired[PATH_MAX];
                     if (snprintf(event, sizeof(event), "%s/%s", dir, entries[k]->d_name) >= (int)sizeof(event) ||
@@ -367,8 +335,7 @@ int history_command(const char *file, int retry) {
     if (result) fprintf(stderr, "alock: pending nab snapshots could not be replayed in %s\n", dir);
     else {
         struct stat st;
-        if (lstat(archive, &st) && errno == ENOENT &&
-            snprintf(archive, sizeof(archive), "%s/history.nab", dir) >= (int)sizeof(archive)) { close(fd); return 1; }
+        if (lstat(archive, &st) || !S_ISREG(st.st_mode) || st.st_uid != getuid()) { close(fd); return 1; }
         char *args[] = {"nab", "log", archive, NULL};
         result = alock_nab_main(3, args);
     }

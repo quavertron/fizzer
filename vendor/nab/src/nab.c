@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/file.h>
 
 #include "nab.h"
 #include "util.c"
@@ -499,11 +500,46 @@ static void debug_print_time(double t_start, const char *label, const char *extr
 //====================
 
 #ifndef NAB_NO_MAIN
-static int parse_positive_version(const char *text, int *version) {
+/* All CLI archive access holds this inode open and locked. Writers must keep
+ * updating that inode in place; replacing/unlinking it requires a different
+ * locking protocol. O_CREAT does not truncate a concurrent creator's file. */
+static int lock_archive(const char *path, int operation) {
+    int flags = operation == LOCK_EX ? O_RDWR | O_CREAT : O_RDONLY;
+    int fd = open(path, flags | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "nab: cannot open archive '%s': %s\n", path, strerror(errno));
+        return -1;
+    }
+    while (flock(fd, operation) != 0) {
+        if (errno == EINTR) continue;
+        fprintf(stderr, "nab: cannot lock '%s': %s\n", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static int patch_locked(const char *archive, const char *source, const char *author) {
+    if (nab_author_validate((const uint8_t *)author, author ? strlen(author) : 0)) return 1;
+    int fd = lock_archive(archive, LOCK_EX);
+    if (fd < 0) return 1;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        fprintf(stderr, "nab: cannot access archive '%s': %s\n", archive, strerror(errno));
+        close(fd);
+        return 1;
+    }
+    int rc = cmd_patch(archive, source, st.st_size == 0, author);
+    close(fd);
+    return rc;
+}
+
+static int parse_version(const char *text, int *version) {
+    if (!text[0] || strspn(text, "0123456789") != strlen(text)) return -1;
     char *end = NULL;
     errno = 0;
     long value = strtol(text, &end, 10);
-    if (errno != 0 || !end || *end != '\0' || value < 1 || value > INT_MAX) {
+    if (errno != 0 || !end || *end != '\0' || value < 0 || value > INT_MAX) {
         return -1;
     }
     *version = (int)value;
@@ -560,19 +596,26 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "input file name is too big\n");
                 return 1;
             }
-            int is_new = access(argv[3], F_OK) != 0;
-            return cmd_patch(argv[3], argv[2], is_new, author);
+            return patch_locked(argv[3], argv[2], author);
         } else {
             int fin_len = strlen(argv[2]) + 8;
             char dest[fin_len];
             format_dotfile(argv[2], fin_len, dest);
-            int is_new = access(dest, F_OK) != 0;
-            return cmd_patch(dest, argv[2], is_new, author);
+            return patch_locked(dest, argv[2], author);
         }
     }
     if (strcmp(cmd, "rebuild") == 0) {
-        if (argc < 3) { fprintf(stderr, "usage: nab [--debug] rebuild <file.nab> [version]\n"); return 1; }
-        return cmd_rebuild(argv[2], (argc >= 4) ? atoi(argv[3]) : -1);
+        if (argc < 3 || argc > 4) { fprintf(stderr, "usage: nab [--debug] rebuild <file.nab> [zero-based version]\n"); return 1; }
+        int version = -1;
+        if (argc == 4 && parse_version(argv[3], &version) != 0) {
+            fprintf(stderr, "nab: rebuild version must be a non-negative integer\n");
+            return 1;
+        }
+        int fd = lock_archive(argv[2], LOCK_SH);
+        if (fd < 0) return 1;
+        int rc = cmd_rebuild(argv[2], version);
+        close(fd);
+        return rc;
     }
     if (strcmp(cmd, "diff") == 0) {
         int from_ver = 0, to_ver = 0;
@@ -581,16 +624,24 @@ int main(int argc, char **argv) {
             fprintf(stderr, "usage: nab [--debug] diff <file.nab> [<version-a>] [<version-b>]\n");
             return 1;
         }
-        if ((version_count >= 1 && parse_positive_version(argv[3], &from_ver) != 0) ||
-            (version_count == 2 && parse_positive_version(argv[4], &to_ver) != 0)) {
-            fprintf(stderr, "nab: diff versions must be positive integers\n");
+        if ((version_count >= 1 && parse_version(argv[3], &from_ver) != 0) ||
+            (version_count == 2 && parse_version(argv[4], &to_ver) != 0)) {
+            fprintf(stderr, "nab: diff versions must be non-negative integers\n");
             return 1;
         }
-        return cmd_diff(argv[2], version_count, from_ver, to_ver);
+        int fd = lock_archive(argv[2], LOCK_SH);
+        if (fd < 0) return 1;
+        int rc = cmd_diff(argv[2], version_count, from_ver, to_ver);
+        close(fd);
+        return rc;
     }
     if (strcmp(cmd, "log") == 0) {
         if (argc < 3) { fprintf(stderr, "usage: nab [--debug] log <file.nab>\n"); return 1; }
-        return cmd_log(argv[2]);
+        int fd = lock_archive(argv[2], LOCK_SH);
+        if (fd < 0) return 1;
+        int rc = cmd_log(argv[2]);
+        close(fd);
+        return rc;
     }
 
     fprintf(stderr, "error: unknown command '%s'\n", cmd);

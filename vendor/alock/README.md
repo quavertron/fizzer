@@ -22,9 +22,10 @@ daemon to write on their behalf, and the daemon:
 
 The CLI (`alock`) is a thin client. It talks to the daemon over the shared unix
 socket `/tmp/alock/daemon.sock`, including the target file in each request, encoding messages with
-[dtob](https://github.com/diegocabello/dtob). The first `acquire` on a file
-auto-spawns its daemon; the daemon exits on its own once it holds no active
-locks.
+[dtob](https://github.com/diegocabello/dtob) behind a 4-byte little-endian length prefix.
+All socket transfers enforce bounded deadlines via `poll()` and strict message size caps
+(up to 64 MiB). The first `acquire` on a file auto-spawns its daemon; the daemon exits on its own once
+it holds no active locks or turns.
 
 ## Commands
 
@@ -56,8 +57,6 @@ Alock retains its hardened DTOB dependency and adapts nab's decoder API to it.
 Archives live beside their source files: `src/example.c` gets `src/.example.c.nab`
 (mode 0600). Locks, pending recovery snapshots, the original `path`, and author/operation
 metadata remain under `${XDG_STATE_HOME:-~/.local/state}/alock/<path-sha256>/`.
-An existing central `history.nab` is used when the sidecar is absent; the next
-recorded edit copies its history into the sidecar, retaining the old archive.
 The first recorded edit includes a baseline revision. Identical
 content is deduplicated by nab; its event metadata is still retained. Deletes
 record an empty after-image; rename records source/destination events. Directory
@@ -257,6 +256,10 @@ upgrading archives that predate author metadata.
 The native cross-user bridge supports file creation, deletion, regular-file
 replacement of symlinks, and symlink retargeting; see
 [account bridge usage and limits](integrations/account-bridge.md).
+Bridge messages use 4-byte little-endian length-prefixed DTOB key-value sets
+(`op`, `argument`, `content`), enforcing nonblocking deadline-bounded transfers
+and strict payload limits (up to 4 MiB content, `PATH_MAX` arguments). Bridge
+heartbeats retry during transient daemon busy states without dropping the bridge.
 
 ## Repo layout
 
@@ -264,12 +267,13 @@ replacement of symlinks, and symlink retargeting; see
 src/main.c           CLI client — parses args, talks to daemon
 src/events.c         editor-neutral change notification fan-out
 src/daemon.c         shared daemon: locking, staging, and atomic file replacement
-src/bridge.c         cross-user proposals with peer authentication
-src/history.c        sidecar archives and durable recovery snapshots
+src/bridge.c         cross-user proposals with peer authentication, framed DTOB envelopes
+src/history.c        sidecar archives, durable per-file sequence tracking, and snapshot recovery
 src/turns.c          per-file turn participation, batching, and lease cleanup
 src/nab_embed.c      embedded nab adapter
-src/lock.c           lock table: overlap checks, byte/line auto-shift, TTL expiry
-src/ipc.c            unix-socket framing and shared socket path
+src/lock.c           lock table: overlap checks, byte/line auto-shift, EOF validation, TTL expiry
+src/ipc.c            deadline-bounded unix socket transfer loops and framing
+src/ipc.h            shared socket paths, transfer deadlines, and framing interfaces
 integrations/        native-editor staging hook
                      (staging_hook.py, install_staging.py, per-agent *.md) & openclaw plugin
 ```
