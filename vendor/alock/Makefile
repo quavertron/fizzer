@@ -1,5 +1,5 @@
 CC      = cc
-CFLAGS  = -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O2 -Isrc -Ilibdtob/lib
+CFLAGS  = -std=c11 -D_DARWIN_C_SOURCE -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O2 -Isrc -Ilibdtob/lib
 OBJDIR  = obj
 BIN     ?= alock
 
@@ -22,7 +22,7 @@ $(OBJDIR)/nab_embed.o: nab/src/nab.c nab/src/cmd.c nab/src/util.c nab/src/xbdiff
 libdtob/libdtob.a:
 	$(MAKE) -C libdtob libdtob.a
 
-control/target/release/libalock_control.a: control/src/lib.rs control/src/transport.rs control/Cargo.toml control/Cargo.lock
+control/target/release/libalock_control.a: control/src/lib.rs control/src/transport.rs control/src/activity.rs control/Cargo.toml control/Cargo.lock
 	cargo build --locked --release --manifest-path control/Cargo.toml
 
 $(BIN): $(OBJ) control/target/release/libalock_control.a libdtob/libdtob.a

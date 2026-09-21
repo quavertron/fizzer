@@ -37,6 +37,9 @@ const AdminPanel = lazy(() =>
 const SuperkanbanView = lazy(() =>
   import('./components/SuperkanbanView').then((m) => ({ default: m.SuperkanbanView })),
 );
+const AwatchPane = lazy(() =>
+  import('./components/AwatchPane').then((m) => ({ default: m.AwatchPane })),
+);
 const AccountSettings = lazy(() =>
   import('./components/AccountSettings').then((m) => ({ default: m.AccountSettings })),
 );
@@ -82,6 +85,7 @@ import type { LayoutNode } from './layout/tree';
 import { api, ApiError, getRemoteVaults, saveRemoteVault, registerVaultOrigin, getVaultOrigin, setActiveVaultOrigin, getVaultShortId, type CommunityUpdateItem, type CommunityUpdates, type User, type Vault, type Folder, type NoteSummary, type Note } from './api';
 import { connectVaultSocket } from './socket';
 import { attachVaultMirror } from './vaultMirror';
+import { activityKey, attachActivity } from './activity';
 import { ensureDesktopRunnerHost, startDesktopRunnerHost, stopDesktopRunnerHost } from './desktopRunnerHost';
 import {
   agentsAfterLoadFailure,
@@ -112,6 +116,7 @@ import {
 import { chatMessageStore, fetchChatMessageSnapshot, useAgentActivity } from './chat/messageStore';
 import { Activity, Bell, Download, PanelLeftOpen, Sparkles, Users } from 'lucide-react';
 import { FizzerMark } from './components/FizzerMark';
+import { DesktopVaultChooser } from './components/DesktopVaultChooser';
 
 import { useDesktopStartup, rememberDesktopSession, acceptAndOpenRemoteInvite } from './desktopStartup';
 
@@ -186,6 +191,8 @@ export default function App() {
   const [resetToken, setResetToken] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
+  const [serverAuthRequested, setServerAuthRequested] = useState(false);
+  useEffect(() => { if (user) setServerAuthRequested(false); }, [user]);
 
 
 
@@ -1696,6 +1703,10 @@ export default function App() {
     void loadSuperkanban();
   }, [loadSuperkanban]);
 
+  const openAwatch = useCallback((paneId: string) => {
+    workspaceStore.openTab({ id: newId('awatch'), title: 'Awatch', type: 'awatch', dirty: false }, 'open', paneId);
+  }, []);
+
   /**
    * Open a note: ensure it has a tab, focus the pane that already shows it, or
    * place it in the focused pane. `replace` swaps the focused pane's active tab
@@ -1727,7 +1738,7 @@ export default function App() {
     const hasSelectedPage = Layout.getActiveTabIds(workspaceStore.active.layout)
       .some((id) => {
         const tab = workspaceStore.active.openTabs.find((candidate) => candidate.id === id);
-        return Boolean(tab && (tab.type === 'new' || tab.type === 'superkanban' || availableIds.has(id)));
+        return Boolean(tab && (tab.type === 'new' || tab.type === 'superkanban' || tab.type === 'awatch' || availableIds.has(id)));
       });
     if (hasSelectedPage) return;
 
@@ -1907,6 +1918,7 @@ export default function App() {
     const controller = new AbortController();
     const socket = connectVaultSocket(activeVault?.origin, activeVault?.token);
     const detachMirror = attachVaultMirror(socket, activeVaultId);
+    const detachActivity = attachActivity(socket, activeVaultId, activityKey(activeVaultId, activeVault?.origin));
     vaultSocketRef.current = socket;
     const joinActiveVault = () => {
       socket.emit('joinVault', activeVaultId);
@@ -2090,6 +2102,7 @@ export default function App() {
     socket.on('vault:userProfileUpdated', handleUserProfileUpdated);
     return () => {
       detachMirror();
+      detachActivity();
       controller.abort();
       if (socketVaultReloadTimerRef.current != null) {
         window.clearTimeout(socketVaultReloadTimerRef.current);
@@ -2186,7 +2199,7 @@ export default function App() {
   const handleCreateNoteInPane = useCallback((paneId: string) => { void createAndOpenNote(paneId, null); }, [createAndOpenNote]);
 
   const handleCreateTabInPane = useCallback((paneId: string) => {
-    const id = `new:${crypto.randomUUID()}`;
+    const id = newId('new');
     const tab: Tab = { id, title: 'New tab', type: 'new', dirty: false };
     workspaceStore.openTab(tab, 'open', paneId);
   }, []);
@@ -2528,7 +2541,8 @@ export default function App() {
   const handleChatJumpHandled = useCallback(() => setChatJumpTarget(null), []);
 
   /** Render the content of a tab inside its pane. */
-  const renderTabContent = useCallback((tab: Tab): ReactNode => {
+  const renderTabContent = useCallback((tab: Tab, paneId: string): ReactNode => {
+    if (tab.type === 'awatch') return <Suspense fallback={<div className="pane-empty">Loading Awatch…</div>}><AwatchPane activityKey={activityKey(activeVaultId || '', vaults.find(v => v.id === activeVaultId)?.origin)} /></Suspense>;
     if (tab.type === 'new') {
       return (
         <div className="new-tab-page">
@@ -2540,6 +2554,7 @@ export default function App() {
             <span><kbd>Ctrl P</kbd> Open anything</span>
             <span><kbd>Ctrl N</kbd> New note</span>
           </div>
+          <button type="button" className="awatch-open-link" onClick={() => openAwatch(paneId)}>Open Awatch</button>
         </div>
       );
     }
@@ -2628,6 +2643,11 @@ export default function App() {
   if (!user) {
     const hasInvite = /^\/invite\/[^/]+$/.test(window.location.pathname);
     const inDesktopApp = Boolean((window as unknown as { electronAPI?: unknown }).electronAPI);
+    if (inDesktopApp && !serverAuthRequested) {
+      return <DesktopVaultChooser vaults={[]} activeVaultId={null} onSelect={() => {}}
+        onCreate={async () => false} onContinue={() => {}}
+        onConnectLocal={() => { setAuthError(''); setServerAuthRequested(true); }} />;
+    }
     return (
       <main className="auth-shell">
         <form className="auth-panel" id="auth-panel" onSubmit={submitAuth}>
@@ -2673,6 +2693,7 @@ export default function App() {
           </p>
 
           {authNotice && <div className="auth-notice">{authNotice}</div>}
+          {inDesktopApp && <button type="button" className="link-button" onClick={() => { setAuthError(''); setPassword(''); setServerAuthRequested(false); }}>Change server</button>}
           {authError && <div className="error">{authError}</div>}
           <button id="auth-submit" type="submit">
             {authMode === 'login' ? 'Log in' : authMode === 'register' ? 'Create account' : 'Set new password'}
@@ -2997,6 +3018,7 @@ export default function App() {
             onCreateTab={handleCreateTabInPane}
             onCreateChat={handleCreateChatInPane}
             onOpenSuperkanban={openSuperkanban}
+            onOpenAwatch={openAwatch}
             onDetachTab={handleDetachTab}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => {

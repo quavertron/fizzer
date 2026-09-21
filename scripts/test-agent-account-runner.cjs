@@ -52,6 +52,11 @@ console.log(JSON.stringify({type:'result', subtype:'success', result:'permission
     if (result.sessionId !== 'disposable-test' || fs.readFileSync(path.join(root, 'note.txt'), 'utf8') !== 'through alock\n') {
       throw new Error('Worker result or committed file did not match.');
     }
+    const activity = events.filter(event => event.type === 'activity').map(event => JSON.parse(event.payload_json));
+    if (!activity.some(event => event.kind === 'lock') || !activity.some(event =>
+      event.kind === 'edit' && event.file === path.join(root, 'note.txt') && event.new_lines.includes('through alock'))) {
+      throw new Error('This run’s native lock and edit events did not reach the desktop relay.');
+    }
     console.log('PASS: actual fizzer UID, denied direct write, native bridge commit, runner events and cleanup. No provider contacted.');
     const outsideProject = path.join(directory, 'outside.txt');
     fs.writeFileSync(outsideProject, 'outside baseline\n', { mode: 0o644 });
@@ -93,22 +98,15 @@ setInterval(() => {}, 1000);
     fs.chmodSync(outside, 0o666);
     const writableLink = path.join(root, 'writable-link');
     fs.symlinkSync(outside, writableLink);
-    let linkRejected = false;
-    try {
-      await run({ runId: 990020, agent: 'claude-code', cwd: root,
-        prompt: 'Reject writable symlink target', model: 'fake-provider' }, () => {}, {});
-    } catch (error) { linkRejected = error.message.includes('directly'); }
-    if (!linkRejected) throw new Error('Writable symlink target was not rejected');
-    fs.unlinkSync(writableLink);
-    console.log('PASS: writable external symlink target rejected');
     fs.chmodSync(path.join(root, 'note.txt'), 0o666);
-    let rejected = false;
-    try {
-      await run({ runId: 990019, agent: 'claude-code', cwd: root, vaultRoot: root,
-        prompt: 'Must not launch into writable project', model: 'fake-provider' }, () => {}, {});
-    } catch (error) { rejected = error.message.includes('can write'); }
-    if (!rejected) throw new Error('Writable project was not rejected.');
-    console.log('PASS: writable project rejected before provider launch');
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+console.log(JSON.stringify({type:'system', subtype:'init', session_id:'writable-tree-test'}));
+console.log(JSON.stringify({type:'result', result:'Started without scanning unrelated permissions', session_id:'writable-tree-test'}));
+`, { mode: 0o755 });
+    const writable = await run({ runId: 990019, agent: 'claude-code', cwd: root, vaultRoot: root,
+      prompt: 'Unrelated writable files must not block startup', model: 'fake-provider' }, () => {}, {});
+    if (writable.sessionId !== 'writable-tree-test') throw new Error('Writable tree blocked startup.');
+    console.log('PASS: writable files and linked folders do not block agent startup');
   } finally {
     if (prior === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prior;
     if (priorData === undefined) delete process.env.CASCADE_DATA_DIR; else process.env.CASCADE_DATA_DIR = priorData;

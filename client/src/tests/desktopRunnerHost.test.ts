@@ -38,11 +38,11 @@ it('only releases a terminal result after a successful server receipt', () => {
 });
 
 describe('desktop runner transport isolation', () => {
-  it('uses a dedicated polling manager instead of a renderer WebSocket upgrade', () => {
+  it('uses a dedicated WebSocket manager with polling fallback', () => {
     expect(DESKTOP_RUNNER_SOCKET_OPTIONS).toEqual({
       forceNew: true,
-      transports: ['polling'],
-      upgrade: false,
+      transports: ['websocket', 'polling'],
+      tryAllTransports: true,
     });
   });
 });

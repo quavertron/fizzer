@@ -66,6 +66,15 @@ static int ranges_overlap(off_t a_start, size_t a_len, off_t b_start, size_t b_l
     return a_start < b_end && b_start < a_end;
 }
 
+Lock *lock_blocker(LockTable *lt, const char *agent, const char *file, off_t start, size_t length) {
+    for (int i = 0; i < MAX_LOCKS; i++) {
+        Lock *l = &lt->entries[i];
+        if (l->active && lock_matches_file(l, file) && strcmp(l->agent, agent) &&
+            ranges_overlap(start, length, l->byte_start, l->length)) return l;
+    }
+    return NULL;
+}
+
 int lock_acquire(LockTable *lt, const char *agent, const char *file,
                  off_t byte_start, size_t length,
                  uint32_t line_start, uint32_t line_end) {
@@ -91,6 +100,7 @@ int lock_acquire(LockTable *lt, const char *agent, const char *file,
     l->id = lt->next_id++;
     strncpy(l->agent, agent, sizeof(l->agent) - 1);
     l->agent[sizeof(l->agent) - 1] = '\0';
+    snprintf(l->display_agent, sizeof(l->display_agent), "%s", agent);
     strncpy(l->file, file, sizeof(l->file) - 1);
     l->file[sizeof(l->file) - 1] = '\0';
     l->byte_start = byte_start;
@@ -105,6 +115,14 @@ int lock_acquire(LockTable *lt, const char *agent, const char *file,
     return l->id;
 }
 
+void lock_release_id(LockTable *lt, int id) {
+    Lock *l = lock_find(lt, id);
+    if (!l) return;
+    l->active = 0;
+    lt->count--;
+    if (lt->on_release) lt->on_release(l);
+}
+
 int lock_release_agent(LockTable *lt, const char *agent, const char *file) {
     int released = 0;
     for (int i = 0; i < MAX_LOCKS; i++) {
@@ -112,8 +130,7 @@ int lock_release_agent(LockTable *lt, const char *agent, const char *file) {
         if (!l->active) continue;
         if (strcmp(l->file, file) != 0) continue;
         if (strcmp(l->agent, agent) != 0) continue;
-        l->active = 0;
-        lt->count--;
+        lock_release_id(lt, l->id);
         released++;
     }
     return released > 0 ? 0 : -1;
@@ -125,8 +142,7 @@ int lock_release_all_agent(LockTable *lt, const char *agent) {
         Lock *l = &lt->entries[i];
         if (!l->active) continue;
         if (strcmp(l->agent, agent) != 0) continue;
-        l->active = 0;
-        lt->count--;
+        lock_release_id(lt, l->id);
         released++;
     }
     return released > 0 ? 0 : -1;
@@ -177,8 +193,7 @@ void lock_expire(LockTable *lt) {
         Lock *l = &lt->entries[i];
         if (!l->active || l->ttl_seconds == 0) continue;
         if (now - l->acquired_at > l->ttl_seconds) {
-            l->active = 0;
-            lt->count--;
+            lock_release_id(lt, l->id);
         }
     }
 }

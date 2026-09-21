@@ -96,11 +96,11 @@ describe('agent steering presentation', () => {
       message('followup-2', { body: 'also remove empty messages' }),
       message('latest', { author: 'Sol', agentId: 'codex', runId: 42, status: 'running', body: 'Fixing both.' }),
     ];
-    for (const status of ['running', undefined] as const) {
+    for (const currentUser of ['owner', 'another-user']) for (const status of ['running', undefined] as const) {
       chatMessageStore.set('channel', rows.map(row => ({ ...row, createdAt: '2026-09-09T13:22:00Z', ...(row.id === 'latest' ? { status } : {}) })));
       const html = renderToStaticMarkup(createElement(ChatView, {
-        channelId: 'channel', channelName: 'General', currentUser: 'owner',
-        presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [],
+        channelId: 'channel', channelName: 'General', currentUser, currentUserId: currentUser === 'owner' ? 1 : 2,
+        presence: { participants: [], online: [] }, availableAgents: [], registeredAgents: [{ ...agent, ownerUserId: 1 }],
         onRegisterAgent() {}, onRemoveAgent() {}, onInviteUser: async () => {}, onSendMessage() {}, onCancelRun() {},
       }));
       expect(html.match(/class="chat-message-meta"/g)).toHaveLength(2);
@@ -109,7 +109,7 @@ describe('agent steering presentation', () => {
       expect(html).toContain('in the vault folder tree');
       expect(html).toContain('also remove empty messages');
       if (!status) expect(html).toContain('Fixing both.');
-      expect(html.includes('>Stop<')).toBe(status === 'running');
+      expect(html.includes('>Stop<')).toBe(status === 'running' && currentUser === 'owner');
     }
   });
 

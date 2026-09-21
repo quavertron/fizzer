@@ -69,7 +69,8 @@ static void usage(void) {
         "  alock release       --file <path> --agent <id>\n"
         "  alock release-agent --agent <id>\n"
         "  alock check         --file <path> --agent <id>\n"
-        "  alock status        [--file <path>]\n");
+        "  alock status        [--file <path>]\n"
+        "  alock events        [--ensure]\n");
 }
 
 const char *arg_get(int argc, char **argv, const char *flag) {
@@ -421,6 +422,35 @@ static int cmd_release_agent(int argc, char **argv) {
         daemon_request(sock_path, make_request("release-agent", NULL, agent)), 0);
 }
 
+static int cmd_events(int argc, char **argv) {
+    char socket[4096], escaped[24577];
+    if (daemon_spawn("", socket, sizeof(socket))) return 1;
+    DtobValue *reply = daemon_request(socket, make_request("capabilities", NULL, NULL));
+    int capable = reply && dtob_kvset_uint(reply, "activity") == 1;
+    if (reply) dtob_free(reply);
+    if (!capable) {
+        fprintf(stderr, "Running alock predates shared activity; restart it after active edits finish.\n");
+        return 1;
+    }
+    if (arg_has(argc, argv, "--ensure")) {
+        json_escape(socket, escaped, sizeof(escaped));
+        printf("{\"socket\":\"%s\"}\n", escaped);
+        return 0;
+    }
+    int fd = ipc_connect(socket);
+    const char *request = "{\"cmd\":\"watch\",\"cursor\":{}}";
+    if (fd < 0 || ipc_send(fd, (const uint8_t *)request, strlen(request))) {
+        if (fd >= 0) close(fd);
+        return 1;
+    }
+    char buffer[8192];
+    ssize_t size;
+    while ((size = read(fd, buffer, sizeof(buffer))) > 0)
+        if (fwrite(buffer, 1, (size_t)size, stdout) != (size_t)size || fflush(stdout)) break;
+    close(fd);
+    return size < 0 ? 1 : 0;
+}
+
 static int cmd_status(int argc, char **argv) {
     const char *file = arg_get(argc, argv, "--file");
     char resolved[4096];
@@ -468,6 +498,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "release-agent") == 0) return cmd_release_agent(argc, argv);
     if (strcmp(cmd, "check") == 0)         return cmd_check(argc, argv);
     if (strcmp(cmd, "status") == 0)        return cmd_status(argc, argv);
+    if (strcmp(cmd, "events") == 0)        return cmd_events(argc, argv);
 
     usage();
     return 2;

@@ -51,7 +51,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const sockPath = "/tmp/awatch.sock"
+const sockPath = "/tmp/alock/daemon.sock"
 const wholeFileLineEnd = 2147483647
 
 type EditEvent struct {
@@ -59,6 +59,8 @@ type EditEvent struct {
 	Agent         string   `json:"agent"`
 	Author        string   `json:"author"`
 	ConflictAgent string   `json:"conflict_agent"`
+	ConflictLineStart int `json:"conflict_line_start"`
+	ConflictLineEnd int `json:"conflict_line_end"`
 	Result        string   `json:"result"`
 	Tool          string   `json:"tool"`
 	Detail        string   `json:"detail"`
@@ -139,6 +141,8 @@ func parseDtobEvent(buf []byte) (*EditEvent, error) {
 		Agent:         dtobGetString(root, "agent"),
 		Author:        dtobGetString(root, "author"),
 		ConflictAgent: dtobGetString(root, "conflict_agent"),
+		ConflictLineStart: int(dtobGetUint(root, "conflict_line_start")),
+		ConflictLineEnd: int(dtobGetUint(root, "conflict_line_end")),
 		Result:        dtobGetString(root, "result"),
 		Tool:          dtobGetString(root, "tool"),
 		Detail:        dtobGetString(root, "detail"),
@@ -165,9 +169,9 @@ const (
 type eventMsg EditEvent
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--collector" {
-		if err := runCollector(context.Background(), sockPath); err != nil {
-			fmt.Fprintln(os.Stderr, "awatch collector:", err)
+	if len(os.Args) == 2 && os.Args[1] == "--analyze" {
+		if err := analyzeStream(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
@@ -585,8 +589,11 @@ func renderLockEvent(ev *EditEvent, lastFile *string, ts, agent string) []string
 		*lastFile = ev.File
 	}
 
+	if ev.Result == "released" {
+		return append(out, fmt.Sprintf("%s %s%s%s", eventTimestamp(ts), colorMagenta, lockDescription(ev), colorReset), "")
+	}
 	if ev.Result == "conflict" {
-		return append(out, renderLockBanner(colorRed, "LOCK CONFLICT", "wants", "blocked by", ev.ConflictAgent, ev, ts, agent)...)
+		return append(out, fmt.Sprintf("%s %s%s%s", eventTimestamp(ts), colorRed, lockDescription(ev), colorReset), "")
 	}
 
 	if ev.Result == "shared" {

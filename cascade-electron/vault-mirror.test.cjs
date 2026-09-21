@@ -33,6 +33,25 @@ test('notifications coalesce, changes during a sync run again, and direction is 
   assert.ok(entry.root.startsWith(path.join(directory, 'mirrors') + path.sep));
 });
 
+test('rclone is rediscovered after installation or a failed launch', {
+  skip: !process.env.FIZZER_RCLONE_BIN,
+}, async t => {
+  const binary = process.env.FIZZER_RCLONE_BIN;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-install-'));
+  const host = new VaultMirrors({ directory });
+  t.after(async () => {
+    process.env.FIZZER_RCLONE_BIN = binary;
+    await host.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  process.env.FIZZER_RCLONE_BIN = path.join(directory, 'not-installed');
+  await assert.rejects(host.start(), /Cannot start rclone.*ENOENT/);
+  process.env.FIZZER_RCLONE_BIN = binary;
+  await host.start();
+  assert.ok(host.child.pid);
+  await host.call('rc/noop', {});
+});
+
 test('real rclone daemon reuses its PID, mirrors same-size edits and deletions, never uploads', {
   skip: !process.env.FIZZER_RCLONE_BIN,
 }, async t => {

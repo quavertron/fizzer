@@ -4,6 +4,9 @@ defmodule Cascade.Alock do
 
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
+  def ensure(vault),
+    do: GenServer.call(__MODULE__, {:endpoint, vault.id, vault.root_path}, 15_000)
+
   def forward(vault, user_id, operation, body) do
     with {:ok, endpoint} <-
            GenServer.call(__MODULE__, {:endpoint, vault.id, vault.root_path}, 15_000) do
@@ -46,6 +49,29 @@ defmodule Cascade.Alock do
   end
 
   @impl true
+  def handle_info({port, {:data, {ending, line}}}, state) when ending in [:eol, :noeol] do
+    case Enum.find(state, fn {_, endpoint} -> endpoint.port == port end) do
+      {id, endpoint} ->
+        data = Map.get(endpoint, :buffer, "") <> line
+
+        if ending == :eol and byte_size(data) <= 1_000_000 do
+          case Jason.decode(data) do
+            {:ok, %{"activity" => event}} when is_map(event) ->
+              Cascade.Activity.publish(id, event)
+
+            _ ->
+              :ok
+          end
+        end
+
+        buffer = if ending == :noeol and byte_size(data) <= 1_000_000, do: data, else: ""
+        {:noreply, Map.put(state, id, Map.put(endpoint, :buffer, buffer))}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({port, {:exit_status, _}}, state) do
     {dead, live} = Enum.split_with(state, fn {_, endpoint} -> endpoint.port == port end)
     Enum.each(dead, fn {_, endpoint} -> File.rm_rf(endpoint.directory) end)
@@ -95,7 +121,8 @@ defmodule Cascade.Alock do
               "127.0.0.1:0",
               "--header-file",
               header,
-              "--control-stdin"
+              "--control-stdin",
+              "--events-stdout"
             ]
           ])
 

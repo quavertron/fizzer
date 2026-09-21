@@ -8,18 +8,9 @@ import (
 // Reuse the same histogram diff as the expanded view, so unchanged context
 // never counts as a change and toggling views never launches a second diff.
 func renderDiffStat(ev *EditEvent) string {
-	var counts smartCounts
-	switch {
-	case len(ev.OldLines) == 0:
-		counts.adds = len(ev.NewLines)
-	case len(ev.NewLines) == 0:
-		counts.dels = len(ev.OldLines)
-	default:
-		ensureGitDiff(ev)
-		if ev.diffErr != "" {
-			return colorYellow + "diff unavailable: " + ev.diffErr + colorReset
-		}
-		counts = classifySmartDiff(ev.diffLines)
+	counts := changeCounts(ev)
+	if ev.diffErr != "" {
+		return colorYellow + "diff unavailable: " + ev.diffErr + colorReset
 	}
 	ev.stats = counts
 	total := counts.adds + counts.moves + counts.mods + counts.dels
@@ -36,6 +27,23 @@ func renderDiffStat(ev *EditEvent) string {
 		}
 	}
 	return fmt.Sprintf("%d %s %s", total, bar.String(), counts.colored(true))
+}
+
+func changeCounts(ev *EditEvent) smartCounts {
+	var counts smartCounts
+	switch {
+	case len(ev.OldLines) == 0:
+		counts.adds = len(ev.NewLines)
+	case len(ev.NewLines) == 0:
+		counts.dels = len(ev.OldLines)
+	default:
+		ensureGitDiff(ev)
+		if ev.diffErr != "" {
+			return counts
+		}
+		counts = classifySmartDiff(ev.diffLines)
+	}
+	return counts
 }
 
 func (s smartCounts) colored(colorNumbers bool) string {

@@ -363,6 +363,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
                     <CascadeRunPanel
                       message={message}
                       onCancelRun={onCancelRun}
+                      canCancel={ownership === 'owned'}
                       forceOpen={selected}
                       onContentGrow={onImageLoad}
                       vaultId={vaultId}
@@ -395,6 +396,7 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   && prev.avatarUrl === next.avatarUrl
   && prev.authorLabel === next.authorLabel
   && prev.ownerLabel === next.ownerLabel
+  && prev.ownership === next.ownership
   && prev.ownerNames === next.ownerNames
   && prev.planUsage === next.planUsage
   && prev.latestRunningMessageId === next.latestRunningMessageId

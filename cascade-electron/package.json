@@ -8,6 +8,8 @@
   "main": "main.cjs",
   "type": "module",
   "scripts": {
+    "prestart": "node ../scripts/build-awatch.mjs",
+    "prestart:watch": "node ../scripts/build-awatch.mjs",
     "start": "electron .",
     "start:watch": "nodemon --watch main.cjs --watch preload.cjs --watch agent-runner.cjs --watch desktop-runner-host.cjs --watch plan-usage.cjs --watch agent-captions.cjs --exec \"electron .\"",
     "package": "electron-forge package",

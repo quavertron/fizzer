@@ -64,6 +64,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
   open,
   onToggle,
   onCancelRun,
+  canCancel,
   onContextMenu,
   onReply,
   selected,
@@ -75,6 +76,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
   open: boolean;
   onToggle: () => void;
   onCancelRun: (runId: number) => void;
+  canCancel: boolean;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
   selected: boolean;
@@ -131,6 +133,7 @@ const WorkTraceLine = memo(function WorkTraceLine({
               <CascadeRunPanel
                 message={message}
                 onCancelRun={onCancelRun}
+                canCancel={canCancel}
                 forceOpen={selected || open}
                 vaultId={vaultId}
                 onHydrateMessage={onHydrateMessage}
@@ -147,6 +150,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   trace,
   selectedMessageId,
   onCancelRun,
+  canCancelMessage,
   onContextMenu,
   onReply,
   vaultId,
@@ -161,6 +165,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
   trace: ChatMessage[];
   selectedMessageId: string | null;
   onCancelRun: (runId: number) => void;
+  canCancelMessage?: (message: ChatMessage) => boolean;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
   vaultId?: string;
@@ -275,6 +280,7 @@ export const ChatWorkTrace = memo(function ChatWorkTrace({
                   open={expandedIds.has(message.id)}
                   onToggle={() => toggleLine(message.id)}
                   onCancelRun={onCancelRun}
+                  canCancel={canCancelMessage?.(message) === true}
                   onContextMenu={onContextMenu}
                   onReply={onReply}
                   selected={selectedMessageId === message.id}

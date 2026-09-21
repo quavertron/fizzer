@@ -131,12 +131,13 @@ test('missing vault reports terminal failure before worker startup', async () =>
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge exit ${bridgeExit}`, async () => {
+for (const bridgeExit of [0, 1, 2, 3]) test(`account run cleans up and reports bridge exit ${bridgeExit}`, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'account-run-'));
   const previousData = process.env.CASCADE_DATA_DIR;
   process.env.CASCADE_DATA_DIR = root;
   const calls = [];
   const concludes = [];
+  let activity, viewerClosed = false;
   function spawn(command, args) {
     calls.push({ command, args });
     const child = new EventEmitter();
@@ -150,7 +151,12 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
     };
     if (command.endsWith('/alock')) {
       child.stdin.on('data', chunk => concludes.push(String(chunk)));
-      setImmediate(() => child.stdout.write('{"ready":true}\n'));
+      setImmediate(() => {
+        if (bridgeExit >= 2) {
+          child.stderr.write(bridgeExit === 2 ? 'usage:\n alock bridge serve --socket <path>\n' : 'alock: unknown command\n');
+          child.kill();
+        } else child.stdout.write('{"ready":true,"session":"own-bridge"}\n');
+      });
     }
     else {
       let input = '';
@@ -159,6 +165,10 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
         assert.equal(JSON.parse(input).opts.runId, 123);
         assert.equal(JSON.parse(input).opts.cwd, fs.realpathSync(root));
         assert.equal(JSON.parse(input).root, fs.realpathSync(root));
+        activity({ events: [
+          { kind: 'edit', agent: 'another-bridge', file: '/private/unrelated', old_lines: [], new_lines: ['secret'] },
+          { kind: 'edit', agent: 'own-bridge', author: 'Codex', file: '/local/test', old_lines: ['before'], new_lines: ['after'] },
+        ] });
         child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
         child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
         child.stdout.write(JSON.stringify({ result: { sessionId: 'test-session' } }) + '\n');
@@ -169,17 +179,31 @@ for (const bridgeExit of [0, 1]) test(`account run cleans up and reports bridge 
   }
   const fakeFs = Object.create(fs);
   fakeFs.existsSync = target => target === '/usr/local/libexec/fizzer/alock' || fs.existsSync(target);
-  const context = { module: { exports: {} }, __dirname, process, setTimeout, clearTimeout,
-    require: name => name === 'node:child_process' ? { spawn, spawnSync: () => ({ stdout: '' }) } : name === 'node:fs' ? fakeFs : require(name) };
+  const context = { module: { exports: {} }, __dirname, process, Buffer, setTimeout, clearTimeout,
+    require: name => name === './awatch.cjs' ? {
+      alockBinary: () => '/test/bundled/alock',
+      createAwatchViewer: callback => { activity = callback; return { close: () => { viewerClosed = true; } }; },
+    } : name === 'node:child_process' ? { spawn, spawnSync: () => ({ stdout: '' }) } : name === 'node:fs' ? fakeFs : require(name) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'agent-account.cjs'), 'utf8'), context);
   try {
     const events = [];
     const completion = context.module.exports.run({ runId: 123, cwd: root, vaultRoot: '/missing-vault', prompt: 'test' }, event => events.push(event), {});
+    if (bridgeExit >= 2) {
+      await assert.rejects(completion, bridgeExit === 2 ? /Installed alock is outdated.*install-agent-writes.sh --update/ : /older alock daemon.*PATH/);
+      assert.equal(calls.length, 1, 'Do not launch the agent with an incompatible bridge');
+      assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
+      return;
+    }
     if (bridgeExit) {
       await assert.rejects(completion, /pending recovery snapshots/);
       assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
     } else assert.equal((await completion).sessionId, 'test-session');
-    assert.equal(calls[0].command, '/usr/local/libexec/fizzer/alock');
+    const edits = events.filter(event => event.type === 'activity').map(event => JSON.parse(event.payload_json));
+    assert.equal(edits.length, 1, 'Only this run’s bridge activity reaches its vault');
+    assert.equal(edits[0].file, '/local/test');
+    assert.equal(edits[0].agent, 'Codex');
+    assert.equal(viewerClosed, true);
+    assert.equal(calls[0].command, '/test/bundled/alock');
     assert.deepEqual(Array.from(calls[0].args.slice(0, 2)), ['account', 'serve']);
     assert.deepEqual(concludes, ['conclude\n', 'conclude\n']);
     assert.equal(calls[0].args[calls[0].args.indexOf('--root') + 1], fs.realpathSync(root));

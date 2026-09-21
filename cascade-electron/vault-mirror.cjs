@@ -16,7 +16,7 @@ function rcloneBinary() {
 
 class VaultMirrors {
   constructor({ directory = process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'),
-    binary = rcloneBinary(), onError = error => console.error('[vault mirror]', error.message) } = {}) {
+    binary, onError = error => console.error('[vault mirror]', error.message) } = {}) {
     this.directory = directory;
     this.binary = binary;
     this.onError = onError;
@@ -39,14 +39,17 @@ class VaultMirrors {
     this.socket = path.join(temporary, 'rc.sock');
     const password = randomBytes(32).toString('hex');
     this.authorization = `Basic ${Buffer.from('fizzer:' + password).toString('base64')}`;
-    const child = spawn(this.binary, ['rcd', '--rc-addr', this.socket, '--config', path.join(temporary, 'rclone.conf'),
+    // Setup may install the helper after this host was created. Resolve again
+    // on each launch/retry rather than retaining a pre-install PATH fallback.
+    const binary = this.binary || rcloneBinary();
+    const child = spawn(binary, ['rcd', '--rc-addr', this.socket, '--config', path.join(temporary, 'rclone.conf'),
       '--cache-dir', path.join(temporary, 'cache'), '--log-level', 'ERROR'], {
       stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...process.env, RCLONE_RC_USER: 'fizzer', RCLONE_RC_PASS: password },
     });
     this.child = child;
     let failure;
-    child.on('error', () => { failure = new Error('Cannot start rclone; install rclone or set FIZZER_RCLONE_BIN.'); });
+    child.on('error', error => { failure = new Error(`Cannot start rclone at ${binary} (${error.code || 'spawn failed'}); install rclone or set FIZZER_RCLONE_BIN.`); });
     child.stderr.resume(); // Never print daemon diagnostics that may contain remote credentials.
     child.once('exit', () => {
       failure = new Error('rclone daemon stopped');

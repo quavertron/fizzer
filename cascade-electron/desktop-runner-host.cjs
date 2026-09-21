@@ -209,7 +209,7 @@ async function ensureHelperProxy(remoteBase) {
  * Kept name `connectDesktopRunner` for existing IPC callers.
  * Starts the Chromium-backed loopback proxy when the remote API is HTTPS.
  */
-async function connectDesktopRunner(token, nextApiBase) {
+async function connectDesktopRunner(token, nextApiBase, writeToken = '') {
   const authToken = String(token || '').trim();
   if (!authToken) {
     await disconnectDesktopRunner();
@@ -232,7 +232,7 @@ async function connectDesktopRunner(token, nextApiBase) {
     helperUrl = nextBase;
   }
 
-  setNoteApiConfig({ url: helperUrl, token: authToken, origin: nextBase });
+  setNoteApiConfig({ url: helperUrl, token: authToken, origin: nextBase, writeToken });
   // Explicit local opt-in; never add browser-CSRF privilege to the TCP proxy.
   if (process.env.FIZZER_LOCAL_AGENT_SETUP === '1' && nextBase === 'https://cscd.online' && !localAgentSetup) {
     try {

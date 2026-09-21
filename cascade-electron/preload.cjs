@@ -16,6 +16,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose safe IPC methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
+  analyzeAwatch: input => ipcRenderer.invoke('awatch:analyze', input),
   ...(process.platform !== 'win32' ? { showAgentAccountSetup: () => ipcRenderer.invoke('agent:showAccountSetup') } : {}),
   // ── Windows ─────────────────────────────────────────────────
   /**

@@ -15,6 +15,7 @@
 typedef struct {
     int      id;
     char     agent[128];
+    char     display_agent[128];
     char     file[4096];
     off_t    byte_start;
     size_t   length;
@@ -29,6 +30,7 @@ typedef struct {
     Lock  entries[MAX_LOCKS];
     int   count;
     int   next_id;
+    void (*on_release)(const Lock *);
 } LockTable;
 
 void locktable_init(LockTable *lt);
@@ -63,5 +65,7 @@ int lines_to_bytes(const char *file, uint32_t line_start, uint32_t line_end,
 
 /* find lock by id */
 Lock *lock_find(LockTable *lt, int lock_id);
+void lock_release_id(LockTable *lt, int id);
+Lock *lock_blocker(LockTable *lt, const char *agent, const char *file, off_t start, size_t length);
 
 #endif /* LOCK_H */

@@ -63,6 +63,9 @@ function sanitizeRestoredTabs(value: unknown): Tab[] {
       if (tab.type === 'new') {
         return { id: tab.id, title: 'New tab', type: 'new', dirty: false };
       }
+      if (tab.type === 'awatch') {
+        return { id: tab.id, title: 'Awatch', type: 'awatch', dirty: false };
+      }
       return null;
     })
     .filter((tab): tab is Tab => Boolean(tab));

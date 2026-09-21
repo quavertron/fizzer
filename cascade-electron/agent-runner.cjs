@@ -187,8 +187,9 @@ function chatTriggeringMessageId(opts) {
 }
 
 /** Set the live API target/token the wrapper should use (call on runner connect). */
-function setNoteApiConfig({ url, token, origin } = {}) {
+function setNoteApiConfig({ url, token, origin, writeToken = '' } = {}) {
   noteApi.origin = origin || url;
+  noteApi.writeToken = writeToken;
   if (typeof url === 'string') {
     noteApi.url = url.trim().replace(/\/$/, '');
     noteApi.configured = true;
@@ -922,6 +923,23 @@ async function runClaudeLocally(opts, emit) {
  * Resolves when the run finishes (success or failure).
  */
 async function startLocalAgentRun(opts, sendEvent) {
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD === '1' || agentAccount.enabled()) {
+    return runLocalAgent(opts, sendEvent);
+  }
+  let seq = 0;
+  const send = event => sendEvent({ ...event, seq: ++seq });
+  const viewer = require('./awatch.cjs').createAwatchViewer(message => {
+    for (const event of message.events || []) {
+      if (event.kind === 'tool' && event.run_id === String(opts.runId)) {
+        send({ runId: Number(opts.runId), type: 'activity', payload_json: JSON.stringify(event) });
+      }
+    }
+  }, { batchMs: 0 });
+  try { return await runLocalAgent(opts, send); }
+  finally { viewer.close(); }
+}
+
+async function runLocalAgent(opts, sendEvent) {
   if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.enabled()) {
     return agentAccount.run(opts, sendEvent, noteApi);
   }
@@ -1007,7 +1025,7 @@ async function startLocalAgentRun(opts, sendEvent) {
     const { runCliAgent } = cliModule;
     activeCliAgentModules.set(runId, cliModule);
     const selfContained = opts.contextMode === 'self-contained';
-    const helperEnv = selfContained ? {} : buildRunHelperEnv(opts);
+    const helperEnv = { ...(selfContained ? {} : buildRunHelperEnv(opts)), CASCADE_RUN_ID: String(opts.runId) };
     const cwd = resolveAgentCwd(opts.cwd, opts.vaultRoot);
     const env = { ...process.env, ...helperEnv };
 

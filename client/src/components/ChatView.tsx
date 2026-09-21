@@ -1058,6 +1058,7 @@ export const ChatView = memo(function ChatView({
                   const workTrace = (
                     <ChatWorkTrace
                       trace={segment.trace}
+                      canCancelMessage={message => agentOwnership(getMessageOwner(message), currentUser, currentUserId) === 'owned'}
                       selectedMessageId={traceSelected ? selectedMessageId : null}
                       onCancelRun={onCancelRun}
                       onContextMenu={openMessageContextMenu}

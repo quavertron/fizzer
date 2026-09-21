@@ -12,7 +12,7 @@
 
 import { Fragment, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles } from 'lucide-react';
+import { FileText, ExternalLink, X, Hash, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Activity } from 'lucide-react';
 import type { Tab } from './TabBar';
 import { NOTE_DND_TYPE } from '../docEmbeds';
 import { usePopupMenu } from '../ui/popupMenu';
@@ -51,6 +51,7 @@ interface PaneGridProps {
   onCreateTab?: (paneId: string) => void;
   onCreateChat?: (paneId: string) => void;
   onOpenSuperkanban?: (paneId: string) => void;
+  onOpenAwatch?: (paneId: string) => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   /** Only the first (top-left) pane owns the global sidebar toggle. */
@@ -108,6 +109,7 @@ function sideFromPosition(rect: DOMRect, clientX: number, clientY: number): Drop
 }
 
 function TabIcon({ type }: { type: Tab['type'] }) {
+  if (type === 'awatch') return <Activity size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   if (type === 'chat') return <Hash size={13} className="text-secondary" style={{ marginRight: 6 }} />;
   if (type === 'superkanban') return <LayoutDashboard size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
   if (type === 'new') return <Sparkles size={13} className="text-tertiary" style={{ marginRight: 6 }} />;
@@ -128,6 +130,7 @@ function PaneTabStrip({
   onCreateNote,
   onCreateChat,
   onOpenSuperkanban,
+  onOpenAwatch,
   onPopOut,
   onDetachTab,
   sidebarOpen,
@@ -146,6 +149,7 @@ function PaneTabStrip({
   onCreateNote?: (paneId: string) => void;
   onCreateChat?: (paneId: string) => void;
   onOpenSuperkanban?: (paneId: string) => void;
+  onOpenAwatch?: (paneId: string) => void;
   onPopOut?: (tabId: string) => void;
   onDetachTab?: (tabId: string, screenX: number, screenY: number) => void;
   sidebarOpen: boolean;
@@ -376,6 +380,9 @@ function PaneTabStrip({
             contextMenu.kind === 'new' && onOpenSuperkanban
               ? { icon: <LayoutDashboard size={13} />, label: 'Superkanban', action: () => onOpenSuperkanban(pane.id) }
               : null,
+            contextMenu.kind === 'new' && onOpenAwatch
+              ? { icon: <Activity size={13} />, label: 'Awatch', action: () => onOpenAwatch(pane.id) }
+              : null,
             contextMenu.kind === 'tab' && onPopOut
               ? { icon: <ExternalLink size={13} />, label: 'Pop out', action: () => onPopOut(contextMenu.tabId) }
               : null,
@@ -424,6 +431,7 @@ function Pane({
   onCreateNote,
   onCreateChat,
   onOpenSuperkanban,
+  onOpenAwatch,
   onPopOut,
   onDetachTab,
   sidebarOpen,
@@ -498,6 +506,7 @@ function Pane({
         onCreateNote={onCreateNote}
         onCreateChat={onCreateChat}
         onOpenSuperkanban={onOpenSuperkanban}
+        onOpenAwatch={onOpenAwatch}
         onPopOut={onPopOut}
         onDetachTab={onDetachTab}
         sidebarOpen={sidebarOpen}

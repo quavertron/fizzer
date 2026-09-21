@@ -17,6 +17,7 @@
 #include <poll.h>
 
 static volatile sig_atomic_t account_stopping;
+int account_activity_connect(void) { return ipc_connect(ALOCK_SOCK_PATH); }
 static void account_signal(int signo) { (void)signo; account_stopping = 1; }
 void account_signals(void) { signal(SIGINT, account_signal); signal(SIGTERM, account_signal); signal(SIGPIPE, SIG_IGN); }
 int account_stopped(void) { return account_stopping != 0; }
@@ -148,10 +149,11 @@ void account_put(DtobValue *value, const char *key, DtobValue *replacement) {
     }
     dtob_kvset_put(value, key, replacement);
 }
-int account_lock(LockTable *lt, const char *agent, const char *path, AccountRange *range) {
+int account_lock(LockTable *lt, const char *agent, const char *path, AccountRange *range, const char *author) {
     int id = lock_acquire(lt, agent, path, (off_t)range->start, (size_t)range->length, range->line_start, range->line_end);
     Lock *lock = lock_find(lt, id);
     if (lock) lock->ttl_seconds = 0; /* Rust owns turn and monotonic lease policy. */
+    if (lock) snprintf(lock->display_agent, sizeof(lock->display_agent), "%s", author);
     return id;
 }
 int account_lock_get(LockTable *lt, int id, AccountRange *range) {
@@ -161,8 +163,14 @@ int account_lock_get(LockTable *lt, int id, AccountRange *range) {
     return 1;
 }
 void account_unlock(LockTable *lt, int id) {
-    Lock *lock = lock_find(lt, id);
-    if (lock) { lock->active = 0; lt->count--; }
+    lock_release_id(lt, id);
+}
+int account_blocker(LockTable *lt, const char *agent, const char *path, AccountRange *range, char *owner) {
+    Lock *lock = lock_blocker(lt, agent, path, (off_t)range->start, (size_t)range->length);
+    if (!lock) return 0;
+    memcpy(owner, lock->agent, sizeof(lock->agent));
+    *range = (AccountRange){(uint64_t)lock->byte_start, lock->length, lock->line_start, lock->line_end};
+    return lock->id;
 }
 void account_adjust(LockTable *lt, int id, const char *path, size_t size, int64_t lines) {
     Lock *lock = lock_find(lt, id);

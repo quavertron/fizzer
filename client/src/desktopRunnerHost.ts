@@ -67,8 +67,8 @@ const RUN_HEARTBEAT_MS = 15_000;
 
 export const DESKTOP_RUNNER_SOCKET_OPTIONS = {
   forceNew: true,
-  transports: ['polling'] as Array<'polling'>,
-  upgrade: false,
+  transports: ['websocket', 'polling'] as Array<'websocket' | 'polling'>,
+  tryAllTransports: true,
 };
 
 let socket: Socket | null = null;
@@ -475,11 +475,9 @@ function connectDesktopRunnerSocket(token: string, nextApiBase: string, socketAu
   socket = io(`${apiBase}/runners`, {
     withCredentials: true,
     ...(socketAuthToken ? { auth: { token: socketAuthToken } } : {}),
-    // Keep the runner on its own polling manager. Sharing the renderer's
-    // manager lets a trace-room reconnect take the runner down with it, and
-    // some residential middleboxes accept a WebSocket upgrade only to reap it
-    // at the first idle heartbeat. Polling is the proven Chromium transport on
-    // those networks and is low-volume in the server-to-runner direction.
+    // Keep runner reconnects independent of trace rooms. Prefer a direct
+    // WebSocket so long polls cannot hold up delivery in the HTTP connection
+    // pool; retain polling for networks that reject WebSockets.
     ...DESKTOP_RUNNER_SOCKET_OPTIONS,
     reconnection: true,
     reconnectionAttempts: Infinity,

@@ -285,7 +285,8 @@ function instanceSession(origin) {
           const url = new URL(request.url);
           const bundledAsset = request.method === 'GET' && url.origin === selectedOrigin
             && url.origin !== embeddedBackend.origin
-            && (url.pathname === '/app' || url.pathname.startsWith('/assets/') || url.pathname === '/gem.svg');
+            && (url.pathname === '/app' || /^\/vault\/[a-f0-9]{8}$/i.test(url.pathname)
+              || url.pathname.startsWith('/assets/') || url.pathname === '/gem.svg');
           return selected.fetch(bundledAsset ? `${embeddedBackend.origin}${url.pathname}${url.search}` : request,
             { bypassCustomProtocolHandlers: true });
         });
@@ -429,7 +430,8 @@ function createWindow() {
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       session: instanceSession(INSTANCE_ORIGIN),
-      backgroundThrottling: true,
+      // This renderer delivers runner commands and events even when unfocused.
+      backgroundThrottling: false,
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs')
@@ -476,7 +478,7 @@ function createPaneWindow(descriptor, bounds) {
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       session: instanceSession(INSTANCE_ORIGIN),
-      backgroundThrottling: true,
+      backgroundThrottling: false,
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs')
@@ -569,6 +571,12 @@ ipcMain.handle('window:mergeTab', async (event, { tab, screenX, screenY }) => {
 
 /** Run a CLI agent (Grok, Codex, etc.) on this machine instead of the remote server. */
 const localAgentRunPromises = new Map();
+ipcMain.handle('awatch:analyze', (event, input) => {
+  if (event.senderFrame !== event.sender.mainFrame || !BrowserWindow.fromWebContents(event.sender)) throw new Error('Unavailable outside the app window');
+  return require('./awatch-engine.cjs').analyze(input);
+});
+app.on('will-quit', () => require('./awatch-engine.cjs').stop());
+
 ipcMain.handle('agent:start', async (event, opts) => {
   try {
     const runId = Number(opts?.runId);
@@ -633,12 +641,20 @@ ipcMain.handle('agent:acknowledge', async (_event, { instanceId, seq } = {}) => 
 ));
 
 /** Configure helper env for local agent children (renderer owns /runners socket). */
-ipcMain.handle('runner:setToken', async (_event, { token, apiUrl } = {}) => {
+ipcMain.handle('runner:setToken', async (event, { token, apiUrl } = {}) => {
   try {
+    if (event.senderFrame !== event.sender.mainFrame || !isSameOrigin(event.senderFrame.url, INSTANCE_ORIGIN)) {
+      throw new Error('Runner setup is only available in the selected app window');
+    }
     if (!isSameOrigin(apiUrl, INSTANCE_ORIGIN)) {
       throw new Error('Runner origin does not match the desktop instance selected at startup');
     }
-    return connectDesktopRunner(token, INSTANCE_ORIGIN);
+    // The renderer supplies a restricted helper token. The human-side file
+    // broker needs the user session, which must never cross into the worker.
+    const cookies = await instanceSession(INSTANCE_ORIGIN).cookies.get({ url: INSTANCE_ORIGIN });
+    const cookieName = INSTANCE_ORIGIN.startsWith('https:') ? '__Host-cascade_session' : 'cascade_session';
+    const writeToken = cookies.find(cookie => cookie.name === cookieName)?.value || '';
+    return connectDesktopRunner(token, INSTANCE_ORIGIN, writeToken);
   } catch (error) {
     console.error('[IPC] Failed to configure desktop runner:', error);
     return { success: false, error: error.message };

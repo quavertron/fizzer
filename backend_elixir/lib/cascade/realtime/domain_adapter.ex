@@ -52,6 +52,28 @@ defmodule Cascade.Realtime.DomainAdapter do
       else: {:error, "Vault not found"}
   end
 
+  def handle_event("/vault", "awatch:replay", [vault_id, cursor], identity, _context)
+      when is_binary(vault_id) and is_map(cursor) do
+    if Cascade.Activity.allowed?(vault_id, identity.id) do
+      vault = Cascade.Content.Store.get_vault(vault_id, identity.id)
+
+      status =
+        case Cascade.Alock.ensure(vault) do
+          {:ok, _} -> ""
+          _ -> "Server activity is unavailable; check the installed alock daemon."
+        end
+
+      packet = Map.put(Cascade.Activity.replay(vault_id, cursor), :status, status)
+      {:ok, [{:emit, "vault:activity", [packet]}]}
+    else
+      {:ok,
+       [
+         {:emit, "vault:activity",
+          [%{vaultId: vault_id, events: [], status: "Vault write access required"}]}
+       ]}
+    end
+  end
+
   def handle_event("/vault", "leaveVault", [vault_id], _identity, _context)
       when is_binary(vault_id),
       do: {:ok, [{:leave, "vault:#{vault_id}"}]}
@@ -116,10 +138,20 @@ defmodule Cascade.Realtime.DomainAdapter do
          type when is_binary(type) and type != "" <- field(data, :type),
          true <-
            RunnerLifecycle.accept_event?(run_id, identity.id) or
-             (terminal_event?(type, payload) and Store.owned?(run_id, identity.id)) do
+             ((terminal_event?(type, payload) or type == "activity") and Store.owned?(run_id, identity.id)) do
       Store.acknowledge_delivery(run_id)
 
       cond do
+        type == "activity" and is_map(payload) ->
+          case Store.get(run_id) do
+            %{vault_id: vault_id} when is_binary(vault_id) ->
+              if payload["kind"] in ["tool", "edit", "lock"] and Cascade.Activity.allowed?(vault_id, identity.id),
+                do: Cascade.Activity.publish(vault_id, payload)
+
+            _ ->
+              :ok
+          end
+
         terminal_event?(type, payload) ->
           settle_runner_event(run_id, payload, identity.id)
 

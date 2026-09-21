@@ -116,26 +116,43 @@ function launchArguments(node, worker, socket) {
 }
 async function startBridge(root, directory, index = 0, remote) {
   if (!fs.existsSync(installedAlock)) throw new Error('Agent write setup is incomplete: rerun the installer.');
+  const bridgeBinary = require('./awatch.cjs').alockBinary();
   const socket = path.join(directory, `socket-${index}`);
   const args = ['account', 'serve', '--root', root, '--user', 'fizzer', '--socket', socket, '--control-stdin'];
   if (remote) args.push('--remote-url', remote.url, '--header-file', remote.header);
-  const child = spawn(installedAlock, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(bridgeBinary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdin.on('error', () => {});
   let errors = '';
   child.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4000); });
-  await new Promise((resolve, reject) => {
+  const session = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { child.kill(); reject(new Error('Agent write bridge startup timed out.')); }, 10000);
     const failed = error => { clearTimeout(timer); reject(error); };
     child.once('error', failed);
-    child.once('exit', code => failed(new Error(`Agent write bridge exited (${code}): ${errors}`)));
+    child.once('exit', code => {
+      if (code === 2 && errors.includes('alock bridge serve') && !errors.includes('alock account serve')) {
+        failed(new Error(`Installed alock is outdated (${installedAlock}): this Fizzer version requires account/HTTP support. Update the native helper bundle using install-agent-writes.sh --update, then retry the run.`));
+      } else if (errors.includes('alock: unknown command')) {
+        failed(new Error('An older alock daemon is still running. Update older alock copies on PATH, finish active edits, and allow the idle daemon to exit before retrying. The installed account bridge cannot use the older daemon.'));
+      } else failed(new Error(`Agent write bridge exited (${code}): ${errors}`));
+    });
+    let buffer = '';
     child.stdout.on('data', chunk => {
-      if (String(chunk).includes('"ready":true')) { clearTimeout(timer); resolve(); }
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        try {
+          const message = JSON.parse(line);
+          if (message.ready) { clearTimeout(timer); resolve(message.session); }
+        } catch {}
+      }
     });
   });
-  return { child, socket, error: () => errors };
+  return { child, socket, session, error: () => errors };
 }
 async function run(opts, sendEvent, api) {
-  let directory, worker, contextApi;
+  let directory, worker, contextApi, activityViewer;
   const bridges = [];
   const record = { child: null, canceled: false };
   let sequence = 0, terminalStatus = false;
@@ -158,15 +175,31 @@ async function run(opts, sendEvent, api) {
     if (api?.url && api?.token && opts.vaultId &&
         (opts.remoteVault === true || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(api.origin || api.url).hostname))) {
       const mirrorHost = require('./vault-mirror.cjs').mirrors();
-      const mirror = mirrorHost.watch({ origin: api.origin || api.url, token: api.token, vaultId: opts.vaultId });
+      const writeToken = api.writeToken || api.token;
+      const mirror = mirrorHost.watch({ origin: api.origin || api.url, token: writeToken, vaultId: opts.vaultId });
       await mirrorHost.reconcile(mirror);
       const header = path.join(directory, 'remote-authorization');
-      fs.writeFileSync(header, `Authorization: Bearer ${api.token}\n`, { mode: 0o600, flag: 'wx' });
+      fs.writeFileSync(header, `Authorization: Bearer ${writeToken}\n`, { mode: 0o600, flag: 'wx' });
       const url = `${new URL(api.url).origin}/api/vaults/${encodeURIComponent(opts.vaultId)}/alock`;
       bridges.push({ ...await startBridge(root, directory, bridges.length, { url, header }),
         root: 'remote-vault', remote: true, vaultId: opts.vaultId, mirrorRoot: mirror.root });
     }
     const bridge = bridges[0];
+    const sessions = new Set(bridges.filter(item => !item.remote && item.session).map(item => item.session));
+    activityViewer = require('./awatch.cjs').createAwatchViewer(message => {
+      for (const event of message.events || []) {
+        if (!sessions.has(event.agent) || !['edit', 'lock'].includes(event.kind)) continue;
+        const payload = { ...event, agent: event.author || opts.chatAuthor || opts.agent };
+        for (const key of ['old_lines', 'new_lines']) {
+          if (!Array.isArray(payload[key])) continue;
+          let bytes = 0;
+          payload[key] = payload[key].filter(line => (bytes += Buffer.byteLength(line) + 1) <= 32768);
+          if (payload[key].length < event[key].length) payload.truncated = true;
+        }
+        sendEvent({ runId: Number(opts.runId), seq: ++sequence, type: 'activity', payload_json: JSON.stringify(payload) });
+      }
+    }, { batchMs: 0, tail: true });
+    await activityViewer.ready;
     contextApi = await startReadOnlyApi(api, opts.vaultId);
     // The worker is plain Node code. Do not pass Electron's process.execPath
     // through sudo: Electron then tries to resolve default_app.asar and fails
@@ -195,7 +228,7 @@ async function run(opts, sendEvent, api) {
               terminalStatus = true;
             }
           }
-          sendEvent(message.event);
+          sendEvent({ ...message.event, seq: ++sequence });
         }
         if (message.result) result = message.result;
         if (message.error) failure = message.error;
@@ -229,6 +262,7 @@ async function run(opts, sendEvent, api) {
       const timer = setTimeout(() => { bridge.child.kill('SIGKILL'); resolve(); }, 30000);
       bridge.child.once('exit', () => { clearTimeout(timer); resolve(); });
     });
+    activityViewer?.close();
     if (directory) fs.rmSync(directory, { recursive: true, force: true });
     const failedBridge = bridges.find(bridge => bridge.child.exitCode !== 0);
     if (failedBridge) {

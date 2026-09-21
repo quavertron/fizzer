@@ -16,6 +16,7 @@ defmodule Cascade.Application do
         Cascade.Realtime.VerifiedTokenCache,
         Cascade.Realtime.AuthBatcher,
         CascadeWeb.RateLimiter,
+        Cascade.Activity,
         Cascade.Alock,
         Cascade.Chat.Voice
       ] ++

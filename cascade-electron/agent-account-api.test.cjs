@@ -10,9 +10,10 @@ test('agent context proxy keeps owner token private and rejects API writes and o
     res.setHeader('content-type', 'application/json'); res.end('{"messages":[]}');
   });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
-  const proxy = await startReadOnlyApi({ url: `http://127.0.0.1:${upstream.address().port}`, token: 'owner-secret' }, 'vault-a');
+  const proxy = await startReadOnlyApi({ url: `http://127.0.0.1:${upstream.address().port}`, token: 'owner-secret', writeToken: 'human-write-secret' }, 'vault-a');
   try {
     assert.notEqual(proxy.config.token, 'owner-secret');
+    assert.equal(JSON.stringify(proxy.config).includes('human-write-secret'), false);
     const headers = { authorization: `Bearer ${proxy.config.token}` };
     assert.equal((await fetch(proxy.config.url + '/api/vaults/vault-a/channels', { headers })).status, 200);
     for (const [method, route] of [['POST', '/api/vaults/vault-a/notes'], ['GET', '/api/vaults/vault-b/channels'], ['GET', '/api/auth/session']]) {

@@ -16,6 +16,14 @@ function fixture() {
 }
 
 describe('workspace authority', () => {
+  it('restores an Awatch tab inside a split pane', () => {
+    const store = fixture();
+    store.openTab({ id: 'awatch:one', title: 'Awatch', type: 'awatch' });
+    store.set('layout', Layout.splitPaneWithTab(store.active.layout, store.focusedPane.id, 'right', 'awatch:one'));
+    const restored = restorePersistedSession(workspaceSession(store.activeVaultId, store.workspaces, {}));
+    expect(restored.openTabs.some(tab => tab.type === 'awatch')).toBe(true);
+    expect(Layout.getAllPanes(restored.layout)).toHaveLength(2);
+  });
   it('targets the original vault and preserves newer edits on save completion', () => {
     const store = fixture();
     store.set('noteContents', { note: { note: note('saved'), draft: 'newer' } });

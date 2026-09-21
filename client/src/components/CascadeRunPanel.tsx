@@ -496,6 +496,7 @@ function StopRunButton({
 export const CascadeRunPanel = memo(function CascadeRunPanel({
   message,
   onCancelRun,
+  canCancel = false,
   forceOpen = false,
   onContentGrow,
   vaultId,
@@ -503,6 +504,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
 }: {
   message: ChatMessage;
   onCancelRun: (runId: number) => void;
+  canCancel?: boolean;
   forceOpen?: boolean;
   /** Notify parent (main chat scroller) when harness content height grows. */
   onContentGrow?: () => void;
@@ -640,7 +642,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="crp-header">
-        {canStopQueued && (
+        {canCancel && canStopQueued && (
           <StopRunButton key={message.id} onStop={async () => {
             if (message.runId != null) return onCancelRun(message.runId);
             await api(`/api/vaults/${vaultId}/channels/${message.channelId}/messages/${encodeURIComponent(message.id)}?queuedOnly=true`, { method: 'DELETE' });
@@ -689,7 +691,7 @@ export const CascadeRunPanel = memo(function CascadeRunPanel({
           {(isRunning || isQueued) && <ThinkingSpinner className="crp-spinner" title={isQueued ? 'Queued' : 'Working'} />}
           {canExpand && <ChevronRight size={13} className="crp-chevron" />}
         </button>
-        {isRunning && message.runId != null && (
+        {canCancel && isRunning && message.runId != null && (
           <StopRunButton key={message.runId} onStop={() => onCancelRun(message.runId!)} />
         )}
       </div>

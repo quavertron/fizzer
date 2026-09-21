@@ -13,6 +13,14 @@ defmodule Cascade.Realtime.RunReceiptsTest do
     Map.put(ctx, :run, run)
   end
 
+  test "owner can forward final lock cleanup after run settlement", ctx do
+    terminal(ctx)
+    data = %{runId: ctx.run.id, type: "activity", payload: %{"kind" => "lock", "result" => "released", "file" => "note", "agent" => "Codex"}}
+    assert {:error, _} = DomainAdapter.handle_event("/runners", "runner:runEvent", [data], %{id: ctx.user_id + 1}, %{})
+    assert {:ok, _} = DomainAdapter.handle_event("/runners", "runner:runEvent", [data], %{id: ctx.user_id}, %{})
+    assert Enum.any?(Cascade.Activity.replay(ctx.vault_id, %{}).events, &(&1["result"] == "released"))
+  end
+
   defp terminal(ctx, status \\ "completed") do
     DomainAdapter.handle_event(
       "/runners",

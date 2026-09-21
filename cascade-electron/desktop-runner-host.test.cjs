@@ -13,12 +13,13 @@ test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes
   const load = Module._load;
   const previous = process.env.FIZZER_LOCAL_AGENT_SETUP;
   let headers;
+  let helperConfig;
   os.homedir = () => directory;
   Module._load = function (name, ...args) {
     if (name === 'electron') return { net: { fetch: async (_url, init) => {
       headers = init.headers; return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
     } } };
-    if (name === './agent-runner.cjs') return { setNoteApiConfig() {} };
+    if (name === './agent-runner.cjs') return { setNoteApiConfig(config) { helperConfig = config; } };
     return load.call(this, name, ...args);
   };
   t.after(() => { Module._load = load; os.homedir = realHome;
@@ -27,7 +28,9 @@ test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes
   t.after(() => host.disconnectDesktopRunner());
   const endpoint = path.join(directory, '.cascade', 'agent-setup', 'setup.sock');
   delete process.env.FIZZER_LOCAL_AGENT_SETUP;
-  await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
+  await host.connectDesktopRunner('fixture-only', 'https://cscd.online', 'human-session');
+  assert.equal(helperConfig.token, 'fixture-only');
+  assert.equal(helperConfig.writeToken, 'human-session');
   assert.equal(fs.existsSync(endpoint), false);
   process.env.FIZZER_LOCAL_AGENT_SETUP = '1';
   await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
@@ -41,5 +44,7 @@ test('host opt-in lifecycle leaves TCP proxy CSRF allowlist unchanged and closes
   await host.connectDesktopRunner('fixture-only', 'https://cscd.online');
   assert.equal(fs.existsSync(endpoint), true);
   await host.disconnectDesktopRunner();
+  assert.equal(helperConfig.token, '');
+  assert.equal(helperConfig.writeToken, undefined);
   assert.equal(fs.existsSync(endpoint), false);
 });

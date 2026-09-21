@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+mod activity;
 mod transport;
 
 type Value = c_void;
@@ -41,8 +42,10 @@ extern "C" {
         agent: *const c_char,
         path: *const c_char,
         range: *const Range,
+        author: *const c_char,
     ) -> c_int;
     fn account_lock_get(lt: *mut Locks, id: c_int, range: *mut Range) -> c_int;
+    fn account_blocker(lt: *mut Locks, agent: *const c_char, path: *const c_char, range: *mut Range, owner: *mut c_char) -> c_int;
     fn account_unlock(lt: *mut Locks, id: c_int);
     fn account_adjust(lt: *mut Locks, id: c_int, path: *const c_char, size: usize, lines: i64);
     fn account_random(bytes: *mut u8, size: usize) -> c_int;
@@ -62,6 +65,7 @@ extern "C" {
     ) -> c_int;
     fn account_notify(
         path: *const c_char,
+        session: *const c_char,
         start: u32,
         end: u32,
         author: *const c_char,
@@ -74,6 +78,14 @@ extern "C" {
     fn account_safe(path: *const c_char) -> c_int;
 }
 const LIMIT: usize = 4 * 1024 * 1024;
+fn activity(kind: &str, path: &str, author: &str, start: u64, end: u64) -> serde_json::Value {
+    serde_json::json!({
+        "id": token().unwrap_or_default(), "kind": kind, "file": path,
+        "agent": author, "author": author, "line_start": start, "line_end": end,
+        "timestamp": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_secs()
+    })
+}
 type Result<T> = std::result::Result<T, (u64, String)>;
 fn err<T>(status: u64, message: &str) -> Result<T> {
     Err((status, message.into()))
@@ -233,6 +245,7 @@ struct FileState {
 }
 struct Proposal {
     session: String,
+    author: String,
     path: String,
     lock: i32,
     base: Vec<u8>,
@@ -247,6 +260,14 @@ struct Controller {
     proposals: HashMap<String, Proposal>,
 }
 impl Controller {
+    fn blocker(&self, lt: *mut Locks, session: &str, path: &str, mut range: Range) -> Option<(String, Range)> {
+        let mut owner = [0 as c_char; 128];
+        let id = unsafe { account_blocker(lt, c(session).as_ptr(), c(path).as_ptr(), &mut range, owner.as_mut_ptr()) };
+        if id == 0 { return None; }
+        let name = self.proposals.values().find(|p| p.lock == id).map(|p| p.author.clone())
+            .unwrap_or_else(|| unsafe { CStr::from_ptr(owner.as_ptr()) }.to_string_lossy().into_owned());
+        Some((name, range))
+    }
     fn checkpoint(&mut self, path: &str, current: &[u8]) -> Result<()> {
         let Some(pending) = self.files.get(path).and_then(|f| f.pending.as_ref()) else {
             return Ok(());
@@ -353,6 +374,7 @@ impl Controller {
         session: &str,
         path: &str,
         baseline_hash: &str,
+        author: &str,
         ls: u64,
         le: u64,
         ttl: u64,
@@ -371,9 +393,12 @@ impl Controller {
         }
         let range = range(&current.data, ls, le)?;
         let ticket = token()?;
-        let lock = unsafe { account_lock(lt, c(session).as_ptr(), c(path).as_ptr(), &range) };
+        let lock = unsafe { account_lock(lt, c(session).as_ptr(), c(path).as_ptr(), &range, c(author).as_ptr()) };
         if lock < 0 {
-            return err(409, "Another agent holds a lock on this range");
+            if let Some((owner, held)) = self.blocker(lt, session, path, range) {
+                return err(409, &format!("{} holds a lock on range {}–{}", owner, held.line_start, held.line_end));
+            }
+            return err(503, "Lock table capacity reached");
         }
         let concurrent = self
             .files
@@ -405,6 +430,7 @@ impl Controller {
             ticket.clone(),
             Proposal {
                 session: session.into(),
+                author: author.into(),
                 path: path.into(),
                 lock,
                 base: current.data,
@@ -440,6 +466,13 @@ impl Controller {
         }
         self.sessions.insert(session.clone(), Instant::now());
         match operation.as_str() {
+            "activity" => {
+                let raw = bytes(req, "event", 16384)?;
+                let root = text(req, "activity_root", 4095)?;
+                let event = activity::tool(&raw, Some(&root))?;
+                activity::publish(event);
+                return Ok(ok());
+            }
             "heartbeat" => return Ok(ok()),
             "conclude" => {
                 self.conclude(&session, lt)?;
@@ -463,16 +496,56 @@ impl Controller {
             if number(req, "remote") != 0 && sha.is_empty() {
                 return err(400, "Remote locks require content SHA-256");
             }
-            let ticket = self.acquire(
+            let concurrent = self
+                .files
+                .get(&path)
+                .is_some_and(|file| file.members.iter().any(|member| member != &session));
+            let acquired = self.acquire(
                 &session,
                 &path,
                 &sha,
+                &author,
                 number(req, "line_start"),
                 number(req, "line_end"),
                 number(req, "persistent_seconds"),
                 lt,
-            )?;
-            return Ok(self.proposal_response(&ticket));
+            );
+            let mut event = activity(
+                "lock",
+                &path,
+                &author,
+                number(req, "line_start"),
+                number(req, "line_end"),
+            );
+            event["agent"] = serde_json::json!(session);
+            let response = match acquired {
+                Ok(ticket) => {
+                    event["result"] =
+                        serde_json::json!(if concurrent { "shared" } else { "granted" });
+                    self.proposal_response(&ticket)
+                }
+                Err((status, message)) => {
+                    event["result"] = serde_json::json!(if message.contains(" holds a lock on range ")
+                    {
+                        "conflict"
+                    } else {
+                        "rejected"
+                    });
+                    event["detail"] = serde_json::json!(message);
+                    if let Ok(current) = read(&path) {
+                        if let Ok(requested) = range(&current.data, number(req, "line_start"), number(req, "line_end")) {
+                            if let Some((owner, held)) = self.blocker(lt, &session, &path, requested) {
+                                event["conflict_agent"] = serde_json::json!(owner);
+                                event["conflict_line_start"] = serde_json::json!(held.line_start);
+                                event["conflict_line_end"] = serde_json::json!(held.line_end);
+                            }
+                        }
+                    }
+                    error(status, &message)
+                }
+            };
+            activity::publish(event);
+            return Ok(response);
         }
         let ticket = text(req, "ticket", 48)?;
         let p = self
@@ -506,6 +579,7 @@ impl Controller {
                 &session,
                 &path,
                 &hash(&current.data),
+                &author,
                 r.line_start.into(),
                 r.line_end.into(),
                 0,
@@ -563,6 +637,7 @@ impl Controller {
         unsafe {
             account_notify(
                 c(&path).as_ptr(),
+                c(&session).as_ptr(),
                 new_range.line_start,
                 new_range.line_end,
                 c(&author).as_ptr(),

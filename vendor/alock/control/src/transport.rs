@@ -7,6 +7,7 @@ extern "C" {
     fn dtob_encode(value: *const Value, size: *mut usize) -> *mut u8;
     fn dtob_decode(data: *const u8, size: usize) -> *mut Value;
     fn account_daemon(value: *mut Value) -> *mut Value;
+    fn account_activity_connect() -> c_int;
     fn account_target(root: *const c_char, relative: *const c_char, out: *mut c_char) -> c_int;
     fn account_peer(fd: c_int, uid: c_uint) -> c_int;
     fn account_user(name: *const c_char) -> c_int;
@@ -36,6 +37,17 @@ fn encode(m: &Message) -> Result<Vec<u8>> {
     Ok(data)
 }
 fn decode(data: &[u8]) -> Result<Message> {
+    if data.first() == Some(&b'{') && data.len() <= 16384 {
+        let request: serde_json::Value =
+            serde_json::from_slice(data).map_err(|_| (400, "Invalid activity envelope".into()))?;
+        if request["cmd"] != "activity" {
+            return err(400, "Unsupported JSON command");
+        }
+        let mut message = Message::new();
+        message.text("operation", "activity");
+        message.text("event", &request["event"].to_string());
+        return Ok(message);
+    }
     if data.len() > 16 * 1024 * 1024 {
         return err(413, "DTOB envelope exceeds limit");
     }
@@ -131,8 +143,20 @@ fn scoped(req: &mut Message, root: &str, session: &str, remote: bool) -> Result<
     req.text("session", session);
     req.number("remote", remote as u64);
     let operation = text(req.0, "operation", 32)?;
-    if !["lock", "commit", "conclude", "heartbeat", "release"].contains(&operation.as_str()) {
+    if ![
+        "lock",
+        "commit",
+        "conclude",
+        "heartbeat",
+        "release",
+        "activity",
+    ]
+    .contains(&operation.as_str())
+    {
         return err(400, "Unknown account operation");
+    }
+    if operation == "activity" {
+        req.text("activity_root", root);
     }
     if operation == "lock" {
         let relative = text(req.0, "file", 4095)?;
@@ -156,7 +180,16 @@ fn remote(
     client: &reqwest::blocking::Client,
 ) -> Result<Message> {
     let operation = text(req.0, "operation", 32)?;
-    if !["lock", "commit", "conclude", "heartbeat", "release"].contains(&operation.as_str()) {
+    if ![
+        "lock",
+        "commit",
+        "conclude",
+        "heartbeat",
+        "release",
+        "activity",
+    ]
+    .contains(&operation.as_str())
+    {
         return err(400, "Unknown remote operation");
     }
     let response = client
@@ -274,7 +307,7 @@ fn serve(args: &[String]) -> Result<()> {
     initial.text("operation", "heartbeat");
     checked(forward(&mut initial)?)?;
     let mut heartbeat = Instant::now();
-    println!("{{\"ready\":true}}");
+    println!("{{\"ready\":true,\"session\":{}}}", quote(&session));
     while unsafe { account_stopped() } == 0 {
         let control = unsafe { account_control() };
         if control == 2 && args.iter().any(|arg| arg == "--control-stdin") {
@@ -296,6 +329,9 @@ fn serve(args: &[String]) -> Result<()> {
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // macOS inherits O_NONBLOCK from the listener. Framed reads and
+                // writes must wait for subsequent chunks until their timeout.
+                io(stream.set_nonblocking(false))?;
                 io(stream.set_read_timeout(Some(Duration::from_secs(10))))?;
                 io(stream.set_write_timeout(Some(Duration::from_secs(10))))?;
                 let result = if unsafe { account_peer(stream.as_raw_fd(), uid as u32) } == 0 {
@@ -333,6 +369,90 @@ fn quote(s: &str) -> String {
     result.push('"');
     result
 }
+fn watch_activity(root: String) {
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        use std::os::fd::FromRawFd;
+        let mut cursor = serde_json::json!({});
+        loop {
+            let fd = unsafe { account_activity_connect() };
+            if fd < 0 {
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+            let mut socket = unsafe { UnixStream::from_raw_fd(fd) };
+            let request = serde_json::json!({"cmd":"watch","cursor":cursor}).to_string();
+            if socket
+                .write_all(&(request.len() as u32).to_le_bytes())
+                .is_err()
+                || socket.write_all(request.as_bytes()).is_err()
+            {
+                continue;
+            }
+            let mut reader = BufReader::new(socket);
+            loop {
+                let mut line = String::new();
+                if reader
+                    .by_ref()
+                    .take(16 * 1024 * 1024 + 1)
+                    .read_line(&mut line)
+                    .unwrap_or(0)
+                    == 0
+                    || line.len() > 16 * 1024 * 1024
+                {
+                    break;
+                }
+                let Ok(packet) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    break;
+                };
+                if !packet["Cursor"].is_null() {
+                    cursor = packet["Cursor"].clone();
+                }
+                let mut event = packet["Event"].clone();
+                if !event.is_object() {
+                    continue;
+                }
+                let path = if event["kind"] == "tool" {
+                    event["root"].as_str()
+                } else {
+                    event["file"].as_str()
+                };
+                let Some(path) = path else {
+                    continue;
+                };
+                let Ok(relative) = std::path::Path::new(path).strip_prefix(&root) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().into_owned();
+                if event["kind"] == "tool" {
+                    event.as_object_mut().unwrap().remove("root");
+                } else {
+                    event["file"] = serde_json::json!(relative);
+                }
+                // Bound network previews independently of the local terminal feed.
+                for key in ["old_lines", "new_lines"] {
+                    if let Some(lines) = event[key].as_array() {
+                        let mut bytes = 0;
+                        let preview: Vec<_> = lines
+                            .iter()
+                            .take_while(|line| {
+                                bytes += line.as_str().unwrap_or("").len() + 1;
+                                bytes <= 32768
+                            })
+                            .cloned()
+                            .collect();
+                        if preview.len() < lines.len() {
+                            event["truncated"] = serde_json::json!(true);
+                        }
+                        event[key] = serde_json::json!(preview);
+                    }
+                }
+                println!("{}", serde_json::json!({"activity":event}));
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
 fn http_serve(args: &[String]) -> Result<()> {
     let root = root(args)?;
     let authorization = String::from_utf8(load(&option(args, "--header-file")?)?)
@@ -358,6 +478,9 @@ fn http_serve(args: &[String]) -> Result<()> {
         "{{\"ready\":true,\"address\":{}}}",
         quote(&server.server_addr().to_string())
     );
+    if args.iter().any(|arg| arg == "--events-stdout") {
+        watch_activity(root.clone());
+    }
     while unsafe { account_stopped() } == 0 {
         if args.iter().any(|arg| arg == "--control-stdin") && unsafe { account_control() } == 2 {
             break;

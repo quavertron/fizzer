@@ -309,6 +309,7 @@ describe('CascadeRunPanel raw fallback', () => {
         blocks: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test --filter harnessActivity' } }],
       }),
       onCancelRun: () => {},
+      canCancel: true,
     }));
     expect(markup).toContain('crp-live-verb');
     expect(markup).toContain('Bash');

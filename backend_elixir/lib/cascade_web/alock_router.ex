@@ -17,7 +17,7 @@ defmodule CascadeWeb.AlockRouter do
     case Auth.require(conn, access: :user, mutation_gate: gate) do
       {:ok, conn} ->
         cond do
-          operation not in ~w(lock commit conclude heartbeat release) ->
+          operation not in ~w(lock commit conclude heartbeat release activity) ->
             JSON.send(conn, 404, %{error: "Unknown alock operation"})
 
           get_req_header(conn, "content-type") != ["application/vnd.dtob"] ->

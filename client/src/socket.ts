@@ -22,6 +22,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /** Events emitted by the server on the `/vault` namespace. */
 type ServerEvents = {
+  'vault:activity': (data: import('./activity').ActivityPacket) => void;
   'vault:filesChanged': (data: { vaultId: string }) => void;
   /** A relevant terminal message, note mutation, deletion, or read-state change occurred. */
   'community:changed': (data: Record<string, never>) => void;
@@ -62,6 +63,7 @@ export type ChatMessagePayload = ChatMessage;
 
 /** Events emitted by the client on the `/vault` namespace. */
 type ClientEvents = {
+  'awatch:replay': (vaultId: string, cursor: { epoch?: string; seq?: number }) => void;
   /** Join a vault room to receive its real-time events. */
   joinVault: (vaultId: string) => void;
   /** Leave a vault room to stop receiving events. */

@@ -260,10 +260,12 @@ test('runner recovers from failed initial and replacement builds without restart
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(path.join(dir, 'cascade-electron'));
   fs.mkdirSync(path.join(dir, 'dist', 'cli-agents'), { recursive: true });
-  fs.symlinkSync(path.join(__dirname, 'node_modules'), path.join(dir, 'node_modules'));
+  const modules = fs.existsSync(path.join(__dirname, 'node_modules', '@resvg', 'resvg-js'))
+    ? path.join(__dirname, 'node_modules') : path.join(__dirname, '..', 'node_modules');
+  fs.symlinkSync(modules, path.join(dir, 'node_modules'));
   const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
   fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
-  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs']) {
+  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs', 'awatch.cjs']) {
     fs.copyFileSync(path.join(__dirname, name), path.join(dir, 'cascade-electron', name));
   }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');

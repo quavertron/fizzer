@@ -22,22 +22,7 @@
 #include <sys/file.h>
 
 #define EXPIRE_INTERVAL_MS 30000
-#ifndef AWATCH_SOCK
-#define AWATCH_SOCK "/tmp/awatch.sock"
-#endif
 
-static DtobValue *split_lines_dtob(const char *data, size_t len) {
-    DtobValue *arr = dtob_array();
-    const char *start = data;
-    for (size_t i = 0; i <= len; i++) {
-        if (i == len || data[i] == '\n') {
-            size_t line_len = &data[i] - start;
-            dtob_array_push(arr, dtob_raw((const uint8_t *)start, line_len));
-            if (i < len) start = &data[i + 1];
-        }
-    }
-    return arr;
-}
 
 static const char *event_agent(DtobValue *req, const char *fallback) {
     static char name[128];
@@ -52,72 +37,27 @@ static void awatch_notify(const char *agent, const char *author, const char *fil
     uint32_t changed_lines = 0;
     for (size_t i = 0; i < new_len; i++) changed_lines += new_data[i] == '\n';
     events_change(file, line_start, line_start + (changed_lines ? changed_lines - 1 : 0), agent, author);
-    int fd = ipc_connect(AWATCH_SOCK);
-    if (fd < 0) return;
-
-    /* strip trailing newline from old/new to avoid empty last element */
-    if (old_len > 0 && old_data[old_len - 1] == '\n') old_len--;
-    if (new_len > 0 && new_data[new_len - 1] == '\n') new_len--;
-
-    DtobValue *ev = dtob_kvset();
-    dtob_kvset_put(ev, "agent", dtob_raw((const uint8_t *)agent, strlen(agent)));
-    dtob_kvset_put(ev, "author", dtob_raw((const uint8_t *)author, strlen(author)));
-    dtob_kvset_put(ev, "file", dtob_raw((const uint8_t *)file, strlen(file)));
-    dtob_kvset_put(ev, "line_start", dtob_uint(line_start));
-    dtob_kvset_put(ev, "line_end", dtob_uint(line_end));
-    dtob_kvset_put(ev, "old_lines", split_lines_dtob(old_data, old_len));
-    dtob_kvset_put(ev, "new_lines", split_lines_dtob(new_data, new_len));
-    dtob_kvset_put(ev, "timestamp", dtob_int((int64_t)time(NULL)));
-
-    size_t enc_len;
-    uint8_t *enc = dtob_encode(ev, &enc_len);
-    dtob_free(ev);
-
-    if (enc) {
-        ipc_send(fd, enc, enc_len);
-        free(enc);
-    }
-    close(fd);
+    activity_edit(file, agent, author, line_start, line_end, old_data, old_len, new_data, new_len);
 }
 
 static const char *lock_display_agent(const char *agent);
-
 static void awatch_lock_notify(const char *agent, const char *file,
                                 uint32_t line_start, uint32_t line_end,
                                 const char *result, const char *conflict_agent) {
-    int fd = ipc_connect(AWATCH_SOCK);
-    if (fd < 0) return;
-
-    DtobValue *ev = dtob_kvset();
-    dtob_kvset_put(ev, "kind", dtob_raw((const uint8_t *)"lock", 4));
-    dtob_kvset_put(ev, "agent", dtob_raw((const uint8_t *)agent, strlen(agent)));
-    dtob_kvset_put(ev, "file", dtob_raw((const uint8_t *)file, strlen(file)));
-    dtob_kvset_put(ev, "line_start", dtob_uint(line_start));
-    dtob_kvset_put(ev, "line_end", dtob_uint(line_end));
-    dtob_kvset_put(ev, "result", dtob_raw((const uint8_t *)result, strlen(result)));
-    if (conflict_agent) conflict_agent = lock_display_agent(conflict_agent);
-    if (conflict_agent)
-        dtob_kvset_put(ev, "conflict_agent", dtob_raw((const uint8_t *)conflict_agent, strlen(conflict_agent)));
-    dtob_kvset_put(ev, "timestamp", dtob_int((int64_t)time(NULL)));
-
-    size_t enc_len;
-    uint8_t *enc = dtob_encode(ev, &enc_len);
-    dtob_free(ev);
-
-    if (enc) {
-        ipc_send(fd, enc, enc_len);
-        free(enc);
-    }
-    close(fd);
+    activity_lock(file, agent, line_start, line_end, result,
+                  conflict_agent ? lock_display_agent(conflict_agent) : NULL, NULL);
 }
 
 
-void account_notify(const char *file, uint32_t start, uint32_t end, const char *author,
+void account_notify(const char *file, const char *session, uint32_t start, uint32_t end, const char *author,
                     const void *before, size_t before_size, const void *after, size_t after_size) {
-    awatch_notify(author, author, file, start, end, before, before_size, after, after_size);
+    awatch_notify(session, author, file, start, end, before, before_size, after, after_size);
 }
 
 static LockTable lt;
+static void lock_released(const Lock *lock) {
+    activity_release(lock->file, lock->agent, lock->display_agent, lock->line_start, lock->line_end);
+}
 static char current_turn[TURN_ID_SIZE];
 
 static int record_history(const char *file, const char *author, const char *operation,
@@ -155,6 +95,15 @@ static DtobValue *make_error(const char *msg) {
     return resp;
 }
 
+static DtobValue *conflict_response(const Lock *held, const char *display, const char *file, uint32_t start, uint32_t end) {
+    if (!held) return make_error("Lock table capacity reached");
+    const char *owner = lock_display_agent(held->agent);
+    char message[256];
+    snprintf(message, sizeof(message), "%s holds a lock on range %u–%u", owner, held->line_start, held->line_end);
+    activity_lock(file, display, start, end, "conflict", owner, message);
+    return make_error(message);
+}
+
 static Lock *find_covering_lock(const char *agent, uint32_t line_start,
                                 uint32_t line_end) {
     for (int i = 0; i < MAX_LOCKS; i++) {
@@ -182,19 +131,8 @@ static DtobValue *handle_acquire(DtobValue *req) {
     if (turn_prepare(current_turn, daemon_file)) return make_error("cannot flush history or join turn before granting lock");
     int id = lock_acquire(&lt, agent, daemon_file, byte_start, length, ls, le);
     if (id < 0) {
-        /* find blocking lock to name the conflicting agent */
-        const char *blocker = NULL;
-        for (int i = 0; i < MAX_LOCKS; i++) {
-            const Lock *l = &lt.entries[i];
-            if (!l->active) continue;
-            if (strcmp(l->file, daemon_file) != 0) continue;
-            if (strcmp(l->agent, agent) == 0) continue;
-            off_t a0 = byte_start, a1 = byte_start + (off_t)length;
-            off_t b0 = l->byte_start, b1 = l->byte_start + (off_t)l->length;
-            if (a0 < b1 && b0 < a1) { blocker = l->agent; break; }
-        }
-        awatch_lock_notify(event_agent(req, agent), daemon_file, ls, le, "conflict", blocker);
-        return make_error("conflict — range is locked by another agent");
+        return conflict_response(lock_blocker(&lt, agent, daemon_file, byte_start, length),
+                                 event_agent(req, agent), daemon_file, ls, le);
     }
 
     /* granted — check if another agent holds a (non-overlapping) lock on the same file */
@@ -211,6 +149,7 @@ static DtobValue *handle_acquire(DtobValue *req) {
     awatch_lock_notify(event_agent(req, agent), daemon_file, ls, le,
                        coholder ? "shared" : "granted", coholder);
     Lock *l = lock_find(&lt, id);
+    snprintf(l->display_agent, sizeof(l->display_agent), "%s", event_agent(req, agent));
     turn_join(current_turn, daemon_file);
     return make_ok_lock(l);
 }
@@ -443,8 +382,8 @@ static int write_all(int fd, const uint8_t *buf, size_t size) {
 static void clear_stage(Stage *s) {
     Lock *source = lock_find(&lt, s->id);
     Lock *destination = lock_find(&lt, s->destination_id);
-    if (source) { source->active = 0; lt.count--; }
-    if (destination) { destination->active = 0; lt.count--; }
+    if (source) lock_release_id(&lt, source->id);
+    if (destination) lock_release_id(&lt, destination->id);
     unlink(s->path);
     free(s->base);
     memset(s, 0, sizeof(*s));
@@ -515,7 +454,7 @@ static DtobValue *handle_stage(DtobValue *req) {
         free(s.base); return make_error("cannot flush history or join turn before granting lock");
     }
     s.id = lock_acquire(&lt, agent, daemon_file, (off_t)s.start, s.length, ls, le);
-    if (s.id < 0) { free(s.base); return make_error("conflict: stage range is locked"); }
+    if (s.id < 0) { free(s.base); return conflict_response(lock_blocker(&lt, agent, daemon_file, s.start, s.length), event_agent(req, agent), daemon_file, ls, le); }
     if (moving) {
         s.destination_id = lock_acquire(&lt, agent, s.destination, 0, 0, 1, 2147483647);
         if (s.destination_id < 0) { clear_stage(&s); return make_error("cannot reserve rename destination"); }
@@ -525,12 +464,13 @@ static DtobValue *handle_stage(DtobValue *req) {
     int failed = fd < 0 || write_all(fd, s.base, s.size);
     if (fd >= 0 && close(fd)) failed = 1;
     if (failed) {
-        Lock *l = lock_find(&lt, s.id); l->active = 0; lt.count--;
+        lock_release_id(&lt, s.id);
         clear_stage(&s); return make_error("cannot create staging file");
     }
     for (int i = 0; i < MAX_LOCKS; i++) if (!stages[i].id) { stages[i] = s; break; }
     turn_join(current_turn, daemon_file);
     if (moving) turn_join(current_turn, s.destination);
+    snprintf(lock_find(&lt, s.id)->display_agent, sizeof(s.display_agent), "%s", s.display_agent);
     awatch_lock_notify(event_agent(req, agent), daemon_file, ls, le, "granted", NULL);
     DtobValue *resp = make_ok_lock(lock_find(&lt, s.id));
     dtob_kvset_put(resp, "stage", dtob_raw((const uint8_t *)s.path, strlen(s.path)));
@@ -681,6 +621,11 @@ static void handle_client(int client_fd) {
     size_t req_len;
     uint8_t *req_data = ipc_recv(client_fd, &req_len);
     if (!req_data) return;
+    if (req_len && req_data[0] == '{') {
+        activity_client(client_fd, req_data, req_len);
+        free(req_data);
+        return;
+    }
 
     DtobValue *req = dtob_decode(req_data, req_len);
     free(req_data);
@@ -705,6 +650,7 @@ static void handle_client(int client_fd) {
         dtob_kvset_put(resp, "file_operations", dtob_uint(1));
         dtob_kvset_put(resp, "turns", dtob_uint(1));
         dtob_kvset_put(resp, "account_flow", dtob_uint(1));
+        dtob_kvset_put(resp, "activity", dtob_uint(1));
         dtob_kvset_put(resp, "pid", dtob_uint((uint64_t)getpid()));
         dtob_kvset_put(resp, "nab", dtob_uint(1));
     }
@@ -750,14 +696,15 @@ static void daemon_run(int listen_fd) {
 
     time_t last_activity = time(NULL);
     while (1) {
-        int ret = poll(&pfd, 1, 1000);
+        int viewers = activity_poll();
+        int ret = poll(&pfd, 1, viewers ? 50 : 1000);
         account_expire(&lt);
         turn_expire(release_turn_locks);
 
         if (ret == 0) {
             lock_expire(&lt);
             reap_stages();
-            if (lt.count == 0 && !turns_active() && !account_active() && time(NULL) - last_activity >= EXPIRE_INTERVAL_MS / 1000) break;
+            if (!viewers && lt.count == 0 && !turns_active() && !account_active() && time(NULL) - last_activity >= EXPIRE_INTERVAL_MS / 1000) break;
             continue;
         }
 
@@ -830,7 +777,8 @@ int daemon_spawn(const char *file, char *sock_path, size_t pathsz) {
         close(ready_pipe[0]);
         /* The bridge may start us while serving a client. Do not retain its
          * listener/client sockets (or any other caller-owned descriptors). */
-        int maxfd = getdtablesize();
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0) maxfd = 65536;
         for (int fd = 3; fd < maxfd; fd++)
             if (fd != ready_pipe[1]) close(fd);
         signal(SIGINT, SIG_DFL);
@@ -843,6 +791,7 @@ int daemon_spawn(const char *file, char *sock_path, size_t pathsz) {
         daemon_sock[sizeof(daemon_sock) - 1] = '\0';
 
         locktable_init(&lt);
+        lt.on_release = lock_released;
 
         int listen_fd = ipc_listen(sock_path);
         if (listen_fd < 0) {
@@ -854,9 +803,14 @@ int daemon_spawn(const char *file, char *sock_path, size_t pathsz) {
         write(ready_pipe[1], "R", 1);
         close(ready_pipe[1]);
 
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
+        /* Keep standard descriptors reserved: long-lived activity viewers
+         * change descriptor reuse, and embedded nab diagnostics must never
+         * write into a file that happened to be opened as fd 1 or 2. */
+        int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd < 0) _exit(1);
+        for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; fd++)
+            if (dup2(null_fd, fd) < 0) _exit(1);
+        if (null_fd > STDERR_FILENO) close(null_fd);
         signal(SIGPIPE, SIG_IGN);
 
         daemon_run(listen_fd);

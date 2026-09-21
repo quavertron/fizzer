@@ -131,6 +131,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and
 
 ## Data and trust boundaries
 
+`npm start` starts the desktop with its own local backend; `npm run alt-profile`
+starts a second desktop with a separate backend and profile. The main profile
+uses `~/.fizzer/` for local data, while the alternate profile uses
+`~/.fizzer-profiles/alt/data/`. Each backend selects its own available port and
+keeps its database, vault files, and sessions separate. An explicit
+`CASCADE_APP_URL` or `APP_URL` still connects to that server instead.
+Run `npm run build:local-runtime` after source changes to rebuild the local
+backend and client used by these commands. Use `npm run dev` for the shared
+development server with live frontend updates.
+
 The desktop keeps its SQLite database and vault files under `~/.fizzer/`, or
 `CASCADE_DATA_DIR` when explicitly configured. Electron and the TUI share
 per-server sessions in individual files under `server-sessions/` there, with owner-only file
