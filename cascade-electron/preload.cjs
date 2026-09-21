@@ -17,7 +17,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 // Expose safe IPC methods to the renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
   analyzeAwatch: input => ipcRenderer.invoke('awatch:analyze', input),
-  ...(process.platform !== 'win32' ? { showAgentAccountSetup: () => ipcRenderer.invoke('agent:showAccountSetup') } : {}),
+  ...(process.platform !== 'win32' ? {
+    showAgentAccountSetup: () => ipcRenderer.invoke('agent:showAccountSetup'),
+    /** Open a terminal to sign a CLI agent ('claude' | 'codex') into its provider. */
+    runAgentLogin: (agent) => ipcRenderer.invoke('agent:login', { agent }),
+  } : {}),
   // ── Windows ─────────────────────────────────────────────────
   /**
    * Pop a tab out into its own OS window. Resolves with `{ popped }`: true when

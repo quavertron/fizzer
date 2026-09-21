@@ -2,6 +2,7 @@ import { LoadingIndicator } from './LoadingIndicator';
 import { HtmlAttachment } from './HtmlAttachment';
 import type { AgentOwnership } from '../chat/agents';
 import { isLiveAgentStatus } from '../chat/runBlocks';
+import { agentLoginLabel, type AgentLoginProvider } from '../chat/agentLogin';
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Paperclip } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
@@ -76,6 +77,8 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onOpenNote,
   onOpenSharedNote,
   onCancelRun,
+  agentLoginProvider,
+  onAgentLogin,
   onToggleSelect,
   onContextMenu,
   onReply,
@@ -112,6 +115,10 @@ export const ChatGroupRow = memo(function ChatGroupRow({
   onOpenNote?: (id: string) => void;
   onOpenSharedNote?: (messageId: string, title: string) => Promise<SharedChatNote | null>;
   onCancelRun: (runId: number) => void;
+  /** Provider to sign in when this agent's run failed for lack of login. */
+  agentLoginProvider?: AgentLoginProvider | null;
+  /** Launch the provider sign-in flow (desktop terminal). */
+  onAgentLogin?: () => void;
   onToggleSelect: (id: string) => void;
   onContextMenu: (event: React.MouseEvent, message: ChatMessage) => void;
   onReply: (message: ChatMessage) => void;
@@ -216,6 +223,11 @@ export const ChatGroupRow = memo(function ChatGroupRow({
               {avatarKind === 'agent' && <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>}
               <time dateTime={tail.createdAt}>{formatChatTime(tail.createdAt)}</time>
               {avatarKind === 'agent' && tail.status === 'failed' && <span className="chat-message-status is-error">failed</span>}
+              {avatarKind === 'agent' && agentLoginProvider && onAgentLogin && (
+                <button type="button" className="chat-agent-login-cta" onClick={onAgentLogin}>
+                  Log in {agentLoginLabel(agentLoginProvider)}
+                </button>
+              )}
             </div>}
             {group.messages.map((message) => {
               const hasRunWidget = message.status === 'running';

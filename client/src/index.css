@@ -4706,6 +4706,20 @@ button.chat-avatar.is-clickable:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   background: var(--accent-subtle);
 }
+.chat-agent-login-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 999px;
+  background: var(--accent-subtle);
+  color: var(--accent-hover);
+  font-size: inherit;
+  cursor: pointer;
+}
+.chat-agent-login-cta:hover {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-raised));
+}
 .chat-message-group.status-running .chat-avatar {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }

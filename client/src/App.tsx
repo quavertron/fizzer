@@ -315,6 +315,16 @@ export default function App() {
   }, [workspaceStore]);
 
   const switchVaultWorkspace = useCallback((nextVaultId: string | null) => {
+    // A real switch retargets the runner to a different vault (and possibly a
+    // different origin/scope). Kill whatever the runner is executing for the
+    // previous vault before retargeting — otherwise the run loses its /runners
+    // relay and keeps running orphaned against the old vault. Initial selection
+    // (no previous vault) has nothing to tear down.
+    const previousVaultId = workspaceStore.activeVaultId;
+    if (previousVaultId !== null && previousVaultId !== nextVaultId) {
+      stopDesktopRunnerHost();
+    }
+
     // Point non-vault-scoped requests (notes/assets) at the open vault's origin.
     const entry = nextVaultId ? getVaultOrigin(nextVaultId) : undefined;
     setActiveVaultOrigin(entry?.origin, entry?.token);

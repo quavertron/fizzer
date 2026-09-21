@@ -24,6 +24,7 @@ import { ChatAvatar } from './ChatAvatar';
 import { ChatChannelSettings } from './ChatChannelSettings';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatGroupRow, getRunningMessageState } from './ChatGroupRow';
+import { messageNeedsLogin, providerLoginTarget, type AgentLoginProvider } from '../chat/agentLogin';
 import { ChatMissionCard } from './ChatMissionCard';
 import { isHumanMissionRoot, missionCoordinatorCarrier } from '../chat/missionAttribution';
 import { usePopupMenu } from '../ui/popupMenu';
@@ -80,6 +81,16 @@ export {
   shouldRenderRunPanel,
 } from './ChatGroupRow';
 export { buildReplyRef, resolveReplyMention } from '../chat/replies';
+
+type AgentLoginBridge = { runAgentLogin?: (agent: string) => Promise<unknown> };
+function chatAgentLoginBridge(): AgentLoginBridge | undefined {
+  return (window as unknown as { electronAPI?: AgentLoginBridge }).electronAPI;
+}
+/** Open the provider sign-in terminal for a failed CLI agent run (desktop only). */
+function runAgentProviderLogin(provider: AgentLoginProvider): void {
+  const bridge = chatAgentLoginBridge();
+  void bridge?.runAgentLogin?.(provider)?.catch?.((error) => console.error('Agent login:', error));
+}
 
 interface ChatViewProps {
   channelId: string;
@@ -969,6 +980,13 @@ export const ChatView = memo(function ChatView({
                   && group.messages.some((message) => message.id === jumpHighlightMessageId);
                 const runKey = head.registrationId || head.agentId || '';
                 const runState = runKey ? runningMessageState.get(runKey) : undefined;
+                // Offer a provider sign-in button when a run failed for lack of
+                // login. Desktop-only (needs the terminal bridge) and limited to
+                // the CLI agents whose login we can drive.
+                const failedTail = group.messages.at(-1);
+                const loginProvider = failedTail && chatAgentLoginBridge()?.runAgentLogin && messageNeedsLogin(failedTail)
+                  ? providerLoginTarget(resolveMessageRegistration(failedTail)?.agentId)
+                  : null;
                 return (
                   <ChatGroupRow
                     key={head.id}
@@ -992,6 +1010,8 @@ export const ChatView = memo(function ChatView({
                     onOpenNote={onOpenNote}
                     onOpenSharedNote={openSharedNote}
                     onCancelRun={onCancelRun}
+                    agentLoginProvider={loginProvider}
+                    onAgentLogin={loginProvider ? () => runAgentProviderLogin(loginProvider) : undefined}
                     onToggleSelect={toggleMessageSelection}
                     onContextMenu={openMessageContextMenu}
                     onReply={startReply}

@@ -1,21 +1,24 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash, randomUUID } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const temporarySessions = new Map();
+
+function storageBinary() {
+  if (process.env.FIZZER_STORAGE_BIN) return process.env.FIZZER_STORAGE_BIN;
+  return [
+    process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
+    path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
+    '/usr/local/libexec/fizzer/fizzer-storage',
+  ].find(file => file && fs.existsSync(file)) || 'fizzer-storage';
+}
 
 function readSessions(directory) {
   let sessions = {};
-  try { sessions = JSON.parse(fs.readFileSync(path.join(directory, 'server-sessions.json'), 'utf8')); }
-  catch { /* Read legacy sessions without rewriting the shared file. */ }
-  const entries = path.join(directory, 'server-sessions');
-  let names = [];
-  try { names = fs.readdirSync(entries); } catch { /* Session storage may be unavailable. */ }
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    try { Object.assign(sessions, JSON.parse(fs.readFileSync(path.join(entries, name), 'utf8'))); }
-    catch { /* An unreadable entry must not hide other servers. */ }
-  }
+  try {
+    const stdout = execFileSync(storageBinary(), ['server-sessions', 'read', path.resolve(directory)], { encoding: 'utf8' });
+    sessions = JSON.parse(stdout);
+  } catch { /* Session storage may be unavailable. */ }
   return { ...sessions, ...temporarySessions.get(path.resolve(directory)) };
 }
 
@@ -25,21 +28,18 @@ function rememberSession(directory, key, token) {
   const pending = temporarySessions.get(directoryKey) || {};
   pending[key] = token;
   temporarySessions.set(directoryKey, pending);
-  const entries = path.join(directory, 'server-sessions');
-  const destination = path.join(entries, `${createHash('sha256').update(key).digest('hex')}.json`);
-  const temporary = `${destination}.${randomUUID()}.tmp`;
   try {
-    fs.mkdirSync(entries, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(temporary, JSON.stringify({ [key]: token }), { mode: 0o600, flag: 'wx' });
-    fs.renameSync(temporary, destination);
+    execFileSync(storageBinary(), ['server-sessions', 'remember', directoryKey, key, token], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
     delete pending[key];
     return true;
   } catch {
+
     // Authentication already succeeded. Keep this login usable for the current
     // process even when it cannot be remembered across application restarts.
     return false;
-  } finally {
-    try { fs.rmSync(temporary, { force: true }); } catch { /* Best-effort cleanup. */ }
   }
 }
 
@@ -52,4 +52,6 @@ function listConnections(directory, vaults) {
   return connections;
 }
 
-module.exports = { readSessions, rememberSession, listConnections };
+module.exports = { readSessions, rememberSession, listConnections, storageBinary };
+
+

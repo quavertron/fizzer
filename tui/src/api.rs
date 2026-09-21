@@ -99,6 +99,10 @@ pub struct ChatMessage {
     pub created_at: String,
     #[serde(alias = "agent_id", rename = "agentId", default)]
     pub agent_id: Option<String>,
+    /// Run status of an agent message: "queued"/"running"/"failed"/"canceled".
+    /// Absent for plain human messages.
+    #[serde(default)]
+    pub status: Option<String>,
     /// Data-URL images attached to the message. The list API strips heavy
     /// data-URLs and instead sets `has_images`, so use `has_image()`.
     #[serde(default)]
@@ -220,6 +224,10 @@ pub struct AgentItem {
     pub mention: String,
     #[serde(rename = "agentId", default)]
     pub agent_id: String,
+    /// Set on a numbered instance (e.g. `ashtray2`); points at the base profile.
+    /// Absent/empty on original profiles.
+    #[serde(rename = "instanceOf", default)]
+    pub instance_of: Option<String>,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -639,6 +647,7 @@ impl CascadeClient {
             body: body.to_string(),
             created_at: "Just now".to_string(),
             agent_id: None,
+            status: None,
             images: images.to_vec(),
             image_count: 0, has_images: !images.is_empty(),
         })
@@ -964,11 +973,11 @@ mod tests {
     fn image_messages_keep_continuation_grouping_for_local_fallbacks() {
         let image = ChatMessage {
             id: "image".into(), author: "diego".into(), body: "".into(),
-            created_at: "Just now".into(), agent_id: None, images: vec!["data:image/png;base64,x".into()], image_count: 0, has_images: true,
+            created_at: "Just now".into(), agent_id: None, status: None, images: vec!["data:image/png;base64,x".into()], image_count: 0, has_images: true,
         };
         let next = ChatMessage {
             id: "next".into(), author: "diego".into(), body: "follow-up".into(),
-            created_at: "2026-09-13T23:40:00Z".into(), agent_id: None, images: vec![], image_count: 0, has_images: false,
+            created_at: "2026-09-13T23:40:00Z".into(), agent_id: None, status: None, images: vec![], image_count: 0, has_images: false,
         };
         assert!(continues_chat_group(&image, &next));
     }

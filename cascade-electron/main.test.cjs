@@ -16,11 +16,18 @@ test('desktop startup paints a window before housekeeping and does not HEAD the 
   assert.ok(backendAt > 0 && createAt > backendAt && reapAt > createAt && pruneAt > createAt);
 });
 
-test('desktop navigation and runner helpers are pinned to the main-process instance', () => {
+test('desktop navigation is pinned to the main-process instance and the runner binds only to trusted vault origins', () => {
   assert.match(source, /win\.webContents\.on\('will-navigate', guardNavigation\)/);
   assert.match(source, /win\.webContents\.on\('will-redirect', guardNavigation\)/);
-  assert.match(source, /isSameOrigin\(apiUrl, INSTANCE_ORIGIN\)/);
-  assert.match(source, /connectDesktopRunner\(token, INSTANCE_ORIGIN\)/);
+  // The runner scope follows the active vault, but only across origins the
+  // desktop already trusts (the instance, the local embedded backend, or a saved
+  // remote vault) — never an arbitrary origin from the renderer payload.
+  assert.match(source, /const runnerOrigin = trustedRunnerOrigin\(apiUrl\)/);
+  assert.match(source, /\[INSTANCE_ORIGIN, embeddedBackend\?\.origin, \.\.\.loadRemoteVaults\(\)\.map\(vault => vault\.origin\)\]/);
+  // Each origin's write token comes from that origin's own partitioned cookie
+  // jar, so a remote runner can never obtain the local session.
+  assert.match(source, /instanceSession\(runnerOrigin\)\.cookies\.get\(\{ url: runnerOrigin \}\)/);
+  assert.match(source, /connectDesktopRunner\(token, runnerOrigin, writeToken\)/);
   assert.doesNotMatch(source, /hostname\.endsWith\('\.cscd\.online'\)/);
 });
 

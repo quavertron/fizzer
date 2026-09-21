@@ -1,39 +1,32 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash, randomUUID } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 
-function key(record) { return JSON.stringify([new URL(record.origin).origin, record.id]); }
+function storageBinary() {
+  if (process.env.FIZZER_STORAGE_BIN) return process.env.FIZZER_STORAGE_BIN;
+  return [
+    process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
+    path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
+    '/usr/local/libexec/fizzer/fizzer-storage',
+  ].find(file => file && fs.existsSync(file)) || 'fizzer-storage';
+}
+
 function readRemoteVaults(directory) {
-  const records = new Map();
-  const add = record => {
-    if (typeof record?.id !== 'string' || typeof record?.token !== 'string') return;
-    try { records.set(key(record), { ...record, origin: new URL(record.origin).origin }); } catch { /* Invalid entry. */ }
-  };
   try {
-    const legacy = JSON.parse(fs.readFileSync(path.join(directory, 'remote-vaults.json'), 'utf8'));
-    if (Array.isArray(legacy)) legacy.forEach(add);
-  } catch { /* Legacy file is a read-only migration fallback. */ }
-  const entries = path.join(directory, 'remote-vaults');
-  let names = [];
-  try { names = fs.readdirSync(entries); } catch { /* No saved entries yet. */ }
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    try { add(JSON.parse(fs.readFileSync(path.join(entries, name), 'utf8'))); } catch { /* Preserve other readable entries. */ }
+    const stdout = execFileSync(storageBinary(), ['remote-vaults', 'read', path.resolve(directory)], { encoding: 'utf8' });
+    return JSON.parse(stdout);
+  } catch {
+    return [];
   }
-  return [...records.values()];
 }
 
 function saveRemoteVault(directory, record) {
-  record = { ...record, origin: new URL(record.origin).origin };
-  const entries = path.join(directory, 'remote-vaults');
-  fs.mkdirSync(entries, { recursive: true, mode: 0o700 });
-  const destination = path.join(entries, `${createHash('sha256').update(key(record)).digest('hex')}.json`);
-  const temporary = `${destination}.${randomUUID()}.tmp`;
-  try {
-    fs.writeFileSync(temporary, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
-    fs.renameSync(temporary, destination);
-  } finally { fs.rmSync(temporary, { force: true }); }
+  execFileSync(storageBinary(), ['remote-vaults', 'save', path.resolve(directory)], {
+    input: JSON.stringify(record),
+    encoding: 'utf8',
+  });
 }
 
-module.exports = { readRemoteVaults, saveRemoteVault };
+module.exports = { readRemoteVaults, saveRemoteVault, storageBinary };
+

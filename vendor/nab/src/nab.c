@@ -505,7 +505,7 @@ static void debug_print_time(double t_start, const char *label, const char *extr
  * locking protocol. O_CREAT does not truncate a concurrent creator's file. */
 static int lock_archive(const char *path, int operation) {
     int flags = operation == LOCK_EX ? O_RDWR | O_CREAT : O_RDONLY;
-    int fd = open(path, flags | O_CLOEXEC, 0600);
+    int fd = open(path, flags | O_CLOEXEC, 0644);
     if (fd < 0) {
         fprintf(stderr, "nab: cannot open archive '%s': %s\n", path, strerror(errno));
         return -1;

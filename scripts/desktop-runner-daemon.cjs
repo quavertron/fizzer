@@ -5,6 +5,10 @@
  * Connects to the Elixir backend's /runners Socket.IO namespace, registers as the active
  * desktop runner, and executes delegated agent runs (Claude, Codex, etc.) locally on this
  * machine via agent-runner.cjs.
+ *
+ * The login is not frozen at startup. ~/.fizzer/token expires after seven days; a later
+ * TUI login is stored as the local server session. This process follows whichever is still
+ * valid and renews it during the last three days, the same window the backend uses for cookies.
  */
 
 'use strict';
@@ -19,10 +23,14 @@ const {
   reapOrphanedLocalAgentRuns,
   setNoteApiConfig,
 } = require('../cascade-electron/agent-runner.cjs');
+const { readSessions, rememberSession } = require('../cascade-electron/server-sessions.cjs');
 const worktrees = require('../cascade-electron/worktrees.cjs');
 
-// Resolve the Fizzer home dir: prefer ~/.fizzer, fall back to legacy ~/.cascade.
+// Same window as Cascade.Auth.Session.
+const LOGIN_RENEWAL_WINDOW_SECONDS = 3 * 24 * 60 * 60;
+
 function fizzerDir() {
+  if (process.env.CASCADE_DATA_DIR) return process.env.CASCADE_DATA_DIR;
   const home = os.homedir();
   const primary = path.join(home, '.fizzer');
   if (fs.existsSync(primary)) return primary;
@@ -31,26 +39,82 @@ function fizzerDir() {
   return primary;
 }
 
-const API_BASE = (process.env.API_URL || process.env.API_BASE || 'http://localhost:3000').replace(/\/$/, '');
-const TOKEN_PATH = process.env.CASCADE_TOKEN_PATH || path.join(fizzerDir(), 'token');
+function tokenPath() {
+  return process.env.CASCADE_TOKEN_PATH || path.join(fizzerDir(), 'token');
+}
 
-function readToken() {
-  if (process.env.CASCADE_TOKEN) return process.env.CASCADE_TOKEN.trim();
+function decodeTokenExp(token) {
   try {
-    return fs.readFileSync(TOKEN_PATH, 'utf8').trim();
+    const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString());
+    return Number.isFinite(payload.exp) ? payload.exp : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function readText(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').trim();
   } catch {
     return '';
   }
 }
 
-const token = readToken();
-if (!token) {
-  console.error(`[DesktopRunner] Error: No auth token found at ${TOKEN_PATH} or in CASCADE_TOKEN env.`);
-  process.exit(1);
+// Prefer a login that has not expired. Among those, prefer the one that lasts longest.
+function resolveToken() {
+  const candidates = [
+    process.env.CASCADE_TOKEN,
+    readText(tokenPath()),
+    readSessions(fizzerDir()).local,
+  ].map(value => String(value || '').trim()).filter(Boolean);
+  const unique = [...new Set(candidates)];
+  if (unique.length === 0) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const fresh = unique.filter(candidate => decodeTokenExp(candidate) > now);
+  const pool = fresh.length > 0 ? fresh : unique;
+  pool.sort((left, right) => decodeTokenExp(right) - decodeTokenExp(left));
+  return pool[0];
 }
 
-setNoteApiConfig({ url: API_BASE, token });
+function parseRenewedSessionCookie(setCookies) {
+  let best = '';
+  let bestExp = 0;
+  for (const line of setCookies || []) {
+    const pair = String(line).split(';', 1)[0];
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    const name = pair.slice(0, eq).trim();
+    if (name !== 'cascade_session' && name !== '__Host-cascade_session') continue;
+    const value = decodeURIComponent(pair.slice(eq + 1).trim());
+    const exp = decodeTokenExp(value);
+    if (value && exp >= bestExp) {
+      best = value;
+      bestExp = exp;
+    }
+  }
+  return best;
+}
 
+function persistToken(token) {
+  const next = String(token || '').trim();
+  if (!next) return;
+  const file = tokenPath();
+  if (readText(file) !== next) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${next}\n`, { mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+  }
+  if (String(readSessions(fizzerDir()).local || '').trim() !== next) {
+    rememberSession(fizzerDir(), 'local', next);
+  }
+}
+
+const API_BASE = (process.env.API_URL || process.env.API_BASE || 'http://localhost:3000').replace(/\/$/, '');
+
+let activeToken = '';
+let lastConnectError = '';
+let loginTimer = null;
+let dispatchInterval = null;
 const activeRuns = new Map();
 const triggeringDispatches = new Set();
 let runnerSocket = null;
@@ -70,14 +134,79 @@ function errorLog(msg, ...args) {
   console.error(`[DesktopRunner ${ts}] ${msg}`, ...args);
 }
 
-log(`Target API: ${API_BASE}`);
-log(`Using auth token from: ${TOKEN_PATH}`);
+function adoptToken() {
+  const next = resolveToken();
+  if (!next) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const previousExp = decodeTokenExp(activeToken);
+  if (decodeTokenExp(readText(tokenPath())) < decodeTokenExp(next) ||
+      String(readSessions(fizzerDir()).local || '').trim() !== next) {
+    persistToken(next);
+  }
+  if (next !== activeToken) {
+    activeToken = next;
+    setNoteApiConfig({ url: API_BASE, token: next });
+    if (previousExp && previousExp <= now && decodeTokenExp(next) > now) {
+      log('Runner login was stale. Using the current local session.');
+    }
+  }
+  return activeToken;
+}
+
+async function refreshLogin() {
+  const current = adoptToken();
+  const now = Math.floor(Date.now() / 1000);
+  const exp = decodeTokenExp(current);
+  if (!current || exp <= now || exp - now > LOGIN_RENEWAL_WINDOW_SECONDS) return;
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/api/session`, {
+      headers: {
+        Cookie: `cascade_session=${encodeURIComponent(current)}; __Host-cascade_session=${encodeURIComponent(current)}`,
+      },
+    });
+  } catch (error) {
+    errorLog('Login refresh failed:', error?.message || error);
+    return;
+  }
+  const cookies = typeof response.headers.getSetCookie === 'function' ? response.headers.getSetCookie() : [];
+  const renewed = parseRenewedSessionCookie(cookies);
+  if (renewed && decodeTokenExp(renewed) > exp) {
+    persistToken(renewed);
+    adoptToken();
+    log('Renewed the runner login before it expired.');
+  }
+}
+
+function scheduleLoginMaintenance() {
+  if (loginTimer) clearTimeout(loginTimer);
+  const token = adoptToken();
+  const now = Math.floor(Date.now() / 1000);
+  const exp = decodeTokenExp(token);
+  const renewalAt = exp - LOGIN_RENEWAL_WINDOW_SECONDS;
+  let delay = 30_000;
+  let refresh = false;
+  if (token && exp > now && now >= renewalAt) {
+    delay = 60 * 60 * 1000;
+    refresh = true;
+  } else if (token && now < renewalAt) {
+    delay = Math.min((renewalAt - now) * 1000, 6 * 60 * 60 * 1000);
+  }
+  loginTimer = setTimeout(() => {
+    ensureConnected();
+    const step = refresh ? refreshLogin() : Promise.resolve();
+    Promise.resolve(step).finally(scheduleLoginMaintenance);
+  }, delay);
+}
 
 function connect() {
   const runnerInstanceId = `headless-runner-${process.pid}-${Date.now().toString(36)}`;
 
   runnerSocket = io(`${API_BASE}/runners`, {
-    auth: { token },
+    auth: (cb) => {
+      adoptToken();
+      cb({ token: activeToken });
+    },
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: Infinity,
@@ -96,7 +225,9 @@ function connect() {
 
   if (remoteMirroring) {
     // Multiplex the vault namespace on the existing runner transport.
-    vaultSocket = runnerSocket.io.socket('/vault', { auth: { token } });
+    vaultSocket = runnerSocket.io.socket('/vault', {
+      auth: (cb) => cb({ token: activeToken }),
+    });
     vaultSocket.on('connect', () => {
       for (const [id, entry] of mirrorEntries) {
         vaultSocket.emit('joinVault', id);
@@ -113,12 +244,19 @@ function connect() {
   }
 
   runnerSocket.on('runner:registered', (data) => {
+    lastConnectError = '';
     log('Successfully registered with backend. Desktop runner is ONLINE.', data);
+    void refreshLogin();
     void checkPendingDispatches();
   });
 
   runnerSocket.on('connect_error', (err) => {
-    errorLog('Connection error:', err?.message || err);
+    const message = err?.message || String(err);
+    if (message !== lastConnectError) {
+      errorLog('Connection error:', message);
+      lastConnectError = message;
+    }
+    adoptToken();
   });
 
   runnerSocket.on('disconnect', (reason) => {
@@ -185,15 +323,20 @@ function connect() {
   });
 }
 
+function ensureConnected() {
+  if (!adoptToken() || runnerSocket) return;
+  connect();
+}
+
 /**
  * Fallback poller to ensure dispatches from TUI/API without a browser
  * are initiated even if the backend's auto-dispatcher had a hiccup.
  */
 async function checkPendingDispatches() {
-  if (!runnerSocket?.connected) return;
+  if (!runnerSocket?.connected || !activeToken) return;
   try {
     const vaultsRes = await fetch(`${API_BASE}/api/vaults`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${activeToken}` },
     });
     if (!vaultsRes.ok) return;
     const { vaults } = await vaultsRes.json();
@@ -201,13 +344,13 @@ async function checkPendingDispatches() {
 
     for (const vault of vaults) {
       if (remoteMirroring && !mirrorEntries.has(vault.id)) {
-        const entry = mirrors().watch({ origin: API_BASE, token, vaultId: vault.id });
+        const entry = mirrors().watch({ origin: API_BASE, token: activeToken, vaultId: vault.id });
         mirrorEntries.set(vault.id, entry);
         if (vaultSocket?.connected) vaultSocket.emit('joinVault', vault.id);
         mirrors().notify(entry);
       }
       const notesRes = await fetch(`${API_BASE}/api/vaults/${vault.id}/notes`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${activeToken}` },
       });
       if (!notesRes.ok) continue;
       const { notes } = await notesRes.json();
@@ -217,7 +360,7 @@ async function checkPendingDispatches() {
       for (const channel of channels) {
         const pendingRes = await fetch(
           `${API_BASE}/api/vaults/${vault.id}/channels/${channel.id}/agent-dispatches/pending`,
-          { headers: { Authorization: `Bearer ${token}` } }
+          { headers: { Authorization: `Bearer ${activeToken}` } }
         );
         if (!pendingRes.ok) continue;
         const { dispatches } = await pendingRes.json();
@@ -254,7 +397,7 @@ async function checkPendingDispatches() {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
+                Authorization: `Bearer ${activeToken}`,
               },
               body: JSON.stringify(runBody),
             });
@@ -279,13 +422,10 @@ async function checkPendingDispatches() {
   }
 }
 
-const dispatchInterval = setInterval(() => {
-  void checkPendingDispatches();
-}, 4000);
-
 async function cleanup() {
   log('Shutting down runner daemon...');
-  clearInterval(dispatchInterval);
+  if (loginTimer) clearTimeout(loginTimer);
+  if (dispatchInterval) clearInterval(dispatchInterval);
   vaultSocket?.disconnect();
   await closeMirrors();
   if (runnerSocket) {
@@ -296,7 +436,24 @@ async function cleanup() {
   process.exit(0);
 }
 
-process.on('SIGINT', cleanup);
-process.on('SIGTERM', cleanup);
+function start() {
+  log(`Target API: ${API_BASE}`);
+  log('Runner login follows the current local session and renews before it expires.');
+  ensureConnected();
+  if (!runnerSocket) log('No runner login yet. Waiting for a local session.');
+  dispatchInterval = setInterval(() => {
+    void checkPendingDispatches();
+  }, 4000);
+  scheduleLoginMaintenance();
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+}
 
-connect();
+if (require.main === module) start();
+
+module.exports = {
+  resolveToken,
+  decodeTokenExp,
+  parseRenewedSessionCookie,
+  persistToken,
+};

@@ -20,10 +20,11 @@ export function stageAgentAccountSetup(destination, binary = process.env.FIZZER_
   }
   fs.mkdirSync(destination, { recursive: true });
   const tools = path.dirname(binary);
-  for (const name of ['alock', 'nab', 'awatch', 'purrvect', 'rclone', 'DEPENDENCIES.json']) {
+  for (const name of ['alock', 'nab', 'awatch', 'purrvect', 'rclone', 'fizzer-storage', 'DEPENDENCIES.json']) {
     fs.copyFileSync(path.join(tools, name), path.join(destination, name));
     if (name !== 'DEPENDENCIES.json') fs.chmodSync(path.join(destination, name), 0o755);
   }
+
   for (const name of fs.readdirSync(tools).filter(name => /\.dylib$|\.so(?:\.|$)/.test(name))) {
     fs.copyFileSync(path.join(tools, name), path.join(destination, name));
   }

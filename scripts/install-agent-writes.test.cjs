@@ -17,7 +17,8 @@ function fixture() {
     return target;
   };
   const binary = write('alock', `#!/bin/sh\ncat <<'HELP'\n${help}\nHELP\n`, 0o755);
-  for (const name of ['nab', 'awatch', 'purrvect', 'rclone']) write(name, '#!/bin/sh\nexit 0\n', 0o755);
+  for (const name of ['nab', 'awatch', 'purrvect', 'rclone', 'fizzer-storage']) write(name, '#!/bin/sh\nexit 0\n', 0o755);
+
   const startup = write('mock-shell', `
 sudo() { printf '%s\\n' "$*" >> "$MOCK_LOG"; }
 git() {

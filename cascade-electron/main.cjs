@@ -635,10 +635,38 @@ ipcMain.handle('agent:showAccountSetup', async (event) => {
     dialog, clipboard, window, packaged: app.isPackaged, resourcesPath: process.resourcesPath,
   });
 });
+/** Open a terminal to sign a CLI agent (Claude/Codex) into its provider. */
+ipcMain.handle('agent:login', async (event, { agent } = {}) => {
+  if (event.senderFrame !== event.sender.mainFrame || !isSameOrigin(event.senderFrame.url, INSTANCE_ORIGIN)) {
+    throw new Error('Agent login is only available in the selected app window');
+  }
+  return require('./agent-login.cjs').runAgentLogin({ agent });
+});
 ipcMain.handle('agent:getState', async (_event, afterSeq = 0) => agentRunState.snapshot(afterSeq));
 ipcMain.handle('agent:acknowledge', async (_event, { instanceId, seq } = {}) => (
   agentRunState.acknowledge(instanceId, seq)
 ));
+
+/**
+ * Origins the runner may bind to. The active vault — not the window's startup
+ * instance — decides the runner scope, so a local-instance window can still run
+ * agents against a connected remote vault (and vice versa). Trust only the
+ * selected instance, the local embedded backend, or a saved remote vault; never
+ * an arbitrary origin from the renderer payload.
+ */
+function trustedRunnerOrigin(apiUrl) {
+  const requested = parseInstanceOrigin(apiUrl);
+  const trusted = new Set(
+    [INSTANCE_ORIGIN, embeddedBackend?.origin, ...loadRemoteVaults().map(vault => vault.origin)]
+      .filter(Boolean)
+      .map(origin => { try { return parseInstanceOrigin(origin); } catch { return null; } })
+      .filter(Boolean),
+  );
+  if (!trusted.has(requested)) {
+    throw new Error('Runner origin is not the selected instance, the local vault, or a connected remote vault');
+  }
+  return requested;
+}
 
 /** Configure helper env for local agent children (renderer owns /runners socket). */
 ipcMain.handle('runner:setToken', async (event, { token, apiUrl } = {}) => {
@@ -646,15 +674,15 @@ ipcMain.handle('runner:setToken', async (event, { token, apiUrl } = {}) => {
     if (event.senderFrame !== event.sender.mainFrame || !isSameOrigin(event.senderFrame.url, INSTANCE_ORIGIN)) {
       throw new Error('Runner setup is only available in the selected app window');
     }
-    if (!isSameOrigin(apiUrl, INSTANCE_ORIGIN)) {
-      throw new Error('Runner origin does not match the desktop instance selected at startup');
-    }
-    // The renderer supplies a restricted helper token. The human-side file
-    // broker needs the user session, which must never cross into the worker.
-    const cookies = await instanceSession(INSTANCE_ORIGIN).cookies.get({ url: INSTANCE_ORIGIN });
-    const cookieName = INSTANCE_ORIGIN.startsWith('https:') ? '__Host-cascade_session' : 'cascade_session';
+    const runnerOrigin = trustedRunnerOrigin(apiUrl);
+    // The renderer supplies a restricted helper token. The human-side file broker
+    // needs the user session for THIS origin, read from that origin's partitioned
+    // cookie jar — it must never cross into the worker or into another origin's
+    // runs, so a remote vault's runner can never obtain the local session.
+    const cookies = await instanceSession(runnerOrigin).cookies.get({ url: runnerOrigin });
+    const cookieName = runnerOrigin.startsWith('https:') ? '__Host-cascade_session' : 'cascade_session';
     const writeToken = cookies.find(cookie => cookie.name === cookieName)?.value || '';
-    return connectDesktopRunner(token, INSTANCE_ORIGIN, writeToken);
+    return connectDesktopRunner(token, runnerOrigin, writeToken);
   } catch (error) {
     console.error('[IPC] Failed to configure desktop runner:', error);
     return { success: false, error: error.message };

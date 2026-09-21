@@ -1225,6 +1225,7 @@ impl App {
             display_name: format!("New Agent {}", suffix),
             mention,
             agent_id,
+            instance_of: None,
             model: String::new(),
             orchestrator: false,
             vault_agent_id: None,
@@ -2066,6 +2067,7 @@ mod tests {
             display_name: "Claude".into(),
             mention: "claude".into(),
             agent_id: "claude-code".into(),
+            instance_of: None,
             model: "claude-sonnet-5".into(),
             orchestrator: false,
             vault_agent_id: Some("va-456".into()),
@@ -2154,6 +2156,7 @@ mod tests {
             display_name: "Test".into(),
             mention: "test".into(),
             agent_id: "codex".into(),
+            instance_of: None,
             model: "".into(),
             orchestrator: false,
             vault_agent_id: None,
@@ -2194,7 +2197,7 @@ mod tests {
         app.active_channel_id = Some("c1".into());
         app.messages = vec![crate::api::ChatMessage {
             id: "m1".into(), author: "me".into(), body: "hello".into(),
-            created_at: "".into(), agent_id: None, images: vec![], image_count: 0, has_images: false,
+            created_at: "".into(), agent_id: None, status: None, images: vec![], image_count: 0, has_images: false,
         }];
         app.mark_offline("Backend unreachable: 429 Too Many Requests");
         assert!(!app.backend_online);

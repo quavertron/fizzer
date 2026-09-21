@@ -729,7 +729,7 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                 let top_line = Line::from(vec![
                     Span::raw(prefix),
                     Span::styled(ball_str, ball_style),
-                    Span::styled(&ag.display_name, name_style),
+                    Span::styled(agent_display_label(ag), name_style),
                     Span::raw(" "),
                     Span::styled(format!("@{}", ag.mention), Style::default().fg(Color::DarkGray)),
                 ]);
@@ -885,6 +885,42 @@ fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
         ))
         .border_style(Style::default().fg(if is_focused { Color::Cyan } else { Color::DarkGray }));
     frame.render_widget(List::new(items).block(block), area);
+}
+
+/// A numbered instance renders as `base<N>` (e.g. `ashtray<2>`). The backend
+/// names instances `"<base> <n>"` and mentions them `"<base><n>"`, so derive the
+/// number from the trailing digits of the display name.
+pub(crate) fn numbered_instance_label(agent: &crate::api::AgentItem) -> Option<String> {
+    if agent.instance_of.as_deref().unwrap_or("").is_empty() {
+        return None;
+    }
+    let (base, number) = agent.display_name.trim().rsplit_once(' ')?;
+    let base = base.trim_end();
+    if base.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{base}<{number}>"))
+}
+
+/// Display label for an agent, using the numbered `<N>` form for instances.
+pub(crate) fn agent_display_label(agent: &crate::api::AgentItem) -> String {
+    numbered_instance_label(agent).unwrap_or_else(|| agent.display_name.clone())
+}
+
+/// A short red badge for a failed agent run, distinguishing a sign-in failure
+/// (expired/rotated token or "Not logged in") from a generic failure.
+pub(crate) fn message_failure_note(msg: &crate::api::ChatMessage) -> Option<&'static str> {
+    if msg.status.as_deref() != Some("failed") {
+        return None;
+    }
+    let body = msg.body.to_lowercase();
+    let login = body.contains("not logged in")
+        || body.contains("please run /login")
+        || body.contains("log out and sign in")
+        || body.contains("token could not be refreshed")
+        || body.contains("refresh token was already used")
+        || body.contains("not authenticated");
+    Some(if login { "⚠ not logged in · 401" } else { "✗ failed" })
 }
 
 fn agent_for_message<'a>(
@@ -1108,15 +1144,20 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                 Color::White
             };
 
+            // Numbered instances show as `base<N>`; everyone else keeps their name.
+            let author_display = maybe_agent
+                .and_then(numbered_instance_label)
+                .unwrap_or_else(|| msg.author.clone());
+
             if !continues_group {
                 let ts = crate::api::format_timestamp(&msg.created_at);
                 let author_line = Line::from(vec![
                     Span::styled("● ", Style::default().fg(author_color)),
-                    Span::styled(msg.author.clone(), Style::default().fg(author_color).bold()),
+                    Span::styled(author_display.clone(), Style::default().fg(author_color).bold()),
                     Span::raw("  "),
                     Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
                 ]);
-                let text_line = format!("● {}  {}", msg.author, ts);
+                let text_line = format!("● {}  {}", author_display, ts);
                 let row = push_line(author_line, &text_line);
                 message_markers.push((row, m_idx));
             }
@@ -1124,6 +1165,24 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
             // A grouped continuation has no author line to mark its start, so its
             // first content row gets a colored `>` in the margin instead.
             let mut marker_pending = continues_group;
+
+            // Represent a failed run (e.g. a not-logged-in 401) with a red badge
+            // above its error body, whether or not it started a new author group.
+            if let Some(note) = message_failure_note(msg) {
+                let (margin_str, margin_span) = if marker_pending {
+                    marker_pending = false;
+                    ("> ", Span::styled("> ", Style::default().fg(author_color)))
+                } else {
+                    ("  ", Span::raw("  "))
+                };
+                let line = Line::from(vec![
+                    margin_span,
+                    Span::styled(note, Style::default().fg(Color::Red).bold()),
+                ]);
+                let text_line = format!("{margin_str}{note}");
+                let row = push_line(line, &text_line);
+                message_markers.push((row, m_idx));
+            }
 
             // Inline SVG is a message-body format, not an agent-only format:
             // human-authored SVG messages should render in exactly the same
@@ -2179,6 +2238,56 @@ mod tests {
     use super::*;
     use crate::api::{AgentItem, Vault};
 
+    #[test]
+    fn numbered_instances_render_as_base_angle_number() {
+        let instance: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "inst-2", "displayName": "ashtray 2", "mention": "ashtray2",
+            "agentId": "claude-code", "instanceOf": "base-1",
+        })).unwrap();
+        assert_eq!(numbered_instance_label(&instance).as_deref(), Some("ashtray<2>"));
+        assert_eq!(agent_display_label(&instance), "ashtray<2>");
+
+        // Originals (no instanceOf) keep their plain name.
+        let original: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "base-1", "displayName": "ashtray", "mention": "ashtray", "agentId": "claude-code",
+        })).unwrap();
+        assert_eq!(numbered_instance_label(&original), None);
+        assert_eq!(agent_display_label(&original), "ashtray");
+
+        // A trailing non-numeric word must not be mistaken for an instance number.
+        let named: AgentItem = serde_json::from_value(serde_json::json!({
+            "id": "inst-x", "displayName": "Red Panda", "mention": "redpanda",
+            "agentId": "codex", "instanceOf": "base-9",
+        })).unwrap();
+        assert_eq!(numbered_instance_label(&named), None);
+    }
+
+    #[test]
+    fn failed_runs_get_a_badge_and_login_failures_are_called_out() {
+        let login: crate::api::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "author": "claude", "body": "Not logged in · Please run /login",
+            "agentId": "claude-code", "status": "failed",
+        })).unwrap();
+        assert_eq!(message_failure_note(&login), Some("⚠ not logged in · 401"));
+
+        let refreshed: crate::api::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "2", "author": "ashtray",
+            "body": "Your access token could not be refreshed because your refresh token was already used.",
+            "status": "failed",
+        })).unwrap();
+        assert_eq!(message_failure_note(&refreshed), Some("⚠ not logged in · 401"));
+
+        let other: crate::api::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "3", "author": "codex", "body": "The agent crashed.", "status": "failed",
+        })).unwrap();
+        assert_eq!(message_failure_note(&other), Some("✗ failed"));
+
+        let ok: crate::api::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "4", "author": "codex", "body": "Not logged in", "status": "completed",
+        })).unwrap();
+        assert_eq!(message_failure_note(&ok), None);
+    }
+
     fn rendered_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
         let area = terminal.backend().buffer().area;
         (0..area.height)
@@ -2603,7 +2712,7 @@ mod tests {
         app.author = "test-user".into();
         let message = crate::api::ChatMessage {
             id: "first".into(), author: "chat2".into(), body: "before".into(),
-            created_at: "2026-09-08T12:00:00Z".into(), agent_id: None,
+            created_at: "2026-09-08T12:00:00Z".into(), agent_id: None, status: None,
             images: vec![], image_count: 0, has_images: false,
         };
         app.messages = vec![message.clone(), crate::api::ChatMessage {
@@ -2655,6 +2764,7 @@ mod tests {
             body: "hello".into(),
             created_at: "2026-09-08T12:00:00Z".into(),
             agent_id: Some("codex".into()),
+            status: None,
             images: vec![],
             image_count: 0, has_images: false,
         };
@@ -2710,6 +2820,7 @@ mod tests {
             display_name: "Bot".into(),
             mention: "bot".into(),
             agent_id: "codex".into(),
+            instance_of: None,
             model: "".into(),
             orchestrator: false,
             vault_agent_id: None,
@@ -2744,7 +2855,7 @@ mod tests {
         app.refresh_run_seeds();
         let message = crate::api::ChatMessage {
             id: "old".into(), author: "bot".into(), body: "first".into(),
-            created_at: "2026-09-13T12:00:00Z".into(), agent_id: Some(agent.id.clone()),
+            created_at: "2026-09-13T12:00:00Z".into(), agent_id: Some(agent.id.clone()), status: None,
             images: vec![], image_count: 0, has_images: false,
         };
         app.messages.push(message.clone());
@@ -2829,6 +2940,7 @@ mod tests {
                 body: format!("Message {i}: Here is some conversational content that will span across multiple wrapped lines in the chat stream!"),
                 created_at: "2026-09-08T04:00:00Z".into(),
                 agent_id: if i % 2 == 1 { Some("claude-code".into()) } else { None },
+                status: None,
                 images: vec![],
                 image_count: 0, has_images: false,
             });
@@ -2881,6 +2993,7 @@ mod tests {
             body: "hello".into(),
             created_at: "2026-09-08T04:00:00Z".into(),
             agent_id: Some("claude-code".into()),
+            status: None,
             images: vec![],
             image_count: 0, has_images: false,
         });

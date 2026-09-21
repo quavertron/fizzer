@@ -33,8 +33,8 @@ bash install-agent-writes.sh
 
 Setup creates a separate agent account, installs alock, enables nab history by
 default, and offers selected credential copying. Existing history/access choices
-are preserved. All five project sources are included under `vendor/`; build them
-with `npm run build:agent-tools`. Packaged releases include the native helpers.
+are preserved. Project sources under `vendor/`, including `fizzer-storage`, are
+built with `npm run build:agent-tools`. Packaged releases include the native helpers.
 See [build prerequisites and account setup](docs/agent-unix-account.md).
 
 ### Try the desktop beta
@@ -79,8 +79,14 @@ To run without Electron:
 npm run dev-headless
 ```
 
-Agent execution still requires the desktop app (or another compatible runner)
-and a locally installed, authenticated agent CLI.
+Agent execution still requires the desktop app or the headless runner in
+`scripts/desktop-runner-daemon.cjs`, plus a locally installed, authenticated
+agent CLI. The headless runner follows the current local server session instead
+of freezing `~/.fizzer/token` at startup, and renews that login during its last
+three days. The desktop runner binds only to a trusted origin: the selected
+instance, the local embedded backend, or a saved remote vault, and reads that
+origin's own session cookie. From a failed Claude or Codex run, the desktop can
+open a terminal to sign that CLI in, including the separate agent account.
 
 For the native terminal app, install Rust and run `npm run tui`. Its binary is
 named `fizzer`. The command automatically starts the local Elixir backend in the
@@ -143,8 +149,9 @@ development server with live frontend updates.
 
 The desktop keeps its SQLite database and vault files under `~/.fizzer/`, or
 `CASCADE_DATA_DIR` when explicitly configured. Electron and the TUI share
-per-server sessions in individual files under `server-sessions/` there, with owner-only file
-permissions on Unix. Local and remote server identities remain separate, and
+per-server sessions and saved remote vaults through the `fizzer-storage` helper,
+which keeps one owner-only file per record under `server-sessions/` and
+`remote-vaults/`. Local and remote server identities remain separate, and
 server sessions can persist even before any vault exists. Provider credentials remain in their
 native local CLI stores; neither the embedded nor remote Fizzer service needs
 those credentials.
