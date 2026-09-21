@@ -3,7 +3,7 @@ import { agentOwnership } from '../chat/agents';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ClipboardList, Copy, Flag, Forward, Hash, History, MessageCircle, Reply, Trash2, X } from 'lucide-react';
 import { api, type NoteSummary } from '../api';
-import { normalizeMention } from '../chat/mentions';
+import { normalizeMention, nextNumberedAgentMentions } from '../chat/mentions';
 import { createChannelWorkItem } from '../chat/workItems';
 import { VoiceRoom } from './VoiceRoom';
 import { buildReplyPreview, buildReplyRef } from '../chat/replies';
@@ -482,6 +482,7 @@ export const ChatView = memo(function ChatView({
     for (const name of humanUsers) {
       if (name) aliases.add(name);
     }
+    for (const mention of nextNumberedAgentMentions(registeredAgents)) aliases.add(mention);
     return Array.from(aliases);
   }, [humanUsers, registeredAgents]);
   const openSharedNote = useCallback(async (messageId: string, title: string) => {

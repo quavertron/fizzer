@@ -13,7 +13,7 @@ defmodule Cascade.Missions.Dispatches do
       {:ok, []}
     else
       with {:ok, _route} <- Channel.assert_channel(channel_id, user_id),
-           {:ok, members} <- Agents.list_members(channel_id, user_id) do
+           {:ok, members} <- mentioned_members(user_id, channel_id, message) do
         targets =
           if clear_targets(field(message, :body, ""), members),
             do: [],
@@ -44,6 +44,14 @@ defmodule Cascade.Missions.Dispatches do
   end
 
   defdelegate retract_pending_reply(dispatch_id), to: Cascade.Chat.PendingReply, as: :retract
+
+  defp mentioned_members(user_id, channel_id, message) do
+    if present?(field(message, :registrationId)) or present?(field(message, :agentId)) do
+      Agents.list_members(channel_id, user_id)
+    else
+      Cascade.Chat.NumberedAgents.ensure(user_id, channel_id, message_source(message))
+    end
+  end
 
   def create(user_id, channel_id, message, registration_id, opts \\ []) do
     with {:ok, route} <- Channel.assert_channel(channel_id, user_id),

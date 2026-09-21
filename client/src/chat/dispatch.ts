@@ -10,6 +10,7 @@ import { api, type NoteSummary } from '../api';
 import { isLocalRunId, cancelLocalAgentRun } from '../localAgentRunner';
 import {
   getMentionedRegistrations,
+  hasNumberedAgentMention,
   isCompactCommand,
   normalizeMention,
   replyQuoteTargetsAgent,
@@ -187,6 +188,7 @@ export function useChatDispatch({
     const hasAgentIntent = isClearCommand(trimmed) || Boolean(replyTo)
       || isCompactCommand(trimmed, channelRegistrations)
       || getMentionedRegistrations(typedSource, channelRegistrations, false).length > 0
+      || hasNumberedAgentMention(typedSource, channelRegistrations)
       || channelRegistrations.some((registration) => registration.replyToEveryMessage);
     let outgoingMessage = candidate;
     let mergeTargetId: string | null = null;

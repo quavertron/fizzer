@@ -210,6 +210,16 @@ defmodule Cascade.Chat.Schema do
     reconcile_member_uniqueness!()
     repair_node_schema_parity!()
     create_indexes_and_search!()
+
+    SQL.exec("""
+    CREATE TABLE IF NOT EXISTS chat_agent_instances (
+      identity_id TEXT PRIMARY KEY REFERENCES vault_agents(id) ON DELETE CASCADE,
+      base_identity_id TEXT NOT NULL,
+      instance_number TEXT NOT NULL,
+      UNIQUE(base_identity_id,instance_number)
+    )
+    """)
+
     :ok
   end
 

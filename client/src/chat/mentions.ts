@@ -25,7 +25,47 @@ export type MentionableAgent = {
   agentId: string;
   mention: string;
   taggableByAgents: boolean;
+  instanceOf?: string | null;
 };
+
+/** Originals reserve suffixes starting at 1; suffix 1 is unavailable. Generated
+ * instances do not reserve prefixes. Exact original handles always win. */
+export function numberedAgentBase<T extends { agentId: string; mention: string; instanceOf?: string | null }>(
+  handle: string, registrations: T[],
+): { base: T; number: string; available: boolean } | undefined {
+  const target = normalizeMention(handle);
+  const originals = registrations.filter((item) => !item.instanceOf);
+  if (originals.some((item) => normalizeMention(item.mention || item.agentId) === target)) return;
+  const base = originals.sort((a, b) => b.mention.length - a.mention.length).find((item) => {
+    const prefix = normalizeMention(item.mention || item.agentId);
+    return target.startsWith(prefix) && /^[1-9][0-9]*$/.test(target.slice(prefix.length));
+  });
+  if (!base) return;
+  const number = target.slice(normalizeMention(base.mention || base.agentId).length);
+  return { base, number, available: number !== '1' };
+}
+
+export function hasNumberedAgentMention(text: string, registrations: MentionableAgent[]) {
+  return Array.from(text.matchAll(/(?<![\w@])@\s*([a-z0-9_-]+)(?=$|[\s.,:;!?\])}])/gi))
+    .some((match) => Boolean(numberedAgentBase(match[1], registrations)));
+}
+
+export function nextNumberedAgentMentions(registrations: MentionableAgent[]) {
+  const used = new Set(registrations.map((item) => normalizeMention(item.mention || item.agentId)));
+  const originals = registrations.filter((item, index) => !item.instanceOf
+    && normalizeMention(item.mention || item.agentId)
+    && registrations.findIndex((other) => !other.instanceOf
+      && normalizeMention(other.mention || other.agentId) === normalizeMention(item.mention || item.agentId)) === index);
+  return originals.map((base) => {
+    const prefix = normalizeMention(base.mention || base.agentId);
+    let number = 2;
+    while (true) {
+      const handle = prefix + number++;
+      const resolved = numberedAgentBase(handle, registrations);
+      if (!used.has(handle) && resolved?.base === base && resolved.available) return handle;
+    }
+  });
+}
 
 export function hasRegistrationForMention(
   mention: string,

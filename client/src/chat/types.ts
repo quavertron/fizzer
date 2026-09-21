@@ -192,6 +192,7 @@ export interface ChatBlock {
 }
 
 export interface ChatAgentRegistration {
+  instanceOf?: string | null;
   id: string;
   /** Persistent vault-level agent id (shared across channels). */
   vaultAgentId?: string;
@@ -234,6 +235,7 @@ export interface ChatAgentRegistration {
 
 /** Stable agent principal. Its visible @ alias is copied into each channel binding and may diverge. */
 export interface VaultAgent {
+  instanceOf?: string | null;
   id: string;
   vaultId: string;
   agentId: string;

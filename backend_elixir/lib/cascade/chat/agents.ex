@@ -33,6 +33,7 @@ defmodule Cascade.Chat.Agents do
         )
         |> Enum.map(&identity/1)
         |> Enum.map(&Map.put(&1, :channelIds, channel_ids(&1.id)))
+        |> Cascade.Chat.NumberedAgents.annotate()
 
       {:ok, agents}
     else
@@ -49,7 +50,11 @@ defmodule Cascade.Chat.Agents do
     end
   end
 
-  def upsert_identity(user_id, vault_id, input) do
+  def upsert_identity(user_id, vault_id, input, opts \\ []) do
+    SQL.transaction(fn -> do_upsert_identity(user_id, vault_id, input, opts) end)
+  end
+
+  defp do_upsert_identity(user_id, vault_id, input, opts) do
     if VaultMembers.role(vault_id, user_id) do
       agent_id = input |> value("agentId", "") |> to_string() |> String.trim()
 
@@ -71,11 +76,19 @@ defmodule Cascade.Chat.Agents do
         existing && hd(existing) not in [nil, user_id] ->
           {:error, "Only the agent owner can edit it"}
 
-        identity_clash?(id, mention, user_id, vault_id) ->
-          {:error, "Mention @#{mention} is already used by another agent"}
-
         true ->
-          persist_identity(user_id, vault_id, id, agent_id, mention, input, existing)
+          with :ok <-
+                 Cascade.Chat.NumberedAgents.reserve_original(
+                   user_id,
+                   vault_id,
+                   id,
+                   mention,
+                   opts
+                 ) do
+            if identity_clash?(id, mention, user_id, vault_id),
+              do: {:error, "Mention @#{mention} is already used by another agent"},
+              else: persist_identity(user_id, vault_id, id, agent_id, mention, input, existing)
+          end
       end
     else
       {:error, "Vault not found"}
@@ -178,6 +191,7 @@ defmodule Cascade.Chat.Agents do
           [route.sourceChannelId]
         )
         |> Enum.map(&member/1)
+        |> Cascade.Chat.NumberedAgents.annotate()
 
       {:ok, members}
     end
@@ -300,7 +314,10 @@ defmodule Cascade.Chat.Agents do
           # writes the channel registration).
           if user_id == owner_id do
             requested_color =
-              value(flags, "color", existing_color) |> to_string() |> String.trim() |> String.upcase()
+              value(flags, "color", existing_color)
+              |> to_string()
+              |> String.trim()
+              |> String.upcase()
 
             new_color =
               if Regex.match?(~r/^[0-9A-F]{6}$/, requested_color),

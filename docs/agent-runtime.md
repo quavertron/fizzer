@@ -38,6 +38,27 @@ Responses wire API is used.
 
 ## Chat run lifecycle
 
+### Numbered agents
+
+Mention `@codex2`, `@codex3`, or another number to create another instance of
+your `codex` profile. Each instance copies the current configuration on first
+use and receives its own saved profile and conversation. Subsequent mentions
+resume that instance; settings can be edited independently. Generated instances
+are explicitly invoked rather than inheriting automatic coordinator or ambient
+room roles. Tab completion offers the next available instance.
+
+Original profile names take precedence. With original profiles `codex` and
+`codex2`, `@codex3` and `@codex20` belong to `codex`, `@codex22` belongs to
+`codex2`, and `@codex21` is unavailable: sequel numbering starts at 2.
+Generated instances do not reserve prefixes, so without an original `codex2`,
+`@codex21` through `@codex29` are instances of `codex`.
+
+Creating an original profile whose name conflicts with generated instances
+moves those instances to unused handles. Their identities and conversations
+are preserved, while the new original gets a fresh identity and history.
+
+### Conversation persistence
+
 Chat agent registrations have a stable Cascade conversation ID. The server maps
 that conversation to a provider session ID when the provider supports resume.
 

@@ -101,13 +101,32 @@ defmodule CascadeWeb.ChatRouter do
     authenticated(conn, :any, :vault, fn conn, user ->
       case serialized_mutation_and_emit(
              conn,
-             fn -> Agents.upsert_identity(user.id, vault_id, conn.body_params) end,
-             fn agent ->
-               %{event: "vault:vaultAgentUpserted", vaultId: vault_id, agent: agent}
+             fn ->
+               with {:ok, before} <- Agents.list_vault(user.id, vault_id),
+                    {:ok, agent} <- Agents.upsert_identity(user.id, vault_id, conn.body_params),
+                    {:ok, after_profiles} <- Agents.list_vault(user.id, vault_id) do
+                 renamed =
+                   Enum.filter(after_profiles, fn profile ->
+                     Enum.any?(before, &(&1.id == profile.id && &1.mention != profile.mention))
+                   end)
+
+                 {:ok, %{agent: agent, renamed: renamed}}
+               end
+             end,
+             fn result ->
+               for profile <- result.renamed do
+                 OrderedPublisher.chat(callback(conn, :events), %{
+                   event: "vault:vaultAgentUpserted",
+                   vaultId: vault_id,
+                   agent: profile
+                 })
+               end
+
+               %{event: "vault:vaultAgentUpserted", vaultId: vault_id, agent: result.agent}
              end
            ) do
-        {:ok, agent} ->
-          JSON.send(conn, 200, %{agent: agent})
+        {:ok, result} ->
+          JSON.send(conn, 200, %{agent: result.agent})
 
         error ->
           domain_error(conn, error)
@@ -232,7 +251,14 @@ defmodule CascadeWeb.ChatRouter do
                conn,
                fn ->
                  with {:ok, prior} <- Messages.list(channel_id, user.id, limit: 48),
-                      {:ok, members} <- Agents.ensure_vault_wide(user.id, vault_id, channel_id) do
+                      {:ok, original_members} <-
+                        Agents.ensure_vault_wide(user.id, vault_id, channel_id),
+                      {:ok, members} <-
+                        Cascade.Chat.NumberedAgents.ensure(
+                          user.id,
+                          channel_id,
+                          body(conn, "body", "")
+                        ) do
                    case Dispatches.clear_targets(body(conn, "body", ""), members) do
                      nil ->
                        input = RoomContext.infer_natural_link(conn.body_params, prior, members)
@@ -243,7 +269,18 @@ defmodule CascadeWeb.ChatRouter do
                               ),
                             {:ok, dispatches} <-
                               Dispatches.create_for_message(user.id, channel_id, message) do
-                         {:ok, %{message: message, agents: members, dispatches: dispatches}}
+                         new_members =
+                           Enum.reject(members, fn member ->
+                             Enum.any?(original_members, &(&1.id == member.id))
+                           end)
+
+                         {:ok,
+                          %{
+                            message: message,
+                            agents: members,
+                            dispatches: dispatches,
+                            newAgents: new_members
+                          }}
                        end
 
                      targets ->
@@ -252,6 +289,15 @@ defmodule CascadeWeb.ChatRouter do
                  end
                end,
                fn result ->
+                 for agent <- Map.get(result, :newAgents, []) do
+                   OrderedPublisher.chat(callback(conn, :events), %{
+                     event: "vault:chatAgentMemberUpserted",
+                     vaultId: source(result.message, :vault, vault_id),
+                     channelId: source(result.message, :channel, channel_id),
+                     registration: agent
+                   })
+                 end
+
                  event = %{
                    event: "vault:chatMessageCreated",
                    vaultId: source(result.message, :vault, vault_id),
@@ -309,21 +355,30 @@ defmodule CascadeWeb.ChatRouter do
   patch "/api/vaults/:vault_id/channels/:channel_id/messages/:message_id" do
     authenticated(conn, :any, :vault, fn conn, user ->
       result = fn ->
-        with {:ok, message} <-
+        with {:ok, before_members} <- Agents.list_members(channel_id, user.id),
+             {:ok, message} <-
                Messages.update(user, vault_id, channel_id, message_id, conn.body_params,
                  access: access(conn)
                ),
              {:ok, all_dispatches} <-
-               Dispatches.create_for_message(user.id, channel_id, message) do
+               Dispatches.create_for_message(user.id, channel_id, message),
+             {:ok, members} <- Agents.list_members(channel_id, user.id) do
           {:ok,
            %{
              message: message,
+             newAgents: Enum.reject(members, fn member -> Enum.any?(before_members, &(&1.id == member.id)) end),
              dispatches: Enum.filter(all_dispatches, &is_nil(&1.runId))
            }}
         end
       end
 
       case serialized_mutation_and_emit(conn, result, fn result ->
+             for agent <- result.newAgents do
+               OrderedPublisher.chat(callback(conn, :events), %{
+                 event: "vault:chatAgentMemberUpserted", vaultId: vault_id,
+                 channelId: channel_id, registration: agent
+               })
+             end
              %{
                event: "vault:chatMessageUpdated",
                vaultId: vault_id,
