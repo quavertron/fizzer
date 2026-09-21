@@ -230,6 +230,20 @@ fn range(data: &[u8], ls: u64, le: u64) -> Result<Range> {
         line_end: le as u32,
     })
 }
+// Merge only inside the live lock; never publish conflict-marker output.
+fn merge_range(base: &[u8], proposed: &[u8], current: &[u8]) -> Result<Vec<u8>> {
+    if current == base || current == proposed {
+        return Ok(proposed.to_vec());
+    }
+    if proposed == base {
+        return Ok(current.to_vec());
+    }
+    if [base, proposed, current].iter().any(|data| data.contains(&0)) {
+        return err(409, "Three-way merge conflict: binary range changed since staging");
+    }
+    diffy::merge_bytes(base, proposed, current)
+        .map_err(|_| (409, "Three-way merge conflict in locked range; reconcile proposal and retry".into()))
+}
 fn live(lt: *mut Locks, id: i32) -> Option<Range> {
     let mut r = Range::default();
     (unsafe { account_lock_get(lt, id, &mut r) } != 0).then_some(r)
@@ -593,14 +607,15 @@ impl Controller {
         let p = &self.proposals[&ticket];
         let live_range = live(lt, p.lock).ok_or((409, "Lock renewal failed".into()))?;
         let start = live_range.start as usize;
-        let length = p.range.length as usize;
-        if live_range.length != p.range.length
-            || current.data.get(start..start.saturating_add(length))
-                != p.base
-                    .get(p.range.start as usize..(p.range.start + p.range.length) as usize)
-        {
-            return err(409, "Locked range changed since staging");
-        }
+        // Other accepted edits may shift or resize this lock. The ancestor still
+        // uses its original staged coordinates; current uses the live lock table.
+        let length = live_range.length as usize;
+        let ancestor = p.base
+            .get(p.range.start as usize..(p.range.start + p.range.length) as usize)
+            .ok_or((409, "Invalid staged range".into()))?;
+        let current_range = current.data.get(start..start.saturating_add(length))
+            .ok_or((409, "Live lock range is outside master; restage required".into()))?;
+        let replacement = merge_range(ancestor, &replacement, current_range)?;
         let updated_size = current.data.len() - length + replacement.len();
         if updated_size > LIMIT {
             return err(413, "Result exceeds 4 MiB");

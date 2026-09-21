@@ -21,8 +21,12 @@ compiler and Rust/Cargo. `control/Cargo.lock` pins the HTTP dependencies.
    metadata. Commit sends only the replacement for the acquired range.
 4. Commit checks plausible syntax and a valid lock. An expired or unclaimed
    lock may be renewed through request-lock only if the full master is
-   unchanged and the range is available. A live range also checks its baseline;
-   other agents' accepted edits outside that range survive.
+   unchanged and the range is available. With a live lock, three-way merge uses
+   the staged range as ancestor, the proposal as ours, and the current **shifted
+   live range** as theirs. Clean text merges are accepted; overlapping changes
+   return 409 without publishing conflict markers. Differing binary edits also
+   return 409. Other agents' accepted edits outside that range survive. Syntax
+   checks run on the merged candidate before publication.
 5. Each accepted concurrent commit writes master and checkpoints nab. Solo
    commits write master; their nab checkpoint waits for conclude. A rejected
    local commit leaves the already-edited temp file intact. A rejected remote
