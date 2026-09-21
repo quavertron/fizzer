@@ -943,6 +943,10 @@ async function runLocalAgent(opts, sendEvent) {
   if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.enabled()) {
     return agentAccount.run(opts, sendEvent, noteApi);
   }
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.isRemoteVault(opts, noteApi)) {
+    const { root } = await agentAccount.prepareWorkspace(opts, noteApi);
+    opts = { ...opts, cwd: root, remoteVault: true };
+  }
   const runId = Number(opts.runId);
   if (!Number.isFinite(runId)) throw new Error('Invalid run id');
 
@@ -1028,6 +1032,9 @@ async function runLocalAgent(opts, sendEvent) {
     const helperEnv = { ...(selfContained ? {} : buildRunHelperEnv(opts)), CASCADE_RUN_ID: String(opts.runId) };
     const cwd = resolveAgentCwd(opts.cwd, opts.vaultRoot);
     const env = { ...process.env, ...helperEnv };
+
+    if (opts.remoteVault === true) env.FIZZER_REMOTE_VAULT = '1';
+    else delete env.FIZZER_REMOTE_VAULT;
 
     if (agent === 'codex' && opts.importedCodexSession && opts.resumeSessionId) {
       require('./codex-sessions.cjs').assertCodexSessionIdle(opts.resumeSessionId);

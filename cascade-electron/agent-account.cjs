@@ -10,6 +10,27 @@ const { startReadOnlyApi } = require('./agent-account-api.cjs');
 const writeAccess = require('./agent-write-access.cjs');
 
 const active = new Map();
+function isRemoteVault(opts, api) {
+  return opts.remoteVault === true || Boolean(api?.url &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(new URL(api.origin || api.url).hostname));
+}
+async function prepareWorkspace(opts, api, mirrorHost) {
+  if (isRemoteVault(opts, api)) {
+    if (!api?.url || !(api.writeToken || api.token) || !opts.vaultId) {
+      throw new Error('Remote vault workspace requires an authenticated mirror connection');
+    }
+    mirrorHost ||= require('./vault-mirror.cjs').mirrors();
+    const mirror = mirrorHost.watch({ origin: api.origin || api.url,
+      token: api.writeToken || api.token, vaultId: opts.vaultId });
+    await mirrorHost.reconcile(mirror);
+    const root = fs.realpathSync(mirror.root);
+    if (!fs.statSync(root).isDirectory()) throw new Error('Remote vault mirror is not a directory');
+    return { root, remote: true };
+  }
+  const root = resolveWorkspace(String(opts.cwd || '').trim() || String(opts.vaultRoot || '').trim() || process.cwd());
+  if (!fs.statSync(root).isDirectory()) throw new Error(`Agent workspace is not a directory: ${root}`);
+  return { root, remote: false };
+}
 function resolveWorkspace(selected) {
   let expanded = selected === '~' ? os.homedir()
     : selected.startsWith('~/') ? path.join(os.homedir(), selected.slice(2)) : selected;
@@ -161,28 +182,23 @@ async function run(opts, sendEvent, api) {
     sendEvent({ runId: Number(opts.runId), seq: ++sequence, type: 'status', payload_json: JSON.stringify({ status: value, summary }) });
   };
   try {
-    const selected = String(opts.cwd || '').trim() || String(opts.vaultRoot || '').trim() || process.cwd();
-    const root = resolveWorkspace(selected);
-    if (!fs.statSync(root).isDirectory()) throw new Error(`Agent workspace is not a directory: ${root}`);
+    const { root, remote } = await prepareWorkspace(opts, api);
     // Resolve once as the human; the worker's HOME belongs to the fizzer account.
-    opts = { ...opts, cwd: root };
+    opts = { ...opts, cwd: root, remoteVault: remote };
     // macOS os.tmpdir() is inside a per-user 0700 tree the agent cannot traverse.
     directory = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'faw-'));
     fs.chmodSync(directory, 0o755);
-    for (const allowedRoot of writeAccess.roots(opts, api, root)) {
-      bridges.push({ ...await startBridge(allowedRoot, directory, bridges.length), root: allowedRoot });
-    }
-    if (api?.url && api?.token && opts.vaultId &&
-        (opts.remoteVault === true || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(api.origin || api.url).hostname))) {
-      const mirrorHost = require('./vault-mirror.cjs').mirrors();
+    if (remote) {
       const writeToken = api.writeToken || api.token;
-      const mirror = mirrorHost.watch({ origin: api.origin || api.url, token: writeToken, vaultId: opts.vaultId });
-      await mirrorHost.reconcile(mirror);
       const header = path.join(directory, 'remote-authorization');
       fs.writeFileSync(header, `Authorization: Bearer ${writeToken}\n`, { mode: 0o600, flag: 'wx' });
       const url = `${new URL(api.url).origin}/api/vaults/${encodeURIComponent(opts.vaultId)}/alock`;
       bridges.push({ ...await startBridge(root, directory, bridges.length, { url, header }),
-        root: 'remote-vault', remote: true, vaultId: opts.vaultId, mirrorRoot: mirror.root });
+        root: 'remote-vault', remote: true, vaultId: opts.vaultId, mirrorRoot: root });
+    } else {
+      for (const allowedRoot of writeAccess.roots(opts, api, root)) {
+        bridges.push({ ...await startBridge(allowedRoot, directory, bridges.length), root: allowedRoot });
+      }
     }
     const bridge = bridges[0];
     const sessions = new Set(bridges.filter(item => !item.remote && item.session).map(item => item.session));
@@ -273,4 +289,4 @@ async function run(opts, sendEvent, api) {
   }
 }
 function cancel(id) { const record = active.get(Number(id)); if (!record) return false; record.canceled = true; record.child.kill('SIGTERM'); return true; }
-module.exports = { enabled, shouldOffer, decline, setupCommand, launchArguments, resolveWorkspace, run, cancel };
+module.exports = { enabled, shouldOffer, decline, setupCommand, launchArguments, resolveWorkspace, isRemoteVault, prepareWorkspace, run, cancel };

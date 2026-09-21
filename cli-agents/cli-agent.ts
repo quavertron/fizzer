@@ -1040,6 +1040,7 @@ class CodexAppServerClient {
       approvalPolicy: 'never',
       sandbox,
       config: {
+        ...(options.env?.FIZZER_REMOTE_VAULT === '1' ? { project_root_markers: [] } : {}),
         ...(sandbox === 'workspace-write' ? { sandbox_workspace_write: { network_access: true } } : {}),
         shell_environment_policy: { inherit: 'all', set: this.environmentOverrides(options.env) },
       },
@@ -1476,7 +1477,10 @@ async function runCodex(
   const imageArgs = imagePaths.flatMap((p) => ['-i', p]);
   const effectiveModel = openRouterModelId ?? model;
   const modelArgs = effectiveModel ? ['--model', effectiveModel] : [];
-  const providerArgs = openRouterModelId ? OPENROUTER_PROVIDER_ARGS : [];
+  const providerArgs = [
+    ...(openRouterModelId ? OPENROUTER_PROVIDER_ARGS : []),
+    ...(env?.FIZZER_REMOTE_VAULT === '1' ? ['-c', 'project_root_markers=[]'] : []),
+  ];
   let codexEnv = env;
   if (openRouterModelId) {
     const key = openRouterApiKey();

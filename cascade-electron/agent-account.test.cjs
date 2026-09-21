@@ -9,6 +9,28 @@ const { PassThrough } = require('node:stream');
 const account = require('./agent-account.cjs');
 const { offerAgentAccountSetup } = require('./agent-account-setup.cjs');
 
+test('remote runs use the reconciled mirror even with an invalid profile workspace', async () => {
+  const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-workspace-'));
+  const calls = [];
+  const mirror = { root: mirrorRoot };
+  const host = { watch: config => { calls.push(config); return mirror; },
+    reconcile: async entry => { assert.equal(entry, mirror); calls.push('synced'); } };
+  try {
+    for (const origin of ['https://vault.example', 'http://localhost:3000']) {
+      const result = await account.prepareWorkspace({ remoteVault: true, vaultId: 'v1',
+        cwd: '/missing/profile/workspace', vaultRoot: '/data' },
+      { url: origin, token: 'read', writeToken: 'write' }, host);
+      assert.deepEqual(result, { root: fs.realpathSync(mirrorRoot), remote: true });
+      assert.equal(calls.at(-2).token, 'write');
+      assert.equal(calls.at(-1), 'synced');
+    }
+    await assert.rejects(account.prepareWorkspace({ remoteVault: true }, {}, host), /authenticated mirror/);
+    await assert.rejects(account.prepareWorkspace({ vaultId: 'v1', cwd: os.homedir() },
+      { url: 'https://vault.example', token: 'token' },
+      { ...host, reconcile: async () => { throw new Error('mirror unavailable'); } }), /mirror unavailable/);
+  } finally { fs.rmSync(mirrorRoot, { recursive: true, force: true }); }
+});
+
 test('account runner resolves stale fizzer workspace through legacy cascade path', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'account-legacy-root-'));
   const legacy = path.join(parent, '.cascade', 'vaults', 'one');

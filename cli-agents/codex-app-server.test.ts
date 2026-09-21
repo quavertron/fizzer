@@ -8,6 +8,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-codex-app-server-
 const fakeBin = path.join(scratch, 'codex');
 const launchLog = path.join(scratch, 'launches');
 const protocolLog = path.join(scratch, 'protocol');
+const configLog = path.join(scratch, 'configs');
 
 fs.writeFileSync(fakeBin, `#!/usr/bin/env node
 const fs = require('fs');
@@ -20,6 +21,7 @@ const retryTurns = new Map();
 function send(value) { process.stdout.write(JSON.stringify(value) + '\\n'); }
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
+  if (message.method === 'thread/start' || message.method === 'thread/resume') fs.appendFileSync(${JSON.stringify(configLog)}, JSON.stringify(message.params.config) + '\\n');
   fs.appendFileSync(${JSON.stringify(protocolLog)}, message.method + ':' + (message.params?.threadId || '') + '\\n');
   if (message.method === 'initialize') return send({ id: message.id, result: {} });
   if (message.method === 'thread/start') return send({ id: message.id, result: { thread: { id: 'thread-' + (++thread) } } });
@@ -109,6 +111,7 @@ test('Codex app-server is reused across sequential turns', async () => {
   const timings: any[] = [];
   const first = await runCliAgent({
     agent: 'codex', context: '', userPrompt: 'first', cwd: scratch,
+    env: { FIZZER_REMOTE_VAULT: '1' },
     emit(type, payload: any) {
       if (type === 'timing') timings.push(payload);
       if (type === 'session') sessions.push(payload.sessionId);
@@ -128,6 +131,9 @@ test('Codex app-server is reused across sequential turns', async () => {
   assert.equal(timings[2].outcome, 'completed');
   assert.equal(first.summary, 'answer 1');
   assert.equal(second.summary, 'answer 2');
+  const configs = fs.readFileSync(configLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(configs[0].project_root_markers, []);
+  assert.equal(configs[1].project_root_markers, undefined);
   assert.deepEqual(sessions, ['thread-1']);
   assert.deepEqual(blocks.map(block => block.type), ['thinking', 'text']);
   assert.equal(fs.readFileSync(launchLog, 'utf8').trim().split('\n').length, 1);

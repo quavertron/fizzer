@@ -1704,7 +1704,10 @@ export default function App() {
   }, [loadSuperkanban]);
 
   const openAwatch = useCallback((paneId: string) => {
-    workspaceStore.openTab({ id: newId('awatch'), title: 'Awatch', type: 'awatch', dirty: false }, 'open', paneId);
+    const workspace = workspaceStore.active;
+    const pane = Layout.findPane(workspace.layout, paneId);
+    const activeTab = workspace.openTabs.find((tab) => tab.id === pane?.activeTabId);
+    workspaceStore.openTab({ id: newId('awatch'), title: 'Awatch', type: 'awatch', dirty: false }, activeTab?.type === 'new' ? 'replace' : 'open', paneId);
   }, []);
 
   /**
