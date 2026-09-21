@@ -21,6 +21,7 @@ const DISPATCH_ADMISSION_COLUMNS = [
   ['requester_channel_id', 'TEXT'],
   ['target_owner_user_id', 'INTEGER REFERENCES users(id)'],
   ['target_identity_id', 'TEXT'],
+  ['delegating_identity_id', 'TEXT'],
   ['conversation_id', 'TEXT'],
   ['error', 'TEXT'],
   ['failed_at', 'TEXT'],
@@ -476,20 +477,27 @@ const PROFILE_COLOR_LEDGER_ROW = {
 function exactRollingColumnAddition(before, after) {
   if (!after || before.type !== 'table' || after.type !== 'table'
       || before.name !== after.name || before.tableName !== after.tableName) return false;
-  const column = PROFILE_COLOR_TABLES.has(before.name) ? "color TEXT NOT NULL DEFAULT 'FFFFFF'"
-    : before.name === 'chat_messages' ? 'reactions_json TEXT' : null;
-  if (!column) return false;
-  const db = new Database(':memory:');
-  try {
-    // Let SQLite produce the exact ALTER result, including legacy constraints
-    // and column ordering. No other schema difference is authorized.
-    db.exec(before.sql);
-    db.exec(`ALTER TABLE ${before.name} ADD COLUMN ${column}`);
-    const { sql } = db.prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?').get('table', before.name);
-    return normalizedSql(sql) === normalizedSql(after.sql);
-  } catch {
-    return false;
-  } finally { db.close(); }
+  const columns = [
+    ...(PROFILE_COLOR_TABLES.has(before.name) ? ["color TEXT NOT NULL DEFAULT 'FFFFFF'"] : []),
+    ...({
+      chat_messages: ['reactions_json TEXT'],
+      vault_agents: ['missions_enabled INTEGER NOT NULL DEFAULT 1'],
+      chat_agent_dispatches: ['delegating_identity_id TEXT'],
+    }[before.name] || []),
+  ];
+  return columns.some(column => {
+    const db = new Database(':memory:');
+    try {
+      // Let SQLite produce the exact ALTER result, including legacy constraints
+      // and column ordering. No other schema difference is authorized.
+      db.exec(before.sql);
+      db.exec(`ALTER TABLE ${before.name} ADD COLUMN ${column}`);
+      const { sql } = db.prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?').get('table', before.name);
+      return normalizedSql(sql) === normalizedSql(after.sql);
+    } catch {
+      return false;
+    } finally { db.close(); }
+  });
 }
 
 export function compareSchemaFingerprints(before, after) {

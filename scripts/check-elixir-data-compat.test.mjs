@@ -90,6 +90,32 @@ test('profile colors permit only the additive column and pinned ledger entry', (
   } finally { db.close(); }
 });
 
+test('delegation rolls forward only with the exact default-on setting and nullable provenance', () => {
+  for (const [table, column, expected] of [
+    ['vault_agents', 'missions_enabled INTEGER NOT NULL DEFAULT 1', { missions_enabled: 1 }],
+    ['chat_agent_dispatches', 'delegating_identity_id TEXT', { delegating_identity_id: null }],
+  ]) {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`CREATE TABLE ${table}(id INTEGER PRIMARY KEY, name TEXT NOT NULL); INSERT INTO ${table} VALUES(1,'existing')`);
+      const fingerprint = () => ({ objects: db.prepare("SELECT type,name,tbl_name AS tableName,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all(), migrations: [] });
+      const before = fingerprint();
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+      const after = fingerprint();
+      assert.deepEqual(compareSchemaFingerprints(before, after), []);
+      assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(), [{ id: 1, name: 'existing', ...expected }]);
+      assert.notDeepEqual(compareSchemaFingerprints(after, before), []);
+      for (const replacement of [column + " CHECK(id > 0)", column.replace('INTEGER NOT NULL DEFAULT 1', 'INTEGER DEFAULT 0').replace('TEXT', 'INTEGER')]) {
+        const changed = structuredClone(after);
+        changed.objects[0].sql = changed.objects[0].sql.replace(column, replacement);
+        assert.notDeepEqual(compareSchemaFingerprints(before, changed), []);
+      }
+      db.exec(`ALTER TABLE ${table} ADD COLUMN unreviewed TEXT`);
+      assert.notDeepEqual(compareSchemaFingerprints(before, fingerprint()), []);
+    } finally { db.close(); }
+  }
+});
+
 test('rolling schema classification permits only the pinned agent flag transitions', () => {
   const base = { type: 'table', name: 'chat_agent_members', tableName: 'chat_agent_members', sql: "CREATE TABLE \"chat_agent_members\" ( id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, agent_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', mention TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '', priority_service_tier INTEGER NOT NULL DEFAULT 0, cwd TEXT NOT NULL DEFAULT '', context_prompt TEXT NOT NULL DEFAULT '', taggable_by_agents INTEGER NOT NULL DEFAULT 0, reply_to_every_message INTEGER NOT NULL DEFAULT 0, orchestrator INTEGER NOT NULL DEFAULT 0, pingable_by_others INTEGER NOT NULL DEFAULT 0, yolo INTEGER NOT NULL DEFAULT 0, conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), vault_agent_id TEXT NOT NULL DEFAULT '' )" };
   const ambient = { ...base, sql: base.sql.replace('yolo INTEGER', 'ambient_group_chat INTEGER NOT NULL DEFAULT 0, yolo INTEGER') };
