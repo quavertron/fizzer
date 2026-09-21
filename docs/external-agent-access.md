@@ -190,17 +190,53 @@ headers. Supply the returned bearer as the worker's `CASCADE_NOTE_TOKEN` or
 explicit `--token`; retain its matching run ID. Keep the owner credential in the
 provisioning client, never in the worker. Updated helpers handle renewal.
 
-Before activating this backend release, the release operator must update
-supported desktop runners to the version that consumes `helperToken`, along
-with the bundled helpers. Already-running processes retain their old environment:
-finish them before activation, or provision their existing run through the owner
-route and hand the bound token to their helper calls. External orchestration
-clients must likewise use owner-provisioned run credentials and renewal.
-Provisioning can be prepared in a staged release before enabling enforcement;
-backend deployment alone is not proof of client migration. Do not claim this
-release preserves delegation for an unmodified old runner: it fails closed.
+**Staged release gate.** `Deploy Production` now fails before configuring SSH or
+deploying any backend unless the production environment variable
+`DELEGATION_ACTIVATION` contains reviewed migration evidence for the exact
+triggering revision. This applies to master pushes, manual runs and successful
+Desktop builds events. An absent record blocks activation by default; the
+currently deployed compatible backend continues serving existing processes.
+Desktop builds remain independent so the runner and bundled helpers can be
+distributed first. A green installer build alone does not open the gate.
+
+The release coordinator must complete these stages using existing release
+authority; this does not require a new manual mission approval:
+
+1. Build and distribute the updated desktop runners and bundled helpers. Verify
+   that every supported installation consumes `helperToken` on newly dispatched
+   runs and supports bound-token renewal. Until activation, the new runner uses
+   the existing generic credential when the old backend omits `helperToken`.
+2. Let all existing generic-credential processes finish normally before the
+   cutover. Do not cancel tasks, alter Stop, or restart workers to manufacture
+   readiness. Account for queued/replayed packets and prevent new generic
+   processes from appearing during the cutover. Merely minting a bearer does not
+   update a running process. This gate deliberately requires draining; it does
+   not certify in-place provisioning as a substitute.
+3. Verify supported external orchestration callers use the run-bound provisioning
+   and renewal contract, with the owner credential confined to the provisioning
+   client. Keep external launches quiescent across cutover until this contract
+   is available. The provisioning endpoint described above is part of the new
+   backend; it is not assumed available on the old backend.
+4. Independently review the installation, process-drain and external-client
+   evidence. Record its durable HTTPS reference and the integrated full commit
+   SHA in the production environment variable, then rerun `Deploy Production`:
+
+   ```json
+   {"revision":"<40-character integrated commit SHA>","desktopRunners":"verified","existingGenericProcesses":"drained","externalClients":"verified","evidence":"https://<durable-reviewed-migration-evidence>"}
+   ```
+
+The gate validates the attestation, not remote installations. The coordinator
+must not populate it from API tests, a build result, or an unverified worker
+claim. A different revision requires fresh matching evidence; installer refresh
+events cannot reuse an older revision's record. Follow normal exact-revision
+deployment and live verification after activation. This temporary gate stays
+until a separately reviewed change removes it after migration is established.
+Self-hosters must follow the same migration sequence before installing this
+backend; their deployment does not run the public repository's Actions gate.
+
 No installed-client migration or production activation is established by the
-synthetic API tests. The integration operator owns that rollout check.
+synthetic tests. This candidate makes premature backend activation fail closed;
+it does not claim that generic credentials work against the activated backend.
 
 Automatic invocation settings (`orchestrator` and `nextStepSuggestions`) are
 also owner-only, including alternate/nested settings payloads, so an agent
