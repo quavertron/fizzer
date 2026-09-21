@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -139,22 +140,64 @@ export function readHelperConfig() {
   }
 }
 
-// Inspect only to prevent an expired run bearer from silently falling back to
-// an owner-wide disk credential. Signature and expiry are enforced by the API.
-function runBoundToken(token) {
-  try { return !!JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).agentSource; }
-  catch { return false; }
+// Unverified claim inspection only selects a credential; the API verifies it.
+function tokenClaims(token) {
+  try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); }
+  catch { return {}; }
+}
+
+function sameRunToken(a, b) {
+  const left = tokenClaims(a), right = tokenClaims(b);
+  return !!left.agentSource && !!right.agentSource &&
+    ['id', 'username', 'authVersion', 'access'].every(key => left[key] === right[key]) &&
+    ['runId', 'registrationId', 'vaultAgentId'].every(key =>
+      left.agentSource[key] === right.agentSource[key]);
 }
 
 export function resolveToken(argsToken, configToken) {
   if (argsToken) return String(argsToken).trim();
   const envToken = String(process.env.CASCADE_NOTE_TOKEN || '').trim();
-  if (envToken && (runBoundToken(envToken) || !isExpiredJwt(envToken))) return envToken;
   const cfgToken = String(configToken || '').trim();
-  if (cfgToken && (runBoundToken(cfgToken) || !isExpiredJwt(cfgToken))) return cfgToken;
+  if (envToken && tokenClaims(envToken).agentSource) {
+    // A renewed same-source config may outlive the immutable process env.
+    if (sameRunToken(envToken, cfgToken) && tokenClaims(cfgToken).exp > tokenClaims(envToken).exp) return cfgToken;
+    return envToken;
+  }
+  if (envToken && !isExpiredJwt(envToken)) return envToken;
+  if (cfgToken && (tokenClaims(cfgToken).agentSource || !isExpiredJwt(cfgToken))) return cfgToken;
   const diskToken = readDiskToken();
   if (diskToken) return diskToken;
   const explicit = envToken || cfgToken;
   if (explicit && process.env.CASCADE_NOTE_TOKEN !== '') return explicit;
   return '';
+}
+
+const renewedTokens = new Map();
+export async function renewRunToken(url, originalToken) {
+  const cacheKey = `${url}\n${originalToken}`;
+  const token = renewedTokens.get(cacheKey) || originalToken;
+  const claims = tokenClaims(token);
+  if (!claims.agentSource || !(claims.exp <= Date.now() / 1000 + 60)) return token;
+  const endpoint = '/api/auth/agent-token/renew';
+  const res = await fetch(`${url}${endpoint}`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw httpError('POST', endpoint, res.status, await res.text());
+  const renewed = (await res.json()).token;
+  if (!sameRunToken(token, renewed) || isExpiredJwt(renewed)) {
+    throw new Error('Run credential renewal returned a different source or expired credential');
+  }
+  renewedTokens.set(cacheKey, renewed);
+  // Never write a broader/default credential or a different run's context.
+  const config = readHelperConfig();
+  if (sameRunToken(token, config.token) && config.url?.replace(/\/$/, '') === url) {
+    const configPath = helperConfigPath();
+    const temporary = `${configPath}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify({ ...config, token: renewed }, null, 2), { mode: 0o600, flag: 'wx' });
+      fs.renameSync(temporary, configPath);
+    } catch { /* In-memory renewal still supports a read-only helper context. */ }
+    finally { try { fs.unlinkSync(temporary); } catch {} }
+  }
+  return renewed;
 }

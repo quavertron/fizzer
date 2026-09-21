@@ -159,11 +159,52 @@ results, child-result integration, inspection and Stop remain available.
 The desktop receives a short-lived, run-bound helper bearer minted from the
 server's owned run and dispatch. The helper env and per-run config use that
 bearer; it is not stored in the replay payload. The helper proxy omits browser
-cookies, and expired bound credentials do not fall back to broader disk tokens. A client-supplied run header or
-registration cannot change its source identity. Generic `/api/auth/agent-token`
-bearers retain notes, inspection and no-invoke access but cannot authorize a new
-delegated invocation. An older desktop that does not pass the run-bound bearer
-must be updated before its agents can delegate; the server fails closed.
+cookies. A client-supplied run header or registration cannot change its source
+identity. Generic `/api/auth/agent-token` bearers retain notes, inspection and
+no-invoke access but cannot authorize a new delegated invocation.
+
+**Renewal.** Helpers renew near-expiry or expired run credentials through
+`POST /api/auth/agent-token/renew`, authenticating with the existing bound bearer.
+The server derives the replacement source exclusively from that bearer and
+checks account revocation, the persisted source, and an owned queued/running run.
+No requested run or registration can replace the signed source. A disabled
+agent may renew for direct work, inspection, reporting and Stop; new delegation
+still checks the live setting. Expired proof is accepted only on this endpoint,
+for seven days after issuance. Completed/stopped runs cannot renew. An inactive
+credential older than seven days needs owner provisioning again.
+
+All three helpers renew before authenticated API calls, including repeated
+polling calls. They save a replacement to the matching per-run helper config
+when writable, and prefer a newer same-source config bearer over the immutable
+process environment. They never fall back from bound proof to a broader disk
+credential. Read-only configs retain renewal within the CLI process only.
+
+**Provisioning and activation.** The owner-authenticated
+`POST /api/auth/agent-token` accepts `{ "runId": 123 }` to provision an existing
+owned active run. Unlike the no-body generic-token request, this returns a bound
+credential derived from that run's persisted dispatch. Foreign, missing and
+ended runs are rejected. Agent credentials cannot call this provisioning route;
+the renewal route cannot upgrade generic credentials. This gives external
+callers and existing runs a secure migration path without trusting their run
+headers. Supply the returned bearer as the worker's `CASCADE_NOTE_TOKEN` or
+explicit `--token`; retain its matching run ID. Keep the owner credential in the
+provisioning client, never in the worker. Updated helpers handle renewal.
+
+Before activating this backend release, the release operator must update
+supported desktop runners to the version that consumes `helperToken`, along
+with the bundled helpers. Already-running processes retain their old environment:
+finish them before activation, or provision their existing run through the owner
+route and hand the bound token to their helper calls. External orchestration
+clients must likewise use owner-provisioned run credentials and renewal.
+Provisioning can be prepared in a staged release before enabling enforcement;
+backend deployment alone is not proof of client migration. Do not claim this
+release preserves delegation for an unmodified old runner: it fails closed.
+No installed-client migration or production activation is established by the
+synthetic API tests. The integration operator owns that rollout check.
+
+Automatic invocation settings (`orchestrator` and `nextStepSuggestions`) are
+also owner-only, including alternate/nested settings payloads, so an agent
+cannot use a sibling's suggestion checkpoint to bypass its own delegation gate.
 
 Fizzer enforces this capability at its HTTP and execution boundaries. Provider
 native subagent tools, arbitrary external processes, and tools outside Fizzer's

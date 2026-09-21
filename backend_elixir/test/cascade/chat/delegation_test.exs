@@ -510,6 +510,155 @@ defmodule Cascade.Chat.DelegationTest do
            ).status == 200
   end
 
+  test "disabled source cannot schedule a sibling via automatic invocation settings", c do
+    set(c, c.source, false)
+    before = counts()
+
+    for token <- [c.token, c.generic],
+        flags <- [
+          %{orchestrator: false},
+          %{nextStepSuggestions: true},
+          %{nested: %{next_step_suggestions: true}}
+        ] do
+      assert request(
+               c,
+               :put,
+               base(c) <> "/agents",
+               Map.put(flags, :vaultAgentId, c.sibling.vaultAgentId),
+               token
+             ).status == 403
+    end
+
+    assert counts() == before
+    # The exact two-step review reproduction cannot switch coordinators.
+    assert request(c, :put, base(c) <> "/agents", %{
+             vaultAgentId: c.source.vaultAgentId,
+             orchestrator: false
+           }).status == 403
+
+    assert request(c, :put, base(c) <> "/agents", %{
+             vaultAgentId: c.sibling.vaultAgentId,
+             orchestrator: true,
+             nextStepSuggestions: true
+           }).status == 403
+
+    # An actual owner can still opt in to a suggestion checkpoint.
+    assert request(
+             c,
+             :put,
+             base(c) <> "/agents",
+             %{vaultAgentId: c.source.vaultAgentId, orchestrator: false},
+             c.human
+           ).status == 200
+
+    assert request(
+             c,
+             :put,
+             base(c) <> "/agents",
+             %{
+               vaultAgentId: c.sibling.vaultAgentId,
+               orchestrator: true,
+               nextStepSuggestions: true
+             },
+             c.human
+           ).status == 200
+
+    [id] =
+      SQL.one(
+        "SELECT id FROM chat_agent_dispatches WHERE registration_id=? AND message_id LIKE 'sys-next-enable-%'",
+        [c.sibling.id]
+      )
+
+    assert {:ok, _} = Dispatches.for_execution(id)
+  end
+
+  test "expired active bearer renews its own source and preserves disabled work reporting", c do
+    mission = mission(c)
+    {:ok, task} = Store.add_task(c.user.id, c.channel, mission.id, task_input(c))
+    expired = aged_token(c.token, 43201)
+    set(c, c.source, false)
+    assert request(c, :get, base(c) <> "/missions/" <> mission.id, nil, expired).status == 401
+
+    response =
+      request(
+        c,
+        :post,
+        "/api/auth/agent-token/renew",
+        %{runId: c.run.id + 1, registrationId: c.sibling.id},
+        expired
+      )
+
+    # Claimed alternate registration is rejected, not used to mint a new source.
+    assert response.status == 403
+    response = request(c, :post, "/api/auth/agent-token/renew", %{runId: c.run.id + 1}, expired)
+    assert response.status == 200
+    fresh = Jason.decode!(response.resp_body)["token"]
+    assert {:ok, %{agent_source: source}} = Token.verify(fresh)
+    assert source == Delegation.run_source(c.user.id, c.run.id)
+    assert request(c, :get, base(c) <> "/missions/" <> mission.id, nil, fresh).status == 200
+
+    assert request(
+             c,
+             :patch,
+             base(c) <> "/missions/tasks/" <> task.task.id,
+             %{status: "completed", summary: "Preserved result"},
+             fresh
+           ).status == 200
+
+    assert request(c, :post, base(c) <> "/missions", mission_input(c), fresh).status == 403
+  end
+
+  test "renewal rejects generic, revoked, stale, foreign and ended-run proof", c do
+    endpoint = "/api/auth/agent-token/renew"
+    assert request(c, :post, endpoint, %{runId: c.run.id}, c.generic).status == 403
+    assert request(c, :post, endpoint, %{}, aged_token(c.generic, 43201)).status == 401
+    assert request(c, :post, endpoint, %{}, aged_token(c.token, 8 * 86400)).status == 401
+    assert request(c, :post, endpoint, %{}, c.token <> "tampered").status == 401
+    SQL.exec("UPDATE users SET auth_version=auth_version+1 WHERE id=?", [c.user.id])
+    assert request(c, :post, endpoint, %{}, c.token).status == 401
+    SQL.exec("UPDATE users SET auth_version=auth_version-1 WHERE id=?", [c.user.id])
+    SQL.exec("UPDATE runs SET status='completed' WHERE id=?", [c.run.id])
+    assert request(c, :post, endpoint, %{}, c.token).status == 403
+    assert request(c, :post, endpoint, %{}, aged_token(c.token, 43201)).status == 401
+  end
+
+  test "owner can provision a legacy or external run without granting caller-chosen binding", c do
+    endpoint = "/api/auth/agent-token"
+    assert request(c, :post, endpoint, %{runId: c.run.id}, c.generic).status == 403
+    assert request(c, :post, endpoint, %{runId: c.run.id}, c.token).status == 403
+    stranger = owner_vault("binding-stranger")
+    other = Token.sign_user(%{id: stranger.user_id, username: stranger.username, auth_version: 0})
+    assert request(c, :post, endpoint, %{runId: c.run.id}, other).status == 403
+    assert request(c, :post, endpoint, %{runId: c.run.id + 100_000}, c.human).status == 403
+    assert request(c, :post, endpoint, %{runId: "invalid"}, c.human).status == 400
+
+    assert request(c, :post, base(c) <> "/missions", mission_input(c), c.generic, c.run.id).status ==
+             403
+
+    response = request(c, :post, endpoint, %{runId: c.run.id}, c.human)
+    assert response.status == 200
+    bound = Jason.decode!(response.resp_body)["token"]
+
+    assert request(c, :post, base(c) <> "/missions", mission_input(c), bound, c.run.id).status ==
+             201
+
+    set(c, c.source, false)
+
+    assert request(c, :post, base(c) <> "/missions", mission_input(c), bound, c.run.id).status ==
+             403
+  end
+
+  defp aged_token(token, age) do
+    signer = Joken.Signer.create("HS256", System.fetch_env!("JWT_SECRET"))
+    {:ok, claims} = Joken.verify(token, signer)
+    now = System.system_time(:second)
+
+    {:ok, token, _} =
+      Joken.encode_and_sign(Map.merge(claims, %{"iat" => now - age, "exp" => now - 1}), signer)
+
+    token
+  end
+
   defp mission_input(c),
     do: %{
       rootMessageId: c.root.id,
@@ -554,9 +703,11 @@ defmodule Cascade.Chat.DelegationTest do
     conn = if run, do: put_req_header(conn, "x-cascade-run-id", to_string(run)), else: conn
 
     router =
-      if String.contains?(path, "/missions"),
-        do: CascadeWeb.MissionRouter,
-        else: CascadeWeb.ChatRouter
+      cond do
+        String.starts_with?(path, "/api/auth/") -> CascadeWeb.Router
+        String.contains?(path, "/missions") -> CascadeWeb.MissionRouter
+        true -> CascadeWeb.ChatRouter
+      end
 
     router.call(conn, router.init([]))
   end

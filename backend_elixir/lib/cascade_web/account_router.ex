@@ -106,8 +106,25 @@ defmodule CascadeWeb.AccountRouter do
 
   post "/api/auth/agent-token" do
     authenticated(conn, :account, fn conn, user ->
-      JSON.send(conn, 200, %{token: AccountDomain.agent_token(user)})
+      case body(conn, "runId", nil) do
+        nil -> JSON.send(conn, 200, %{token: AccountDomain.agent_token(user)})
+        run when is_integer(run) -> issue_run_token(conn, user, run)
+        _ -> JSON.send(conn, 400, %{error: "runId must be an integer"})
+      end
     end)
+  end
+
+  post "/api/auth/agent-token/renew" do
+    case Auth.require(conn, access: :agent, mutation_gate: :not_vault_scoped, token_renewal: true) do
+      {:ok, conn} ->
+        case conn.assigns.agent_source do
+          %{"runId" => run} -> issue_run_token(conn, conn.assigns.current_user, run)
+          _ -> JSON.send(conn, 403, %{error: "Renewal requires a run-bound agent credential"})
+        end
+
+      {:error, conn} ->
+        conn
+    end
   end
 
   get "/api/admin/users" do
@@ -494,6 +511,25 @@ defmodule CascadeWeb.AccountRouter do
 
   match _ do
     JSON.send(conn, 404, %{error: "Not found"})
+  end
+
+  # Human provisioning and agent renewal share the same owned, active run
+  # validation. Renewal never reads a caller-supplied run or registration.
+  defp issue_run_token(conn, user, run) do
+    SQL.transaction(fn ->
+      source = Cascade.Chat.Delegation.run_source(user.id, run)
+      same_source = conn.assigns.auth_access == "user" or conn.assigns.agent_source == source
+
+      if is_map(source) and same_source and
+           SQL.one(
+             "SELECT 1 FROM runs WHERE id=? AND owner_user_id=? AND status IN ('queued','running')",
+             [run, user.id]
+           ) == [1] do
+        JSON.send(conn, 200, %{token: Cascade.Auth.Token.sign_run_agent(user, run)})
+      else
+        JSON.send(conn, 403, %{error: "An owned active agent run is required"})
+      end
+    end)
   end
 
   defp authenticated(conn, gate, fun) do

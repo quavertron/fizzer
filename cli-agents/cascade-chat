@@ -10,7 +10,7 @@
 'use strict';
 
 import { randomUUID } from 'node:crypto';
-import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken } from './cli-common.mjs';
+import { createCli, httpError, helperConfigPath, readHelperConfig, resolveToken, renewRunToken } from './cli-common.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -264,7 +264,7 @@ function baseUrl(args, config, { ignoreArgsUrl = false } = {}) {
 
 async function getToken(url, args, config) {
   const explicit = resolveToken(args.token, configString(config, 'token'));
-  if (explicit) return explicit;
+  if (explicit) return renewRunToken(url, explicit);
   const user = String(process.env.CASCADE_NOTE_USER || '').trim();
   const pass = String(process.env.CASCADE_NOTE_PASS || '');
   if (!user || !pass) {
@@ -285,6 +285,7 @@ async function getToken(url, args, config) {
 }
 
 async function api(url, token, method, path, body) {
+  token = await renewRunToken(url, token);
   const headers = { authorization: `Bearer ${token}` };
   const runId = String(process.env.CASCADE_RUN_ID || '').trim();
   if (runId) headers['x-cascade-run-id'] = runId;

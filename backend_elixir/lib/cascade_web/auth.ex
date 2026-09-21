@@ -26,7 +26,8 @@ defmodule CascadeWeb.Auth do
   def require(conn, options \\ []) do
     required_access = Keyword.get(options, :access, :any)
 
-    with {:ok, session} <- Session.authenticate(conn),
+    with {:ok, session} <-
+           Session.authenticate(conn, token_renewal: Keyword.get(options, :token_renewal, false)),
          :ok <- authorize_access(session, required_access, conn),
          :ok <- authorize_mutation(session, conn, Keyword.get(options, :mutation_gate)),
          :ok <- authorize_agent_delegation(session, conn) do
@@ -71,7 +72,8 @@ defmodule CascadeWeb.Auth do
     cond do
       mutation and Regex.match?(~r{/(?:vault-agents|agents)(?:/|$)}, conn.request_path) and
           protected_setting?(params) ->
-        {:error, 403, "Only the human owner can edit Missions and delegation"}
+        {:error, 403,
+         "Only the human owner can edit delegation and automatic invocation settings"}
 
       mutation and String.contains?(conn.request_path, "/messages") and
           params["missionTaskId"] not in [nil, ""] ->
@@ -101,7 +103,8 @@ defmodule CascadeWeb.Auth do
 
   defp protected_setting?(map) when is_map(map) do
     Enum.any?(map, fn {key, value} ->
-      to_string(key) in ["missionsEnabled", "missions_enabled"] or protected_setting?(value)
+      to_string(key) in ~w(missionsEnabled missions_enabled orchestrator nextStepSuggestions next_step_suggestions) or
+        protected_setting?(value)
     end)
   end
 

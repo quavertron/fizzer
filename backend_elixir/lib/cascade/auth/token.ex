@@ -25,9 +25,11 @@ defmodule Cascade.Auth.Token do
 
   def verify(_token), do: {:error, :invalid_or_expired}
 
-  def verify_with_expiration(token) when is_binary(token) do
+  def verify_with_expiration(token, options \\ [])
+
+  def verify_with_expiration(token, options) when is_binary(token) do
     with {:ok, claims} <- Joken.verify(token, signer()),
-         :ok <- validate_times(claims),
+         :ok <- validate_times(claims, options),
          {:ok, identity} <- validate_identity_shape(claims) do
       {:ok, identity, claims["exp"]}
     else
@@ -35,7 +37,7 @@ defmodule Cascade.Auth.Token do
     end
   end
 
-  def verify_with_expiration(_token), do: {:error, :invalid_or_expired}
+  def verify_with_expiration(_token, _options), do: {:error, :invalid_or_expired}
 
   defp sign(user, access, ttl_seconds, source \\ nil) do
     now = System.system_time(:second)
@@ -54,19 +56,35 @@ defmodule Cascade.Auth.Token do
     token
   end
 
-  defp validate_times(%{"iat" => issued_at, "exp" => expires_at})
+  defp validate_times(%{"iat" => issued_at, "exp" => expires_at} = claims, options)
        when is_integer(issued_at) and is_integer(expires_at) do
     now = System.system_time(:second)
 
     cond do
       issued_at > now + 60 -> {:error, :future_issued_at}
       now - issued_at > @user_session_max_age_seconds -> {:error, :stale_issued_at}
-      expires_at <= now -> {:error, :expired}
+      expires_at <= now and not renewable?(claims, options) -> {:error, :expired}
       true -> :ok
     end
   end
 
-  defp validate_times(_claims), do: {:error, :invalid_times}
+  defp validate_times(_claims, _options), do: {:error, :invalid_times}
+
+  # Only the renewal endpoint accepts expired proof, for at most seven days
+  # since issuance, and only while the exact server-bound run remains active.
+  # Account revocation and source equality are still checked by Session/Auth.
+  defp renewable?(
+         %{"access" => "agent", "id" => owner, "agentSource" => %{"runId" => run}},
+         options
+       ) do
+    Keyword.get(options, :token_renewal, false) and
+      Cascade.Accounts.SQL.one(
+        "SELECT 1 FROM runs WHERE id=? AND owner_user_id=? AND status IN ('queued','running')",
+        [run, owner]
+      ) == [1]
+  end
+
+  defp renewable?(_, _), do: false
 
   defp validate_identity_shape(%{"id" => id, "username" => username} = claims)
        when is_integer(id) and is_binary(username) do

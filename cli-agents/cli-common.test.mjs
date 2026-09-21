@@ -95,3 +95,100 @@ test('expired bound helper credentials do not fall back to a broader config bear
     else process.env.CASCADE_NOTE_TOKEN = prior;
   }
 });
+
+function boundToken(exp, source = { runId: 7, registrationId: 'reg', vaultAgentId: 'identity' }) {
+  return `header.${Buffer.from(JSON.stringify({ id: 1, username: 'fixture', authVersion: 0, access: 'agent', exp, agentSource: source })).toString('base64url')}.signature`;
+}
+
+test('immutable env accepts only a newer same-source config bearer', () => {
+  const prior = process.env.CASCADE_NOTE_TOKEN;
+  const expired = boundToken(1);
+  const fresh = boundToken(Date.now() / 1000 + 3600);
+  try {
+    process.env.CASCADE_NOTE_TOKEN = expired;
+    assert.equal(resolveToken(undefined, fresh), fresh);
+    assert.equal(resolveToken(undefined, boundToken(Date.now() / 1000 + 3600, { runId: 8 })), expired);
+    assert.equal(resolveToken(undefined, 'owner-token'), expired);
+    process.env.CASCADE_NOTE_TOKEN = fresh;
+    assert.equal(resolveToken(undefined, expired), fresh);
+  } finally {
+    if (prior === undefined) delete process.env.CASCADE_NOTE_TOKEN;
+    else process.env.CASCADE_NOTE_TOKEN = prior;
+  }
+});
+
+for (const [helper, command] of Object.entries(helpers)) {
+  test(`${helper}: expired bound credential renews before API access and fails closed`, async t => {
+    const expired = boundToken(1);
+    const fresh = boundToken(Date.now() / 1000 + 3600);
+    const requests = [];
+    let renewalStatus = 200;
+    let returnedToken = fresh;
+    const server = http.createServer((req, res) => {
+      requests.push([req.url, req.headers.authorization]);
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/api/auth/agent-token/renew') {
+        res.statusCode = renewalStatus;
+        res.end(JSON.stringify(renewalStatus === 200 ? { token: returnedToken } : { error: 'Revoked' }));
+      } else {
+        res.end(JSON.stringify({ messages: [], notes: [], entries: [], journal: [] }));
+      }
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const args = [...command, '--url', `http://127.0.0.1:${server.address().port}`, '--token', expired, '--vault', 'v', '--channel', 'c', '--json'];
+    await run(helper, args);
+    assert.deepEqual(requests[0], ['/api/auth/agent-token/renew', `Bearer ${expired}`]);
+    assert.ok(requests.length > 1);
+    assert.ok(requests.slice(1).every(([, token]) => token === `Bearer ${fresh}`));
+    requests.length = 0;
+    renewalStatus = 401;
+    await assert.rejects(run(helper, args), error => {
+      assert.equal(JSON.parse(error.stderr).error.status, 401);
+      return true;
+    });
+    assert.equal(requests.length, 1);
+    requests.length = 0;
+    renewalStatus = 200;
+    returnedToken = boundToken(Date.now() / 1000 + 3600, { runId: 8 });
+    await assert.rejects(run(helper, args), /different source/);
+    assert.equal(requests.length, 1);
+  });
+}
+
+test('renewal persists matching per-run context for the next invocation with an expired env', async t => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-renew-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, '7.json');
+  const expired = boundToken(1);
+  const fresh = boundToken(Date.now() / 1000 + 3600);
+  let renewals = 0;
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/auth/agent-token/renew') {
+      renewals++;
+      res.end(JSON.stringify({ token: fresh }));
+    } else {
+      seen.push(req.headers.authorization);
+      res.end(JSON.stringify({ messages: [] }));
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  fs.writeFileSync(configPath, JSON.stringify({ url, token: expired, runId: 7 }), { mode: 0o600 });
+  for (let i = 0; i < 2; i++) {
+    await exec(process.execPath, [new URL('cascade-chat', import.meta.url).pathname, 'history', '--vault', 'v', '--channel', 'c', '--json'], {
+      env: { ...env, CASCADE_NOTE_TOKEN: expired, CASCADE_HELPER_CONFIG: configPath },
+    });
+  }
+  assert.equal(renewals, 1);
+  assert.ok(seen.length >= 2);
+  assert.ok(seen.every(token => token === `Bearer ${fresh}`));
+  assert.equal(JSON.parse(fs.readFileSync(configPath)).token, fresh);
+  assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+});

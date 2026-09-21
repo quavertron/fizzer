@@ -9,7 +9,7 @@ defmodule Cascade.Auth.Session do
   @local_cookie "cascade_session"
   @renewal_window_seconds 3 * 24 * 60 * 60
 
-  def authenticate(conn) do
+  def authenticate(conn, options \\ []) do
     conn = fetch_cookies(conn)
 
     candidates =
@@ -17,7 +17,7 @@ defmodule Cascade.Auth.Session do
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq_by(&elem(&1, 1))
 
-    Enum.find_value(candidates, {:error, :invalid_or_expired}, &verify_candidate/1)
+    Enum.find_value(candidates, {:error, :invalid_or_expired}, &verify_candidate(&1, options))
   end
 
   def cookie_token(conn) do
@@ -80,8 +80,8 @@ defmodule Cascade.Auth.Session do
     end
   end
 
-  defp verify_candidate({source, token}) do
-    with {:ok, claims, expires_at} <- Token.verify_with_expiration(token),
+  defp verify_candidate({source, token}, options) do
+    with {:ok, claims, expires_at} <- Token.verify_with_expiration(token, options),
          {:ok, user} <- Accounts.fetch_by_id(claims.id),
          true <- user.username == claims.username,
          true <- user.auth_version == claims.auth_version do
