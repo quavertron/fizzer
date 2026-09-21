@@ -223,10 +223,12 @@ defmodule Cascade.Chat.DelegationTest do
 
   test "bound provenance rejects missing identity, forged run and enabled-sibling substitution",
        c do
+    set(c, c.source, false)
     input = mission_input(c)
     path = base(c) <> "/missions"
     before = counts()
     assert request(c, :post, path, input, c.generic).status == 403
+    set(c, c.source, true)
 
     assert request(c, :post, path, %{input | coordinatorRegistrationId: c.sibling.id}).status ==
              403
@@ -632,6 +634,8 @@ defmodule Cascade.Chat.DelegationTest do
     assert request(c, :post, endpoint, %{runId: c.run.id + 100_000}, c.human).status == 403
     assert request(c, :post, endpoint, %{runId: "invalid"}, c.human).status == 400
 
+    set(c, c.sibling, false)
+
     assert request(c, :post, base(c) <> "/missions", mission_input(c), c.generic, c.run.id).status ==
              403
 
@@ -646,6 +650,44 @@ defmodule Cascade.Chat.DelegationTest do
 
     assert request(c, :post, base(c) <> "/missions", mission_input(c), bound, c.run.id).status ==
              403
+  end
+
+  test "legacy delegation works by default but cannot impersonate an enabled sibling after Off",
+       c do
+    path = base(c) <> "/missions"
+    assert request(c, :post, path, mission_input(c), c.generic, c.run.id).status == 201
+    set(c, c.source, false)
+    sibling_input = %{mission_input(c) | coordinatorRegistrationId: c.sibling.id}
+    assert request(c, :post, path, sibling_input, c.generic).status == 403
+    assert request(c, :post, path, sibling_input, c.generic, c.run.id).status == 403
+    assert request(c, :post, path, sibling_input, c.token).status == 403
+    assert Delegation.enabled?(c.sibling.id)
+    set(c, c.source, true)
+    assert request(c, :post, path, mission_input(c), c.generic).status == 201
+  end
+
+  test "legacy queued invocation retains owner provenance and rechecks Off", c do
+    response =
+      request(
+        c,
+        :post,
+        base(c) <> "/messages",
+        %{registrationId: c.source.id, body: "@sibling work"},
+        c.generic
+      )
+
+    assert response.status == 201
+    [dispatch] = Jason.decode!(response.resp_body)["dispatches"]
+
+    assert SQL.one("SELECT delegating_identity_id FROM chat_agent_dispatches WHERE id=?", [
+             dispatch["id"]
+           ]) == [Delegation.legacy_source(c.user.id)]
+
+    assert Delegation.dispatch_enabled?(dispatch["id"])
+    set(c, c.sibling, false)
+    assert Delegation.enabled?(c.source.id)
+    refute Delegation.dispatch_enabled?(dispatch["id"])
+    refute Delegation.enabled?(Delegation.legacy_source(c.user.id))
   end
 
   defp aged_token(token, age) do

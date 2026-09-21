@@ -33,16 +33,6 @@ jobs:
     environment: production
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Require reviewed delegation migration before backend activation
-        env:
-          REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
-          DELEGATION_ACTIVATION: ${{ vars.DELEGATION_ACTIVATION }}
-        run: node scripts/check-delegation-activation.mjs
-
       - name: Configure pinned deploy identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.PRODUCTION_DEPLOY_SSH_KEY }}

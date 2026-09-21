@@ -9,6 +9,17 @@ defmodule Cascade.Chat.Delegation do
     do:
       "Missions and delegation are disabled for this agent. Do authorized direct work and converse; do not open missions, delegate, invoke other agents or use native subagent tools. Preserve task facts, report progress/results, inspect history and honor Stop. Existing child results may still be joined and integrated."
 
+  # Legacy credentials prove the owner, not a particular agent. They retain
+  # delegation only while every identity for that owner permits it. Carry this
+  # trusted source into queued dispatches so disabling later also fences replay.
+  def legacy_source(owner), do: "legacy-owner:#{owner}"
+
+  def enabled?("legacy-owner:" <> owner) do
+    SQL.one("SELECT 1 FROM vault_agents WHERE owner_user_id=? AND missions_enabled=0 LIMIT 1", [
+      owner
+    ]) == nil
+  end
+
   def enabled?(registration) do
     SQL.one(
       "SELECT va.missions_enabled FROM chat_agent_members m JOIN vault_agents va ON va.id=m.vault_agent_id WHERE m.id=?",
@@ -125,11 +136,17 @@ defmodule Cascade.Chat.Delegation do
         nil
 
       present?(field(message, :registrationId)) ->
-        case SQL.one("SELECT vault_agent_id FROM chat_agent_members WHERE id=?", [
-               field(message, :registrationId)
-             ]) do
-          [identity] -> identity
-          _ -> nil
+        registration = field(message, :registrationId)
+
+        if is_binary(registration) and String.starts_with?(registration, "legacy-owner:") do
+          registration
+        else
+          case SQL.one("SELECT vault_agent_id FROM chat_agent_members WHERE id=?", [
+                 field(message, :registrationId)
+               ]) do
+            [identity] -> identity
+            _ -> nil
+          end
         end
 
       true ->
@@ -152,6 +169,11 @@ defmodule Cascade.Chat.Delegation do
 
           source == "" ->
             true
+
+          is_binary(source) and String.starts_with?(source, "legacy-owner:") ->
+            enabled?(source) and
+              message_check(%{missionTaskId: task, registrationId: registration, agentId: agent}) ==
+                :ok
 
           is_binary(source) ->
             SQL.one("SELECT missions_enabled FROM vault_agents WHERE id=?", [source]) == [1]

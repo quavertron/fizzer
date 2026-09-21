@@ -909,7 +909,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
               disabled={agentPanelMode !== 'create' && !canManageRegistration(agentForm)}
               onChange={(event) => setAgentForm((value) => ({ ...value, missionsEnabled: event.target.checked }))}
               name="Missions and delegation"
-              hint="Allow this agent to open missions and delegate new work wherever it is registered. Existing work can finish."
+              hint="Allow this agent to open missions and delegate new work wherever it is registered. Existing work can finish. Turning any agent off also blocks new delegation from older clients that cannot identify their source agent; update those clients to delegate as an enabled agent."
             />
             {(agentPanelMode === 'edit-member' || agentPanelMode === 'create') && (
               <>

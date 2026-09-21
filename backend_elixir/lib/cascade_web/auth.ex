@@ -52,8 +52,17 @@ defmodule CascadeWeb.Auth do
 
   def source_options(conn) do
     case conn.assigns[:agent_source] do
-      %{"registrationId" => registration} -> [source_registration: registration]
-      _ -> if(conn.assigns.auth_access == "agent", do: [source_registration: nil], else: [])
+      %{"registrationId" => registration} ->
+        [source_registration: registration]
+
+      _ ->
+        if(conn.assigns.auth_access == "agent",
+          do: [
+            source_registration:
+              Cascade.Chat.Delegation.legacy_source(conn.assigns.current_user.id)
+          ],
+          else: []
+        )
     end
   end
 
@@ -80,8 +89,12 @@ defmodule CascadeWeb.Auth do
         {:error, 403, "Mission task attribution is server-owned"}
 
       invocation and not Regex.match?(~r{/messages(?:/[^/]+)?$}, conn.request_path) and
-          not is_map(source) ->
-        {:error, 403, "Delegated invocation requires a run-bound agent credential"}
+        not is_map(source) and
+          not Cascade.Chat.Delegation.enabled?(
+            Cascade.Chat.Delegation.legacy_source(session.user.id)
+          ) ->
+        {:error, 403,
+         "Use a run-bound agent credential to delegate while any agent has missions disabled"}
 
       is_map(source) and
           Cascade.Chat.Delegation.run_source(session.user.id, source["runId"]) != source ->
@@ -91,6 +104,7 @@ defmodule CascadeWeb.Auth do
         {:error, 403, "Agent attribution does not match its credential"}
 
       invocation and not String.contains?(conn.request_path, "/messages") and
+        is_map(source) and
           not Cascade.Chat.Delegation.enabled?(source["registrationId"]) ->
         {:error, 403, Cascade.Chat.Delegation.reason()}
 
