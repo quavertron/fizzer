@@ -54,8 +54,9 @@ type grant struct {
 }
 
 var (
-	activeRuns = map[int]*exec.Cmd{}
-	activeMu   sync.Mutex
+	activeRuns          = map[int]*exec.Cmd{}
+	canceledAccountRuns = map[int]bool{}
+	activeMu            sync.Mutex
 )
 
 func startBridge(root, directory string, index int, remoteURL, remoteHeader string) (*bridgeSession, error) {
@@ -186,7 +187,13 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 	opts["cwd"] = root
 	opts["remoteVault"] = remote
 
-	directory, err := os.MkdirTemp(os.TempDir(), "faw-")
+	// Shared /tmp, not the per-user TMPDIR: the fizzer account must reach the bridge socket.
+	tmp, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		status("failed", err.Error())
+		return nil, err
+	}
+	directory, err := os.MkdirTemp(tmp, "faw-")
 	if err != nil {
 		status("failed", err.Error())
 		return nil, err
@@ -349,6 +356,7 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 	defer func() {
 		activeMu.Lock()
 		delete(activeRuns, runID)
+		delete(canceledAccountRuns, runID)
 		activeMu.Unlock()
 		if worker.Process != nil && worker.ProcessState == nil {
 			worker.Process.Signal(syscall.SIGTERM)
@@ -431,6 +439,9 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 				}
 				json.Unmarshal([]byte(msg.Event.PayloadJSON), &payload)
 				if payload.Status == "completed" || payload.Status == "failed" || payload.Status == "canceled" {
+					if accountRunCanceled(runID) {
+						continue
+					}
 					terminal = true
 				}
 			}
@@ -481,6 +492,11 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 		}
 	}
 
+	if accountRunCanceled(runID) {
+		status("canceled", "Run canceled.")
+		canceled := json.RawMessage(`{"canceled":true}`)
+		return &canceled, nil
+	}
 	if exitCode == 0 && failure == "" {
 		return result, nil
 	}
@@ -506,8 +522,15 @@ func cancelAgentAccount(id int) bool {
 	if !ok || cmd == nil || cmd.Process == nil {
 		return false
 	}
+	canceledAccountRuns[id] = true
 	cmd.Process.Signal(syscall.SIGTERM)
 	return true
+}
+
+func accountRunCanceled(id int) bool {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	return canceledAccountRuns[id]
 }
 
 // AgentAccountCLI dispatches `agent-account` subcommands.

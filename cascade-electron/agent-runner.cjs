@@ -950,7 +950,7 @@ function spawnAgentRunStart(opts, onEvent) {
     });
     const child = spawn(storageBinary(), ['agent-run', 'start'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: { FIZZER_AGENT_WORKER: path.join(__dirname, 'agent-account-worker.cjs'), ...process.env },
     });
     let stderr = '';
     let result;
@@ -1194,8 +1194,6 @@ async function cancelLocalAgentRun(runId) {
 }
 
 async function cancelLocalAgentRunInProcess(id) {
-  if (agentAccount.cancel(id)) return true;
-
   // Claude CLI runs: terminate the live child process.
   const claudeProcess = activeClaudeProcesses.get(id);
   if (claudeProcess) {

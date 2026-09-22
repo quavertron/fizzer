@@ -266,7 +266,7 @@ test('runner recovers from failed initial and replacement builds without restart
   fs.symlinkSync(modules, path.join(dir, 'node_modules'));
   const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
   fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
-  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs', 'awatch.cjs', 'storage-bin.cjs']) {
+  for (const name of ['agent-account.cjs', 'awatch.cjs', 'storage-bin.cjs']) {
     fs.copyFileSync(path.join(__dirname, name), path.join(dir, 'cascade-electron', name));
   }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');

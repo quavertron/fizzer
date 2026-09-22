@@ -3,9 +3,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const vm = require('node:vm');
-const { EventEmitter } = require('node:events');
-const { PassThrough } = require('node:stream');
 const account = require('./agent-account.cjs');
 const { offerAgentAccountSetup } = require('./agent-account-setup.cjs');
 
@@ -137,106 +134,5 @@ test('launch resolves the Go storage helper for the worker without discovering t
   } finally {
     if (oldAddress !== undefined) process.env.ANTIGRAVITY_LS_ADDRESS = oldAddress;
     if (oldToken !== undefined) process.env.ANTIGRAVITY_CSRF_TOKEN = oldToken;
-  }
-});
-
-test('missing vault reports terminal failure before worker startup', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'missing-vault-'));
-  const events = [];
-  try {
-    await assert.rejects(account.run({ runId: 1507, vaultRoot: path.join(directory, 'missing') },
-      event => events.push(event), {}), { code: 'ENOENT' });
-    assert.equal(events.length, 1);
-    assert.equal(events[0].runId, 1507);
-    assert.equal(events[0].type, 'status');
-    const payload = JSON.parse(events[0].payload_json);
-    assert.equal(payload.status, 'failed');
-    assert.match(payload.summary, /ENOENT/);
-  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
-});
-
-for (const bridgeExit of [0, 1, 2, 3]) test(`account run cleans up and reports bridge exit ${bridgeExit}`, async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'account-run-'));
-  const previousData = process.env.CASCADE_DATA_DIR;
-  process.env.CASCADE_DATA_DIR = root;
-  const calls = [];
-  const concludes = [];
-  let activity, viewerClosed = false;
-  function spawn(command, args) {
-    calls.push({ command, args });
-    const child = new EventEmitter();
-    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.stdin = new PassThrough();
-    child.exitCode = null;
-    child.kill = () => {
-      if (child.exitCode === null) {
-        child.exitCode = command.endsWith('/alock') ? bridgeExit : 0;
-        child.emit('exit', child.exitCode); child.emit('close', child.exitCode);
-      }
-    };
-    if (command.endsWith('/alock')) {
-      child.stdin.on('data', chunk => concludes.push(String(chunk)));
-      setImmediate(() => {
-        if (bridgeExit >= 2) {
-          child.stderr.write(bridgeExit === 2 ? 'usage:\n alock bridge serve --socket <path>\n' : 'alock: unknown command\n');
-          child.kill();
-        } else child.stdout.write('{"ready":true,"session":"own-bridge"}\n');
-      });
-    }
-    else {
-      let input = '';
-      child.stdin.on('data', chunk => { input += chunk; });
-      child.stdin.on('finish', () => setImmediate(() => {
-        assert.equal(JSON.parse(input).opts.runId, 123);
-        assert.equal(JSON.parse(input).opts.cwd, fs.realpathSync(root));
-        assert.equal(JSON.parse(input).root, fs.realpathSync(root));
-        activity({ events: [
-          { kind: 'edit', agent: 'another-bridge', file: '/private/unrelated', old_lines: [], new_lines: ['secret'] },
-          { kind: 'edit', agent: 'own-bridge', author: 'Codex', file: '/local/test', old_lines: ['before'], new_lines: ['after'] },
-        ] });
-        child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
-        child.stdout.write(JSON.stringify({ event: { type: 'assistant-turn-end' } }) + '\n');
-        child.stdout.write(JSON.stringify({ result: { sessionId: 'test-session' } }) + '\n');
-        child.kill();
-      }));
-    }
-    return child;
-  }
-  const fakeFs = Object.create(fs);
-  fakeFs.existsSync = target => target === '/usr/local/libexec/fizzer/alock' || fs.existsSync(target);
-  const context = { module: { exports: {} }, __dirname, process, Buffer, setTimeout, clearTimeout,
-    require: name => name === './awatch.cjs' ? {
-      alockBinary: () => '/test/bundled/alock',
-      createAwatchViewer: callback => { activity = callback; return { close: () => { viewerClosed = true; } }; },
-    } : name === 'node:child_process' ? { spawn, spawnSync: () => ({ stdout: '' }) } : name === 'node:fs' ? fakeFs : require(name) };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'agent-account.cjs'), 'utf8'), context);
-  try {
-    const events = [];
-    const completion = context.module.exports.run({ runId: 123, cwd: root, vaultRoot: '/missing-vault', prompt: 'test' }, event => events.push(event), {});
-    if (bridgeExit >= 2) {
-      await assert.rejects(completion, bridgeExit === 2 ? /Installed alock is outdated.*install-agent-writes.sh --update/ : /older alock daemon.*PATH/);
-      assert.equal(calls.length, 1, 'Do not launch the agent with an incompatible bridge');
-      assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
-      return;
-    }
-    if (bridgeExit) {
-      await assert.rejects(completion, /pending recovery snapshots/);
-      assert.equal(JSON.parse(events.at(-1).payload_json).status, 'failed');
-    } else assert.equal((await completion).sessionId, 'test-session');
-    const edits = events.filter(event => event.type === 'activity').map(event => JSON.parse(event.payload_json));
-    assert.equal(edits.length, 1, 'Only this run’s bridge activity reaches its vault');
-    assert.equal(edits[0].file, '/local/test');
-    assert.equal(edits[0].agent, 'Codex');
-    assert.equal(viewerClosed, true);
-    assert.equal(calls[0].command, '/test/bundled/alock');
-    assert.deepEqual(Array.from(calls[0].args.slice(0, 2)), ['account', 'serve']);
-    assert.deepEqual(concludes, ['conclude\n', 'conclude\n']);
-    assert.equal(calls[0].args[calls[0].args.indexOf('--root') + 1], fs.realpathSync(root));
-    assert.equal(calls[1].command, '/usr/bin/sudo');
-    assert.ok(calls[1].args.includes('fizzer'));
-    const socket = calls[0].args[calls[0].args.indexOf('--socket') + 1];
-    assert.equal(fs.existsSync(path.dirname(socket)), false);
-  } finally {
-    if (previousData === undefined) delete process.env.CASCADE_DATA_DIR; else process.env.CASCADE_DATA_DIR = previousData;
-    fs.rmSync(root, { recursive: true, force: true });
   }
 });

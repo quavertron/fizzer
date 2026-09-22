@@ -4,8 +4,31 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { run, cancel } = require('../cascade-electron/agent-account.cjs');
+const { spawn, spawnSync } = require('node:child_process');
+const readline = require('node:readline');
+const { storageBinary } = require('../cascade-electron/storage-bin.cjs');
+
+// Drives the Go account orchestration the desktop uses (`fizzer-storage agent-run`).
+function run(opts, onEvent, api) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(storageBinary(), ['agent-run', 'start'], { stdio: ['pipe', 'pipe', 'inherit'],
+      env: { ...process.env, FIZZER_AGENT_WORKER: path.join(__dirname, '..', 'cascade-electron', 'agent-account-worker.cjs') } });
+    let result, failure;
+    readline.createInterface({ input: child.stdout }).on('line', line => {
+      try {
+        const message = JSON.parse(line);
+        if (message.event) onEvent(message.event);
+        if (message.result !== undefined) result = message.result;
+        if (message.error) failure = message.error;
+      } catch { /* Ignore incidental provider stdout. */ }
+    });
+    child.once('error', reject);
+    child.once('close', code => failure ? reject(new Error(failure))
+      : code === 0 ? resolve(result || {}) : reject(new Error(`agent-run start exited with code ${code}`)));
+    child.stdin.end(JSON.stringify({ opts, api, root: '', mirrorRoot: '' }));
+  });
+}
+function cancel(id) { spawnSync(storageBinary(), ['agent-run', 'cancel', String(id)]); }
 
 async function main() {
   const id = spawnSync('/usr/bin/sudo', ['-n', '-H', '-u', 'fizzer', '/usr/bin/id', '-u'], { encoding: 'utf8' });
@@ -17,6 +40,8 @@ async function main() {
   const priorData = process.env.CASCADE_DATA_DIR;
   process.env.CASCADE_DATA_DIR = path.join(directory, 'state');
   try {
+    fs.mkdirSync(process.env.CASCADE_DATA_DIR);
+    fs.writeFileSync(path.join(process.env.CASCADE_DATA_DIR, 'agent-writes-enabled'), '1\n');
     fs.chmodSync(directory, 0o755);
     fs.mkdirSync(root, { mode: 0o755 });
     fs.writeFileSync(path.join(root, 'note.txt'), 'original\n', { mode: 0o644 });

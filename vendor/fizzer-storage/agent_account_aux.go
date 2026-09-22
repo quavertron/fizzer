@@ -39,6 +39,8 @@ func startAwatchViewer(emit func(events []map[string]any), tail bool) func() {
 
 	cursor := map[string]any{}
 	var connected bool
+	ready := make(chan struct{})
+	var readyOnce sync.Once
 
 	connect := func() {
 		for {
@@ -82,6 +84,7 @@ func startAwatchViewer(emit func(events []map[string]any), tail bool) func() {
 					conn.Close()
 					return
 				}
+				readyOnce.Do(func() { close(ready) })
 				if packet.Event != nil && packet.Cursor != nil {
 					cursor = packet.Cursor
 					emit([]map[string]any{packet.Event})
@@ -98,6 +101,11 @@ func startAwatchViewer(emit func(events []map[string]any), tail bool) func() {
 	}
 	go connect()
 	_ = connected
+	// A tail subscription must be live before the caller starts editing, or it misses those edits.
+	select {
+	case <-ready:
+	case <-time.After(6 * time.Second):
+	}
 	return closeFn
 }
 
@@ -132,7 +140,7 @@ func startReadOnlyAPI(api *runAPI, vaultID any) (config map[string]string, close
 			w.Write([]byte("{}"))
 			return
 		}
-		target := origin + r.URL.Path
+		target := origin + r.URL.RequestURI()
 		if r.Method != http.MethodGet || r.URL.Path != prefix && !hasPrefixStr(r.URL.Path, prefix+"/") ||
 			containsFold(r.URL.RawPath, "%2f") || containsFold(r.URL.RawPath, "%5c") || contains(r.URL.RawPath, "%00") {
 			w.WriteHeader(403)
@@ -152,10 +160,10 @@ func startReadOnlyAPI(api *runAPI, vaultID any) (config map[string]string, close
 			return
 		}
 		defer resp.Body.Close()
-		w.WriteHeader(resp.StatusCode)
 		if ct := resp.Header.Get("content-type"); ct != "" {
 			w.Header().Set("content-type", ct)
 		}
+		w.WriteHeader(resp.StatusCode)
 		var written int64
 		buf := make([]byte, 32*1024)
 		for {
