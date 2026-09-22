@@ -103,8 +103,10 @@ func resolveWorkspace(selected string) (string, error) {
 		}
 		legacy := strings.Replace(expanded, string(os.PathSeparator)+".fizzer"+string(os.PathSeparator),
 			string(os.PathSeparator)+".cascade"+string(os.PathSeparator), 1)
-		if legacy != expanded && fileExists(legacy) {
-			expanded = legacy
+		if legacy != expanded {
+			if _, err := os.Stat(legacy); err == nil {
+				expanded = legacy
+			}
 		}
 	}
 	return filepath.EvalSymlinks(expanded)
@@ -209,7 +211,6 @@ type launchOptions struct {
 }
 
 func launchArguments(opts launchOptions) []string {
-	env := os.Environ()
 	providerBinaries := []string{}
 	providerNames := []string{
 		"CLAUDE_BIN", "CODEX_BIN", "GROK_BIN", "COPILOT_BIN", "HERMES_BIN", "AKRON_BIN", "OMP_BIN", "PI_BIN",

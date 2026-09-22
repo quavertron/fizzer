@@ -5,7 +5,95 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { createHash } = require('node:crypto');
 const { VaultMirrors } = require('./vault-mirror.cjs');
+
+const keyFor = (origin, vaultId) => createHash('sha256').update(JSON.stringify([origin, vaultId])).digest('hex');
+
+test('mirror records persist and a restarted host restores entries without syncing', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-persist-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const first = new VaultMirrors({ directory });
+  const original = first.watch({ origin: 'https://example.test', token: 'secret', vaultId: 'vault' });
+  await first.close();
+
+  const record = path.join(directory, 'mirrors', `${original.key}.json`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(record, 'utf8')), { origin: 'https://example.test', vaultId: 'vault' });
+
+  const errors = [];
+  const second = new VaultMirrors({ directory, onError: error => errors.push(error) });
+  t.after(async () => { await second.close(); });
+  const jobs = [];
+  second.start = async () => { throw new Error('restore must not launch rclone'); };
+  second.call = async operation => { if (operation === 'sync/sync') { jobs.push(operation); return { jobid: 1 }; } return { finished: true, success: true }; };
+
+  second.restore();
+  const restored = second.entries.get(original.key);
+  assert.deepEqual(errors, []);
+  assert.equal(second.entries.size, 1);
+  assert.equal(restored.root, original.root);
+  assert.equal(restored.vaultId, 'vault');
+  assert.equal(restored.token, null);
+  assert.equal(restored.dirty, false, 'restore must stay lazy and leave reconciliation to the next notification');
+  assert.deepEqual(jobs, []);
+});
+
+test('orphaned mirror roots are pruned while connected ones are adopted', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-prune-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const origin = 'https://example.test';
+  const vaultId = 'adopted';
+  const key = keyFor(origin, vaultId);
+  const orphan = 'f'.repeat(64);
+  fs.mkdirSync(path.join(directory, 'mirrors', key), { recursive: true });
+  fs.mkdirSync(path.join(directory, 'mirrors', orphan), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'mirrors', orphan, 'stale.txt'), 'stale');
+  fs.mkdirSync(path.join(directory, 'remote-vaults'), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'remote-vaults', `${key}.json`),
+    JSON.stringify({ id: vaultId, name: 'Adopted', origin, token: 'stored' }));
+
+  const host = new VaultMirrors({ directory });
+  t.after(async () => { await host.close(); });
+  host.restore();
+
+  assert.equal(fs.existsSync(path.join(directory, 'mirrors', orphan)), false, 'a root with no surviving record is discarded');
+  assert.equal(fs.existsSync(path.join(directory, 'mirrors', key)), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, 'mirrors', `${key}.json`), 'utf8')), { origin, vaultId });
+  assert.equal(host.entries.get(key)?.vaultId, vaultId);
+  assert.equal(host.entries.get(orphan), undefined);
+});
+
+test('a restored mirror without a credential defers instead of spawning rclone', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-token-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const origin = 'https://example.test';
+  const vaultId = 'vault';
+  const key = keyFor(origin, vaultId);
+  fs.mkdirSync(path.join(directory, 'mirrors', key), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'mirrors', `${key}.json`), JSON.stringify({ origin, vaultId }));
+
+  const host = new VaultMirrors({ directory });
+  t.after(async () => { await host.close(); });
+  host.restore();
+  const entry = host.entries.get(key);
+  assert.ok(entry);
+
+  let starts = 0;
+  host.start = async () => { starts++; };
+  host.call = async operation => {
+    if (operation === 'sync/sync') return { jobid: 1 };
+    return { finished: true, success: true };
+  };
+
+  await host.reconcile(entry);
+  assert.equal(starts, 0, 'rclone must not start just to collect 403s');
+  assert.equal(entry.dirty, true, 'the mirror stays dirty so the next watch can finish it');
+
+  host.watch({ origin, token: 'secret', vaultId });
+  await host.reconcile(entry);
+  assert.equal(starts, 1);
+  assert.equal(entry.dirty, false);
+});
 
 test('notifications coalesce, changes during a sync run again, and direction is fixed', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-unit-'));

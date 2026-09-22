@@ -204,6 +204,11 @@ class VaultMirrors {
     if (entry.running) return entry.running;
     clearTimeout(entry.timer); entry.timer = null;
     entry.running = (async () => {
+      // A restored mirror has no live credential until something watches it.
+      // Stay dirty and skip rather than spawn rclone just to collect 403s.
+      const token = entry.token || storedToken(this.directory, entry.key);
+      if (!token) { entry.dirty = true; return; }
+      entry.token = token;
       await this.start();
       while (entry.dirty && !this.closed) {
         entry.dirty = false;

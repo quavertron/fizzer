@@ -3,9 +3,10 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net/url"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -215,6 +216,20 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 		}
 		vaultID, _ := opts["vaultId"].(string)
 		remoteURL := fmt.Sprintf("%s/api/vaults/%s/alock", strings.TrimRight(origin, "/"), vaultID)
+		mirrorRoot := root
+		if input.MirrorRoot != "" {
+			mirrorRoot = input.MirrorRoot
+		}
+		b, err := startBridge("remote-vault", directory, 0, remoteURL, header)
+		if err != nil {
+			if !terminal {
+				status("failed", err.Error())
+			}
+			return nil, err
+		}
+		bridges = append(bridges, b)
+		grants = append(grants, grant{Root: "remote-vault", Socket: b.socket, Remote: true, VaultID: vaultID, MirrorRoot: mirrorRoot})
+	} else {
 		roots, err := writeAccessRoots(opts, api, root)
 		if err != nil {
 			if !terminal {
@@ -618,6 +633,94 @@ func AgentAccountCLI(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+		return 0
+	case "write-access-roots":
+		// write-access-roots <json> -> roots JSON on stdout
+		// json: {opts, api, workspace}
+		arg := ""
+		if len(args) > 1 {
+			arg = args[1]
+		}
+		data := []byte("{}")
+		if arg != "" {
+			var err error
+			data, err = readInput(arg)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		var input struct {
+			Opts      map[string]any `json:"opts"`
+			API       *runAPI        `json:"api"`
+			Workspace string         `json:"workspace"`
+		}
+		if err := json.Unmarshal(data, &input); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		roots, err := writeAccessRoots(input.Opts, input.API, input.Workspace)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		out, _ := json.Marshal(roots)
+		os.Stdout.Write(out)
+		return 0
+	case "is-remote-vault":
+		// is-remote-vault <json: {opts, api}> -> true/false
+		arg := ""
+		if len(args) > 1 {
+			arg = args[1]
+		}
+		data, err := readInput(arg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		var input struct {
+			Opts map[string]any `json:"opts"`
+			API  *runAPI        `json:"api"`
+		}
+		if err := json.Unmarshal(data, &input); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if isRemoteVault(input.Opts, input.API) {
+			fmt.Println("true")
+		} else {
+			fmt.Println("false")
+		}
+		return 0
+	case "prepare-workspace":
+		// prepare-workspace <json: {opts, api}> -> {root, remote}
+		arg := ""
+		if len(args) > 1 {
+			arg = args[1]
+		}
+		data, err := readInput(arg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		var input struct {
+			Opts map[string]any `json:"opts"`
+			API  *runAPI        `json:"api"`
+		}
+		if err := json.Unmarshal(data, &input); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		root, remote, err := prepareWorkspace(input.Opts, input.API)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+				fmt.Fprintln(os.Stderr, "ENOENT")
+			}
+			return 1
+		}
+		out, _ := json.Marshal(map[string]any{"root": root, "remote": remote})
+		os.Stdout.Write(out)
 		return 0
 	default:
 		fmt.Fprintln(os.Stderr, "unknown agent-account subcommand:", args[0])

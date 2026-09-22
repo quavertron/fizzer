@@ -2,14 +2,15 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -184,71 +185,47 @@ func startReadOnlyAPI(api *runAPI, vaultID any) (config map[string]string, close
 }
 
 func randomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := io.ReadFull(randReader{}, b); err != nil {
-		return fmt.Sprintf("%064x", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%x", b)
+	return hex.EncodeToString(mustRandom(n))
 }
 
-type randReader struct{}
-
-func (randReader) Read(p []byte) (int, error) {
-	f, err := os.Open("/dev/urandom")
-	if err != nil {
-		return 0, err
+func mustRandom(n int) []byte {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		seed := time.Now().UnixNano()
+		for i := range b {
+			seed = seed*6364136223846793005 + 1442695040888963407
+			b[i] = byte(seed >> 33)
+		}
 	}
-	defer f.Close()
-	return f.Read(p)
+	return b
 }
 
 func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
+	return strings.Index(s, sub)
 }
 
 func indexOfAny(s, chars string) int {
-	for i, c := range s {
-		if stringsContains(chars, byte(c)) {
-			return i
-		}
-	}
-	return -1
+	return strings.IndexAny(s, chars)
 }
 
 func stringsContains(s string, b byte) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return true
-		}
-	}
-	return false
+	return strings.IndexByte(s, b) >= 0
 }
 
 func hasPrefixStr(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+	return strings.HasPrefix(s, prefix)
 }
 
 func containsFold(s, sub string) bool {
-	// simplified: case-insensitive contains
-	ls, lsub := toLower(s), toLower(sub)
-	return indexOf(ls, lsub) >= 0
+	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
 
-func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }
+func contains(s, sub string) bool {
+	return strings.Contains(s, sub)
+}
 
 func toLower(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 32
-		}
-	}
-	return string(b)
+	return strings.ToLower(s)
 }
 
 // ensure workspace path helpers used by run

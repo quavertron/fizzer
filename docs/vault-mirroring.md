@@ -34,6 +34,16 @@ absent from the server. Agents read baselines there, edit alock proposals, and
 post through the remote bridge. The human account owns mirrors and the private
 rclone control socket.
 
+Each watched vault also writes a sibling `mirrors/<hash>.json` record naming its
+origin and vault ID. The record is the local registry: on the first start of a
+host, existing records are rehydrated into idle entries that arm the
+reconciliation interval but do not sync on their own, so the remote stays the
+source of truth. A root with no surviving record is deleted at that point,
+unless its connection still exists under `remote-vaults/<hash>.json` — then the
+record is adopted and the local content kept. Restored entries carry no
+credential until something watches the vault again, so reconciliation defers
+instead of spawning rclone just to collect 403s.
+
 ## Installation
 
 The native helper bundle includes rclone **v1.75.1**, downloaded from the official

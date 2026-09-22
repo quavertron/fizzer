@@ -1,32 +1,17 @@
 'use strict';
-const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
-
-function storageBinary() {
-  if (process.env.FIZZER_STORAGE_BIN) return process.env.FIZZER_STORAGE_BIN;
-  return [
-    process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
-    path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
-    '/usr/local/libexec/fizzer/fizzer-storage',
-  ].find(file => file && fs.existsSync(file)) || 'fizzer-storage';
-}
+const { runStorage, storageBinary } = require('./storage-bin.cjs');
 
 function readRemoteVaults(directory) {
   try {
-    const stdout = execFileSync(storageBinary(), ['remote-vaults', 'read', path.resolve(directory)], { encoding: 'utf8' });
-    return JSON.parse(stdout);
+    return runStorage(['remote-vaults', 'read', path.resolve(directory)]);
   } catch {
     return [];
   }
 }
 
 function saveRemoteVault(directory, record) {
-  execFileSync(storageBinary(), ['remote-vaults', 'save', path.resolve(directory)], {
-    input: JSON.stringify(record),
-    encoding: 'utf8',
-  });
+  runStorage(['remote-vaults', 'save', path.resolve(directory)], { input: JSON.stringify(record), raw: true });
 }
 
 module.exports = { readRemoteVaults, saveRemoteVault, storageBinary };
-

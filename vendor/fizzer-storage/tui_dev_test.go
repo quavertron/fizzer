@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -95,22 +96,9 @@ func TestDevSessionSkipsTUIWhenBackendExits(t *testing.T) {
 	if started {
 		t.Fatal("tui started after the backend exited")
 	}
-	if !contains(err.Error(), "code=9") || !contains(err.Error(), "mix failed") {
+	if !strings.Contains(err.Error(), "code=9") || !strings.Contains(err.Error(), "mix failed") {
 		t.Fatalf("error = %s", err)
 	}
-}
-
-func contains(text, part string) bool {
-	return len(text) >= len(part) && (text == part || len(part) == 0 || (len(text) > 0 && (stringIndex(text, part) >= 0)))
-}
-
-func stringIndex(text, part string) int {
-	for i := 0; i+len(part) <= len(text); i++ {
-		if text[i:i+len(part)] == part {
-			return i
-		}
-	}
-	return -1
 }
 
 func TestSignalGroupDoesNotKillCaller(t *testing.T) {

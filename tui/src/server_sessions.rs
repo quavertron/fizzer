@@ -1,21 +1,8 @@
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, process::Command};
-
-fn binary() -> PathBuf {
-    if let Some(path) = std::env::var_os("FIZZER_STORAGE_BIN") { return path.into(); }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("fizzer-storage");
-        if sibling.is_file() { return sibling; }
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dev = manifest.join("../.native-tools/fizzer-storage");
-    if dev.is_file() { return dev; }
-    let system = PathBuf::from("/usr/local/libexec/fizzer/fizzer-storage");
-    if system.is_file() { return system; }
-    "fizzer-storage".into()
-}
+use std::{collections::HashMap, fs, path::Path, process::Command};
+use crate::storage_bin;
 
 pub fn read(directory: &Path) -> HashMap<String, String> {
-    let output = Command::new(binary())
+    let output = Command::new(storage_bin::binary())
         .arg("server-sessions").arg("read").arg(directory)
         .output().ok();
     output.and_then(|out| if out.status.success() { serde_json::from_slice(&out.stdout).ok() } else { None })
@@ -23,7 +10,7 @@ pub fn read(directory: &Path) -> HashMap<String, String> {
 }
 
 pub fn remember(directory: &Path, origin: &str, token: &str) -> Result<(), String> {
-    let output = Command::new(binary())
+    let output = Command::new(storage_bin::binary())
         .arg("server-sessions").arg("remember").arg(directory).arg(origin).arg(token)
         .output().map_err(|e| e.to_string())?;
     if !output.status.success() {

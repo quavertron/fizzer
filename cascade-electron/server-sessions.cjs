@@ -1,23 +1,12 @@
 'use strict';
-const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runStorage, storageBinary } = require('./storage-bin.cjs');
 const temporarySessions = new Map();
-
-function storageBinary() {
-  if (process.env.FIZZER_STORAGE_BIN) return process.env.FIZZER_STORAGE_BIN;
-  return [
-    process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
-    path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
-    '/usr/local/libexec/fizzer/fizzer-storage',
-  ].find(file => file && fs.existsSync(file)) || 'fizzer-storage';
-}
 
 function readSessions(directory) {
   let sessions = {};
   try {
-    const stdout = execFileSync(storageBinary(), ['server-sessions', 'read', path.resolve(directory)], { encoding: 'utf8' });
-    sessions = JSON.parse(stdout);
+    sessions = runStorage(['server-sessions', 'read', path.resolve(directory)]);
   } catch { /* Session storage may be unavailable. */ }
   return { ...sessions, ...temporarySessions.get(path.resolve(directory)) };
 }
@@ -29,14 +18,10 @@ function rememberSession(directory, key, token) {
   pending[key] = token;
   temporarySessions.set(directoryKey, pending);
   try {
-    execFileSync(storageBinary(), ['server-sessions', 'remember', directoryKey, key, token], {
-      stdio: 'pipe',
-      encoding: 'utf8',
-    });
+    runStorage(['server-sessions', 'remember', directoryKey, key, token], { raw: true, stdio: 'pipe' });
     delete pending[key];
     return true;
   } catch {
-
     // Authentication already succeeded. Keep this login usable for the current
     // process even when it cannot be remembered across application restarts.
     return false;
@@ -44,8 +29,11 @@ function rememberSession(directory, key, token) {
 }
 
 function listConnections(directory, vaults) {
-  const connections = vaults.map(({ id, name, origin }) => ({ id, name, origin }));
-  for (const origin of Object.keys(readSessions(directory))) {
+  const connections = runStorage([
+    'list-connections', path.resolve(directory), JSON.stringify(vaults),
+  ]);
+  const pending = temporarySessions.get(path.resolve(directory)) || {};
+  for (const origin of Object.keys(pending)) {
     if (origin === 'local' || connections.some(connection => connection.origin === origin)) continue;
     connections.push({ id: '', name: 'Remote server', origin });
   }
@@ -53,5 +41,3 @@ function listConnections(directory, vaults) {
 }
 
 module.exports = { readSessions, rememberSession, listConnections, storageBinary };
-
-

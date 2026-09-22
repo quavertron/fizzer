@@ -5,6 +5,7 @@ mod awatch;
 mod codex_sessions;
 mod server_sessions;
 mod remote_vaults;
+mod storage_bin;
 mod app;
 mod ui;
 mod terminal_theme;

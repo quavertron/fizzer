@@ -4,7 +4,7 @@ use ratatui::{layout::{Constraint, Layout}, style::{Color, Style}, widgets::{Blo
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use crate::{api::{CascadeClient, ChannelItem}, app::App, BackendEvent};
+use crate::{api::{CascadeClient, ChannelItem}, app::App, storage_bin, BackendEvent};
 
 #[derive(Deserialize)]
 pub struct LocalSession { pub id: String, pub title: String, pub cwd: String }
@@ -24,13 +24,15 @@ pub struct Picker {
 }
 
 async fn local(method: &str, options: Value) -> Result<Value, String> {
-    // Node is also used by the TUI's local agent runner. Embed the reader so an
-    // installed binary does not depend on the source checkout's location.
-    let script = format!("{}\ntry {{ process.stdout.write(JSON.stringify(module.exports[process.argv[1]](JSON.parse(process.argv[2])))); }} catch (e) {{ console.error(e.message); process.exitCode = 1; }}", include_str!("../../cascade-electron/codex-sessions.cjs"));
+    let sub = match method {
+        "listCodexSessions" => "list",
+        "readCodexSession" => "read",
+        _ => return Err(format!("Unknown Codex session method: {method}")),
+    };
     let output = tokio::time::timeout(std::time::Duration::from_secs(15),
-        tokio::process::Command::new("node").arg("-e").arg(script).arg(method).arg(options.to_string())
+        tokio::process::Command::new(storage_bin::binary()).arg("codex-sessions").arg(sub).arg(options.to_string())
             .kill_on_drop(true).output()).await.map_err(|_| "Local Codex history read timed out".to_string())?
-        .map_err(|e| format!("Cannot read local Codex sessions (Node required): {e}"))?;
+        .map_err(|e| format!("Cannot read local Codex sessions: {e}"))?;
     if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().to_string()); }
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
 }
