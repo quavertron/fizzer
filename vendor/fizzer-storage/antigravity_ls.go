@@ -20,12 +20,12 @@ import (
 
 // Discovery file written by language_server -persistent_mode under GeminiDir.
 type lsDiscovery struct {
-	PID        int    `json:"pid"`
-	HTTPSPort  int    `json:"httpsPort"`
-	HTTPPort   int    `json:"httpPort"`
-	LSPort     int    `json:"lspPort"`
-	LSVersion  string `json:"lsVersion"`
-	CSRFToken  string `json:"csrfToken"`
+	PID       int    `json:"pid"`
+	HTTPSPort int    `json:"httpsPort"`
+	HTTPPort  int    `json:"httpPort"`
+	LSPort    int    `json:"lspPort"`
+	LSVersion string `json:"lsVersion"`
+	CSRFToken string `json:"csrfToken"`
 }
 
 type lsEndpoint struct {

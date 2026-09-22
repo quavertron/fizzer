@@ -80,13 +80,14 @@ npm run dev-headless
 ```
 
 Agent execution still requires the desktop app or the headless runner in
-`scripts/desktop-runner-daemon.cjs`, plus a locally installed, authenticated
-agent CLI. The headless runner follows the current local server session instead
-of freezing `~/.fizzer/token` at startup, and renews that login during its last
-three days. The desktop runner binds only to a trusted origin: the selected
-instance, the local embedded backend, or a saved remote vault, and reads that
-origin's own session cookie. From a failed Claude or Codex run, the desktop can
-open a terminal to sign that CLI in, including the separate agent account.
+`scripts/runner.cjs` (the Go `fizzer-storage runner` daemon), plus a locally
+installed, authenticated agent CLI. The headless runner follows the current
+local server session instead of freezing `~/.fizzer/token` at startup, and
+renews that login during its last three days. The desktop runner binds only to
+a trusted origin: the selected instance, the local embedded backend, or a
+saved remote vault, and reads that origin's own session cookie. From a failed
+Claude or Codex run, the desktop can open a terminal to sign that CLI in,
+including the separate agent account.
 
 For the native terminal app, install Rust and run `npm run tui`. Its binary is
 named `fizzer`. The command starts the local Elixir backend and waits until

@@ -54,8 +54,8 @@ type grant struct {
 }
 
 var (
-	activeRuns   = map[int]*exec.Cmd{}
-	activeMu     sync.Mutex
+	activeRuns = map[int]*exec.Cmd{}
+	activeMu   sync.Mutex
 )
 
 func startBridge(root, directory string, index int, remoteURL, remoteHeader string) (*bridgeSession, error) {
@@ -77,7 +77,7 @@ func startBridge(root, directory string, index int, remoteURL, remoteHeader stri
 	if err != nil {
 		return nil, err
 	}
- stderr, _ := cmd.StderrPipe()
+	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

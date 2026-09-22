@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Resvg } = require('@resvg/resvg-js');
 const agentAccount = require('./agent-account.cjs');
+const { storageBinary, runStorage } = require('./storage-bin.cjs');
 
 let cliAgentModulePromise = null;
 let cliAgentModuleMtimeMs = -1;
@@ -923,30 +924,128 @@ async function runClaudeLocally(opts, emit) {
  * Resolves when the run finishes (success or failure).
  */
 async function startLocalAgentRun(opts, sendEvent) {
-  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD === '1' || agentAccount.enabled()) {
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD === '1') {
     return runLocalAgent(opts, sendEvent);
   }
-  let seq = 0;
-  const send = event => sendEvent({ ...event, seq: ++seq });
-  const viewer = require('./awatch.cjs').createAwatchViewer(message => {
-    for (const event of message.events || []) {
-      if (event.kind === 'tool' && event.run_id === String(opts.runId)) {
-        send({ runId: Number(opts.runId), type: 'activity', payload_json: JSON.stringify(event) });
+  return startLocalAgentRunViaStorage(opts, sendEvent);
+}
+
+function noteApiPayload() {
+  if (!noteApi.configured && !noteApi.url && !noteApi.token) return undefined;
+  return {
+    url: noteApi.url,
+    origin: noteApi.origin || noteApi.url,
+    token: noteApi.token,
+    writeToken: noteApi.writeToken || '',
+  };
+}
+
+function spawnAgentRunStart(opts, onEvent) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      opts,
+      api: noteApiPayload(),
+      root: opts.remoteVault ? String(opts.cwd || '') : '',
+      mirrorRoot: opts.mirrorRoot || '',
+    });
+    const child = spawn(storageBinary(), ['agent-run', 'start'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env,
+    });
+    let stderr = '';
+    let result;
+    let failure;
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const lines = readline.createInterface({ input: child.stdout });
+    lines.on('line', (line) => {
+      try {
+        const message = JSON.parse(line);
+        if (message.event) onEvent(message.event);
+        if (message.result !== undefined) result = message.result;
+        if (message.error) failure = message.error;
+      } catch { /* Ignore incidental provider stdout. */ }
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (failure === 'Run canceled.') {
+        resolve({ canceled: true });
+        return;
       }
+      if (failure) {
+        reject(new Error(failure));
+        return;
+      }
+      if (code === 0) {
+        resolve(result || {});
+        return;
+      }
+      reject(new Error(stderr.trim() || `agent-run start exited with code ${code}`));
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(payload);
+  });
+}
+
+async function startLocalAgentRunViaStorage(opts, sendEvent) {
+  const runId = Number(opts.runId);
+  if (!Number.isFinite(runId)) throw new Error('Invalid run id');
+  if (!String(opts.agent || '').trim()) throw new Error('Agent is required');
+  if (!String(opts.prompt || '').trim()) throw new Error('Prompt is required');
+
+  let seq = 0;
+  let terminalSeen = false;
+  const send = (event) => {
+    if (event.type === 'status') {
+      try {
+        const payload = JSON.parse(event.payload_json || '{}');
+        if (['completed', 'failed', 'canceled'].includes(payload.status)) terminalSeen = true;
+      } catch { /* ignore */ }
     }
-  }, { batchMs: 0 });
-  try { return await runLocalAgent(opts, send); }
-  finally { viewer.close(); }
+    if (event.type === 'assistant-turn-end') return;
+    sendEvent({ ...event, seq: ++seq, runId: Number(event.runId) || runId });
+  };
+
+  const prepared = renderInlineSvgAttachments(String(opts.prompt), opts.inlineSvgs);
+  opts = {
+    ...opts,
+    prompt: prepared.prompt,
+    images: [...(Array.isArray(opts.images) ? opts.images : []), ...prepared.images],
+  };
+
+  let viewer = null;
+  try {
+    if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.isRemoteVault(opts, noteApi)) {
+      const { root } = await agentAccount.prepareWorkspace(opts, noteApi);
+      opts = { ...opts, cwd: root, remoteVault: true, mirrorRoot: root };
+    }
+    if (!agentAccount.enabled()) {
+      viewer = require('./awatch.cjs').createAwatchViewer((message) => {
+        for (const event of message.events || []) {
+          if (event.kind === 'tool' && event.run_id === String(runId)) {
+            send({ runId, type: 'activity', payload_json: JSON.stringify(event) });
+          }
+        }
+      }, { batchMs: 0 });
+    }
+    return await spawnAgentRunStart(opts, send);
+  } catch (error) {
+    if (!terminalSeen) {
+      const message = error instanceof Error ? error.message : String(error);
+      send({
+        runId,
+        type: 'status',
+        payload_json: JSON.stringify({ status: 'failed', summary: message }),
+      });
+    }
+    throw error;
+  } finally {
+    prepared.cleanup();
+    viewer?.close();
+  }
 }
 
 async function runLocalAgent(opts, sendEvent) {
-  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.enabled()) {
-    return agentAccount.run(opts, sendEvent, noteApi);
-  }
-  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1' && agentAccount.isRemoteVault(opts, noteApi)) {
-    const { root } = await agentAccount.prepareWorkspace(opts, noteApi);
-    opts = { ...opts, cwd: root, remoteVault: true };
-  }
   const runId = Number(opts.runId);
   if (!Number.isFinite(runId)) throw new Error('Invalid run id');
 
@@ -1082,6 +1181,19 @@ const canceledCliRuns = new Set();
 
 async function cancelLocalAgentRun(runId) {
   const id = Number(runId);
+  if (process.env.FIZZER_AGENT_ACCOUNT_CHILD !== '1') {
+    try {
+      runStorage(['agent-run', 'cancel', String(id)], { raw: true });
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return cancelLocalAgentRunInProcess(id);
+      return false;
+    }
+  }
+  return cancelLocalAgentRunInProcess(id);
+}
+
+async function cancelLocalAgentRunInProcess(id) {
   if (agentAccount.cancel(id)) return true;
 
   // Claude CLI runs: terminate the live child process.
@@ -1116,6 +1228,13 @@ async function cancelLocalAgentRun(runId) {
 
 /** Reap detached CLI groups left behind by a prior crashed Electron main. */
 async function reapOrphanedLocalAgentRuns() {
+  try {
+    runStorage(['agent-run', 'reap'], { raw: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[agent-runner] failed to reap agent-run pidfiles:', error?.message || error);
+    }
+  }
   await loadCliAgentModule();
 }
 
@@ -1140,4 +1259,5 @@ module.exports = {
   isMissingClaudeSession,
   resolveAgentCwd,
   setNoteApiConfig,
+  spawnAgentRunStart,
 };

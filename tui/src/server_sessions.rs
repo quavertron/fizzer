@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::Path, process::Command};
+use std::{collections::HashMap, path::Path, process::Command};
 use crate::storage_bin;
 
 pub fn read(directory: &Path) -> HashMap<String, String> {
@@ -23,9 +23,21 @@ pub fn remember(directory: &Path, origin: &str, token: &str) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
 
     #[test]
     fn electron_and_tui_writers_preserve_each_other_and_legacy_sessions() {
+        if !node_available() {
+            return;
+        }
         let directory = std::env::temp_dir().join(format!("fizzer-session-test-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("server-sessions.json"), r#"{"local":"legacy"}"#).unwrap();

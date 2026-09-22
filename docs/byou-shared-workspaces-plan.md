@@ -12,7 +12,7 @@ The host stores shared files, revisions, permissions, and change events. It does
 
 - `backend_elixir/lib/cascade_web/orchestration_controller.ex` selects `runner_user_id` from the registration owner, but resolves execution through registration, channel, and work-item `cwd` paths.
 - `cascade-electron/agent-runner.cjs` resolves `opts.cwd` / `opts.vaultRoot` before invoking local CLIs. Keep this execution boundary.
-- `scripts/desktop-runner-daemon.cjs` supports workspace preparation and local execution for the terminal surface. Electron and TUI must use the same workspace service.
+- `scripts/runner.cjs` (the Go `fizzer-storage runner` daemon) supports workspace preparation and local execution for the terminal surface. Electron and TUI must use the same workspace service.
 - `cascade-electron/worktrees.cjs` manages host-local Git worktrees and explicit publication. Preserve isolated task workspaces instead of replacing them with one mutable shared Git index.
 - Vault notes and chat are backend records. Project files are a separate resource; do not synchronize a SQLite database or create a second editable copy of note content.
 

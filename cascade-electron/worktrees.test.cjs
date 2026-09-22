@@ -13,7 +13,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-wt-'));
+// realpath so expected paths match git's symlink-resolved worktree output on macOS (/var → /private/var).
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-wt-')));
 process.env.CASCADE_WORKTREE_ROOT = path.join(scratch, 'workspaces');
 
 const wt = require('./worktrees.cjs');

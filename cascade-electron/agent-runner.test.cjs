@@ -12,6 +12,7 @@ process.env.CASCADE_AGENT_PROCESS_DIR = runnerLeaseDir;
 process.env.CASCADE_AGENT_STATE_DIR = runnerStateDir;
 process.env.CASCADE_DATA_DIR = runnerStateDir;
 process.env.CASCADE_AGENT_BIN_DIR = runnerBinDir;
+process.env.FIZZER_AGENT_ACCOUNT_CHILD = '1';
 const {
   buildRunHelperEnv,
   chatTriggeringMessageId,
@@ -265,7 +266,7 @@ test('runner recovers from failed initial and replacement builds without restart
   fs.symlinkSync(modules, path.join(dir, 'node_modules'));
   const runnerPath = path.join(dir, 'cascade-electron', 'agent-runner.cjs');
   fs.copyFileSync(path.join(__dirname, 'agent-runner.cjs'), runnerPath);
-  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs', 'awatch.cjs']) {
+  for (const name of ['agent-account.cjs', 'agent-account-api.cjs', 'agent-write-access.cjs', 'awatch.cjs', 'storage-bin.cjs']) {
     fs.copyFileSync(path.join(__dirname, name), path.join(dir, 'cascade-electron', name));
   }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
@@ -375,4 +376,69 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   await run;
   const statuses = events.filter(event => event.type === 'status').map(event => JSON.parse(event.payload_json).status);
   assert.deepEqual(statuses, ['running', stop ? 'canceled' : 'completed']);
+});
+
+test('Electron routes start through fizzer-storage when not the account child', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-agent-run-go-'));
+  const bin = path.join(dir, 'fizzer-storage');
+  const argsFile = path.join(dir, 'argv.json');
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+fs.writeFileSync(process.env.FAKE_STORAGE_ARGS, JSON.stringify(args));
+if (args[0] === 'agent-account') {
+  if (args[1] === 'enabled') { process.stdout.write('false'); process.exit(0); }
+  if (args[1] === 'is-remote-vault') { process.stdout.write('false'); process.exit(0); }
+  process.exit(0);
+}
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  fs.writeFileSync(process.env.FAKE_STORAGE_INPUT, input);
+  const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+  send({ event: { runId: 93001, seq: 1, type: 'status', payload_json: JSON.stringify({ status: 'running' }) } });
+  send({ event: { runId: 93001, seq: 2, type: 'status', payload_json: JSON.stringify({ status: 'completed', summary: 'via storage' }) } });
+  send({ result: { sessionId: 'storage-session' } });
+  process.exit(0);
+});
+`, { mode: 0o755 });
+  const inputFile = path.join(dir, 'input.json');
+  const priorChild = process.env.FIZZER_AGENT_ACCOUNT_CHILD;
+  const priorBin = process.env.FIZZER_STORAGE_BIN;
+  const priorArgs = process.env.FAKE_STORAGE_ARGS;
+  const priorInput = process.env.FAKE_STORAGE_INPUT;
+  delete process.env.FIZZER_AGENT_ACCOUNT_CHILD;
+  process.env.FIZZER_STORAGE_BIN = bin;
+  process.env.FAKE_STORAGE_ARGS = argsFile;
+  process.env.FAKE_STORAGE_INPUT = inputFile;
+  t.after(() => {
+    if (priorChild === undefined) delete process.env.FIZZER_AGENT_ACCOUNT_CHILD;
+    else process.env.FIZZER_AGENT_ACCOUNT_CHILD = priorChild;
+    if (priorBin === undefined) delete process.env.FIZZER_STORAGE_BIN;
+    else process.env.FIZZER_STORAGE_BIN = priorBin;
+    if (priorArgs === undefined) delete process.env.FAKE_STORAGE_ARGS;
+    else process.env.FAKE_STORAGE_ARGS = priorArgs;
+    if (priorInput === undefined) delete process.env.FAKE_STORAGE_INPUT;
+    else process.env.FAKE_STORAGE_INPUT = priorInput;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const events = [];
+  const result = await startLocalAgentRun({
+    runId: 93001,
+    agent: 'claude-code',
+    prompt: 'Say hello',
+    cwd: dir,
+    model: 'claude-test',
+  }, (event) => events.push(event));
+
+  assert.equal(JSON.parse(fs.readFileSync(argsFile, 'utf8')).join(' '), 'agent-run start');
+  const payload = JSON.parse(fs.readFileSync(inputFile, 'utf8'));
+  assert.equal(payload.opts.runId, 93001);
+  assert.equal(payload.opts.prompt, 'Say hello');
+  assert.equal(result.sessionId, 'storage-session');
+  const statuses = events.filter(event => event.type === 'status').map(event => JSON.parse(event.payload_json).status);
+  assert.deepEqual(statuses, ['running', 'completed']);
+  assert.equal(events.at(-1).seq, 2);
 });

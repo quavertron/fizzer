@@ -262,7 +262,7 @@ fn spawn_runner_check(tx: &mpsc::UnboundedSender<BackendEvent>) {
     let tx = tx.clone();
     tokio::spawn(async move {
         let running = tokio::process::Command::new("pgrep")
-            .args(["-f", "desktop-runner-daemon"])
+            .args(["-f", "fizzer-storage runner"])
             .output()
             .await
             .map(|o| o.status.success())
@@ -283,7 +283,7 @@ async fn start_native_runner(base_url: &str, token: Option<&str>) -> Option<toki
     }
     let token = token.filter(|value| !value.trim().is_empty())?;
     let already_running = tokio::process::Command::new("pgrep")
-        .args(["-f", "desktop-runner-daemon"])
+        .args(["-f", "fizzer-storage runner"])
         .output()
         .await
         .map(|output| output.status.success())
@@ -292,13 +292,8 @@ async fn start_native_runner(base_url: &str, token: Option<&str>) -> Option<toki
         return None;
     }
 
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
-    let script = repo_root.join("scripts").join("desktop-runner-daemon.cjs");
-    if !script.is_file() {
-        return None;
-    }
-    tokio::process::Command::new("node")
-        .arg(script)
+    tokio::process::Command::new(storage_bin::binary())
+        .arg("runner")
         .env("API_URL", base_url)
         .env("CASCADE_TOKEN", token)
         // The daemon is a child service, not a second terminal UI. Letting

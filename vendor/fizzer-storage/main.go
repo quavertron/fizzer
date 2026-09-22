@@ -15,10 +15,13 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  server-sessions read <directory>\n")
 	fmt.Fprintf(os.Stderr, "  server-sessions remember <directory> <origin> <token>\n")
 	fmt.Fprintf(os.Stderr, "  list-connections <directory> [vaults-json]\n")
-		fmt.Fprintf(os.Stderr, "  antigravity-ls ensure\n")
-		fmt.Fprintf(os.Stderr, "  agent-account <enabled|should-offer|state|decline|setup-command|resolve-workspace|launch-argv|run|cancel|save-write-access|write-access-roots|is-remote-vault|prepare-workspace>\n")
-		fmt.Fprintf(os.Stderr, "  codex-sessions <list|read|assert-idle> [json]\n")
-		fmt.Fprintf(os.Stderr, "  tui\n")
+	fmt.Fprintf(os.Stderr, "  antigravity-ls ensure\n")
+	fmt.Fprintf(os.Stderr, "  agent-account <enabled|should-offer|state|decline|setup-command|resolve-workspace|launch-argv|run|cancel|save-write-access|write-access-roots|is-remote-vault|prepare-workspace>\n")
+	fmt.Fprintf(os.Stderr, "  codex-sessions <list|read|assert-idle> [json]\n")
+	fmt.Fprintf(os.Stderr, "  worktree <prepare|status|create|list|diff|file-diff|remove|prune|pr-create|pr-status|normalize-slug|root|resolve-repo> [json]\n")
+	fmt.Fprintf(os.Stderr, "  agent-run <start|cancel|reap> [json]\n")
+	fmt.Fprintf(os.Stderr, "  runner [json]\n")
+	fmt.Fprintf(os.Stderr, "  tui\n")
 	os.Exit(1)
 }
 
@@ -165,6 +168,15 @@ func main() {
 
 	case "codex-sessions":
 		os.Exit(CodexSessionsCLI(os.Args[2:]))
+
+	case "worktree":
+		os.Exit(WorktreeCLI(os.Args[2:]))
+
+	case "agent-run":
+		os.Exit(AgentRunCLI(os.Args[2:]))
+
+	case "runner":
+		os.Exit(RunnerCLI(os.Args[2:]))
 
 	case "tui":
 		os.Exit(RunTuiDev())

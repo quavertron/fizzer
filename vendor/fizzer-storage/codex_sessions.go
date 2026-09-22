@@ -44,10 +44,10 @@ type codexSessionList struct {
 }
 
 type codexMessage struct {
-	Index     int   `json:"index"`
+	Index     int    `json:"index"`
 	Role      string `json:"role"`
 	Body      string `json:"body"`
-	CreatedAt any   `json:"createdAt,omitempty"`
+	CreatedAt any    `json:"createdAt,omitempty"`
 }
 
 type codexPage struct {

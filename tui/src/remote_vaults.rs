@@ -1,4 +1,4 @@
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use std::{path::Path, process::Command};
 use crate::{RemoteVaultRecord, storage_bin};
 
 pub fn read(directory: &Path) -> Vec<RemoteVaultRecord> {
@@ -32,8 +32,21 @@ pub fn save(directory: &Path, record: RemoteVaultRecord) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
     #[test]
     fn electron_and_tui_connection_updates_do_not_lose_other_vaults() {
+        if !node_available() {
+            return;
+        }
         let directory = std::env::temp_dir().join(format!("fizzer-vault-writers-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let record = |id: &str, origin: &str, token: &str| RemoteVaultRecord {

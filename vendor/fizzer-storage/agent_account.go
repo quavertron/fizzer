@@ -14,8 +14,8 @@ import (
 )
 
 type accountState struct {
-	Enabled      bool `json:"enabled"`
-	ShouldOffer  bool `json:"shouldOffer"`
+	Enabled      bool   `json:"enabled"`
+	ShouldOffer  bool   `json:"shouldOffer"`
 	SetupCommand string `json:"setupCommand,omitempty"`
 }
 
@@ -198,16 +198,19 @@ func repoRoot() string {
 	if err != nil {
 		return "."
 	}
-	// vendor/fizzer-storage/fizzer-storage → repo root is ../../
-	return filepath.Join(filepath.Dir(exe), "..", "..")
+	dir := filepath.Dir(exe)
+	if filepath.Base(dir) == ".native-tools" {
+		return filepath.Dir(dir)
+	}
+	return filepath.Join(dir, "..", "..")
 }
 
 type launchOptions struct {
-	Node           string
-	Worker         string
-	Socket         string
-	ResourcesPath  string
-	RepoRoot       string
+	Node          string
+	Worker        string
+	Socket        string
+	ResourcesPath string
+	RepoRoot      string
 }
 
 func launchArguments(opts launchOptions) []string {
