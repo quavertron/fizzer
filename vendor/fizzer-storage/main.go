@@ -15,6 +15,8 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  server-sessions read <directory>\n")
 	fmt.Fprintf(os.Stderr, "  server-sessions remember <directory> <origin> <token>\n")
 	fmt.Fprintf(os.Stderr, "  list-connections <directory> [vaults-json]\n")
+	fmt.Fprintf(os.Stderr, "  antigravity-ls ensure\n")
+	fmt.Fprintf(os.Stderr, "  tui\n")
 	os.Exit(1)
 }
 
@@ -139,6 +141,25 @@ func main() {
 			os.Exit(1)
 		}
 		os.Stdout.Write(out)
+
+	case "antigravity-ls":
+		if len(os.Args) < 3 || os.Args[2] != "ensure" {
+			usage()
+		}
+		endpoint, err := EnsureAntigravityLS()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		out, err := json.Marshal(endpoint)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Stdout.Write(out)
+
+	case "tui":
+		os.Exit(RunTuiDev())
 
 	default:
 		usage()

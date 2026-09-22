@@ -82,31 +82,22 @@ function launchArguments(node, worker, socket) {
     if (fs.existsSync(candidate)) providerBinaries.push(`ANTIGRAVITY_HOME=${candidate}`);
   }
   if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_LS_ADDRESS='))) {
-    if (process.platform === 'darwin') {
+    // Discovery + standalone spawn live in Go (fizzer-storage); no desktop app.
+    const helper = [
+      process.env.FIZZER_STORAGE_BIN,
+      process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
+      path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
+      '/usr/local/libexec/fizzer/fizzer-storage',
+    ].filter(Boolean).find(file => fs.existsSync(file));
+    if (helper) {
       try {
-        const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf-8' });
-        for (const line of (ps.stdout || '').split('\n')) {
-          if (!/\/language_server(\s|$)/.test(line)) continue;
-          const tokenMatch = line.match(/--csrf_token\s+(\S+)/);
-          const pidMatch = line.match(/^\s*(\d+)\s/);
-          if (!tokenMatch || !pidMatch) continue;
-          const token = tokenMatch[1];
-          const pid = pidMatch[1];
-          const lsof = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pid], { encoding: 'utf-8' });
-          const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
-            .map(m => parseInt(m[1], 10))
-            .filter(n => Number.isFinite(n));
-          for (const p of ports) {
-            try {
-              const probe = spawnSync('curl', ['-s', '-m', '1', `http://127.0.0.1:${p}/`], { encoding: 'utf-8' });
-              if (probe.stdout && (probe.stdout.includes('__APP_CONFIG__') || probe.stdout.includes('<!doctype html>'))) {
-                providerBinaries.push(`ANTIGRAVITY_LS_ADDRESS=127.0.0.1:${p}`);
-                providerBinaries.push(`ANTIGRAVITY_CSRF_TOKEN=${token}`);
-                break;
-              }
-            } catch {}
+        const result = spawnSync(helper, ['antigravity-ls', 'ensure'], { encoding: 'utf-8', timeout: 20000 });
+        if (result.status === 0 && result.stdout) {
+          const endpoint = JSON.parse(result.stdout);
+          if (endpoint.address && endpoint.csrf) {
+            providerBinaries.push(`ANTIGRAVITY_LS_ADDRESS=${endpoint.address}`);
+            providerBinaries.push(`ANTIGRAVITY_CSRF_TOKEN=${endpoint.csrf}`);
           }
-          if (providerBinaries.some(value => value.startsWith('ANTIGRAVITY_LS_ADDRESS='))) break;
         }
       } catch {}
     }

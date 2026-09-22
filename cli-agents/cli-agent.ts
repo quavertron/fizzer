@@ -1931,6 +1931,35 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
   return undefined;
 }
 
+
+/** Locate a running language_server's HTTP address + CSRF token via fizzer-storage. */
+function ensureAntigravityLanguageServer(): { address: string; csrf: string } | undefined {
+  const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const helper = [
+    process.env.FIZZER_STORAGE_BIN,
+    resources && path.join(resources, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
+    path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
+    path.join(os.homedir(), '.local', 'bin', 'fizzer-storage'),
+    '/usr/local/libexec/fizzer/fizzer-storage',
+  ].filter((c): c is string => Boolean(c)).find((c) => {
+    try { return fs.existsSync(c); } catch { return false; }
+  });
+  if (!helper) return undefined;
+  try {
+    const result = spawnSync(helper, ['antigravity-ls', 'ensure'], {
+      encoding: 'utf-8',
+      timeout: 20000,
+      env: { ...process.env },
+    });
+    if (result.status !== 0 || !result.stdout) return undefined;
+    const parsed = JSON.parse(result.stdout) as { address?: string; csrf?: string };
+    if (!parsed.address || !parsed.csrf) return undefined;
+    return { address: parsed.address, csrf: parsed.csrf };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Discover Antigravity language_server HTTP address + CSRF + project id.
  * Prefer env, then /proc cmdline + language_server.log, then /proc environ.
@@ -1978,48 +2007,6 @@ export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = p
 
   let token: string | undefined;
   let port: string | undefined;
-
-  // macOS has no /proc: inspect the running language_server via `ps` (for the
-  // --csrf_token) and `lsof` (for its live listening port). The Antigravity log
-  // records a random port but is unreliable across restarts, so trust the socket.
-  if (process.platform === 'darwin') {
-    try {
-      const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf-8' });
-      const lines = (ps.stdout || '').split('\n');
-      for (const l of lines) {
-        // The real LS binary, not the "Antigravity Helper" Electron children.
-        if (!/\/language_server(\s|$)/.test(l)) continue;
-        const tokenMatch = l.match(/--csrf_token\s+(\S+)/);
-        const pidMatch = l.match(/^\s*(\d+)\s/);
-        if (!tokenMatch || !pidMatch) continue;
-        token = tokenMatch[1];
-        const pid = pidMatch[1];
-        const lsof = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pid], { encoding: 'utf-8' });
-        const ports = [...(lsof.stdout || '').matchAll(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/g)]
-          .map((m) => parseInt(m[1], 10))
-          .filter((n) => Number.isFinite(n));
-        // Probe ports to find the real HTTP/gRPC LanguageServerService endpoint.
-        // The LS opens paired HTTPS/HTTP ports initially plus internal sandbox proxy ports later.
-        // The real HTTP endpoint serves HTML with __APP_CONFIG__ and returns HTTP 200 on /.
-        for (const p of ports) {
-          try {
-            const probe = spawnSync('curl', ['-s', '-m', '1', `http://127.0.0.1:${p}/`], { encoding: 'utf-8' });
-            if (probe.stdout && (probe.stdout.includes('__APP_CONFIG__') || probe.stdout.includes('<!doctype html>'))) {
-              port = String(p);
-              break;
-            }
-          } catch { /* ignore */ }
-        }
-        break;
-      }
-    } catch { /* fall through to /proc + log scanning below */ }
-
-    if (port && token) {
-      env.ANTIGRAVITY_LS_ADDRESS = `127.0.0.1:${port}`;
-      env.ANTIGRAVITY_CSRF_TOKEN = token;
-      return env;
-    }
-  }
 
   try {
     for (const file of fs.readdirSync('/proc')) {
@@ -2069,6 +2056,14 @@ export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = p
       } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
+
+  if (!env.ANTIGRAVITY_LS_ADDRESS || !env.ANTIGRAVITY_CSRF_TOKEN) {
+    const started = ensureAntigravityLanguageServer();
+    if (started) {
+      env.ANTIGRAVITY_LS_ADDRESS = started.address;
+      env.ANTIGRAVITY_CSRF_TOKEN = started.csrf;
+    }
+  }
 
   return env;
 }
