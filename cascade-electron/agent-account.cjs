@@ -2,9 +2,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-// DO NOT REMOVE spawnSync: launchArguments() uses it synchronously to discover Antigravity's
-// live language server port & CSRF token before dropping privileges to the fizzer account.
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const { startReadOnlyApi } = require('./agent-account-api.cjs');
 const writeAccess = require('./agent-write-access.cjs');
@@ -68,6 +66,8 @@ function launchArguments(node, worker, socket) {
     'CLAUDE_BIN', 'CODEX_BIN', 'GROK_BIN', 'COPILOT_BIN', 'HERMES_BIN', 'AKRON_BIN', 'OMP_BIN', 'PI_BIN',
     'ANTIGRAVITY_BIN', 'ANTIGRAVITY_HOME', 'ANTIGRAVITY_LS_ADDRESS', 'ANTIGRAVITY_CSRF_TOKEN',
     'ANTIGRAVITY_PROJECT_ID', 'ANTIGRAVITY_AGENTAPI_EXE',
+    // Path only: the worker resolves/fizzles the Go helper for antigravity-ls ensure.
+    'FIZZER_STORAGE_BIN',
   ]
     .filter(name => typeof process.env[name] === 'string' && process.env[name])
     .map(name => `${name}=${process.env[name]}`);
@@ -81,26 +81,13 @@ function launchArguments(node, worker, socket) {
     const candidate = path.join(os.homedir(), '.gemini');
     if (fs.existsSync(candidate)) providerBinaries.push(`ANTIGRAVITY_HOME=${candidate}`);
   }
-  if (!providerBinaries.some(value => value.startsWith('ANTIGRAVITY_LS_ADDRESS='))) {
-    // Discovery + standalone spawn live in Go (fizzer-storage); no desktop app.
-    const helper = [
-      process.env.FIZZER_STORAGE_BIN,
+  if (!providerBinaries.some(value => value.startsWith('FIZZER_STORAGE_BIN='))) {
+    const candidate = [
       process.resourcesPath && path.join(process.resourcesPath, 'embedded-runtime', 'agent-account-setup', 'fizzer-storage'),
       path.join(__dirname, '..', '.native-tools', 'fizzer-storage'),
       '/usr/local/libexec/fizzer/fizzer-storage',
-    ].filter(Boolean).find(file => fs.existsSync(file));
-    if (helper) {
-      try {
-        const result = spawnSync(helper, ['antigravity-ls', 'ensure'], { encoding: 'utf-8', timeout: 20000 });
-        if (result.status === 0 && result.stdout) {
-          const endpoint = JSON.parse(result.stdout);
-          if (endpoint.address && endpoint.csrf) {
-            providerBinaries.push(`ANTIGRAVITY_LS_ADDRESS=${endpoint.address}`);
-            providerBinaries.push(`ANTIGRAVITY_CSRF_TOKEN=${endpoint.csrf}`);
-          }
-        }
-      } catch {}
-    }
+    ].find(file => file && fs.existsSync(file));
+    if (candidate) providerBinaries.push(`FIZZER_STORAGE_BIN=${candidate}`);
   }
   // Claude runs as the fizzer account with a locked-down env and no login
   // keychain, so subscription OAuth can't be read from the Keychain. Forward an

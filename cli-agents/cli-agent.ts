@@ -1932,7 +1932,7 @@ export function resolveAntigravityModelTier(model?: string | null): AntigravityT
 }
 
 
-/** Locate a running language_server's HTTP address + CSRF token via fizzer-storage. */
+/** Ensure a language_server via fizzer-storage (shared with Electron/TUI). */
 function ensureAntigravityLanguageServer(): { address: string; csrf: string } | undefined {
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const helper = [
@@ -1962,7 +1962,8 @@ function ensureAntigravityLanguageServer(): { address: string; csrf: string } | 
 
 /**
  * Discover Antigravity language_server HTTP address + CSRF + project id.
- * Prefer env, then /proc cmdline + language_server.log, then /proc environ.
+ * Connection details come only from the environment or Go (`fizzer-storage
+ * antigravity-ls ensure`); project selection stays here.
  */
 export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = { ANTIGRAVITY_AGENT: '1' };
@@ -2005,64 +2006,10 @@ export function discoverAntigravityEnv(cwd?: string, base: NodeJS.ProcessEnv = p
     return env;
   }
 
-  let token: string | undefined;
-  let port: string | undefined;
-
-  try {
-    for (const file of fs.readdirSync('/proc')) {
-      if (!/^\d+$/.test(file)) continue;
-      try {
-        const cmdline = fs.readFileSync(`/proc/${file}/cmdline`, 'utf-8');
-        if (!cmdline.includes('language_server')) continue;
-        const parts = cmdline.split('\0');
-        const tokenIdx = parts.indexOf('--csrf_token');
-        if (tokenIdx !== -1 && parts[tokenIdx + 1]) {
-          token = parts[tokenIdx + 1];
-          break;
-        }
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
-
-  try {
-    const logPath = path.join(os.homedir(), '.config', 'Antigravity', 'logs', 'language_server.log');
-    if (fs.existsSync(logPath)) {
-      const content = fs.readFileSync(logPath, 'utf-8');
-      const matches = [...content.matchAll(/Language server listening on random port at (\d+) for HTTP/g)];
-      if (matches.length > 0) port = matches[matches.length - 1][1];
-    }
-  } catch { /* ignore */ }
-
-  // Validate log port is actually open; fall back to /proc/net/tcp listeners later if needed.
-  if (port && token) {
-    env.ANTIGRAVITY_LS_ADDRESS = `localhost:${port}`;
-    env.ANTIGRAVITY_CSRF_TOKEN = token;
-    return env;
-  }
-
-  try {
-    for (const file of fs.readdirSync('/proc')) {
-      if (!/^\d+$/.test(file)) continue;
-      try {
-        const envContent = fs.readFileSync(`/proc/${file}/environ`, 'utf-8');
-        const parts = envContent.split('\0');
-        const addrVar = parts.find((p) => p.startsWith('ANTIGRAVITY_LS_ADDRESS='));
-        const tokenVar = parts.find((p) => p.startsWith('ANTIGRAVITY_CSRF_TOKEN='));
-        if (addrVar && tokenVar) {
-          env.ANTIGRAVITY_LS_ADDRESS = addrVar.slice('ANTIGRAVITY_LS_ADDRESS='.length);
-          env.ANTIGRAVITY_CSRF_TOKEN = tokenVar.slice('ANTIGRAVITY_CSRF_TOKEN='.length);
-          break;
-        }
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
-
-  if (!env.ANTIGRAVITY_LS_ADDRESS || !env.ANTIGRAVITY_CSRF_TOKEN) {
-    const started = ensureAntigravityLanguageServer();
-    if (started) {
-      env.ANTIGRAVITY_LS_ADDRESS = started.address;
-      env.ANTIGRAVITY_CSRF_TOKEN = started.csrf;
-    }
+  const started = ensureAntigravityLanguageServer();
+  if (started) {
+    env.ANTIGRAVITY_LS_ADDRESS = started.address;
+    env.ANTIGRAVITY_CSRF_TOKEN = started.csrf;
   }
 
   return env;

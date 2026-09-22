@@ -119,7 +119,7 @@ test('launch passes the human Antigravity executable to the fizzer account', () 
   }
 });
 
-test('launch discovers and passes Antigravity language server address and CSRF token', () => {
+test('launch resolves the Go storage helper for the worker without discovering the LS in cjs', () => {
   const oldAddress = process.env.ANTIGRAVITY_LS_ADDRESS;
   const oldToken = process.env.ANTIGRAVITY_CSRF_TOKEN;
   delete process.env.ANTIGRAVITY_LS_ADDRESS;
@@ -127,10 +127,12 @@ test('launch discovers and passes Antigravity language server address and CSRF t
   try {
     const args = account.launchArguments('/usr/bin/node', '/tmp/worker.cjs', '/tmp/socket');
     assert.ok(Array.isArray(args));
-    if (process.platform === 'darwin') {
-      const hasLs = args.some(v => v.startsWith('ANTIGRAVITY_LS_ADDRESS='));
-      const hasCsrf = args.some(v => v.startsWith('ANTIGRAVITY_CSRF_TOKEN='));
-      assert.equal(hasLs, hasCsrf);
+    assert.ok(!args.some(v => v.startsWith('ANTIGRAVITY_LS_ADDRESS=')));
+    assert.ok(!args.some(v => v.startsWith('ANTIGRAVITY_CSRF_TOKEN=')));
+    // Worker discovers/ensures via `fizzer-storage antigravity-ls ensure` (Go).
+    const storage = args.find(v => v.startsWith('FIZZER_STORAGE_BIN='));
+    if (fs.existsSync(path.join(__dirname, '..', '.native-tools', 'fizzer-storage'))) {
+      assert.ok(storage, 'dev build must pass FIZZER_STORAGE_BIN to the worker');
     }
   } finally {
     if (oldAddress !== undefined) process.env.ANTIGRAVITY_LS_ADDRESS = oldAddress;

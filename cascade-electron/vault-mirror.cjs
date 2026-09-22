@@ -8,6 +8,33 @@ const http = require('node:http');
 const { createHash, randomBytes } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const mirrorKey = (origin, vaultId) => createHash('sha256').update(JSON.stringify([origin, vaultId])).digest('hex');
+function writeRecord(file, value) {
+  const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+/** Read a persisted mirror/connection record, rejecting anything whose keys do not hash back to `key`. */
+function normalizeRecord(raw, key) {
+  if (!raw || typeof raw !== 'object') return null;
+  let origin;
+  try { origin = new URL(raw.origin).origin; } catch { return null; }
+  const vaultId = raw.vaultId ?? raw.id;
+  if (!/^https?:/.test(origin) || !/^[a-zA-Z0-9_-]{1,128}$/.test(vaultId)) return null;
+  if (key && mirrorKey(origin, vaultId) !== key) return null;
+  return { origin, vaultId };
+}
+/** The session token for an already-connected remote vault, keyed exactly like its mirror. */
+function storedToken(directory, key) {
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(directory, 'remote-vaults', `${key}.json`), 'utf8'));
+    return typeof record?.token === 'string' && record.token ? record.token : null;
+  } catch { return null; }
+}
 function rcloneBinary() {
   if (process.env.FIZZER_RCLONE_BIN) return process.env.FIZZER_RCLONE_BIN;
   const candidates = ['/usr/local/libexec/fizzer/rclone', '/opt/homebrew/bin/rclone', '/usr/local/bin/rclone'];
@@ -21,6 +48,7 @@ class VaultMirrors {
     this.binary = binary;
     this.onError = onError;
     this.entries = new Map();
+    this.restored = false;
     this.agent = new http.Agent({ keepAlive: true });
     this.closed = false;
   }
@@ -28,6 +56,7 @@ class VaultMirrors {
   async start() {
     if (this.closed) throw new Error('Mirror host is closed');
     if (this.starting) return this.starting;
+    try { this.restore(); } catch (error) { this.onError(error); }
     this.starting = this.launch().catch(error => { this.starting = null; throw error; });
     return this.starting;
   }
@@ -84,25 +113,77 @@ class VaultMirrors {
     });
   }
 
+  recordPath(key) { return path.join(this.directory, 'mirrors', `${key}.json`); }
+
+  register(key, origin, vaultId) {
+    let entry = this.entries.get(key);
+    if (entry) return entry;
+    // Never sync into cwd, a repository, or a caller-selected path.
+    const root = path.join(this.directory, 'mirrors', key);
+    fs.mkdirSync(root, { recursive: true, mode: 0o755 });
+    if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Mirror root must not be a symlink');
+    entry = { key, origin, vaultId, root, token: null, dirty: false, running: null, timer: null };
+    this.entries.set(key, entry);
+    // Reconciliation also repairs a lost final notification without inventing
+    // another event journal or relying on Socket.IO replay support.
+    entry.interval = setInterval(() => this.notify(entry), 60000);
+    entry.interval.unref();
+    return entry;
+  }
+
   watch({ origin, token, vaultId }) {
     origin = new URL(origin).origin;
     if (!/^https?:/.test(origin) || !token || !/^[a-zA-Z0-9_-]{1,128}$/.test(vaultId)) throw new Error('Invalid mirror connection');
-    const key = createHash('sha256').update(JSON.stringify([origin, vaultId])).digest('hex');
-    let entry = this.entries.get(key);
-    if (!entry) {
-      // Never sync into cwd, a repository, or a caller-selected path.
-      const root = path.join(this.directory, 'mirrors', key);
-      fs.mkdirSync(root, { recursive: true, mode: 0o755 });
-      if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Mirror root must not be a symlink');
-      entry = { origin, vaultId, root, token, dirty: false, running: null, timer: null };
-      this.entries.set(key, entry);
-      // Reconciliation also repairs a lost final notification without inventing
-      // another event journal or relying on Socket.IO replay support.
-      entry.interval = setInterval(() => this.notify(entry), 60000);
-      entry.interval.unref();
+    const key = mirrorKey(origin, vaultId);
+    if (!this.entries.has(key)) {
+      this.register(key, origin, vaultId);
+      // Persist the registry so a restart resumes this mirror instead of
+      // leaving its root to go stale until the vault is opened again.
+      writeRecord(this.recordPath(key), { origin, vaultId });
     }
+    const entry = this.entries.get(key);
     entry.token = token;
     return entry;
+  }
+
+  /**
+   * Rehydrate persisted mirrors without syncing them: the remote stays the
+   * source of truth, so entries only need to exist for the next notification
+   * or reconciliation interval. Roots with no surviving record are pruned.
+   */
+  restore() {
+    if (this.restored) return;
+    const directory = path.join(this.directory, 'mirrors');
+    let names;
+    try { names = fs.readdirSync(directory); } catch { this.restored = true; return; }
+    const records = new Map();
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const key = name.slice(0, -'.json'.length);
+      let raw;
+      try { raw = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')); } catch { continue; }
+      const record = normalizeRecord(raw, key);
+      if (record) records.set(key, record);
+    }
+    for (const name of names) {
+      if (name.endsWith('.json')) continue;
+      const root = path.join(directory, name);
+      let stat;
+      try { stat = fs.lstatSync(root); } catch { continue; }
+      if (!stat.isDirectory() || records.has(name)) continue;
+      // A mirror created before records existed still counts as live when its
+      // connection survives, so adopt it rather than discarding local content.
+      let stored;
+      try { stored = JSON.parse(fs.readFileSync(path.join(this.directory, 'remote-vaults', `${name}.json`), 'utf8')); } catch { stored = null; }
+      const record = normalizeRecord(stored, name);
+      if (!record) { fs.rmSync(root, { recursive: true, force: true }); continue; }
+      writeRecord(this.recordPath(name), record);
+      records.set(name, record);
+    }
+    for (const [key, record] of records) {
+      try { this.register(key, record.origin, record.vaultId); } catch (error) { this.onError(error); }
+    }
+    this.restored = true;
   }
 
   notify(entry) {

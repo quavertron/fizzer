@@ -15,8 +15,9 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  server-sessions read <directory>\n")
 	fmt.Fprintf(os.Stderr, "  server-sessions remember <directory> <origin> <token>\n")
 	fmt.Fprintf(os.Stderr, "  list-connections <directory> [vaults-json]\n")
-	fmt.Fprintf(os.Stderr, "  antigravity-ls ensure\n")
-	fmt.Fprintf(os.Stderr, "  tui\n")
+		fmt.Fprintf(os.Stderr, "  antigravity-ls ensure\n")
+		fmt.Fprintf(os.Stderr, "  agent-account <enabled|should-offer|state|decline|setup-command|resolve-workspace|launch-argv|run|cancel|save-write-access>\n")
+		fmt.Fprintf(os.Stderr, "  tui\n")
 	os.Exit(1)
 }
 
@@ -157,6 +158,9 @@ func main() {
 			os.Exit(1)
 		}
 		os.Stdout.Write(out)
+
+	case "agent-account":
+		os.Exit(AgentAccountCLI(os.Args[2:]))
 
 	case "tui":
 		os.Exit(RunTuiDev())
