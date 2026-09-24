@@ -1,0 +1,55 @@
+name: Upload alock-rclone branch
+
+# Mirrors the work/alock-rclone-20260920 branch to 69.62.69.212. This is a
+# branch preview upload, not the production deploy (see deploy-production.yml).
+
+on:
+  push:
+    branches: [work/alock-rclone-20260920]
+  workflow_dispatch:
+
+concurrency:
+  group: upload-alock-rclone
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UPLOAD_HOST: 69.62.69.212
+  UPLOAD_HOST_KEY: 69.62.69.212 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGVhudMHD51sP7RKIYrjXSfi2tSmuzrGBnsS+lIk++nk
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure SSH identity
+        env:
+          UPLOAD_SSH_KEY: ${{ secrets.UPLOAD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$UPLOAD_SSH_KEY"
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$UPLOAD_SSH_KEY" > ~/.ssh/upload
+          printf '%s\n' "$UPLOAD_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/upload ~/.ssh/known_hosts
+
+      - name: Upload checkout
+        env:
+          UPLOAD_USER: ${{ vars.UPLOAD_USER || 'root' }}
+          UPLOAD_PATH: ${{ vars.UPLOAD_PATH || '/var/www/fizzer-alock-rclone' }}
+          UPLOAD_POST_COMMAND: ${{ vars.UPLOAD_POST_COMMAND }}
+        run: |
+          set -euo pipefail
+          ssh_cmd="ssh -i $HOME/.ssh/upload -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          $ssh_cmd "$UPLOAD_USER@$UPLOAD_HOST" "mkdir -p '$UPLOAD_PATH'"
+          rsync -az --delete --exclude .git --exclude node_modules --exclude .env \
+            -e "$ssh_cmd" ./ "$UPLOAD_USER@$UPLOAD_HOST:$UPLOAD_PATH/"
+          $ssh_cmd "$UPLOAD_USER@$UPLOAD_HOST" "echo '$GITHUB_SHA' > '$UPLOAD_PATH/REVISION'"
+          if [[ -n "$UPLOAD_POST_COMMAND" ]]; then
+            $ssh_cmd "$UPLOAD_USER@$UPLOAD_HOST" "cd '$UPLOAD_PATH' && $UPLOAD_POST_COMMAND"
+          fi
+          echo "Uploaded $GITHUB_SHA to $UPLOAD_HOST:$UPLOAD_PATH" >> "$GITHUB_STEP_SUMMARY"
