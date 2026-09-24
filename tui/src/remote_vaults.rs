@@ -34,17 +34,10 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn node_available() -> bool {
-        std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
-    }
-
     #[test]
-    fn electron_and_tui_connection_updates_do_not_lose_other_vaults() {
-        if !node_available() {
+    fn concurrent_connection_updates_do_not_lose_other_vaults() {
+        // Electron and the TUI both write through fizzer-storage.
+        if !storage_bin::binary().is_file() {
             return;
         }
         let directory = std::env::temp_dir().join(format!("fizzer-vault-writers-{}", std::process::id()));
@@ -54,18 +47,20 @@ mod tests {
         };
         let legacy = serde_json::to_vec(&vec![record("legacy", "https://legacy.example", "original")]).unwrap();
         fs::write(directory.join("remote-vaults.json"), &legacy).unwrap();
-        let module = Path::new(env!("CARGO_MANIFEST_DIR")).join("../cascade-electron/remote-vaults.cjs");
-        let mut electron = std::process::Command::new("node").arg("-e")
-            .arg("const {saveRemoteVault}=require(process.argv[1]); for(let i=0;i<50;i++) saveRemoteVault(process.argv[2], {id:'cloned', name:'Electron', origin:'https://server'+i+'.example', token:'electron'});")
-            .arg(&module).arg(&directory).spawn().unwrap();
+        let other = {
+            let directory = directory.clone();
+            std::thread::spawn(move || for i in 0..50 {
+                save(&directory, record("cloned", &format!("https://server{i}.example"), "electron")).unwrap();
+            })
+        };
         for i in 0..50 { save(&directory, record(&format!("tui-{i}"), "https://tui.example", "tui")).unwrap(); }
-        assert!(electron.wait().unwrap().success());
+        other.join().unwrap();
         assert_eq!(read(&directory).len(), 101);
         save(&directory, record("cloned", "https://server0.example", "renewed-by-tui")).unwrap();
-        let status = std::process::Command::new("node").arg("-e")
-            .arg("const m=require(process.argv[1]), assert=require('node:assert/strict'); const records=m.readRemoteVaults(process.argv[2]); assert.equal(records.length,101); assert.equal(records.find(r=>r.origin==='https://server0.example').token,'renewed-by-tui'); m.saveRemoteVault(process.argv[2], {id:'legacy',name:'Updated',origin:'https://legacy.example',token:'renewed-by-electron'});")
-            .arg(&module).arg(&directory).status().unwrap();
-        assert!(status.success());
+        let records = read(&directory);
+        assert_eq!(records.len(), 101);
+        assert_eq!(records.iter().find(|r| r.origin == "https://server0.example").unwrap().token, "renewed-by-tui");
+        save(&directory, record("legacy", "https://legacy.example", "renewed-by-electron")).unwrap();
         assert_eq!(read(&directory).iter().find(|r| r.id == "legacy").unwrap().token, "renewed-by-electron");
         assert_eq!(fs::read(directory.join("remote-vaults.json")).unwrap(), legacy);
         assert_eq!(fs::read_dir(directory.join("remote-vaults")).unwrap().count(), 101);

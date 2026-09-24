@@ -10,7 +10,7 @@ test('remote requests time out while waiting for headers or a stalled body', asy
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  await assert.rejects(remoteRequest(`${origin}/headers`, {}, 50), /timeout|aborted/i);
-  const response = await remoteRequest(`${origin}/body`, {}, 50);
+  await assert.rejects(remoteRequest(`${origin}/headers`, {}, 250), /timeout|aborted/i);
+  const response = await remoteRequest(`${origin}/body`, {}, 250);
   await assert.rejects(response.text(), /timeout|aborted/i);
 });

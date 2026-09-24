@@ -950,7 +950,7 @@ function spawnAgentRunStart(opts, onEvent) {
     });
     const child = spawn(storageBinary(), ['agent-run', 'start'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { FIZZER_AGENT_WORKER: path.join(__dirname, 'agent-account-worker.cjs'), ...process.env },
+      env: process.env,
     });
     let stderr = '';
     let result;

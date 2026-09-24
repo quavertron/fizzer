@@ -235,9 +235,10 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
     if (busy) return reply(409, { error: 'busy' });
     busy = true;
     try {
-      let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 12 * 1024 * 1024) fail('request_too_large'); }
-      let input; try { input = JSON.parse(body); } catch { fail('invalid_json'); }
-      if (input?.op !== 'mediaUpload' && Buffer.byteLength(body) > 262144) fail('request_too_large');
+      const parts = []; let size = 0;
+      for await (const chunk of req) { size += chunk.length; if (size > 12 * 1024 * 1024) fail('request_too_large'); parts.push(chunk); }
+      let input; try { input = JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { fail('invalid_json'); }
+      if (input?.op !== 'mediaUpload' && size > 262144) fail('request_too_large');
       reply(200, await execute(input));
     } catch (error) {
       // Fixed vocabulary only: no upstream bodies, tokens, paths, or exception strings.
@@ -253,8 +254,9 @@ async function startExternalAgentAccess({ enabled, directory, origin, vaultId, o
 function request(socketPath, payload) {
   return new Promise((resolve, reject) => {
     const req = http.request({ socketPath, agent: false, path: '/v1', method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
-      let data = ''; res.on('data', c => { data += c; if (data.length > 1024 * 1024) req.destroy(new Error('response_too_large')); });
-      res.on('end', () => { try { resolve({ status: res.statusCode, ...JSON.parse(data) }); } catch { reject(new Error('invalid_response')); } });
+      const parts = []; let size = 0;
+      res.on('data', c => { size += c.length; if (size > 1024 * 1024) req.destroy(new Error('response_too_large')); parts.push(c); });
+      res.on('end', () => { try { resolve({ status: res.statusCode, ...JSON.parse(Buffer.concat(parts).toString('utf8')) }); } catch { reject(new Error('invalid_response')); } });
     });
     req.setTimeout(20000, () => req.destroy(new Error('timeout')));
     req.on('error', reject); req.end(JSON.stringify(payload));

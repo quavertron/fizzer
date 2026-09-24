@@ -9,14 +9,14 @@ const { randomUUID } = require('node:crypto');
 const { startExternalAgentAccess, request } = require('./external-agent-access.cjs');
 const { reads, writes } = require('./app-control.cjs');
 async function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-control-'));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-control-')));
   fs.chmodSync(directory, 0o700);
   const v = randomUUID(), other = randomUUID();
   const vaults = new Map([[v, { id: v, name: 'Private', created_by: 1, visibility: 'private', role: 'owner' }], [other, { id: other, name: 'Shared', created_by: 2, visibility: 'public', role: 'viewer' }]]);
   const notes = new Map(), folders = new Map(), calls = [];
   const state = { owner: 1, writes: 0, lost: false, corrupt: false, shared: false };
   const upstream = http.createServer(async (req, res) => {
-    let raw = ''; for await (const b of req) raw += b;
+    const parts = []; for await (const b of req) parts.push(b); const raw = Buffer.concat(parts).toString('utf8');
     const body = raw ? JSON.parse(raw) : null;
     calls.push([req.method, req.url]);
     assert.equal(req.headers['x-cascade-browser'], '1');
@@ -62,9 +62,11 @@ async function fixture(t) {
     return respond(200, { fixture: req.url });
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => upstream.close(r)));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const options = { enabled: true, directory, origin: `http://127.0.0.1:${upstream.address().port}`, vaultId: v, ownerId: 1, agentId: 'hermes', author: 'Along (AI agent)', browserFetch: fetch, agentFetch: fetch, allowFixtureHTTP: true };
   let service = await startExternalAgentAccess(options);
-  t.after(async () => { await service.close(); await new Promise(r => upstream.close(r)); fs.rmSync(directory, { recursive: true }); });
+  t.after(async () => { if (service) await service.close(); });
   const call = p => request(service.socketPath, p);
   const plan = (action, args, requestId = randomUUID()) => call({ op: 'appPlan', action, args, requestId });
   const apply = p => call({ op: 'appApply', action: p.action, args: p.args, requestId: p.requestId, planDigest: p.planDigest });

@@ -10,11 +10,11 @@ const { startExternalAgentAccess, request } = require('./external-agent-access.c
 const { png } = require('./media-control.cjs');
 const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 async function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-media-')); fs.chmodSync(directory, 0o700);
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-media-'))); fs.chmodSync(directory, 0o700);
   const vaultId = randomUUID(), configuredVaultId = randomUUID(), channelId = randomUUID();
   const state = { owner: 1, role: 'owner', unsupported: false, uploads: 0, posts: 0, calls: [], assets: new Map(), messages: new Map() };
   const upstream = http.createServer(async (req, res) => {
-    let raw = ''; for await (const c of req) raw += c;
+    const parts = []; for await (const c of req) parts.push(c); const raw = Buffer.concat(parts).toString('utf8');
     const body = raw ? JSON.parse(raw) : null; state.calls.push([req.method, req.url]);
     const send = (code, value) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.headers.authorization) { assert.equal(req.headers.authorization, 'Bearer fixture'); assert.equal(req.headers.cookie, undefined); }
@@ -56,10 +56,12 @@ async function fixture(t) {
     return send(404, {});
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => upstream.close(r)));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const options = { enabled: true, directory, origin: `http://127.0.0.1:${upstream.address().port}`, vaultId: configuredVaultId, ownerId: 1,
     agentId: 'hermes', author: 'Along (AI agent)', browserFetch: fetch, agentFetch: fetch, allowFixtureHTTP: true };
   let service = await startExternalAgentAccess(options);
-  t.after(async () => { await service.close(); await new Promise(r => upstream.close(r)); fs.rmSync(directory, { recursive: true }); });
+  t.after(async () => { if (service) await service.close(); });
   return { state, directory, vaultId, channelId, call: p => request(service.socketPath, p), restart: async () => { await service.close(); service = await startExternalAgentAccess(options); } };
 }
 const upload = f => ({ op: 'mediaUpload', mode: 'apply', requestId: 'upload', vaultId: f.vaultId, channelId: f.channelId, name: 'fixture.png', data });

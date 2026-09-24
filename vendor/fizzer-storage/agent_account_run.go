@@ -20,8 +20,31 @@ type bridgeSession struct {
 	cmd     *exec.Cmd
 	socket  string
 	session string
-	errors  *strings.Builder
+	errors  *tailBuffer
 	stdin   io.WriteCloser
+}
+
+// tailBuffer keeps the last limit bytes written, safe for concurrent use.
+type tailBuffer struct {
+	mu    sync.Mutex
+	data  []byte
+	limit int
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.data = append(b.data, p...)
+	if len(b.data) > b.limit {
+		b.data = append([]byte{}, b.data[len(b.data)-b.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }
 
 type agentRunEvent struct {
@@ -82,7 +105,7 @@ func startBridge(root, directory string, index int, remoteURL, remoteHeader stri
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	s := &bridgeSession{cmd: cmd, socket: socket, stdin: stdin, errors: &strings.Builder{}}
+	s := &bridgeSession{cmd: cmd, socket: socket, stdin: stdin, errors: &tailBuffer{limit: 4000}}
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
@@ -96,34 +119,28 @@ func startBridge(root, directory string, index int, remoteURL, remoteHeader stri
 			if json.Unmarshal([]byte(line), &msg) == nil && msg.Ready {
 				s.session = msg.Session
 				close(done)
+				// Keep draining so a chatty bridge never blocks on a full pipe.
+				_, _ = io.Copy(io.Discard, stdout)
 				return
 			}
 		}
 		errCh <- fmt.Errorf("bridge exited before ready")
 	}()
+	stderrDone := make(chan struct{})
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 {
-				s.errors.Write(buf[:n])
-				if s.errors.Len() > 4000 {
-					b := s.errors.String()
-					s.errors.Reset()
-					s.errors.WriteString(b[len(b)-4000:])
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
+		defer close(stderrDone)
+		_, _ = io.Copy(s.errors, stderr)
 	}()
 
 	select {
 	case <-done:
 		return s, nil
-	case err := <-errCh:
-		_ = err
+	case <-errCh:
+		// Classify the exit from its complete stderr, not a partial read.
+		select {
+		case <-stderrDone:
+		case <-time.After(time.Second):
+		}
 		msg := s.errors.String()
 		if strings.Contains(msg, "alock bridge serve") && !strings.Contains(msg, "alock account serve") {
 			return nil, fmt.Errorf("Installed alock is outdated (%s): this Fizzer version requires account/HTTP support. Update the native helper bundle using install-agent-writes.sh --update, then retry the run.", bridgeBinary)
@@ -316,33 +333,11 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 	defer closeAPI()
 
 	// Launch worker under sudo
-	workerPath := os.Getenv("FIZZER_AGENT_WORKER")
-	if workerPath == "" {
-		workerPath = filepath.Join(agentAccountDir(), "agent-account-worker.cjs")
-	}
-	// Prefer sibling of the Go binary's checkout when FIZZER_AGENT_WORKER unset
-	if _, err := os.Stat(workerPath); err != nil {
-		if exe, e := os.Executable(); e == nil {
-			// vendor/fizzer-storage → cascade-electron/agent-account-worker.cjs
-			candidate := filepath.Join(filepath.Dir(exe), "..", "..", "cascade-electron", "agent-account-worker.cjs")
-			if fileExists(candidate) {
-				workerPath = candidate
-			}
-		}
-	}
-	nodeBin := os.Getenv("FIZZER_NODE_BIN")
-	if nodeBin == "" {
-		nodeBin = "node"
-	}
 	socket := ""
 	if len(bridges) > 0 {
 		socket = bridges[0].socket
 	}
-	argv := launchArguments(launchOptions{
-		Node:   nodeBin,
-		Worker: workerPath,
-		Socket: socket,
-	})
+	argv := launchArguments(launchOptions{Socket: socket})
 	worker, err := spawnWorker(argv, root)
 	if err != nil {
 		if !terminal {
@@ -596,20 +591,15 @@ func AgentAccountCLI(args []string) int {
 		}
 		fmt.Println(root)
 		return 0
+	case "worker":
+		// Runs as the fizzer account: stdin {opts, api, root, grants}; stdout event/result lines.
+		return runAgentAccountWorker(os.Stdin, os.Stdout)
 	case "launch-argv":
 		socket := ""
-		worker := os.Getenv("FIZZER_AGENT_WORKER")
-		nodeBin := os.Getenv("FIZZER_NODE_BIN")
-		if nodeBin == "" {
-			nodeBin = "node"
-		}
 		if len(args) > 1 {
 			socket = args[1]
 		}
-		if len(args) > 2 {
-			worker = args[2]
-		}
-		argv := launchArguments(launchOptions{Node: nodeBin, Worker: worker, Socket: socket})
+		argv := launchArguments(launchOptions{Socket: socket})
 		out, _ := json.Marshal(argv)
 		os.Stdout.Write(out)
 		return 0

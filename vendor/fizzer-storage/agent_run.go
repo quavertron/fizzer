@@ -67,6 +67,7 @@ func readRunPid(runID int) int {
 }
 
 func reapOrphanedAgentRuns() {
+	reapOrphanedCliAgentProcesses()
 	dir := agentRunRegistryDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -135,6 +136,9 @@ func cancelLocalAgentRun(runID int) bool {
 	agentClaudeMu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return true
+	}
+	if cancelCliRun(runID) {
 		return true
 	}
 	pid := readRunPid(runID)
@@ -268,16 +272,17 @@ func executeLocalAgentRun(opts map[string]any, api *runAPI, root, mirrorRoot str
 		return map[string]any{"sessionId": result["sessionId"]}, nil
 	}
 
-	result, err := runCliAgentBridge(opts, nextEmit, status)
+	result, err := runLocalCliAgent(opts, nextEmit)
+	clearCliCancel(runID)
+	agentClaudeMu.Lock()
+	wasCanceled := canceledAgentRun[runID]
+	delete(canceledAgentRun, runID)
+	agentClaudeMu.Unlock()
+	if wasCanceled {
+		status("canceled", "Run canceled.", nil)
+		return map[string]any{}, nil
+	}
 	if err != nil {
-		agentClaudeMu.Lock()
-		wasCanceled := canceledAgentRun[runID]
-		delete(canceledAgentRun, runID)
-		agentClaudeMu.Unlock()
-		if wasCanceled {
-			status("canceled", "Run canceled.", nil)
-			return map[string]any{}, nil
-		}
 		status("failed", err.Error(), nil)
 		return nil, err
 	}
@@ -381,32 +386,9 @@ func runHelperConfigPath(runID int) string {
 	return helperConfigPath()
 }
 
+// resolveWrapperDir is the directory of cascade-* helper links to this binary.
 func resolveWrapperDir() string {
-	exe, err := os.Executable()
-	candidates := []string{}
-	if err == nil {
-		dir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(dir, "..", "..", "cli-agents"),
-			filepath.Join(dir, "..", "..", "dist", "cli-agents"),
-			filepath.Join(dir, "..", "cli-agents"),
-			filepath.Join(dir, "..", "dist", "cli-agents"),
-		)
-	}
-	home, _ := os.UserHomeDir()
-	candidates = append(candidates,
-		filepath.Join(home, "cli-agents"),
-		filepath.Join(home, "dist", "cli-agents"),
-	)
-	for _, dir := range candidates {
-		if fileExists(filepath.Join(dir, "cascade-note")) {
-			return dir
-		}
-	}
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return "cli-agents"
+	return ensureHelperLinks()
 }
 
 func currentNoteToken() string {
@@ -487,10 +469,11 @@ func buildRunHelperEnv(opts map[string]any, runID int) []string {
 	if vault := str(opts["vaultId"]); vault != "" {
 		env = append(env, "CASCADE_NOTE_VAULT="+vault)
 	}
-	if ch := firstNonEmpty(str(opts["chatChannelId"]), str(opts["chat"].(map[string]any)["channelId"])); ch != "" {
+	chat := asObject(opts["chat"])
+	if ch := firstNonEmpty(str(opts["chatChannelId"]), str(chat["channelId"])); ch != "" {
 		env = append(env, "CASCADE_CHAT_CHANNEL="+ch)
 	}
-	if msg := firstNonEmpty(str(opts["chatMessageId"]), str(opts["chat"].(map[string]any)["messageId"])); msg != "" {
+	if msg := firstNonEmpty(str(opts["chatMessageId"]), str(chat["messageId"])); msg != "" {
 		env = append(env, "CASCADE_CHAT_MESSAGE="+msg)
 	}
 	if author := str(opts["chatAuthor"]); author != "" {
@@ -1093,95 +1076,6 @@ func numOrUndef(v any) (any, bool) {
 		}
 	}
 	return nil, false
-}
-
-func cliAgentBridgePath() string {
-	return filepath.Join(repoRoot(), "scripts", "cli-agent-bridge.mjs")
-}
-
-func runCliAgentBridge(opts map[string]any, emit func(string, string), status func(string, string, map[string]any)) (map[string]any, error) {
-	runID := int(numberOf(opts["runId"]))
-	bridge := cliAgentBridgePath()
-	if !fileExists(bridge) {
-		return nil, fmt.Errorf("CLI agent bridge is missing: %s", bridge)
-	}
-	nodeBin := os.Getenv("FIZZER_NODE_BIN")
-	if nodeBin == "" {
-		nodeBin = "node"
-	}
-	cmd := exec.Command(nodeBin, bridge)
-	cmd.Dir = resolveAgentCwd(str(opts["cwd"]), str(opts["vaultRoot"]))
-	cmd.Env = buildRunHelperEnv(opts, runID)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderrBuf{&stderr}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("Failed to launch CLI agent bridge: %w", err)
-	}
-	agentClaudeMu.Lock()
-	activeClaude[runID] = cmd
-	agentClaudeMu.Unlock()
-	defer func() {
-		agentClaudeMu.Lock()
-		delete(activeClaude, runID)
-		agentClaudeMu.Unlock()
-	}()
-
-	payload, _ := json.Marshal(opts)
-	if _, err := stdin.Write(payload); err != nil {
-		_ = cmd.Process.Kill()
-		return nil, err
-	}
-	_ = stdin.Close()
-
-	var result map[string]any
-	var failure string
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 1024*1024), 32*1024*1024)
-	for scanner.Scan() {
-		var msg struct {
-			Event  *agentRunEvent `json:"event"`
-			Result map[string]any `json:"result"`
-			Error  string         `json:"error"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &msg) != nil {
-			continue
-		}
-		if msg.Event != nil {
-			emit(msg.Event.Type, msg.Event.PayloadJSON)
-		}
-		if msg.Result != nil {
-			result = msg.Result
-		}
-		if msg.Error != "" {
-			failure = msg.Error
-		}
-	}
-	waitErr := cmd.Wait()
-	if isCanceledRun(runID) {
-		return map[string]any{}, errClaudeCanceled
-	}
-	if failure != "" {
-		return nil, fmt.Errorf("%s", failure)
-	}
-	if waitErr != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = fmt.Sprintf("CLI agent bridge exited: %v", waitErr)
-		}
-		return nil, fmt.Errorf("%s", msg)
-	}
-	if result == nil {
-		result = map[string]any{}
-	}
-	return result, nil
 }
 
 type agentRunStartInput struct {

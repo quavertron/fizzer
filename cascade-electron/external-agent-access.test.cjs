@@ -9,14 +9,15 @@ const { randomUUID } = require('node:crypto');
 const { startExternalAgentAccess, request } = require('./external-agent-access.cjs');
 const vaultId = '5f57525b-4272-47aa-96ed-cc913a6563e8';
 async function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-access-'));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fizzer-access-')));
   fs.chmodSync(directory, 0o700);
   const notes = new Map(), messages = new Map(), calls = [];
   const state = { owner: 1, role: 'owner', corrupt: false, failWrite: false, posts: 0,
     visibility: 'private', creator: 1, members: [{ userId: 1, role: 'owner' }] };
   const vaults = new Map([[vaultId, { id: vaultId, name: 'My Vault', role: 'owner' }]]);
   const upstream = http.createServer(async (req, res) => {
-    let raw = ''; for await (const c of req) raw += c;
+    const parts = []; for await (const c of req) parts.push(c);
+    const raw = Buffer.concat(parts).toString('utf8');
     const body = raw ? JSON.parse(raw) : null;
     calls.push({ path: req.url, method: req.method, body });
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
@@ -105,11 +106,13 @@ async function fixture(t) {
     return send(200, { message: state.corrupt ? { ...message, agentId: null } : message });
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => upstream.close(r)));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const origin = `http://127.0.0.1:${upstream.address().port}`;
   const options = { enabled: true, directory, origin, vaultId, ownerId: 1, agentId: 'hermes', author: 'Along (AI agent)',
     allowFixtureHTTP: true, browserFetch: fetch, agentFetch: (url, init) => { assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error'); return fetch(url, init); } };
   let service = await startExternalAgentAccess(options);
-  t.after(async () => { await service.close(); await new Promise(r => upstream.close(r)); fs.rmSync(directory, { recursive: true }); });
+  t.after(async () => { if (service) await service.close(); });
   return { directory, options, notes, messages, vaults, state, calls, call: p => request(service.socketPath, p),
     restart: async () => { await service.close(); service = await startExternalAgentAccess(options); } };
 }

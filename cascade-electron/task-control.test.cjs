@@ -6,7 +6,7 @@ const {randomUUID} = require('node:crypto');
 const {startExternalAgentAccess, request} = require('./external-agent-access.cjs');
 const {reads,writes,hash} = require('./task-control.cjs');
 async function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(),'fizzer-task-'));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'fizzer-task-')));
   fs.chmodSync(directory,0o700);
   const v = randomUUID(), w = randomUUID(), m = randomUUID(), registrationId = randomUUID(), identityId = randomUUID(), channelId = randomUUID();
   const items = new Map([[w,{id:w,vaultId:v,title:'Fixture task',brief:'test',contract:'',verification:'',status:'open',createdBy:1,runIds:[]}]]);
@@ -14,7 +14,8 @@ async function fixture(t) {
   const state = {owner:1,shared:false,lost:false,linkLost:false,wrong:false};
   const settings = {contract:'registration_settings_v1',registration:{id:registrationId,vaultAgentId:identityId,ownerUserId:1,hermesProfile:'along',localVaultId:v,localChannelId:channelId},settings:{model:'model-a',reasoningEffort:'',contextPrompt:'preserve',finalReplyOnly:false},protected:{yolo:false,ambientGroupChat:false},revision:'initial'};
   const server = http.createServer(async(req,res) => {
-    let raw=''; for await (const chunk of req) raw+=chunk;
+    const parts=[]; for await (const chunk of req) parts.push(chunk);
+    const raw=parts.length ? Buffer.concat(parts).toString('utf8') : '';
     const body=raw ? JSON.parse(raw):null, u=new URL(req.url,'http://fixture'), p=u.pathname, get=req.method==='GET';
     calls.push({method:req.method,path:p,body});
     assert.equal(req.headers['x-cascade-browser'],'1');
@@ -86,10 +87,12 @@ async function fixture(t) {
     return reply(404,{});
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(()=>new Promise(r=>server.close(r)));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   const origin=`http://127.0.0.1:${server.address().port}`;
   const options={enabled:true,directory,origin,vaultId:v,ownerId:1,agentId:'hermes',author:'Along (AI agent)',browserFetch:fetch,agentFetch:fetch,allowFixtureHTTP:true};
   let service=await startExternalAgentAccess(options);
-  t.after(async()=>{await service.close();await new Promise(r=>server.close(r));fs.rmSync(directory,{recursive:true});});
+  t.after(async()=>{if(service)await service.close();});
   const call=p=>request(service.socketPath,p);
   const plan=(action,args,requestId=randomUUID())=>call({op:'appPlan',action,args,requestId});
   const apply=(p,op='appApply')=>call({op,action:p.action,args:p.args,requestId:p.requestId,planDigest:p.planDigest});

@@ -64,6 +64,20 @@ func terminalStatuses(events []agentRunEvent) []map[string]string {
 	return out
 }
 
+func TestAccountWorkerAuthorAndLaunchNeedNoNode(t *testing.T) {
+	for input, want := range map[string]string{"Terra\x07 ": "Terra", "": "codex",
+		strings.Repeat("é", 20): strings.Repeat("é", 16)} {
+		if got := accountWorkerAuthor(map[string]any{"chatAuthor": input, "agent": "codex"}); got != want {
+			t.Fatalf("%q: got %q want %q", input, got, want)
+		}
+	}
+	argv := launchArguments(launchOptions{Socket: "/bridge/socket"})
+	tail := strings.Join(argv[len(argv)-2:], " ")
+	if tail != "agent-account worker" || strings.Contains(strings.Join(argv, " "), "node") || strings.Contains(strings.Join(argv, " "), "ELECTRON_RUN_AS_NODE") {
+		t.Fatalf("argv %q", argv)
+	}
+}
+
 func TestAccountRunMissingVaultFailsBeforeBridge(t *testing.T) {
 	t.Setenv("CASCADE_DATA_DIR", t.TempDir())
 	var events []agentRunEvent

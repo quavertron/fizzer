@@ -206,8 +206,6 @@ func repoRoot() string {
 }
 
 type launchOptions struct {
-	Node          string
-	Worker        string
 	Socket        string
 	ResourcesPath string
 	RepoRoot      string
@@ -279,13 +277,17 @@ func launchArguments(opts launchOptions) []string {
 	}
 	args := []string{"-n", "-H", "-u", "fizzer", "--", "/usr/bin/env",
 		"PATH=" + path,
-		"ELECTRON_RUN_AS_NODE=1", "FIZZER_AGENT_ACCOUNT_CHILD=1",
+		"FIZZER_AGENT_ACCOUNT_CHILD=1",
 		"FIZZER_BRIDGE_SOCKET=" + opts.Socket, "FIZZER_ALOCK_BIN=" + installedAlock(),
 	}
 	args = append(args, authEnv...)
 	args = append(args, providerBinaries...)
-	args = append(args, opts.Node, opts.Worker)
-	return args
+	// The worker is this binary, so the agent account needs no Node runtime.
+	exe := storageExecutable()
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return append(args, exe, "agent-account", "worker")
 }
 
 func hasPrefix(values []string, prefix string) bool {

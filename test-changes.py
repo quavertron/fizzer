@@ -63,6 +63,9 @@ def discover_cases():
     add("elixir", json.loads(next(line.removeprefix("JEV_CASES=") for line in output.splitlines() if line.startswith("JEV_CASES="))))
     output = capture(["cargo", "test", "--locked", "--manifest-path", "tui/Cargo.toml", "--", "--list"])
     add("rust", [{"file": "tui", "name": line.removesuffix(": test")} for line in output.splitlines() if line.endswith(": test")])
+    # `go test -list` compiles the runner but runs no tests. awatch needs a native header, so it is excluded.
+    output = capture(["go", "test", "-list", "^Test", "./..."], ROOT / "vendor/fizzer-storage")
+    add("go", [{"file": "vendor/fizzer-storage", "name": line} for line in output.splitlines() if line.startswith("Test")])
     for pattern in ("scripts/*.test.py", "deploy/*.test.py"):
         for path in sorted(ROOT.glob(pattern)):
             tree = ast.parse(path.read_text())
@@ -98,6 +101,8 @@ def case_command(case):
         return ["mix", "test", file.removeprefix("backend_elixir/"), "--only", "test:" + name], ROOT / "backend_elixir"
     if runner == "rust":
         return ["cargo", "test", "--locked", "--manifest-path", "tui/Cargo.toml", "--", "--exact", name], ROOT
+    if runner == "go":
+        return ["go", "test", "-count=1", "-run", exact_pattern([name]), "./..."], ROOT / file
     if runner == "python":
         return [sys.executable, "-B", file, name], ROOT
     raise ValueError(f"Unsupported runner: {runner}")

@@ -99,12 +99,12 @@ class VaultMirrors {
       const body = JSON.stringify(payload);
       const request = http.request({ socketPath: this.socket, path: '/' + operation, method: 'POST', agent: this.agent,
         headers: { authorization: this.authorization, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, response => {
-        let data = '';
-        response.on('data', chunk => { data += chunk; if (data.length > 1024 * 1024) response.destroy(new Error('Oversize rclone response')); });
+        const parts = []; let size = 0;
+        response.on('data', chunk => { size += chunk.length; if (size > 1024 * 1024) response.destroy(new Error('Oversize rclone response')); parts.push(chunk); });
         response.on('error', reject);
         response.on('end', () => {
           if (response.statusCode !== 200) return reject(new Error(`rclone ${operation} failed (${response.statusCode})`));
-          try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid rclone response')); }
+          try { resolve(JSON.parse(Buffer.concat(parts).toString('utf8'))); } catch { reject(new Error('Invalid rclone response')); }
         });
       });
       request.setTimeout(10000, () => request.destroy(new Error('rclone API timeout')));

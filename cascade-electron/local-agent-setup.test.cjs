@@ -15,7 +15,7 @@ async function fixture(t, overrides = {}) {
   const state = { agents: [], notes: [], members: [], writes: [], calls: [], ...overrides };
   const root = '/api/vaults/' + INPUT.vaultId;
   const upstream = http.createServer(async (req, res) => {
-    let text = ''; for await (const chunk of req) text += chunk;
+    const parts = []; for await (const chunk of req) parts.push(chunk); const text = Buffer.concat(parts).toString('utf8');
     const body = text ? JSON.parse(text) : null;
     state.calls.push([req.method, req.url]);
     if (state.redirect) { res.writeHead(302, { Location: 'https://invalid.example/forbidden' }); res.end(); return; }

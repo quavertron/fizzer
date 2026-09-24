@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const zlib = require('node:zlib');
-const grant = Object.freeze({ vaultId: '21b2b809-6f53-4e41-9a58-fe30762d3657', channelId: 'b8871984-357a-46b6-b0d8-07f2ee6223d8', vaultAgentId: '26f13c5b-f357-443b-98fe-b5d272a36054', ownerId: 1, agentId: 'hermes', hermesProfile: 'along', messageId: 'msg-1789091231980-k4f82e', body: '@along can you set a profile picture', imageSha256: 'be385cd8a9a08debf097beea18c8b1e5f02a9019296ed185d5124fea0ce37bd8' });
+const grant = Object.freeze({ vaultId: '21b2b809-6f53-4e41-9a58-fe30762d3657', channelId: 'b8871984-357a-46b6-b0d8-07f2ee6223d8', vaultAgentId: '26f13c5b-f357-443b-98fe-b5d272a36054', ownerId: 1, agentId: 'hermes', hermesProfile: 'along', messageId: 'msg-1789091231980-k4f82e', body: '@along can you set a profile picture', imageSha256: '9c55c898e17219e063304428f1a6a486709397cb52394bca81d78f39e90aac1b' });
 const legacyFields = ['vaultId', 'channelId', 'vaultAgentId', 'imageBase64'];
 const fields = [...legacyFields, 'sourceMessageId'];
 const fail = code => { throw new Error(code); };

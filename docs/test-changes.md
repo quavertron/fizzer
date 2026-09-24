@@ -13,7 +13,7 @@ The implementation is Python. `uv` installs the Python AST-parser dependencies
 declared in the script. Alternatively, install `tree-sitter>=0.25,<0.26` and
 `tree-sitter-typescript>=0.23,<0.24` in your Python environment and run
 `python3 test-changes.py`. Authentication uses `TYPESAFE_API_KEY` or `~/jev`.
-The repo's Node, Elixir and Rust tools must also be installed.
+The repo's Node, Elixir, Rust and Go tools must also be installed.
 
 The script sends `git diff --stat HEAD`, changed filenames, and untracked
 filenames and each individual test's name to Jev. Comparing against HEAD includes staged and unstaged changes;
@@ -21,8 +21,8 @@ filenames and each individual test's name to Jev. Comparing against HEAD include
 Ignored files are omitted. An empty change set makes no API request.
 
 The script discovers individual cases, including supported literal-generated
-names. Python parses Node test source without importing it. Vitest, ExUnit and
-Rust provide collection metadata without running test bodies; collection may
+names. Python parses Node test source without importing it. Vitest, ExUnit,
+Rust and Go provide collection metadata without running test bodies; collection may
 load modules or compile code. Python unittest methods are read from their AST.
 Unknown dynamic Node names or duplicate case identities stop discovery.
 
@@ -34,7 +34,7 @@ cases and commands; `--list` only discovers cases.
 
 Each selected case has its own process and elapsed time, including startup.
 Vitest uses an anchored full-name regex; Node uses anchored names and sibling
-exclusions; ExUnit uses its exact `test` tag; Rust uses `--exact`; Python unittest
+exclusions; ExUnit uses its exact `test` tag; Rust uses `--exact`; Go uses an anchored `-run`; Python unittest
 receives `Class.test_method`. Required parent setup and hooks still run. Normal
 skip/ignore annotations remain honored. The default timeout is 120 seconds per
 case, after which the process group is stopped. Failures do not prevent later

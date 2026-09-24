@@ -11,8 +11,7 @@ const { storageBinary } = require('../cascade-electron/storage-bin.cjs');
 // Drives the Go account orchestration the desktop uses (`fizzer-storage agent-run`).
 function run(opts, onEvent, api) {
   return new Promise((resolve, reject) => {
-    const child = spawn(storageBinary(), ['agent-run', 'start'], { stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env, FIZZER_AGENT_WORKER: path.join(__dirname, '..', 'cascade-electron', 'agent-account-worker.cjs') } });
+    const child = spawn(storageBinary(), ['agent-run', 'start'], { stdio: ['pipe', 'pipe', 'inherit'] });
     let result, failure;
     readline.createInterface({ input: child.stdout }).on('line', line => {
       try {

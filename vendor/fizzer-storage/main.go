@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 func usage() {
@@ -22,6 +23,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  agent-run <start|cancel|reap> [json]\n")
 	fmt.Fprintf(os.Stderr, "  runner [json]\n")
 	fmt.Fprintf(os.Stderr, "  tui\n")
+	fmt.Fprintf(os.Stderr, "  cascade-note|cascade-chat|cascade-scratchpad [args...]  (also by link name)\n")
 	os.Exit(1)
 }
 
@@ -33,11 +35,18 @@ func readInput(arg string) ([]byte, error) {
 }
 
 func main() {
+	// Agents invoke the helpers by name through links to this binary.
+	if name := filepath.Base(os.Args[0]); helperCommands[name] != nil {
+		os.Exit(runHelper(name, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) < 2 {
 		usage()
 	}
 
 	cmd := os.Args[1]
+	if helperCommands[cmd] != nil {
+		os.Exit(runHelper(cmd, os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	switch cmd {
 	case "remote-vaults", "vaults":
 		if len(os.Args) < 4 {

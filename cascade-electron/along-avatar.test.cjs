@@ -5,16 +5,16 @@ const fs=require('node:fs'), os=require('node:os'), path=require('node:path'), h
 const {randomUUID}=require('node:crypto');
 const {startExternalAgentAccess,request}=require('./external-agent-access.cjs');
 const {grant:legacy,image,receiptKey}=require('./along-avatar.cjs');
-const png=fs.readFileSync('/home/jt/projects/along/fizzer/along-avatar-refinement-256.png');
+const png=fs.readFileSync(path.join(__dirname,'fixtures','along-avatar-refinement-256.png'));
 const g={...legacy,messageId:'msg-new-owner-source',body:'how bout something more tasteful',imageSha256:require('node:crypto').createHash('sha256').update(png).digest('hex')};
-async function fixture(t){
- const directory=fs.mkdtempSync(path.join(os.tmpdir(),'avatar-control-')); fs.chmodSync(directory,0o700);
+ async function fixture(t){
+ const directory=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'avatar-control-'))); fs.chmodSync(directory,0o700);
  const state={writes:0,lost:false,badAsset:false,owner:1,profile:'along',message:g.body,extra:false};
  const identity={id:g.vaultAgentId,vaultId:g.vaultId,ownerUserId:1,agentId:'hermes',hermesProfile:'along',channelIds:[g.channelId],avatarUrl:''};
  const reg={id:'489c84af-917d-4ec7-b22a-61bb5e770b42',vaultAgentId:g.vaultAgentId,ownerUserId:1,agentId:'hermes',hermesProfile:'along',avatarUrl:'',vaultId:g.vaultId,localVaultId:g.vaultId,sourceVaultId:g.vaultId,localChannelId:g.channelId,sourceChannelId:g.channelId,contract:'registration_lookup_select_only_v1'};
  const calls=[];
  const upstream=http.createServer(async(req,res)=>{
-  let raw='';for await(const b of req)raw+=b;
+  const parts=[];for await(const b of req)parts.push(b);const raw=Buffer.concat(parts).toString('utf8');
   calls.push([req.method,req.url]);assert.equal(req.headers.authorization,undefined);assert.equal(req.headers['x-cascade-browser'],'1');
   const send=(data,status=200)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(data));};
   const base='/api/vaults/'+g.vaultId, ch=base+'/channels/'+g.channelId;
@@ -36,12 +36,14 @@ async function fixture(t){
   send({},404);
  });
  await new Promise(r=>upstream.listen(0,'127.0.0.1',r));
+ t.after(()=>new Promise(r=>upstream.close(r)));
+ t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
  const options={enabled:true,directory,origin:'http://127.0.0.1:'+upstream.address().port,vaultId:g.vaultId,ownerId:1,agentId:'hermes',author:'Along (AI agent)',browserFetch:fetch,agentFetch:fetch,allowFixtureHTTP:true};
  let service=await startExternalAgentAccess(options);
  const grantFile=path.join(directory,'receipts','avatar-grant-'+receiptKey(options.origin,1,g.messageId)+'.json');
  const localGrant={...g,contract:'avatar_owner_grant_v1',origin:options.origin,registrationId:reg.id};
  fs.writeFileSync(grantFile,JSON.stringify(localGrant),{mode:0o600});
- t.after(async()=>{await service.close();await new Promise(r=>upstream.close(r));fs.rmSync(directory,{recursive:true});});
+ t.after(async()=>{if(service)await service.close();});
  const payload={op:'appPlan',action:'updateAgentAvatar',requestId:g.messageId,args:{vaultId:g.vaultId,channelId:g.channelId,vaultAgentId:g.vaultAgentId,imageBase64:png.toString('base64'),sourceMessageId:g.messageId}};
  return{state,reg,calls,payload,grantFile,localGrant,directory,options,call:p=>request(service.socketPath,p),restart:async()=>{await service.close();service=await startExternalAgentAccess(options);}};
 }
@@ -102,7 +104,7 @@ test('forged asset URL and mismatched registration projection never verify',asyn
 });
 test('legacy receipt retains digest and uncertain intent without replay or grant migration',async t=>{
  const f=await fixture(t),{avatar}=require('./along-avatar.cjs');
- const oldPNG=fs.readFileSync('/home/jt/projects/along/fizzer/along-avatar.png');
+  const oldPNG=png;
  const digest=x=>require('node:crypto').createHash('sha256').update(JSON.stringify(x)).digest('hex');
  const asset='/api/notes/agent-avatars/assets/'+legacy.vaultAgentId+'-123';
  const file=path.join(f.directory,'receipts','avatar-'+receiptKey(f.options.origin,1,legacy.messageId)+'.json');
