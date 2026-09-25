@@ -61,7 +61,7 @@ interface SidebarProps {
   onRetryVaults?: () => void;
   onManageVault: (id: string) => void;
   onJoinVault: (inviteLink: string) => Promise<boolean>;
-  onConnectRemoteServer: (origin: string, username: string, password: string) => Promise<boolean>;
+  onConnectRemoteServer: (origin: string, username: string, password: string, register?: boolean) => Promise<boolean>;
   onOpenPublicVaults: () => void;
   onOpenDirectMessages: () => void;
   onSelectNote: (id: string) => void;
@@ -929,16 +929,18 @@ export const Sidebar = memo(function Sidebar({
     setVaultMenuOpen(false);
   };
 
-  const submitConnectRemote = async () => {
+  const submitConnectRemote = async (register = false) => {
     const origin = remoteOrigin.trim();
     const username = remoteUsername.trim();
     if (!origin || !username || !remotePassword || remoteBusy) return;
     setRemoteBusy(true);
     setVaultFormError('');
-    const connected = await onConnectRemoteServer(origin, username, remotePassword);
+    const connected = await onConnectRemoteServer(origin, username, remotePassword, register);
     setRemoteBusy(false);
     if (!connected) {
-      setVaultFormError('Could not connect to the remote server. Check the address and credentials.');
+      setVaultFormError(register
+        ? 'Could not create an account on the remote server. The username may be taken, or the server may require an invite.'
+        : 'Could not connect to the remote server. Check the address and credentials.');
       return;
     }
     setRemoteOrigin('');
@@ -1140,6 +1142,7 @@ export const Sidebar = memo(function Sidebar({
                     <input value={remotePassword} placeholder="Password" aria-label="Remote server password" type="password" autoComplete="current-password" disabled={remoteBusy} onChange={(event) => setRemotePassword(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void submitConnectRemote(); }} />
                     <div className="vault-manager-form-actions">
                       <button type="button" disabled={remoteBusy} onClick={() => { setConnectingRemote(false); setRemoteOrigin(''); setRemoteUsername(''); setRemotePassword(''); }}>Cancel</button>
+                      <button type="button" disabled={!remoteOrigin.trim() || !remoteUsername.trim() || !remotePassword || remoteBusy} onClick={() => void submitConnectRemote(true)}>Create account</button>
                       <button type="button" disabled={!remoteOrigin.trim() || !remoteUsername.trim() || !remotePassword || remoteBusy} onClick={() => void submitConnectRemote()}>{remoteBusy ? 'Connecting' : 'Connect'}</button>
                     </div>
                   </div>

@@ -2798,12 +2798,12 @@ export default function App() {
             setAccountOpen(true);
           }}
           onJoinVault={handleJoinVault}
-          onConnectRemoteServer={async (origin, username, password) => {
+          onConnectRemoteServer={async (origin, username, password, register) => {
             const electronAPI = (window as unknown as { electronAPI?: {
-              connectRemoteInstance?: (input: { origin: string; username: string; password: string }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[]; error?: string }>;
+              connectRemoteInstance?: (input: { origin: string; username: string; password: string; register?: boolean }) => Promise<{ success: boolean; origin?: string; vaults?: Vault[]; error?: string }>;
               openConnection?: (input: { id: string; origin: string }) => Promise<{ success: boolean; error?: string }>;
             } }).electronAPI;
-            const result = await electronAPI?.connectRemoteInstance?.({ origin, username, password });
+            const result = await electronAPI?.connectRemoteInstance?.({ origin, username, password, register });
             if (!result?.success || !result.origin) {
               console.error('[Fizzer] Remote server connection failed', {
                 origin,

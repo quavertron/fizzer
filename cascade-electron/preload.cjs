@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Configure main-process helper env (token/url) after login. */
   setRunnerToken: ({ token, apiUrl }) => ipcRenderer.invoke('runner:setToken', { token, apiUrl }),
   clearRunnerToken: () => ipcRenderer.invoke('runner:clearToken'),
-  connectRemoteInstance: ({ origin, username, password }) => ipcRenderer.invoke('desktop:connectRemote', { origin, username, password }),
+  connectRemoteInstance: ({ origin, username, password, register }) => ipcRenderer.invoke('desktop:connectRemote', { origin, username, password, register: Boolean(register) }),
   rememberServerSession: () => ipcRenderer.invoke('desktop:rememberSession'),
   acceptRemoteInvite: ({ inviteUrl, username, password }) => ipcRenderer.invoke('desktop:acceptRemoteInvite', { inviteUrl, username, password }),
   getRemoteVaults: () => ipcRenderer.invoke('desktop:getRemoteVaults'),

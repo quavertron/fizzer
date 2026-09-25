@@ -796,18 +796,19 @@ ipcMain.handle('desktop:saveRemoteVaults', async (_event, vaults) => {
   return loadRemoteVaults();
 });
 
-ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, password }) => {
+ipcMain.handle('desktop:connectRemote', async (_event, { origin, username, password, register }) => {
   try {
     const trimmed = normalizeInstanceOrigin(origin);
-    const res = await remoteRequest(`${trimmed}/api/auth/login`, {
+    // Registration returns the same session token as login.
+    const res = await remoteRequest(`${trimmed}/api/auth/${register ? 'register' : 'login'}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     });
     if (!res.ok) {
       const body = await res.text();
-      console.error('[Main] Remote server login failed', { origin: trimmed, status: res.status, body });
-      return { success: false, error: `Login failed (${res.status}): ${body}` };
+      console.error('[Main] Remote server login failed', { origin: trimmed, register: Boolean(register), status: res.status, body });
+      return { success: false, error: `${register ? 'Account creation' : 'Login'} failed (${res.status}): ${body}` };
     }
     const data = await res.json();
     rememberSession(process.env.CASCADE_DATA_DIR || path.join(os.homedir(), '.fizzer'),
