@@ -244,7 +244,8 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 		if input.MirrorRoot != "" {
 			mirrorRoot = input.MirrorRoot
 		}
-		b, err := startBridge("remote-vault", directory, 0, remoteURL, header)
+		// alock validates --root even for remote vaults; "remote-vault" is only the grant label.
+		b, err := startBridge(root, directory, 0, remoteURL, header)
 		if err != nil {
 			if !terminal {
 				status("failed", err.Error())

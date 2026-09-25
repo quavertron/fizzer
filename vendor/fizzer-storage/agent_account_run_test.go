@@ -93,6 +93,30 @@ func TestAccountRunMissingVaultFailsBeforeBridge(t *testing.T) {
 	}
 }
 
+func TestRemoteVaultBridgeGetsWorkspaceRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CASCADE_DATA_DIR", dir)
+	seen := filepath.Join(dir, "root-arg")
+	bin := filepath.Join(dir, "alock")
+	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --root ] && echo \"$2\" > '" + seen + "'; shift; done\nexit 2\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FIZZER_ALOCK_BIN", bin)
+	_, _ = runAccountOrchestrated(runInput{
+		Opts: map[string]any{"runId": float64(124), "remoteVault": true, "vaultId": "v1"},
+		API:  &runAPI{URL: "http://69.62.69.212:3000", Token: "t"},
+		Root: dir,
+	}, func(agentRunEvent) {})
+	got, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != dir {
+		t.Fatalf("alock --root = %q, want workspace %q", strings.TrimSpace(string(got)), dir)
+	}
+}
+
 func TestAccountRunReportsIncompatibleBridge(t *testing.T) {
 	for _, tc := range []struct {
 		stderr, want string
