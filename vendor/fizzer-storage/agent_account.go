@@ -207,6 +207,7 @@ func repoRoot() string {
 
 type launchOptions struct {
 	Socket        string
+	Worker        string // a copy of this binary the fizzer account can reach
 	ResourcesPath string
 	RepoRoot      string
 }
@@ -236,6 +237,15 @@ func launchArguments(opts launchOptions) []string {
 		if fileExists(candidate) {
 			providerBinaries = append(providerBinaries, "ANTIGRAVITY_HOME="+candidate)
 		}
+	}
+	if opts.Worker != "" {
+		kept := providerBinaries[:0]
+		for _, v := range providerBinaries {
+			if !strings.HasPrefix(v, "FIZZER_STORAGE_BIN=") {
+				kept = append(kept, v)
+			}
+		}
+		providerBinaries = append(kept, "FIZZER_STORAGE_BIN="+opts.Worker)
 	}
 	if !hasPrefix(providerBinaries, "FIZZER_STORAGE_BIN=") {
 		var candidates []string
@@ -283,11 +293,33 @@ func launchArguments(opts launchOptions) []string {
 	args = append(args, authEnv...)
 	args = append(args, providerBinaries...)
 	// The worker is this binary, so the agent account needs no Node runtime.
+	exe := opts.Worker
+	if exe == "" {
+		exe = resolvedStorageExecutable()
+	}
+	return append(args, exe, "agent-account", "worker")
+}
+
+func resolvedStorageExecutable() string {
 	exe := storageExecutable()
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	return append(args, exe, "agent-account", "worker")
+	return exe
+}
+
+// copyWorkerBinary places this binary in the shared run directory: the fizzer
+// account cannot traverse a 0700 app bundle or home directory.
+func copyWorkerBinary(directory string) (string, error) {
+	data, err := os.ReadFile(resolvedStorageExecutable())
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(directory, "fizzer-storage")
+	if err := os.WriteFile(path, data, 0o755); err != nil {
+		return "", err
+	}
+	return path, os.Chmod(path, 0o755)
 }
 
 func hasPrefix(values []string, prefix string) bool {

@@ -338,7 +338,14 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 	if len(bridges) > 0 {
 		socket = bridges[0].socket
 	}
-	argv := launchArguments(launchOptions{Socket: socket})
+	workerBin, err := copyWorkerBinary(directory)
+	if err != nil {
+		if !terminal {
+			status("failed", err.Error())
+		}
+		return nil, err
+	}
+	argv := launchArguments(launchOptions{Socket: socket, Worker: workerBin})
 	worker, err := spawnWorker(argv, root)
 	if err != nil {
 		if !terminal {

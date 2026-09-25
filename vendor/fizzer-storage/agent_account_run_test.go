@@ -93,6 +93,24 @@ func TestAccountRunMissingVaultFailsBeforeBridge(t *testing.T) {
 	}
 }
 
+func TestWorkerLaunchesFromSharedRunDirectory(t *testing.T) {
+	t.Setenv("FIZZER_STORAGE_BIN", "/private/app/bundle/fizzer-storage")
+	dir := t.TempDir()
+	bin, err := copyWorkerBinary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(bin); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("worker copy %q: %v %v", bin, info, err)
+	}
+	argv := launchArguments(launchOptions{Socket: "/bridge/socket", Worker: bin})
+	joined := strings.Join(argv, " ")
+	if strings.Join(argv[len(argv)-3:], " ") != bin+" agent-account worker" ||
+		!strings.Contains(joined, "FIZZER_STORAGE_BIN="+bin) || strings.Contains(joined, "/private/app/bundle") {
+		t.Fatalf("argv %q", argv)
+	}
+}
+
 func TestRemoteVaultBridgeGetsWorkspaceRoot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CASCADE_DATA_DIR", dir)
