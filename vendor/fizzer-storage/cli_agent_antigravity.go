@@ -43,22 +43,22 @@ var (
 // including the human's home when running as the separate agent account.
 func cliGeminiHome() string {
 	for _, name := range []string{"GEMINI_HOME", "ANTIGRAVITY_HOME"} {
-		if dir := os.Getenv(name); dir != "" && fileExists(dir) {
+		if dir := os.Getenv(name); dir != "" && dirExists(dir) {
 			return dir
 		}
 	}
 	if bin := os.Getenv("ANTIGRAVITY_BIN"); bin != "" {
 		candidate := filepath.Clean(filepath.Join(filepath.Dir(bin), "..", ".."))
-		if filepath.Base(candidate) == ".gemini" && fileExists(candidate) {
+		if filepath.Base(candidate) == ".gemini" && dirExists(candidate) {
 			return candidate
 		}
 	}
 	userHome := homeJoin(".gemini")
-	if fileExists(userHome) {
+	if dirExists(userHome) {
 		return userHome
 	}
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if human := filepath.Join("/Users", sudoUser, ".gemini"); fileExists(human) {
+		if human := filepath.Join("/Users", sudoUser, ".gemini"); dirExists(human) {
 			return human
 		}
 	}

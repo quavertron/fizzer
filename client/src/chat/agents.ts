@@ -37,6 +37,7 @@ export function eligibleAgentProfiles(
   const added = new Set(registrations.map((registration) => registration.vaultAgentId));
   const channels = new Set(vaultChannelIds);
   return profiles.filter((profile) => agentOwnership(profile, currentUser, currentUserId) === 'owned'
+    && !profile.instanceOf
     && !added.has(profile.id)
     && !profile.channelIds?.some((id) => channels.has(id)));
 }

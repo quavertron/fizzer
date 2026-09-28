@@ -21,6 +21,32 @@ defmodule Cascade.Realtime.RunReceiptsTest do
     assert Enum.any?(Cascade.Activity.replay(ctx.vault_id, %{}).events, &(&1["result"] == "released"))
   end
 
+  test "edit counts survive completion and replay without crossing runs", ctx do
+    # Replayed edits must preserve the completed turn's totals without doubling them.
+    channel = Cascade.Content.Store.create_note(ctx.vault_id, ctx.user_id, %{title: "Counters", content: "cascade://chat-channel"})
+    {:ok, message} = Cascade.Chat.Messages.create(%{id: ctx.user_id, username: ctx.username}, ctx.vault_id, channel.id, %{body: "Working"})
+    Cascade.Accounts.SQL.exec("UPDATE chat_messages SET run_id=? WHERE id=?", [ctx.run.id, message.id])
+    payload = %{"kind" => "edit", "id" => "event-1", "diffCounts" => %{"adds" => 2, "mods" => 3, "moves" => 4, "dels" => 1}}
+    data = %{runId: ctx.run.id, type: "activity", payload: payload}
+    assert {:error, _} = DomainAdapter.handle_event("/runners", "runner:runEvent", [data], %{id: ctx.user_id + 1}, %{})
+    assert Store.edit_counts(ctx.run.id) == nil
+    for _ <- 1..2 do
+      assert {:ok, _} = DomainAdapter.handle_event("/runners", "runner:runEvent", [data], %{id: ctx.user_id}, %{})
+    end
+    assert Store.edit_counts(ctx.run.id) == payload["diffCounts"]
+    terminal(ctx)
+    assert Store.edit_counts(ctx.run.id) == payload["diffCounts"]
+    {:ok, reloaded} = Cascade.Chat.Messages.get(channel.id, ctx.user_id, message.id)
+    assert reloaded.diffCounts == payload["diffCounts"]
+    assert length(Enum.filter(Store.events(ctx.run.id), &(&1.type == "edit_counts"))) == 1
+    {:ok, next} = Store.start(ctx.vault_id, nil, "Next turn", "codex", owner_user_id: ctx.user_id)
+    assert Store.edit_counts(next.id) == nil
+    Store.record_edit_counts(ctx.run.id, Map.put(payload, "id", "event-2"))
+    assert Store.edit_counts(ctx.run.id)["adds"] == 4
+    Store.record_edit_counts(ctx.run.id, %{payload | "id" => "invalid", "diffCounts" => %{"adds" => -1}})
+    assert Store.edit_counts(ctx.run.id)["adds"] == 4
+  end
+
   defp terminal(ctx, status \\ "completed") do
     DomainAdapter.handle_event(
       "/runners",

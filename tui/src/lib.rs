@@ -28,7 +28,7 @@ use crossterm::{
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, window_size, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
@@ -68,6 +68,12 @@ enum BackendEvent {
         is_new: bool,
         result: Result<AgentItem, String>,
     },
+    AgentProfileDeleted {
+        vault_id: String,
+        profile_id: String,
+        mention: String,
+        result: Result<(), String>,
+    },
     Session { origin: String, result: Result<Option<(String, String)>, String> },
 }
 
@@ -90,7 +96,8 @@ fn run_pending_command(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
             app.active_pane = ActivePane::Vaults;
             spawn_vault_sync(app, tx);
         }
-        Some(panes::AppCommand::ImportCodex) => codex_sessions::open(app, tx),
+        Some(panes::AppCommand::ImportCodex) => codex_sessions::open(app, tx, false),
+        Some(panes::AppCommand::ImportClaude) => codex_sessions::open(app, tx, true),
         Some(panes::AppCommand::TermCharMode) => app.awatch.enter_character_mode(),
         Some(panes::AppCommand::Refresh) => {
             spawn_refresh_channels(app, tx);
@@ -655,6 +662,28 @@ fn apply_backend_event_current(app: &mut App, event: BackendEvent, tx: &mpsc::Un
                 }
             }
         }
+        BackendEvent::AgentProfileDeleted { vault_id, profile_id, mention, result } => {
+            if app.vault_id.as_deref() != Some(vault_id.as_str()) { return; }
+            match result {
+                Ok(()) => {
+                    app.agents.retain(|agent| agent.vault_agent_id.as_deref() != Some(profile_id.as_str()));
+                    for buffer in app.channel_buffers.values_mut() {
+                        buffer.agents.retain(|agent| agent.vault_agent_id.as_deref() != Some(profile_id.as_str()));
+                    }
+                    app.selected_agent_idx = app.selected_agent_idx.min(app.agents.len().saturating_sub(1));
+                    app.status_message = format!("Deleted @{} from every vault", mention);
+                    if app.agent_settings_modal.as_ref().is_some_and(|modal| modal.agent.vault_agent_id.as_deref() == Some(profile_id.as_str())) {
+                        app.close_agent_settings();
+                    }
+                }
+                Err(err) => {
+                    if let Some(modal) = app.agent_settings_modal.as_mut() {
+                        modal.confirm_delete = false;
+                        modal.error_message = Some(format!("Could not delete profile: {}", err));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -944,11 +973,7 @@ async fn run_app(
     native_runner: &mut Option<tokio::process::Child>,
 ) -> Result<()> {
     let mut vector_display = purrvect::Display::new();
-    // Track terminal cell pixel geometry so inline diagrams re-rasterize on zoom.
-    // Font-size zoom changes pixels-per-cell without changing the row/column grid,
-    // so crossterm emits no Resize event and the upload cache would otherwise keep
-    // showing a stale, mis-scaled raster. We watch the reported pixel size instead.
-    let mut last_window_px = window_size().map(|w| (w.width, w.height)).unwrap_or((0, 0));
+    // Ghostty retains SVG geometry and updates raster resolution on font zoom.
     let mut runner_connection = None;
     let mut event_stream = EventStream::new();
     // Start the first poll one full period out so its ~5 concurrent sync requests
@@ -983,16 +1008,7 @@ async fn run_app(
             }
         }
         terminal.draw(|frame| ui::render(frame, app))?;
-        // If the terminal was zoomed (cell pixel size changed, possibly with no
-        // Resize event because the grid dimensions held), drop the uploaded images
-        // so sync re-transmits them and the terminal re-rasterizes at the new size.
-        if let Ok(win) = window_size() {
-            let px = (win.width, win.height);
-            if px != (0, 0) && px != last_window_px {
-                vector_display.clear(terminal.backend_mut())?;
-                last_window_px = px;
-            }
-        }
+        // Position and clipping updates reuse the uploaded SVG and GPU texture.
         vector_display.sync(terminal.backend_mut())?;
 
         if app.should_quit {
@@ -1320,8 +1336,21 @@ async fn run_app(
                                     } else if modal.editing_handle {
                                         modal.editing_handle = false;
                                         modal.agent.mention = crate::app::sanitize_handle(&modal.handle_input);
+                                    } else if modal.confirm_delete {
+                                        modal.confirm_delete = false;
                                     } else {
                                         app.close_agent_settings();
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if app.agent_settings_modal.as_ref().is_some_and(|modal| modal.confirm_delete) {
+                                if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                                    delete_agent_profile(app, &tx);
+                                } else if matches!(key.code, KeyCode::Char('n' | 'N')) {
+                                    if let Some(modal) = app.agent_settings_modal.as_mut() {
+                                        modal.confirm_delete = false;
                                     }
                                 }
                                 continue;
@@ -1677,18 +1706,7 @@ async fn run_app(
                             }
                             ActivePane::ChatMessages => {}
                             ActivePane::Agents => {
-                                match key.code {
-                                    KeyCode::Up | KeyCode::Char('k') => app.prev_agent(),
-                                    KeyCode::Down | KeyCode::Char('j') => app.next_agent(),
-                                    KeyCode::Char('n') => app.open_new_agent_settings(),
-                                    KeyCode::Enter => {
-                                        app.insert_agent_mention();
-                                    }
-                                    KeyCode::Char('s') => {
-                                        app.open_agent_settings();
-                                    }
-                                    _ => {}
-                                }
+                                handle_agents_key(app, key.code);
                             }
                             ActivePane::Users => {
                                 match key.code {
@@ -1937,6 +1955,7 @@ async fn run_app(
                             continue;
                         }
                         if let Some(ref mut modal) = app.agent_settings_modal {
+                            if modal.confirm_delete { continue; }
                             let modal_area = ui::agent_modal_rect(Rect::new(0, 0, term_width, term_height));
                             let in_modal = mouse.column >= modal_area.x
                                 && mouse.column < modal_area.x + modal_area.width
@@ -2105,6 +2124,12 @@ fn chat_offset_at_position(app: &App, row: u16, column: u16, area: Rect, bounds:
 
 fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mpsc::UnboundedSender<BackendEvent>, bounds: Rect) {
     if app.show_vaults || app.vault_action.is_some() || app.codex_import.is_some() || app.panes.borrow().picker.is_some() { return; }
+    let border_click = app.panes.borrow().border_click(mouse);
+    let resizing = app.panes.borrow_mut().mouse_resize(mouse);
+    let mouse = if resizing {
+        let Some(click) = border_click else { return; };
+        click
+    } else { mouse };
     let Some((id, area)) = app.panes.borrow().window_at(mouse.column, mouse.row) else { return; };
     let previous = app.panes.borrow().focused_id();
     let previous_channel = app.active_channel_id.clone();
@@ -2147,7 +2172,9 @@ fn handle_pane_mouse(app: &mut App, mouse: crossterm::event::MouseEvent, tx: &mp
                     }
                 }
                 ActivePane::Notes if row / 2 < app.notes.len() => app.selected_note_idx = row / 2,
-                ActivePane::Agents if row / 2 < app.agents.len() => app.selected_agent_idx = row / 2,
+                ActivePane::Agents => {
+                    if let Some(&index) = app.agent_display_order().get(row) { app.selected_agent_idx = index; }
+                }
                 ActivePane::Users if row / 2 < app.users.len() => app.selected_user_idx = row / 2,
                 ActivePane::ChatMessages => {
                     if let Some(offset) = chat_offset_at_position(app, mouse.row, mouse.column, area, bounds) {
@@ -2252,6 +2279,31 @@ fn save_agent_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) 
     });
 }
 
+fn delete_agent_profile(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+    let (Some(vault_id), Some((profile_id, mention))) = (
+        app.vault_id.clone(),
+        app.agent_settings_modal.as_mut().and_then(|modal| {
+            let profile_id = modal.agent.vault_agent_id.clone().filter(|id| !id.is_empty())?;
+            modal.confirm_delete = false;
+            modal.error_message = None;
+            Some((profile_id, modal.agent.mention.clone()))
+        }),
+    ) else {
+        if let Some(modal) = app.agent_settings_modal.as_mut() {
+            modal.confirm_delete = false;
+            modal.error_message = Some("This agent has no deletable profile".into());
+        }
+        return;
+    };
+    app.status_message = format!("Deleting @{} from every vault...", mention);
+    let client = app.client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.delete_agent_profile(&vault_id, &profile_id).await;
+        let _ = tx.send(BackendEvent::AgentProfileDeleted { vault_id, profile_id, mention, result });
+    });
+}
+
 fn save_user_settings(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
     let (user_idx, display_name, color) = {
         let Some(modal) = app.user_settings_modal.as_mut() else { return; };
@@ -2324,4 +2376,14 @@ fn resolve_token() -> Option<String> {
 #[cfg(test)]
 mod tests {
     include!("../tests/main.rs");
+}
+
+fn handle_agents_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => app.prev_agent(),
+        KeyCode::Down | KeyCode::Char('j') => app.next_agent(),
+        KeyCode::Char('n') => app.open_new_agent_settings(),
+        KeyCode::Enter => app.open_agent_settings(),
+        _ => {}
+    }
 }

@@ -207,7 +207,8 @@ func repoRoot() string {
 
 type launchOptions struct {
 	Socket        string
-	Worker        string // a copy of this binary the fizzer account can reach
+	Worker        string   // a copy of this binary the fizzer account can reach
+	Env           []string // extra NAME=value entries resolved by the human
 	ResourcesPath string
 	RepoRoot      string
 }
@@ -234,7 +235,7 @@ func launchArguments(opts launchOptions) []string {
 	}
 	if !hasPrefix(providerBinaries, "ANTIGRAVITY_HOME=") {
 		candidate := filepath.Join(home, ".gemini")
-		if fileExists(candidate) {
+		if dirExists(candidate) {
 			providerBinaries = append(providerBinaries, "ANTIGRAVITY_HOME="+candidate)
 		}
 	}
@@ -263,6 +264,8 @@ func launchArguments(opts launchOptions) []string {
 			}
 		}
 	}
+
+	providerBinaries = append(providerBinaries, opts.Env...)
 
 	authEnv := []string{}
 	for _, name := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} {

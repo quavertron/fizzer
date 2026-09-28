@@ -6397,6 +6397,17 @@ button.chat-avatar.is-clickable:focus-visible {
   gap: 1px;
   line-height: 1.25;
 }
+.chat-user-copy-inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 5px;
+}
+.chat-user-copy-inline strong {
+  flex: 0 1 auto;
+}
+.chat-user-copy-inline span {
+  min-width: 0;
+}
 .chat-user-copy-head {
   display: flex;
   align-items: center;

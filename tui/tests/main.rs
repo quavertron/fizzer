@@ -1,4 +1,34 @@
 use super::*;
+
+#[test]
+fn agents_enter_opens_settings_and_s_does_nothing() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    app.active_pane = ActivePane::Agents;
+    app.agents = serde_json::from_value(json!([
+        {"id":"a","displayName":"A","mention":"a"},
+        {"id":"b","displayName":"B","mention":"b"}
+    ])).unwrap();
+    app.selected_agent_idx = 1;
+    app.input = "existing draft".into();
+
+    handle_agents_key(&mut app, KeyCode::Char('s'));
+    assert!(app.agent_settings_modal.is_none());
+    assert_eq!(app.input, "existing draft");
+    assert_eq!(app.selected_agent_idx, 1);
+    assert_eq!(app.active_pane, ActivePane::Agents);
+
+    handle_agents_key(&mut app, KeyCode::Enter);
+    assert_eq!(app.agent_settings_modal.as_ref().unwrap().agent.id, "b");
+    assert_eq!(app.input, "existing draft");
+    assert_eq!(app.active_pane, ActivePane::Agents);
+}
+
+#[test]
+fn agents_enter_with_empty_list_is_harmless() {
+    let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
+    handle_agents_key(&mut app, KeyCode::Enter);
+    assert!(app.agent_settings_modal.is_none());
+}
 use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -6,6 +36,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::{JoinHandle, JoinSet};
 
 type Requests = Arc<Mutex<Vec<(String, Value)>>>;
+
+#[tokio::test]
+async fn claude_import_targets_selected_server() {
+    let server = MockServer::new(|request, body| {
+        assert!(request.starts_with("POST /api/vaults/selected/import-claude-session "));
+        assert_eq!(body["id"], "local-claude-session");
+        (200, json!({"imported":{"channelId":"claude-imported"}}), Duration::ZERO)
+    }).await;
+    let result = server.client.import_session_page("selected", "claude", &json!({"id":"local-claude-session"})).await.unwrap();
+    assert_eq!(result["imported"]["channelId"], "claude-imported");
+}
 
 fn screen_text(terminal: &Terminal<TestBackend>) -> String {
     terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect()
@@ -20,7 +61,7 @@ async fn codex_import_targets_selected_server_and_opens_existing_channel_once() 
         }
         (200, json!({"messages":[], "agents":[], "notes":[], "sessions":[]}), Duration::ZERO)
     }).await;
-    let result = server.client.import_codex_page("selected", &json!({"messages":[{"body":"Previous work"}]})).await.unwrap();
+    let result = server.client.import_session_page("selected", "codex", &json!({"messages":[{"body":"Previous work"}]})).await.unwrap();
     assert_eq!(result["imported"]["channelId"], "imported");
     let mut app = App::new(server.client.clone());
     app.vault_id = Some("selected".into());
@@ -684,4 +725,3 @@ fn history_reading_anchors_scroll_when_new_messages_arrive() {
     let new_lines = app.chat_cache.read().unwrap().lines.len();
     assert_eq!(app.scroll_offset, 5 + (new_lines - old_lines), "Scroll offset should increase by added lines to keep user position stationary");
 }
-

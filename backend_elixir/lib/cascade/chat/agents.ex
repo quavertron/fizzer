@@ -8,6 +8,14 @@ defmodule Cascade.Chat.Agents do
   @claude_efforts ~w(low medium high xhigh max)
   @identity_scopes ~w(vault session)
 
+  # Durable instance identities remain available internally for routing and
+  # session lookup, but are not reusable profiles in the account roster.
+  def list_profiles(user_id, vault_id) do
+    with {:ok, identities} <- list_vault(user_id, vault_id) do
+      {:ok, Enum.reject(identities, & &1[:instanceOf])}
+    end
+  end
+
   def list_vault(user_id, vault_id) do
     if VaultMembers.role(vault_id, user_id) do
       purge_expired_sessions!()
@@ -75,6 +83,9 @@ defmodule Cascade.Chat.Agents do
 
         existing && hd(existing) not in [nil, user_id] ->
           {:error, "Only the agent owner can edit it"}
+
+        existing && SQL.one("SELECT 1 FROM chat_agent_instances WHERE identity_id=?", [id]) ->
+          {:error, "This is a child agent instance; edit its parent profile instead"}
 
         true ->
           with :ok <-
@@ -530,7 +541,8 @@ defmodule Cascade.Chat.Agents do
     SQL.all(
       """
       SELECT va.id FROM vault_agents va
-      WHERE (va.vault_id=? OR EXISTS(
+      WHERE NOT EXISTS(SELECT 1 FROM chat_agent_instances i WHERE i.identity_id=va.id)
+      AND (va.vault_id=? OR EXISTS(
         SELECT 1 FROM chat_agent_members m WHERE m.vault_agent_id=va.id AND m.vault_id=?
       )) AND NOT EXISTS(
         SELECT 1 FROM vault_agent_exclusions x WHERE x.vault_id=? AND x.vault_agent_id=va.id

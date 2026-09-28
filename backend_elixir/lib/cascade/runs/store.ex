@@ -12,6 +12,35 @@ defmodule Cascade.Runs.Store do
   """
 
   def terminal?(status), do: status in @terminal
+
+  def record_edit_counts(run_id, %{"kind" => "edit", "id" => source, "diffCounts" => counts})
+      when is_binary(source) and source != "" and is_map(counts) do
+    keys = ~w(adds mods moves dels)
+    if Enum.all?(keys, &(is_integer(counts[&1]) and counts[&1] >= 0 and counts[&1] <= 100_000_000)) do
+      OrderedPublisher.mutate(fn ->
+        SQL.transaction(fn ->
+          unless SQL.one("SELECT 1 FROM run_events WHERE run_id=? AND type='edit_counts' AND json_extract(payload_json,'$.source')=?", [run_id, source]) do
+            publish(run_id, "edit_counts", %{source: source, counts: Map.take(counts, keys)})
+          end
+        end)
+      end)
+    end
+    :ok
+  end
+
+  def record_edit_counts(_, _), do: :ok
+
+  def edit_counts(run_id) when is_integer(run_id) do
+    rows = SQL.all("SELECT payload_json FROM run_events WHERE run_id=? AND type='edit_counts' ORDER BY seq", [run_id])
+    if rows != [] do
+      Enum.reduce(rows, Map.new(~w(adds mods moves dels), &{&1, 0}), fn [json], total ->
+        counts = Jason.decode!(json)["counts"]
+        Map.merge(total, counts, fn _, a, b -> a + b end)
+      end)
+    end
+  end
+
+  def edit_counts(_), do: nil
   def valid_agent?(agent), do: agent in @agents
 
   def list(vault_id, owner_id) do
@@ -472,7 +501,7 @@ defmodule Cascade.Runs.Store do
 
   defp broadcast_last(run_id), do: run_id |> events() |> List.last() |> broadcast_event()
 
-  defp project_chat(run_id, type) when type in ["text", "user", "harness", "status"] do
+  defp project_chat(run_id, type) when type in ["text", "user", "harness", "status", "edit_counts"] do
     target? =
       type == "status" or
         not is_nil(SQL.one("SELECT 1 FROM chat_messages WHERE run_id=? LIMIT 1", [run_id]))

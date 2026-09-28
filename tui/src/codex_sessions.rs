@@ -15,6 +15,7 @@ pub struct SessionList { pub sessions: Vec<LocalSession>, pub next_offset: Optio
 
 #[derive(Default)]
 pub struct Picker {
+    pub claude: bool,
     pub sessions: Vec<LocalSession>,
     pub selected: usize,
     pub offset: usize,
@@ -23,16 +24,16 @@ pub struct Picker {
     pub error: String,
 }
 
-async fn local(method: &str, options: Value) -> Result<Value, String> {
+async fn local(claude: bool, method: &str, options: Value) -> Result<Value, String> {
     let sub = match method {
         "listCodexSessions" => "list",
         "readCodexSession" => "read",
-        _ => return Err(format!("Unknown Codex session method: {method}")),
+        _ => return Err(format!("Unknown session method: {method}")),
     };
     let output = tokio::time::timeout(std::time::Duration::from_secs(15),
-        tokio::process::Command::new(storage_bin::binary()).arg("codex-sessions").arg(sub).arg(options.to_string())
-            .kill_on_drop(true).output()).await.map_err(|_| "Local Codex history read timed out".to_string())?
-        .map_err(|e| format!("Cannot read local Codex sessions: {e}"))?;
+        tokio::process::Command::new(storage_bin::binary()).arg(if claude { "claude-sessions" } else { "codex-sessions" }).arg(sub).arg(options.to_string())
+            .kill_on_drop(true).output()).await.map_err(|_| "Local history read timed out".to_string())?
+        .map_err(|e| format!("Cannot read local sessions: {e}"))?;
     if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().to_string()); }
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
 }
@@ -42,9 +43,10 @@ fn load(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>, offset: usize) 
     picker.busy = true;
     picker.offset = offset;
     picker.error.clear();
+    let claude = picker.claude;
     let tx = tx.clone();
     tokio::spawn(async move {
-        let result = match local("listCodexSessions", json!({"offset": offset})).await {
+        let result = match local(claude, "listCodexSessions", json!({"offset": offset})).await {
             Ok(value) => serde_json::from_value(value).map_err(|e| e.to_string()),
             Err(error) => Err(error),
         };
@@ -52,33 +54,33 @@ fn load(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>, offset: usize) 
     });
 }
 
-async fn import(client: CascadeClient, vault_id: &str, id: &str) -> Result<ChannelItem, String> {
+async fn import(client: CascadeClient, vault_id: &str, id: &str, claude: bool) -> Result<ChannelItem, String> {
     let mut offset = 0;
     let mut snapshot_end = None;
     loop {
         let mut options = json!({"id": id, "offset": offset});
         if let Some(end) = snapshot_end { options["snapshotEnd"] = json!(end); }
-        let page = local("readCodexSession", options).await?;
+        let page = local(claude, "readCodexSession", options).await?;
         snapshot_end = page["snapshotEnd"].as_u64();
-        let response = client.import_codex_page(vault_id, &page).await?;
+        let response = client.import_session_page(vault_id, if claude { "claude" } else { "codex" }, &page).await?;
         let imported = &response["imported"];
         if imported["paused"] == true { return Err("A run is already queued in Fizzer. Wait for it to finish before importing again.".into()); }
         if imported["following"] == false || page["hasMore"] != true {
             return Ok(ChannelItem {
                 id: imported["channelId"].as_str().ok_or("Missing imported channel")?.into(),
-                title: imported["title"].as_str().unwrap_or("Codex session").into(),
+                title: imported["title"].as_str().unwrap_or(if claude { "Claude session" } else { "Codex session" }).into(),
             });
         }
         let next = page["nextOffset"].as_u64().ok_or("Missing history cursor")?;
-        if next <= offset { return Err("Codex history cursor did not advance".into()); }
+        if next <= offset { return Err("History cursor did not advance".into()); }
         offset = next;
     }
 }
 
-pub fn open(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>) {
+pub fn open(app: &mut App, tx: &mpsc::UnboundedSender<BackendEvent>, claude: bool) {
     if app.vault_id.is_none() || app.show_vaults {
-        app.status_message = "Open a vault before importing a local Codex session.".into();
-    } else { load(app, tx, 0); }
+        app.status_message = "Open a vault before importing a local session.".into();
+    } else { app.codex_import = Some(Picker { claude, ..Picker::default() }); load(app, tx, 0); }
 }
 
 pub fn key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<BackendEvent>) -> bool {
@@ -94,13 +96,14 @@ pub fn key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<BackendEvent
         KeyCode::Enter => {
             if let (Some(session), Some(vault_id)) = (picker.sessions.get(picker.selected), app.vault_id.clone()) {
                 let id = session.id.clone();
+                let claude = picker.claude;
                 picker.busy = true;
                 picker.error.clear();
                 let client = app.client.clone();
                 let origin = client.base_url.clone();
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    let result = import(client, &vault_id, &id).await;
+                    let result = import(client, &vault_id, &id, claude).await;
                     let _ = tx.send(BackendEvent::CodexImported { origin, vault_id, result });
                 });
             }
@@ -112,7 +115,7 @@ pub fn key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<BackendEvent
 
 pub fn render(frame: &mut Frame, app: &App, picker: &Picker, area: ratatui::layout::Rect) {
     frame.render_widget(Clear, area);
-    let block = Block::default().title(" Import local Codex session ").borders(Borders::ALL);
+    let block = Block::default().title(if picker.claude { " Import local Claude session " } else { " Import local Codex session " }).borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(1), Constraint::Length(3)]).split(inner);
@@ -120,6 +123,6 @@ pub fn render(frame: &mut Frame, app: &App, picker: &Picker, area: ratatui::layo
     let items: Vec<_> = picker.sessions.iter().map(|s| ListItem::new(format!("{}\n  {}", s.title, s.cwd))).collect();
     let mut state = ListState::default().with_selected(Some(picker.selected));
     frame.render_stateful_widget(List::new(items).highlight_style(Style::default().bg(Color::DarkGray)).highlight_symbol("> "), chunks[1], &mut state);
-    let status = if picker.busy { "Loading / importing history…" } else if !picker.error.is_empty() { &picker.error } else if picker.sessions.is_empty() { "No local Codex sessions found." } else { "" };
+    let status = if picker.busy { "Loading / importing history…" } else if !picker.error.is_empty() { &picker.error } else if picker.sessions.is_empty() { "No local sessions found." } else { "" };
     frame.render_widget(Paragraph::new(status).wrap(Wrap { trim: true }), chunks[2]);
 }

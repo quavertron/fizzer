@@ -567,6 +567,17 @@ func runClaudeNative(opts map[string]any, emit func(string, string), status func
 	if isCanceledRun(runID) {
 		return nil, errClaudeCanceled
 	}
+	if str(opts["resumeSessionId"]) != "" && strings.Contains(err.Error(), "No conversation found") {
+		harnessNote(emit, "\x1b[2m# Saved Claude session is gone — starting a new one\x1b[0m\r\n")
+		delete(opts, "resumeSessionId")
+		result, err = runClaudeOnce(opts, emit, status, "")
+		if err == nil {
+			return map[string]any{"summary": result.Summary, "sessionId": result.Session}, nil
+		}
+		if isCanceledRun(runID) {
+			return nil, errClaudeCanceled
+		}
+	}
 	if result != nil && result.Timeout {
 		harnessNote(emit, "\x1b[2m# Claude did not start — retrying once\x1b[0m\r\n")
 		result, err = runClaudeOnce(opts, emit, status, "")

@@ -893,6 +893,7 @@ defmodule Cascade.Chat.Messages do
       agentId: row.agent_id,
       registrationId: row.registration_id,
       runId: row.run_id,
+      diffCounts: Cascade.Runs.Store.edit_counts(row.run_id),
       blocks: if(detail == :list, do: truncate_blocks(blocks), else: blocks),
       harnessLog: row.harness_log,
       attachments: nil_if_empty(decode(row.attachments, [])),

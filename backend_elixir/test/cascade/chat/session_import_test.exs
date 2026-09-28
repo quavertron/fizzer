@@ -40,6 +40,23 @@ defmodule Cascade.Chat.SessionImportTest do
     assert [0] == SQL.one("SELECT count(*) FROM chat_messages WHERE channel_id=? AND body='No duplicate output'", [imported.channelId])
   end
 
+  test "Claude imports are idempotent and resume independently from Codex", %{user: user, vault: vault} do
+    session = Ecto.UUID.generate()
+    page = %{"id" => session, "title" => "Claude work", "cwd" => "/tmp/claude-project", "messages" => [
+      %{"index" => 0, "role" => "user", "body" => "Hello", "createdAt" => "2026-09-01T12:00:00Z"},
+      %{"index" => 120, "role" => "assistant", "body" => "Hi", "createdAt" => "2026-09-01T12:00:01Z"}
+    ]}
+    assert {:ok, imported} = SessionImport.import(user, vault.id, page, "claude")
+    assert {:ok, ^imported} = SessionImport.import(user, vault.id, page, "claude")
+    assert [["Hello", nil], ["Hi", "claude-code"]] == SQL.all("SELECT body,agent_id FROM chat_messages WHERE channel_id=? ORDER BY created_at", [imported.channelId])
+    assert [conversation] = SQL.one("SELECT conversation_id FROM chat_agent_members WHERE channel_id=?", [imported.channelId])
+    assert session == Cascade.Runs.Store.find_conversation_session(%{vault_id: vault.id, note_id: nil, agent: "claude-code", conversation_id: conversation})
+    assert ["/tmp/claude-project"] == SQL.one("SELECT cwd FROM chat_agent_members WHERE channel_id=?", [imported.channelId])
+    assert [0] == SQL.one("SELECT count(*) FROM chat_agent_dispatches WHERE channel_id=?", [imported.channelId])
+    assert {:ok, codex} = SessionImport.import(user, vault.id, page)
+    refute codex.channelId == imported.channelId
+  end
+
   test "invalid pages cannot create a channel", %{user: user, vault: vault} do
     count = SQL.one("SELECT count(*) FROM notes WHERE vault_id=?", [vault.id])
     assert {:error, _} = SessionImport.import(user, vault.id, %{"id" => Ecto.UUID.generate(), "messages" => [%{"role" => "system"}]})

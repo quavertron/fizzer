@@ -382,6 +382,7 @@ defmodule Cascade.Runs.RunnerLifecycle do
     |> Enum.reject(fn row ->
       not is_nil(Store.pending_delivery(row.run_id, row.owner_user_id))
     end)
+    |> Enum.reject(&Map.has_key?(state.run_leases, &1.run_id))
     |> Enum.each(fn row ->
       Store.finish(row.run_id, "failed", summary)
       Store.publish(row.run_id, "status", %{status: "failed", summary: summary})

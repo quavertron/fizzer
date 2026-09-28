@@ -20,6 +20,12 @@ const registration = (identity: VaultAgent): ChatAgentRegistration => ({
 });
 
 describe('My Agents eligibility', () => {
+  it('does not offer cached child instances as standalone profiles', () => {
+    const parent = profile('parent');
+    const child = profile('parent2', { instanceOf: parent.id, identityScope: 'instance' });
+    expect(eligibleAgentProfiles([parent, child], [], 'alice', 1)).toEqual([parent]);
+  });
+
   it('omits existing vault identities, including those seated only in another channel', () => {
     const added = profile('added');
     const profiles = [added, profile('another-channel', { channelIds: ['vault-chat-2'] }),

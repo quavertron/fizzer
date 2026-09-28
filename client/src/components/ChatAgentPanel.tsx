@@ -365,6 +365,14 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
 
   function editVaultIdentity(event: React.MouseEvent, registration: ChatAgentRegistration) {
     event.stopPropagation();
+    if (registration.instanceOf) {
+      const parent = registeredAgents.find((agent) => agent.vaultAgentId === registration.instanceOf);
+      if (!parent) {
+        setAgentFormError('The parent profile is not in this channel.');
+        return;
+      }
+      registration = parent;
+    }
     const identity = vaultAgents.find((agent) => agent.id === registration.vaultAgentId);
     setIdentityScope(identity?.identityScope === 'session' ? 'session' : 'vault');
     if (identity?.expiresAt) {
@@ -637,7 +645,9 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                   </div>
                   <span className="chat-user-handle">@{agent.registration.mention || agent.id}</span>
                   <span className="chat-user-role">{selectedModel || 'no model'}</span>
-                  <span className="chat-agent-owner">{ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>
+                  <span className="chat-agent-owner">{agent.registration.instanceOf
+                    ? `Child of @${registeredAgents.find((parent) => parent.vaultAgentId === agent.registration.instanceOf)?.mention || vaultAgents.find((parent) => parent.id === agent.registration.instanceOf)?.mention || 'parent agent'}`
+                    : ownerLabel ? `${ownerLabel}’s agent` : 'Owner unknown'}</span>
                 </div>
               </button>
               {canManage && <button
@@ -672,9 +682,9 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                   title={`Add @${profile.mention} to this vault · ${profile.ownerUsername || currentUser}’s agent`}
                 >
                   <ChatAvatar name={profile.displayName || profile.mention} kind="agent" ownership="owned" ownerLabel={profile.ownerUsername || currentUser} ownerNames={ownerNames} avatarUrl={profile.avatarUrl} size="sm" />
-                  <span className="chat-user-copy">
+                  <span className="chat-user-copy chat-user-copy-inline">
                     <strong>{profile.displayName || profile.mention}</strong>
-                    <span>@{profile.mention} · {profile.model || profile.agentId}</span>
+                    <span>@{profile.mention} • {profile.model || profile.agentId}</span>
                   </span>
                 </button>
               ))}</div>
@@ -1004,7 +1014,7 @@ export const ChatAgentPanel = forwardRef<ChatAgentPanelHandle, {
                 onClick={(event) => editVaultIdentity(event, agentForm)}
               >
                 <span className="chat-agent-toggle-copy">
-                  <span className="chat-agent-toggle-name">Edit vault identity</span>
+                  <span className="chat-agent-toggle-name">{agentForm.instanceOf ? 'Edit parent profile' : 'Edit vault identity'}</span>
                   <span className="chat-agent-toggle-hint">Name, handle, persona — shared across all channels.</span>
                 </span>
                 <ChevronRight size={13} />

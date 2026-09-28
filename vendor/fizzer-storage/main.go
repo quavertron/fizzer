@@ -177,6 +177,8 @@ func main() {
 
 	case "codex-sessions":
 		os.Exit(CodexSessionsCLI(os.Args[2:]))
+	case "claude-sessions":
+		os.Exit(ClaudeSessionsCLI(os.Args[2:]))
 
 	case "worktree":
 		os.Exit(WorktreeCLI(os.Args[2:]))

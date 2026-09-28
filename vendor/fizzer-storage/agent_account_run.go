@@ -301,6 +301,9 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 			} else if a, ok := opts["agent"].(string); ok && a != "" {
 				event["agent"] = a
 			}
+			if counts := awatchEditCounts(event); counts != nil {
+				event["diffCounts"] = counts
+			}
 			// truncate lines
 			for _, key := range []string{"old_lines", "new_lines"} {
 				if lines, ok := event[key].([]any); ok {
@@ -345,7 +348,14 @@ func runAccountOrchestrated(input runInput, emit func(agentRunEvent)) (*json.Raw
 		}
 		return nil, err
 	}
-	argv := launchArguments(launchOptions{Socket: socket, Worker: workerBin})
+	var extraEnv []string
+	if str(opts["agent"]) == "antigravity" && os.Getenv("ANTIGRAVITY_LS_ADDRESS") == "" {
+		// The LS discovery file is private to the human, so the agent account cannot find it.
+		if endpoint, err := EnsureAntigravityLS(); err == nil && endpoint.Address != "" && endpoint.CSRF != "" {
+			extraEnv = []string{"ANTIGRAVITY_LS_ADDRESS=" + endpoint.Address, "ANTIGRAVITY_CSRF_TOKEN=" + endpoint.CSRF}
+		}
+	}
+	argv := launchArguments(launchOptions{Socket: socket, Worker: workerBin, Env: extraEnv})
 	worker, err := spawnWorker(argv, root)
 	if err != nil {
 		if !terminal {

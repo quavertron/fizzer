@@ -72,7 +72,7 @@ defmodule Cascade.Chat.NumberedAgentsTest do
     assert {:error, _} = NumberedAgents.ensure(f.user_id, f.channel.id, "@codex1")
   end
 
-  test "profiles and independent conversations persist across repeated dispatches", f do
+  test "child instances and independent conversations persist across repeated dispatches", f do
     user = %{id: f.user_id, username: f.username}
 
     {:ok, message} =
@@ -89,7 +89,11 @@ defmodule Cascade.Chat.NumberedAgentsTest do
     assert second.yolo
     assert second.contextPrompt == "base instructions"
     assert {:ok, profile} = Agents.get(f.user_id, f.vault_id, second.vaultAgentId)
-    assert profile.identityScope == "vault"
+    assert profile.identityScope == "instance"
+    assert profile.instanceOf == f.base.vaultAgentId
+    {:ok, profiles} = Agents.list_profiles(f.user_id, f.vault_id)
+    refute Enum.any?(profiles, &(&1.id == profile.id))
+    assert {:error, _} = Agents.upsert_identity(f.user_id, f.vault_id, profile)
 
     {:ok, _} =
       Agents.add_to_channel(f.user_id, f.vault_id, f.channel.id, profile.id, %{
@@ -121,6 +125,28 @@ defmodule Cascade.Chat.NumberedAgentsTest do
       Enum.map(results, fn {:ok, members} -> Enum.find(members, &(&1.mention == "codex22")).id end)
 
     assert length(Enum.uniq(ids)) == 1
+  end
+
+  test "children stay out of the profile roster and other channels until mentioned", f do
+    {:ok, members} = NumberedAgents.ensure(f.user_id, f.channel.id, "@codex2")
+    child = Enum.find(members, & &1[:instanceOf])
+    other = Store.create_note(f.vault_id, f.user_id, %{title: "Other", content: "cascade://chat-channel"})
+    {:ok, roster} = Agents.ensure_vault_wide(f.user_id, f.vault_id, other.id)
+    refute Enum.any?(roster, & &1[:instanceOf])
+    {:ok, other_members} = NumberedAgents.ensure(f.user_id, other.id, "@codex2")
+    other_child = Enum.find(other_members, & &1[:instanceOf])
+    assert other_child.vaultAgentId == child.vaultAgentId
+    refute other_child.conversationId == child.conversationId
+    {:ok, original_members} = Agents.list_members(f.channel.id, f.user_id)
+    assert Enum.find(original_members, & &1[:instanceOf]).conversationId == child.conversationId
+
+    token = Cascade.Auth.Token.sign_user(%{id: f.user_id, username: f.username, auth_version: 0})
+    response = Cascade.TestHelpers.json_conn(:get, "/api/vaults/#{f.vault_id}/vault-agents", nil, token)
+      |> CascadeWeb.ChatRouter.call(CascadeWeb.ChatRouter.init([]))
+    assert response.status == 200
+    profiles = Jason.decode!(response.resp_body)["agents"]
+    assert Enum.any?(profiles, &(&1["id"] == f.base.vaultAgentId))
+    refute Enum.any?(profiles, &(&1["id"] == child.vaultAgentId))
   end
 
   test "new original displaces generated names without inheriting their histories", f do

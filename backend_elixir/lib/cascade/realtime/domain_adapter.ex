@@ -145,8 +145,10 @@ defmodule Cascade.Realtime.DomainAdapter do
         type == "activity" and is_map(payload) ->
           case Store.get(run_id) do
             %{vault_id: vault_id} when is_binary(vault_id) ->
-              if payload["kind"] in ["tool", "edit", "lock"] and Cascade.Activity.allowed?(vault_id, identity.id),
-                do: Cascade.Activity.publish(vault_id, payload)
+              if payload["kind"] in ["tool", "edit", "lock"] and Cascade.Activity.allowed?(vault_id, identity.id) do
+                Store.record_edit_counts(run_id, payload)
+                Cascade.Activity.publish(vault_id, payload)
+              end
 
             _ ->
               :ok

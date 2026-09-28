@@ -695,10 +695,10 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.agents.is_empty() {
         vec![ListItem::new(Span::styled("  No agents registered", Style::default().fg(Color::DarkGray)))]
     } else {
-        app.agents
-            .iter()
-            .enumerate()
-            .map(|(idx, ag)| {
+        app.agent_display_order()
+            .into_iter()
+            .map(|idx| {
+                let ag = &app.agents[idx];
                 let is_selected = idx == app.selected_agent_idx;
                 let prefix = if is_selected { "> " } else { "  " };
 
@@ -722,30 +722,23 @@ fn render_agents_panel(frame: &mut Frame, app: &App, area: Rect) {
                 let (ball_str, ball_style) = if is_active {
                     let ball = agent_termimation_ball(ag, app.animation_tick, app.agent_run_seed(ag), idx);
                     (ball, Style::default().fg(badge_color).add_modifier(Modifier::BOLD))
+                } else if ag.instance_of.is_some() {
+                    (String::new(), Style::default())
                 } else {
                     ("● ".to_string(), Style::default().fg(badge_color))
                 };
 
+                let model_info = if !ag.model.is_empty() { &ag.model } else { &ag.agent_id };
                 let top_line = Line::from(vec![
                     Span::raw(prefix),
+                    Span::raw(if ag.instance_of.is_some() { "  ↳ " } else { "" }),
                     Span::styled(ball_str, ball_style),
                     Span::styled(agent_display_label(ag), name_style),
                     Span::raw(" "),
                     Span::styled(format!("@{}", ag.mention), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!(" • {}", model_info), Style::default().fg(Color::DarkGray)),
                 ]);
-
-                let model_info = if !ag.model.is_empty() {
-                    &ag.model
-                } else {
-                    &ag.agent_id
-                };
-
-                let sub_line = Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(model_info, Style::default().fg(Color::DarkGray)),
-                ]);
-
-                ListItem::new(vec![top_line, sub_line])
+                ListItem::new(top_line)
             })
             .collect()
     };
@@ -887,7 +880,7 @@ fn render_users_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items).block(block), area);
 }
 
-/// A numbered instance renders as `base<N>` (e.g. `ashtray<2>`). The backend
+/// A numbered instance renders as `baseN` (e.g. `ashtray2`). The backend
 /// names instances `"<base> <n>"` and mentions them `"<base><n>"`, so derive the
 /// number from the trailing digits of the display name.
 pub(crate) fn numbered_instance_label(agent: &crate::api::AgentItem) -> Option<String> {
@@ -899,10 +892,10 @@ pub(crate) fn numbered_instance_label(agent: &crate::api::AgentItem) -> Option<S
     if base.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(format!("{base}<{number}>"))
+    Some(format!("{base}{number}"))
 }
 
-/// Display label for an agent, using the numbered `<N>` form for instances.
+/// Display label for an agent, preserving plain numbered names.
 pub(crate) fn agent_display_label(agent: &crate::api::AgentItem) -> String {
     numbered_instance_label(agent).unwrap_or_else(|| agent.display_name.clone())
 }
@@ -1144,27 +1137,39 @@ pub fn ensure_chat_cache(app: &App, body_wrap_width: usize) {
                 Color::White
             };
 
-            // Numbered instances show as `base<N>`; everyone else keeps their name.
+            // Use the registered plain name for numbered instances.
             let author_display = maybe_agent
                 .and_then(numbered_instance_label)
                 .unwrap_or_else(|| msg.author.clone());
 
-            if !continues_group {
+            if !continues_group || msg.diff_counts.is_some() {
                 let ts = crate::api::format_timestamp(&msg.created_at);
-                let author_line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled("● ", Style::default().fg(author_color)),
                     Span::styled(author_display.clone(), Style::default().fg(author_color).bold()),
                     Span::raw("  "),
-                    Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)),
-                ]);
-                let text_line = format!("● {}  {}", author_display, ts);
+                ];
+                let mut text_line = format!("● {}  ", author_display);
+                text_line.push_str(&ts);
+                spans.push(Span::styled(ts.clone(), Style::default().fg(Color::DarkGray)));
+                if let Some(counts) = &msg.diff_counts {
+                    text_line.push(' ');
+                    spans.push(Span::raw(" "));
+                    for (symbol, count, color) in [("+", counts.adds, Color::LightGreen),
+                        ("~", counts.mods, Color::LightYellow), ("*", counts.moves, Color::LightCyan), ("-", counts.dels, Color::LightRed)] {
+                        let label = format!("{symbol}{count} ");
+                        text_line.push_str(&label);
+                        spans.push(Span::styled(label, Style::default().fg(color)));
+                    }
+                }
+                let author_line = Line::from(spans);
                 let row = push_line(author_line, &text_line);
                 message_markers.push((row, m_idx));
             }
 
             // A grouped continuation has no author line to mark its start, so its
             // first content row gets a colored `>` in the margin instead.
-            let mut marker_pending = continues_group;
+            let mut marker_pending = continues_group && msg.diff_counts.is_none();
 
             // Represent a failed run (e.g. a not-logged-in 401) with a red badge
             // above its error body, whether or not it started a new author group.
@@ -1378,12 +1383,9 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
             let shown = (bottom - top) as u16;
             let y = area.y + 1 + (top - scroll_y) as u16;
             let x = area.x + 3;
-            // The crop is part of the identity; otherwise scrolling would reuse
-            // the previously uploaded band under the same id.
-            let instance_id = svg.image_id
-                ^ (u32::from(x) << 16)
-                ^ (u32::from(skipped) << 8)
-                ^ u32::from(shown);
+            // Keep the upload stable as different rows cross the viewport edge.
+            // The horizontal pane instance remains distinct from other panes.
+            let instance_id = svg.image_id ^ (u32::from(x) << 16);
             let max_cols = body_wrap_width.min(u16::MAX as usize) as u16;
             // An explicit width wins; otherwise derive columns from the row count
             // and the terminal's real cell aspect so the diagram is not stretched.
@@ -1392,10 +1394,9 @@ fn render_messages_stream(frame: &mut Frame, app: &App, area: Rect) {
                 None => crate::purrvect::columns_for_rows(&svg.svg, rows)
                     .map_or(max_cols, |c| c.min(max_cols)),
             };
-            let body = crate::purrvect::crop_svg_rows(&svg.svg, skipped, shown, rows)
-                .unwrap_or_else(|| svg.svg.clone());
             crate::purrvect::place(crate::purrvect::Placement { image_id: instance_id.max(1),
-                area: Rect::new(x, y, cols, shown), svg: body });
+                area: Rect::new(x, y, cols, shown), svg: svg.svg.clone(),
+                total_rows: rows, skip_rows: skipped });
         }
     }
 
@@ -1914,6 +1915,22 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
     let area = agent_modal_rect(frame.area());
     frame.render_widget(Clear, area);
 
+    if modal.confirm_delete {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" Delete Agent Profile ", Style::default().fg(Color::Red).bold()))
+            .border_style(Style::default().fg(Color::Red));
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(format!("Permanently delete @{}?", modal.agent.mention), Style::default().fg(Color::White).bold())),
+            Line::from("This removes the profile from every vault."),
+            Line::from(""),
+            Line::from(Span::styled("Press y to confirm deletion, or Esc to cancel.", Style::default().fg(Color::Yellow))),
+        ];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+
     let title = if modal.is_new {
         format!(" Add Agent: {} (@{}) ", modal.agent.display_name, modal.agent.mention)
     } else {
@@ -2153,6 +2170,14 @@ fn render_agent_settings_modal(frame: &mut Frame, app: &App) {
         Span::styled(" [ Cancel (Esc) ] ", if cancel_sel { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Gray) }),
     ]));
 
+    if modal.agent.vault_agent_id.is_some() && !modal.is_new {
+        let delete_sel = modal.selected_field == AgentSettingsField::DeleteProfile;
+        lines.push(Line::from(Span::styled(
+            "  [ Delete profile everywhere ] ",
+            if delete_sel { Style::default().fg(Color::Black).bg(Color::Red).bold() } else { Style::default().fg(Color::Red) },
+        )));
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  Controls: ", Style::default().fg(Color::DarkGray)),
@@ -2239,13 +2264,96 @@ mod tests {
     use crate::api::{AgentItem, Vault};
 
     #[test]
-    fn numbered_instances_render_as_base_angle_number() {
+    fn turn_diff_counts_update_and_remain_after_completion() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.messages = serde_json::from_value(serde_json::json!([{
+            "id":"turn", "author":"Astra", "body":"Working", "agentId":"codex",
+            "createdAt":"2026-09-28T12:00:00Z", "status":"running",
+            "diffCounts":{"adds":2,"mods":3,"moves":4,"dels":1}
+        }])).unwrap();
+        let text = chat_log_text(&app, 100);
+        let ts = crate::api::format_timestamp("2026-09-28T12:00:00Z");
+        assert!(text.contains(&format!("Astra  {ts} +2 ~3 *4 -1")));
+        app.messages[0].diff_counts.as_mut().unwrap().adds = 8;
+        app.messages[0].status = Some("completed".into());
+        assert!(chat_log_text(&app, 100).contains(&format!("Astra  {ts} +8 ~3 *4 -1")));
+        let cache = app.chat_cache.read().unwrap();
+        let spans: Vec<_> = cache.lines.iter().flat_map(|line| &line.spans).collect();
+        for (label, color) in [("+8 ", Color::LightGreen), ("~3 ", Color::LightYellow), ("*4 ", Color::LightCyan), ("-1 ", Color::LightRed)] {
+            assert!(spans.iter().any(|span| span.content == label && span.style.fg == Some(color)));
+        }
+    }
+
+    #[test]
+    fn derivative_spinner_appears_after_arrow_only_while_running() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.agents = serde_json::from_value(serde_json::json!([
+            {"id":"parent", "displayName":"Luna", "mention":"luna", "agentId":"codex"},
+            {"id":"child", "displayName":"Luna 2", "mention":"luna2", "agentId":"codex", "instanceOf":"parent"}
+        ])).unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 10)).unwrap();
+        for active in ["parent", "child", ""] {
+            app.active_agent_ids.clear();
+            if !active.is_empty() { app.active_agent_ids.insert(active.into()); }
+            for tick in [0, 10] {
+                app.animation_tick = tick;
+                terminal.draw(|frame| render_agents_panel(frame, &app, frame.area())).unwrap();
+                let row = (0..100).map(|x| terminal.backend().buffer()[(x, 2)].symbol()).collect::<String>();
+                if active == "child" {
+                    let spinner = agent_termimation_ball(&app.agents[1], tick, app.agent_run_seed(&app.agents[1]), 1);
+                    assert!(row.contains(&format!("↳ {spinner}Luna2")), "{row}");
+                } else {
+                    assert!(row.contains("↳ Luna2"), "{row}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_agent_uses_one_line_and_clicks_match_rows() {
+        let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
+        app.agents = serde_json::from_value(serde_json::json!([
+            {"id":"one", "displayName":"Luna", "mention":"luna", "agentId":"codex", "model":"gpt-6-luna"},
+            {"id":"other", "displayName":"Other", "mention":"other", "agentId":"codex", "model":"other-model"},
+            {"id":"two", "displayName":"Luna 2", "mention":"luna2", "agentId":"codex", "model":"gpt-6-luna", "instanceOf":"one"}
+        ])).unwrap();
+        let area = Rect::new(0, 0, 100, 10);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 10)).unwrap();
+        terminal.draw(|frame| render_agents_panel(frame, &app, area)).unwrap();
+        let row = |y| (0..100).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();
+        assert!(row(1).contains("Luna @luna • gpt-6-luna"));
+        assert!(row(2).contains("Luna2 @luna2 • gpt-6-luna"));
+        assert!(!row(2).contains('●'));
+        assert!(row(3).contains("Other @other • other-model"));
+        assert!(row(1).contains('●'));
+        assert_eq!(app.agent_display_order(), vec![0, 2, 1]);
+        app.next_agent();
+        assert_eq!(app.selected_agent_idx, 2);
+        app.next_agent();
+        assert_eq!(app.selected_agent_idx, 1);
+        app.prev_agent();
+        assert_eq!(app.selected_agent_idx, 2);
+        app.selected_agent_idx = 0;
+
+        let screen = Rect::new(0, 0, 140, 42);
+        crate::panes::prepare(&app, screen);
+        let agents = app.panes.borrow().rect(ActivePane::Agents);
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        crate::handle_pane_mouse(&mut app, crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: agents.x + 2, row: agents.y + 2, modifiers: crossterm::event::KeyModifiers::NONE,
+        }, &tx, screen);
+        assert_eq!(app.selected_agent_idx, 2);
+    }
+
+    #[test]
+    fn numbered_instances_render_as_plain_names() {
         let instance: AgentItem = serde_json::from_value(serde_json::json!({
             "id": "inst-2", "displayName": "ashtray 2", "mention": "ashtray2",
             "agentId": "claude-code", "instanceOf": "base-1",
         })).unwrap();
-        assert_eq!(numbered_instance_label(&instance).as_deref(), Some("ashtray<2>"));
-        assert_eq!(agent_display_label(&instance), "ashtray<2>");
+        assert_eq!(numbered_instance_label(&instance).as_deref(), Some("ashtray2"));
+        assert_eq!(agent_display_label(&instance), "ashtray2");
 
         // Originals (no instanceOf) keep their plain name.
         let original: AgentItem = serde_json::from_value(serde_json::json!({
@@ -2711,6 +2819,7 @@ mod tests {
         let mut app = App::new(crate::api::CascadeClient::new("http://localhost".into(), None));
         app.author = "test-user".into();
         let message = crate::api::ChatMessage {
+            diff_counts: None,
             id: "first".into(), author: "chat2".into(), body: "before".into(),
             created_at: "2026-09-08T12:00:00Z".into(), agent_id: None, status: None,
             images: vec![], image_count: 0, has_images: false,
@@ -2759,6 +2868,7 @@ mod tests {
             }
         ])).unwrap();
         let message = crate::api::ChatMessage {
+            diff_counts: None,
             id: "astra-message".into(),
             author: "astra".into(),
             body: "hello".into(),
@@ -2854,6 +2964,7 @@ mod tests {
         app.active_agent_ids.insert(agent.id.clone());
         app.refresh_run_seeds();
         let message = crate::api::ChatMessage {
+            diff_counts: None,
             id: "old".into(), author: "bot".into(), body: "first".into(),
             created_at: "2026-09-13T12:00:00Z".into(), agent_id: Some(agent.id.clone()), status: None,
             images: vec![], image_count: 0, has_images: false,
@@ -2935,6 +3046,7 @@ mod tests {
 
         for i in 0..500 {
             app.messages.push(ChatMessage {
+                diff_counts: None,
                 id: format!("msg-{i}"),
                 author: if i % 2 == 0 { "test-user".into() } else { "claude".into() },
                 body: format!("Message {i}: Here is some conversational content that will span across multiple wrapped lines in the chat stream!"),
@@ -2988,6 +3100,7 @@ mod tests {
         let mut app = App::new(CascadeClient::new("http://127.0.0.1:1".into(), None));
         app.active_channel_id = Some("chan-stream".into());
         app.messages.push(ChatMessage {
+            diff_counts: None,
             id: "msg-1".into(),
             author: "claude".into(),
             body: "hello".into(),

@@ -89,7 +89,17 @@ pub struct ChannelItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffCounts {
+    pub adds: u64,
+    pub mods: u64,
+    pub moves: u64,
+    pub dels: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    #[serde(rename = "diffCounts", default)]
+    pub diff_counts: Option<DiffCounts>,
     pub id: String,
     #[serde(default)]
     pub author: String,
@@ -590,6 +600,16 @@ impl CascadeClient {
         Err("Failed to parse agents response".into())
     }
 
+    pub async fn delete_agent_profile(&self, vault_id: &str, profile_id: &str) -> Result<(), String> {
+        let url = format!("{}/api/vaults/{}/vault-agents/{}/profile", self.base_url, vault_id, profile_id);
+        let response = self.auth_header(self.client.delete(&url)).send().await.map_err(|e| e.to_string())?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        Err(format_status_body_error("DELETE", "/api/vault-agents/:agent_id/profile", status, &response.text().await.unwrap_or_default()))
+    }
+
     pub async fn fetch_active_sessions(&self, vault_id: &str) -> Result<Vec<ActiveSession>, String> {
         let url = format!("{}/api/vaults/{}/active-sessions", self.base_url, vault_id);
         let req = self.auth_header(self.client.get(&url));
@@ -642,6 +662,7 @@ impl CascadeClient {
         }
 
         Ok(ChatMessage {
+            diff_counts: None,
             id: random_id,
             author: "me".to_string(),
             body: body.to_string(),
@@ -727,8 +748,8 @@ impl CascadeClient {
         Err("Failed to parse updated agent response".to_string())
     }
 
-    pub async fn import_codex_page(&self, vault_id: &str, page: &serde_json::Value) -> Result<serde_json::Value, String> {
-        let url = format!("{}/api/vaults/{}/import-codex-session", self.base_url, vault_id);
+    pub async fn import_session_page(&self, vault_id: &str, provider: &str, page: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("{}/api/vaults/{}/import-{}-session", self.base_url, vault_id, provider);
         let response = self.auth_header(self.client.post(url).json(page)).send().await.map_err(|e| e.to_string())?;
         if !response.status().is_success() {
             return Err(response.text().await.unwrap_or_else(|e| e.to_string()));
@@ -972,10 +993,12 @@ mod tests {
     #[test]
     fn image_messages_keep_continuation_grouping_for_local_fallbacks() {
         let image = ChatMessage {
+            diff_counts: None,
             id: "image".into(), author: "diego".into(), body: "".into(),
             created_at: "Just now".into(), agent_id: None, status: None, images: vec!["data:image/png;base64,x".into()], image_count: 0, has_images: true,
         };
         let next = ChatMessage {
+            diff_counts: None,
             id: "next".into(), author: "diego".into(), body: "follow-up".into(),
             created_at: "2026-09-13T23:40:00Z".into(), agent_id: None, status: None, images: vec![], image_count: 0, has_images: false,
         };

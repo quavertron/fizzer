@@ -247,7 +247,7 @@ export interface VaultAgent {
   contextPrompt: string;
   hermesProfile: string;
   hermesSafeMode: boolean;
-  identityScope: 'network' | 'vault' | 'session';
+  identityScope: 'network' | 'vault' | 'session' | 'instance';
   expiresAt?: string | null;
   ownerUserId: number;
   ownerUsername: string;

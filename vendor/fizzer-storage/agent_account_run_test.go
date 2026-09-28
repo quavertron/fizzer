@@ -10,6 +10,26 @@ import (
 	"testing"
 )
 
+func TestAwatchEditCounts(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "awatch")
+	t.Setenv("FIZZER_AWATCH_BIN", binary)
+	event := map[string]any{"kind": "edit", "id": "stream:42", "old_lines": []string{"old"}, "new_lines": []string{"new"}}
+	if got := awatchEditCounts(event); got != nil { t.Fatalf("missing helper reported counts: %v", got) }
+	for _, tc := range []struct { response string; valid bool }{
+		{`{"counts":{"adds":1,"mods":2,"moves":3,"dels":4}}`, true},
+		{`{"error":"unavailable","counts":{"adds":0,"mods":0,"moves":0,"dels":0}}`, false},
+		{`{"counts":{"adds":-1,"mods":0,"moves":0,"dels":0}}`, false},
+		{`{"counts":{"adds":1}}`, false},
+	} {
+		if err := os.WriteFile(binary, []byte("#!/bin/sh\n[ \"$1\" = --analyze ] || exit 1\ncat >/dev/null\nprintf '%s\\n' '"+tc.response+"'\n"), 0700); err != nil { t.Fatal(err) }
+		got := awatchEditCounts(event)
+		if (got != nil) != tc.valid { t.Fatalf("%s: %v", tc.response, got) }
+		if tc.valid && (got["adds"] != 1 || got["mods"] != 2 || got["moves"] != 3 || got["dels"] != 4) { t.Fatal(got) }
+	}
+	event["truncated"] = true
+	if awatchEditCounts(event) != nil { t.Fatal("truncated source must not report exact counts") }
+}
+
 func TestReadOnlyAPIKeepsOwnerTokenPrivateAndScopesToVault(t *testing.T) {
 	var received []*http.Request
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

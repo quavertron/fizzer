@@ -284,6 +284,18 @@ defmodule Cascade.Runs.OrchestrationStateTest do
            ]
   end
 
+  test "startup orphan recovery keeps runs the runner is heartbeating", context do
+    assert {:ok, run} = Store.start(context.vault_id, nil, "started after boot", "codex")
+    :ok = Store.record_delegated(run.id, context.user_id)
+    RunnerLifecycle.heartbeat(run.id, context.user_id)
+    :sys.get_state(RunnerLifecycle)
+
+    send(RunnerLifecycle, :orphan_reclaim)
+    :sys.get_state(RunnerLifecycle)
+
+    assert Store.get(run.id).status != "failed"
+  end
+
   test "startup orphan recovery fails delegated runs that no desktop reclaims", context do
     assert {:ok, run} = Store.start(context.vault_id, nil, "orphan after restart", "codex")
     :ok = Store.record_delegated(run.id, context.user_id)

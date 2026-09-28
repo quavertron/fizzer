@@ -272,7 +272,7 @@ func (c *socketIOClient) handlePacket(text string) {
 		return
 	}
 	// 43/runners,[ackId, ...]  or  42/runners,["event", ...]
-	rest := text[1:]
+	rest := text[2:]
 	ns := "/runners"
 	if strings.HasPrefix(rest, ns+",") {
 		rest = rest[len(ns)+1:]

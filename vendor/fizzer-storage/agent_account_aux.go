@@ -2,18 +2,52 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Use awatch's classifier before activity previews truncate the source lines.
+// Missing/older helpers leave counts absent rather than reporting false zeros.
+func awatchEditCounts(event map[string]any) map[string]int {
+	if event["kind"] != "edit" || event["truncated"] == true { return nil }
+	binary := os.Getenv("FIZZER_AWATCH_BIN")
+	if binary == "" {
+		binary = filepath.Join(filepath.Dir(alockBinary()), "awatch")
+	}
+	request := make(map[string]any, len(event))
+	for key, value := range event { request[key] = value }
+	request["id"] = 0
+	data, err := json.Marshal(request)
+	if err != nil { return nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--analyze")
+	cmd.Stdin = bytes.NewReader(append(data, '\n'))
+	out, err := cmd.Output()
+	if err != nil { return nil }
+	var result struct {
+		Counts map[string]int `json:"counts"`
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(out, &result) != nil || result.Error != "" { return nil }
+	for _, key := range []string{"adds", "mods", "moves", "dels"} {
+		value, ok := result.Counts[key]
+		if !ok || value < 0 { return nil }
+	}
+	return result.Counts
+}
 
 // startAwatchViewer connects to the alock command socket and emits edit/lock events.
 // Returns a close function. Failure is non-fatal.

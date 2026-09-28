@@ -140,7 +140,8 @@ func (d *runnerDaemon) run() int {
 			errorLogf("Malformed run:delegate: %v", err)
 			return
 		}
-		d.handleDelegate(payload)
+		// Off the socket read loop: a long run would otherwise stop pong replies.
+		go d.handleDelegate(payload)
 	})
 	client.On("run:cancel", func(args []json.RawMessage, ack func(...any)) {
 		if len(args) == 0 {

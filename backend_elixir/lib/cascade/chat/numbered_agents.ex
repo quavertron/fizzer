@@ -1,5 +1,5 @@
 defmodule Cascade.Chat.NumberedAgents do
-  @moduledoc "Persistent numbered profiles. Only original profiles reserve numeric prefixes."
+  @moduledoc "Durable child instances of agent profiles, with independent provider sessions."
   alias Cascade.Accounts.SQL
   alias Cascade.Chat.{Agents, Channel, Schema}
 
@@ -14,10 +14,11 @@ defmodule Cascade.Chat.NumberedAgents do
       )
       |> Map.new(fn [id, base] -> {id, base} end)
 
-    Enum.map(
-      agents,
-      &Map.put(&1, :instanceOf, Map.get(parents, Map.get(&1, :vaultAgentId, &1.id)))
-    )
+    Enum.map(agents, fn agent ->
+      parent = Map.get(parents, Map.get(agent, :vaultAgentId, agent.id))
+      agent = Map.put(agent, :instanceOf, parent)
+      if parent, do: Map.put(agent, :identityScope, "instance"), else: agent
+    end)
   end
 
   # Called inside the profile-write transaction. Rename generated identities,

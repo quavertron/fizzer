@@ -70,6 +70,12 @@ defmodule CascadeWeb.ChatRouter do
     end)
   end
 
+  post "/api/vaults/:vault_id/import-claude-session" do
+    authenticated(conn, :user, :vault, fn conn, user ->
+      respond(conn, Cascade.Chat.SessionImport.import(user, vault_id, conn.body_params, "claude"), :imported)
+    end)
+  end
+
   put "/api/app-context" do
     authenticated(conn, :any, :account, fn conn, user ->
       case Cascade.Runs.AppContext.put(
@@ -93,7 +99,7 @@ defmodule CascadeWeb.ChatRouter do
 
   get "/api/vaults/:vault_id/vault-agents" do
     authenticated(conn, :any, nil, fn conn, user ->
-      respond(conn, Agents.list_vault(user.id, vault_id), :agents)
+      respond(conn, Agents.list_profiles(user.id, vault_id), :agents)
     end)
   end
 

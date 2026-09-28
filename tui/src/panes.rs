@@ -61,14 +61,14 @@ pub struct BufferPicker { pub query: String, pub selected: usize, pub other: boo
 enum RegisterAction { Prefix, Save, Load }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppCommand { Vaults, ImportCodex, Refresh, TermCharMode }
+pub enum AppCommand { Vaults, ImportCodex, ImportClaude, Refresh, TermCharMode }
 
 const COMMANDS: &[&str] = &[
     "switch-to-buffer", "list-buffers", "switch-to-buffer-other-window",
     "other-window", "window-swap-states", "split-window-below", "split-window-right",
     "delete-window", "delete-other-windows", "balance-windows",
     "enlarge-window", "shrink-window", "enlarge-window-horizontally", "shrink-window-horizontally",
-    "fizzer-vaults", "fizzer-import-codex-session", "fizzer-awatch", "term-char-mode", "save-window-configuration", "load-window-configuration", "revert-buffer", "save-buffers-kill-terminal",
+    "fizzer-vaults", "fizzer-import-codex-session", "fizzer-import-claude-session", "fizzer-awatch", "term-char-mode", "save-window-configuration", "load-window-configuration", "revert-buffer", "save-buffers-kill-terminal",
 ];
 
 fn command_key(name: &str) -> &'static str {
@@ -106,6 +106,8 @@ pub struct Panes {
     transient_composer: Option<PaneId>,
     register_action: Option<RegisterAction>,
     other_prefix: bool,
+    border_drag: Option<(Vec<usize>, Rect, Direction, crossterm::event::MouseEvent, bool)>,
+    composer_resized: bool,
 }
 
 fn split(direction: Direction, ratio: f32, first: Node, second: Node) -> Node {
@@ -125,7 +127,7 @@ impl Default for Panes {
             (PaneId::new(2), ActivePane::ChatInput), (PaneId::new(3), ActivePane::Agents), (PaneId::new(4), ActivePane::Users)],
             automatic: true, area: Rect::default(), prefix: false, rects: Vec::new(),
             window_rects: Vec::new(), channels: HashMap::new(), picker: None, pending_command: None,
-            transient_composer: None, register_action: None, other_prefix: false }
+            transient_composer: None, register_action: None, other_prefix: false, border_drag: None, composer_resized: false }
     }
 }
 
@@ -170,6 +172,7 @@ impl Panes {
         self.automatic = saved.automatic;
         self.focus_id(PaneId::new(saved.focused));
         self.rects.clear(); self.window_rects.clear(); self.transient_composer = None;
+        self.border_drag = None; self.composer_resized = false;
         true
     }
 
@@ -248,6 +251,7 @@ impl Panes {
         }
     }
     pub fn compute(&mut self, area: Rect, input_height: u16) {
+        if self.area != area { self.border_drag = None; }
         self.area = area;
         if self.automatic {
             let _ = self.engine.set_split_ratio(&[], 26.0 / f32::from(area.width.max(1)));
@@ -273,7 +277,7 @@ impl Panes {
         // A transient composer is an auto-opened message popup even though
         // creating its channel-specific split disables persistent auto-layout.
         // Keep that popup content-sized until it is submitted or dismissed.
-        if (self.automatic || self.transient_composer.is_some()) && self.rects.len() > 1 {
+        if (self.automatic || (self.transient_composer.is_some() && !self.composer_resized)) && self.rects.len() > 1 {
             let messages = self.rect(ActivePane::ChatMessages);
             let input = self.rect(ActivePane::ChatInput);
             let height = input_height.min(input.bottom().saturating_sub(messages.y + 5));
@@ -333,6 +337,73 @@ impl Panes {
         }
         self.engine.compute_layout(self.area);
         self.engine.apply_action(action);
+    }
+
+    pub fn border_click(&self, mouse: crossterm::event::MouseEvent) -> Option<crossterm::event::MouseEvent> {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let (_, _, _, down, dragged) = self.border_drag.as_ref()?;
+        (mouse.kind == MouseEventKind::Up(MouseButton::Left) && !dragged
+            && mouse.row == down.row && mouse.column == down.column).then_some(*down)
+    }
+
+    /// Capture shared borders until a click or resize is resolved.
+    pub fn mouse_resize(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                fn hit(node: &Node, rects: &[(PaneId, Rect)], x: u16, y: u16,
+                    path: &mut Vec<usize>, target: &mut Option<(Vec<usize>, Rect, Direction)>) -> Option<Rect> {
+                    match node {
+                        Node::Pane(id) => rects.iter().find(|(key, _)| key == id).map(|(_, rect)| *rect),
+                        Node::Split { direction, first, second, .. } => {
+                            path.push(0);
+                            let a = hit(first, rects, x, y, path, target);
+                            path.pop();
+                            path.push(1);
+                            let b = hit(second, rects, x, y, path, target);
+                            path.pop();
+                            match (a, b) {
+                                (Some(a), Some(b)) => {
+                                    let area = a.union(b);
+                                    let on_border = match direction {
+                                        Direction::Vertical => y == b.y && a.bottom() == b.y
+                                            && x > area.x && x < area.right().saturating_sub(1),
+                                        Direction::Horizontal => x == b.x && a.right() == b.x
+                                            && y > area.y && y < area.bottom().saturating_sub(1),
+                                    };
+                                    if on_border && target.is_none() {
+                                        *target = Some((path.clone(), area, *direction));
+                                    }
+                                    Some(area)
+                                }
+                                (a, b) => a.or(b),
+                            }
+                        }
+                    }
+                }
+                let mut target = None;
+                hit(self.engine.root(), &self.window_rects, mouse.column, mouse.row, &mut vec![], &mut target);
+                self.border_drag = target.map(|(path, area, direction)| (path, area, direction, mouse, false));
+                self.border_drag.is_some()
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some((path, area, direction, down, dragged)) = &mut self.border_drag else { return false; };
+                let (position, start, origin, extent) = match direction {
+                    Direction::Vertical => (mouse.row, down.row, area.y, area.height),
+                    Direction::Horizontal => (mouse.column, down.column, area.x, area.width),
+                };
+                if position == start && !*dragged { return true; }
+                *dragged = true;
+                let ratio = (f32::from(position) - f32::from(origin)) / f32::from(extent.max(1));
+                if self.engine.set_split_ratio(path, ratio.clamp(0.1, 0.9)).is_ok() {
+                    self.automatic = false;
+                    self.composer_resized = true;
+                }
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.border_drag.take().is_some(),
+            _ => false,
+        }
     }
 
     pub fn resize(&mut self, direction: Direction, cells: f32) -> Result<(), String> {
@@ -520,7 +591,7 @@ pub fn focus_composer(app: &mut App) {
     if let Some(id) = panes.views.iter().find(|(id, view)| *view == ActivePane::ChatInput
         && panes.channels.get(id).map(String::as_str).or(channel.as_deref()) == channel.as_deref()).map(|(id, _)| *id) {
         panes.focus_id(id);
-        if !had_matching { panes.transient_composer = Some(id); }
+        if !had_matching { panes.transient_composer = Some(id); panes.composer_resized = false; }
     }
     drop(panes);
     activate_focused(app);
@@ -669,6 +740,7 @@ pub fn execute_command(app: &mut App, name: &str) {
         }
         "fizzer-vaults" => { app.panes.borrow_mut().pending_command = Some(AppCommand::Vaults); None }
         "fizzer-import-codex-session" => { app.panes.borrow_mut().pending_command = Some(AppCommand::ImportCodex); None }
+        "fizzer-import-claude-session" => { app.panes.borrow_mut().pending_command = Some(AppCommand::ImportClaude); None }
         "term-char-mode" => { app.panes.borrow_mut().pending_command = Some(AppCommand::TermCharMode); None }
         "revert-buffer" => { app.panes.borrow_mut().pending_command = Some(AppCommand::Refresh); None }
         "save-buffers-kill-terminal" => { app.should_quit = true; None }
@@ -880,6 +952,7 @@ mod tests {
         for (name, expected) in [
             ("fizzer-vaults", AppCommand::Vaults),
             ("fizzer-import-codex-session", AppCommand::ImportCodex),
+            ("fizzer-import-claude-session", AppCommand::ImportClaude),
             ("revert-buffer", AppCommand::Refresh),
         ] {
             named_command(&mut app, name);
@@ -1094,6 +1167,108 @@ mod tests {
             let text = crate::ui::chat_log_text(&app, rect.width.saturating_sub(4) as usize);
             assert_eq!(app.selected_chat_text(&text).as_deref(), Some("Existing"));
         }
+    }
+
+    #[test]
+    fn horizontal_borders_drag_without_changing_focus_or_selecting_text() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = app();
+        let screen = Rect::new(0, 0, 140, 42);
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        for view in [ActivePane::ChatInput, ActivePane::Users] {
+            prepare(&app, screen);
+            let border = app.panes.borrow().rect(view);
+            let focus = app.panes.borrow().focused_id();
+            let mouse = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+                column: border.x + 2, row: border.y, modifiers: KeyModifiers::NONE };
+            crate::handle_pane_mouse(&mut app, mouse, &tx, screen);
+            crate::handle_pane_mouse(&mut app, MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left), row: border.y - 5, ..mouse
+            }, &tx, screen);
+            prepare(&app, screen);
+            assert_eq!(app.panes.borrow().rect(view).y, border.y - 5);
+            assert_eq!(app.panes.borrow().focused_id(), focus);
+            assert!(app.chat_selection_anchor.is_none());
+            crate::handle_pane_mouse(&mut app, MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left), row: 0, column: 0, ..mouse
+            }, &tx, screen);
+            assert!(app.panes.borrow().border_drag.is_none());
+        }
+        let mut panes = app.panes.borrow_mut();
+        let input = panes.rect(ActivePane::ChatInput);
+        let down = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+            column: input.x + 2, row: input.y, modifiers: KeyModifiers::NONE };
+        assert!(panes.mouse_resize(down));
+        assert!(panes.mouse_resize(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left), row: u16::MAX, column: 0, ..down
+        }));
+        panes.compute(main_area(screen), 3);
+        assert!(panes.rect(ActivePane::ChatInput).height >= 3);
+        panes.compute(main_area(Rect::new(0, 0, 160, 50)), 3);
+        assert!(panes.border_drag.is_none());
+        let input = panes.rect(ActivePane::ChatInput);
+        assert!(!panes.mouse_resize(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+            column: input.x + 2, row: input.y + 1, modifiers: KeyModifiers::NONE }));
+    }
+
+    #[test]
+    fn vertical_borders_click_to_focus_and_drag_without_focus_changes() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = app();
+        let screen = Rect::new(0, 0, 140, 42);
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        for view in [ActivePane::ChatMessages, ActivePane::Agents] {
+            prepare(&app, screen);
+            let border = app.panes.borrow().rect(view);
+            let focus = app.panes.borrow().focused_id();
+            let mouse = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+                column: border.x, row: border.y + 2, modifiers: KeyModifiers::NONE };
+            crate::handle_pane_mouse(&mut app, mouse, &tx, screen);
+            assert_eq!(app.panes.borrow().focused_id(), focus);
+            crate::handle_pane_mouse(&mut app, MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left), column: border.x + 5, ..mouse
+            }, &tx, screen);
+            prepare(&app, screen);
+            assert_eq!(app.panes.borrow().rect(view).x, border.x + 5);
+            crate::handle_pane_mouse(&mut app, MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left), column: border.x + 5, ..mouse
+            }, &tx, screen);
+            assert_eq!(app.panes.borrow().focused_id(), focus);
+            assert!(app.chat_selection_anchor.is_none());
+            let click = MouseEvent { column: border.x + 5, ..mouse };
+            crate::handle_pane_mouse(&mut app, click, &tx, screen);
+            assert_eq!(app.panes.borrow().focused_id(), focus);
+            crate::handle_pane_mouse(&mut app, MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left), ..click
+            }, &tx, screen);
+            assert_eq!(app.active_pane, view);
+            assert!(app.panes.borrow().border_drag.is_none());
+        }
+    }
+
+    #[test]
+    fn border_click_selects_pane_only_on_release() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = app();
+        let screen = Rect::new(0, 0, 140, 42);
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        prepare(&app, screen);
+        let border = app.panes.borrow().rect(ActivePane::Users);
+        let previous = app.panes.borrow().focused_id();
+        let mouse = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left),
+            column: border.x + 2, row: border.y, modifiers: KeyModifiers::NONE };
+        crate::handle_pane_mouse(&mut app, mouse, &tx, screen);
+        assert_eq!(app.panes.borrow().focused_id(), previous);
+        crate::handle_pane_mouse(&mut app, MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left), ..mouse
+        }, &tx, screen);
+        crate::handle_pane_mouse(&mut app, MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left), ..mouse
+        }, &tx, screen);
+        assert_eq!(app.active_pane, ActivePane::Users);
+        assert_eq!(app.panes.borrow().focused_id(), app.panes.borrow().id(ActivePane::Users).unwrap());
+        assert_eq!(app.panes.borrow().rect(ActivePane::Users), border);
+        assert!(app.panes.borrow().border_drag.is_none());
     }
 
     #[test]

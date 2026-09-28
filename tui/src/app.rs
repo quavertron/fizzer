@@ -66,6 +66,7 @@ pub enum AgentSettingsField {
     Yolo,
     Save,
     Cancel,
+    DeleteProfile,
 }
 
 impl AgentSettingsField {
@@ -177,6 +178,7 @@ pub struct AgentSettingsState {
     pub color_s: u8,
     pub color_v: u8,
     pub error_message: Option<String>,
+    pub confirm_delete: bool,
 }
 
 /// Normalize a typed @handle: drop a leading '@', collapse whitespace to
@@ -328,6 +330,7 @@ impl AgentSettingsState {
             color_s: s,
             color_v: v,
             error_message: None,
+            confirm_delete: false,
         }
     }
 
@@ -474,6 +477,9 @@ impl AgentSettingsState {
         list.push(AgentSettingsField::Yolo);
         list.push(AgentSettingsField::Save);
         list.push(AgentSettingsField::Cancel);
+        if !self.is_new && self.agent.vault_agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+            list.push(AgentSettingsField::DeleteProfile);
+        }
         list
     }
 
@@ -569,6 +575,10 @@ impl AgentSettingsState {
             }
             AgentSettingsField::Save => Some(true),
             AgentSettingsField::Cancel => Some(false),
+            AgentSettingsField::DeleteProfile => {
+                self.confirm_delete = true;
+                None
+            }
         }
     }
 
@@ -694,6 +704,14 @@ impl AgentSettingsState {
                 self.selected_field = AgentSettingsField::Cancel;
                 return Some(false);
             }
+        }
+
+        if row == cur_row + 2
+            && !self.is_new
+            && self.agent.vault_agent_id.as_deref().is_some_and(|id| !id.is_empty())
+        {
+            self.selected_field = AgentSettingsField::DeleteProfile;
+            return self.toggle_or_action();
         }
 
         None
@@ -1931,19 +1949,39 @@ impl App {
         "No channel selected"
     }
 
+    /// Display parents with their children, retaining the underlying registration indices.
+    pub fn agent_display_order(&self) -> Vec<usize> {
+        fn append(app: &App, index: usize, order: &mut Vec<usize>) {
+            if order.contains(&index) { return; }
+            order.push(index);
+            let parent = &app.agents[index];
+            for (child, agent) in app.agents.iter().enumerate() {
+                if agent.instance_of.as_deref().is_some_and(|id|
+                    parent.vault_agent_id.as_deref() == Some(id) || parent.id == id) {
+                    append(app, child, order);
+                }
+            }
+        }
+        let mut order = Vec::with_capacity(self.agents.len());
+        for (index, agent) in self.agents.iter().enumerate() {
+            if agent.instance_of.is_none() { append(self, index, &mut order); }
+        }
+        // Keep orphaned or malformed instances reachable too.
+        for index in 0..self.agents.len() { append(self, index, &mut order); }
+        order
+    }
+
     pub fn next_agent(&mut self) {
-        if !self.agents.is_empty() {
-            self.selected_agent_idx = (self.selected_agent_idx + 1) % self.agents.len();
+        let order = self.agent_display_order();
+        if let Some(position) = order.iter().position(|&i| i == self.selected_agent_idx) {
+            self.selected_agent_idx = order[(position + 1) % order.len()];
         }
     }
 
     pub fn prev_agent(&mut self) {
-        if !self.agents.is_empty() {
-            if self.selected_agent_idx == 0 {
-                self.selected_agent_idx = self.agents.len() - 1;
-            } else {
-                self.selected_agent_idx -= 1;
-            }
+        let order = self.agent_display_order();
+        if let Some(position) = order.iter().position(|&i| i == self.selected_agent_idx) {
+            self.selected_agent_idx = order[(position + order.len() - 1) % order.len()];
         }
     }
 
@@ -2196,6 +2234,7 @@ mod tests {
         app.channels = vec![crate::api::ChannelItem { id: "c1".into(), title: "general".into() }];
         app.active_channel_id = Some("c1".into());
         app.messages = vec![crate::api::ChatMessage {
+            diff_counts: None,
             id: "m1".into(), author: "me".into(), body: "hello".into(),
             created_at: "".into(), agent_id: None, status: None, images: vec![], image_count: 0, has_images: false,
         }];

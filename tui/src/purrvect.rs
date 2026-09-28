@@ -1,5 +1,5 @@
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use ratatui::layout::Rect;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -14,6 +14,14 @@ pub struct Placement {
     pub image_id: u32,
     pub area: Rect,
     pub svg: String,
+    /// Full placement height and the first visible row within it.
+    pub total_rows: u16,
+    pub skip_rows: u16,
+}
+impl Placement {
+    fn geometry(&self) -> (Rect, u16, u16) {
+        (self.area, self.total_rows, self.skip_rows)
+    }
 }
 static FRAME: OnceLock<Mutex<Vec<Placement>>> = OnceLock::new();
 fn frame() -> &'static Mutex<Vec<Placement>> {
@@ -77,7 +85,9 @@ pub fn svg_aspect(svg: &str) -> Option<f32> {
         let start = head.find(&key)? + key.len();
         let rest = &head[start..];
         let end = rest.find('"')?;
-        let raw = rest[..end].trim().trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%');
+        let raw = rest[..end]
+            .trim()
+            .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%');
         raw.parse::<f32>().ok()
     };
     if let Some(view_box) = {
@@ -112,43 +122,6 @@ pub fn columns_for_rows(svg: &str, rows: u16) -> Option<u16> {
     Some(cols.round().clamp(1.0, 4096.0) as u16)
 }
 
-/// Crop an SVG to a horizontal band of its rows.
-///
-/// A diagram scrolled half off-screen would otherwise be dropped entirely, so
-/// the viewBox is narrowed to the slice that is actually visible and placed in
-/// that many rows. Returns None when the whole thing is visible (no crop
-/// needed) or the viewBox cannot be parsed.
-pub fn crop_svg_rows(svg: &str, skip_rows: u16, visible_rows: u16, total_rows: u16) -> Option<String> {
-    if total_rows == 0 || visible_rows == 0 || (skip_rows == 0 && visible_rows >= total_rows) {
-        return None;
-    }
-    let head_end = svg.find('>')?;
-    let head = &svg[..head_end];
-    let key = "viewBox=\"";
-    let open = head.find(key)? + key.len();
-    let close = open + head[open..].find('"')?;
-    let nums: Vec<f32> = head[open..close]
-        .split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|t| !t.is_empty())
-        .filter_map(|t| t.parse::<f32>().ok())
-        .collect();
-    if nums.len() != 4 || nums[3] <= 0.0 {
-        return None;
-    }
-    let (x, y, w, h) = (nums[0], nums[1], nums[2], nums[3]);
-    let per_row = h / f32::from(total_rows);
-    let top = y + per_row * f32::from(skip_rows);
-    let height = per_row * f32::from(visible_rows.min(total_rows));
-    if !(height > 0.0) {
-        return None;
-    }
-    let mut out = String::with_capacity(svg.len() + 16);
-    out.push_str(&svg[..open]);
-    out.push_str(&format!("{x} {top} {w} {height}"));
-    out.push_str(&svg[close..]);
-    Some(out)
-}
-
 pub fn image_id(message_id: &str, index: usize, svg: &str) -> u32 {
     let mut hash = Sha256::new();
     hash.update(message_id.as_bytes());
@@ -160,7 +133,7 @@ pub fn image_id(message_id: &str, index: usize, svg: &str) -> u32 {
 
 #[derive(Default)]
 pub struct Display {
-    shown: HashMap<u32, Rect>,
+    shown: HashMap<u32, (Rect, u16, u16)>,
     uploaded: HashSet<u32>,
     enabled: bool,
 }
@@ -204,16 +177,18 @@ impl Display {
         }
 
         for item in current {
-            if item.area.width == 0 || item.area.height == 0 {
+            if item.area.width == 0
+                || item.area.height == 0
+                || item.total_rows == 0
+                || item.skip_rows >= item.total_rows
+                || item.area.height > item.total_rows - item.skip_rows
+            {
                 continue;
             }
-            if self.shown.get(&item.image_id) == Some(&item.area) {
+            if self.shown.get(&item.image_id) == Some(&item.geometry()) {
                 continue;
             }
             if self.uploaded.contains(&item.image_id) {
-                if self.shown.contains_key(&item.image_id) {
-                    delete_placement(out, item.image_id)?;
-                }
                 place_existing(out, &item)?;
             } else {
                 if self.shown.contains_key(&item.image_id) {
@@ -222,7 +197,7 @@ impl Display {
                 transmit(out, &item)?;
                 self.uploaded.insert(item.image_id);
             }
-            self.shown.insert(item.image_id, item.area);
+            self.shown.insert(item.image_id, item.geometry());
         }
         out.flush()
     }
@@ -243,11 +218,13 @@ fn delete_placement(out: &mut impl Write, id: u32) -> io::Result<()> {
 fn place_existing(out: &mut impl Write, item: &Placement) -> io::Result<()> {
     write!(
         out,
-        "\x1b7\x1b[{};{}H\x1b_Ga=p,i={},c={},r={},q=2\x1b\\\x1b8",
+        "\x1b7\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},J={},K={},C=1,q=2\x1b\\\x1b8",
         item.area.y + 1,
         item.area.x + 1,
         item.image_id,
         item.area.width,
+        item.total_rows,
+        item.skip_rows,
         item.area.height,
     )
 }
@@ -255,7 +232,8 @@ fn transmit(out: &mut impl Write, item: &Placement) -> io::Result<()> {
     let encoded = encode(item)?;
     write!(out, "\x1b7\x1b[{};{}H", item.area.y + 1, item.area.x + 1)?;
     out.write_all(&encoded)?;
-    out.write_all(b"\x1b8")
+    out.write_all(b"\x1b8")?;
+    place_existing(out, item)
 }
 
 fn encode(item: &Placement) -> io::Result<Vec<u8>> {
@@ -283,10 +261,7 @@ fn encode_native(item: &Placement) -> io::Result<Vec<u8>> {
         let slice = &bytes[offset..offset + n];
         let more = if offset + n < bytes.len() { 1 } else { 0 };
         if offset == 0 {
-            let header = format!(
-                "\x1b_Ga=T,f=1001,t=d,c={},r={},i={},q=2,m={};",
-                item.area.width, item.area.height, item.image_id, more
-            );
+            let header = format!("\x1b_Ga=t,f=1001,t=d,i={},q=2,m={};", item.image_id, more);
             output.extend_from_slice(header.as_bytes());
         } else {
             let header = format!("\x1b_Gm={};", more);
@@ -308,7 +283,7 @@ fn encode_external(binary: PathBuf, item: &Placement) -> io::Result<Vec<u8>> {
             "--width",
             &item.area.width.to_string(),
             "--height",
-            &item.area.height.to_string(),
+            &item.total_rows.to_string(),
             "--id",
             &item.image_id.to_string(),
             "-",
@@ -318,7 +293,7 @@ fn encode_external(binary: PathBuf, item: &Placement) -> io::Result<Vec<u8>> {
         .stderr(Stdio::piped())
         .spawn()?;
     let written = child.stdin.take().unwrap().write_all(item.svg.as_bytes());
-    let result = child.wait_with_output()?;
+    let mut result = child.wait_with_output()?;
     if !result.status.success() {
         return Err(io::Error::other(format!(
             "purrvect: {}",
@@ -326,6 +301,15 @@ fn encode_external(binary: PathBuf, item: &Placement) -> io::Result<Vec<u8>> {
         )));
     }
     written?;
+    // The legacy encoder emits transmit-and-display; defer display until the
+    // clipped placement command so an uncropped image never flashes on screen.
+    let marker = b"\x1b_Ga=T,";
+    let offset = result
+        .stdout
+        .windows(marker.len())
+        .position(|v| v == marker)
+        .ok_or_else(|| io::Error::other("purrvect encoder did not emit a transmit command"))?;
+    result.stdout[offset + 5] = b't';
     Ok(result.stdout)
 }
 
@@ -485,7 +469,11 @@ pub fn split_inline_svgs(input: &str) -> Vec<InlinePart<'_>> {
                         source
                             .and_then(|source| {
                                 if lang.eq_ignore_ascii_case("svg") {
-                                    Some(InlinePart::Svg { svg: source, width, height })
+                                    Some(InlinePart::Svg {
+                                        svg: source,
+                                        width,
+                                        height,
+                                    })
                                 } else if lang.eq_ignore_ascii_case("mermaid") {
                                     render_mermaid(&source).map(|svg| InlinePart::Svg {
                                         svg: Cow::Owned(svg),
@@ -577,16 +565,20 @@ mod tests {
         let item = Placement {
             image_id: 123,
             area: Rect::new(4, 5, 20, 8),
+            total_rows: 8,
+            skip_rows: 0,
             svg: svg.clone(),
         };
         let mut output = Vec::new();
         transmit(&mut output, &item).unwrap();
         let text = String::from_utf8(output).unwrap();
-        assert!(text.starts_with("\x1b7\x1b[6;5H\x1b_Ga=T,f=1001,t=d,c=20,r=8,i=123,q=2,m=1;"));
-        assert!(text.ends_with("\r\x1b8"));
+        assert!(text.starts_with("\x1b7\x1b[6;5H\x1b_Ga=t,f=1001,t=d,i=123,q=2,m=1;"));
+        assert!(text.ends_with("J=0,K=8,C=1,q=2\x1b\\\x1b8"));
         let mut decoded = Vec::new();
         for chunk in text.split("\x1b_G").skip(1) {
-            let (_, payload) = chunk.split_once(';').unwrap();
+            let Some((_, payload)) = chunk.split_once(';') else {
+                continue;
+            };
             let (payload, _) = payload.split_once("\x1b\\").unwrap();
             decoded.extend(
                 base64::engine::general_purpose::STANDARD
@@ -665,9 +657,11 @@ mod tests {
     #[test]
     fn missing_fence_file_renders_nothing() {
         let body = "```svg file=/nonexistent/fizzer/nope.svg\n```";
-        assert!(split_inline_svgs(body)
-            .iter()
-            .all(|part| matches!(part, InlinePart::Text(_))));
+        assert!(
+            split_inline_svgs(body)
+                .iter()
+                .all(|part| matches!(part, InlinePart::Text(_)))
+        );
     }
 
     #[test]
@@ -700,6 +694,8 @@ mod tests {
         let item1 = Placement {
             image_id: 42,
             area: Rect::new(5, 10, 30, 10),
+            total_rows: 10,
+            skip_rows: 0,
             svg: "<svg><rect/></svg>".to_string(),
         };
 
@@ -709,9 +705,9 @@ mod tests {
         let mut out1 = Vec::new();
         display.sync(&mut out1).unwrap();
         let text1 = String::from_utf8(out1).unwrap();
-        assert!(text1.contains("\x1b_Ga=T,f=1001,t=d,c=30,r=10,i=42,q=2,m=0;"));
+        assert!(text1.contains("\x1b_Ga=t,f=1001,t=d,i=42,q=2,m=0;"));
         assert!(display.uploaded.contains(&42));
-        assert_eq!(display.shown.get(&42), Some(&item1.area));
+        assert_eq!(display.shown.get(&42), Some(&item1.geometry()));
 
         // 2. Idle sync: no movement, no output
         let mut out_idle = Vec::new();
@@ -723,16 +719,44 @@ mod tests {
         let item2 = Placement {
             image_id: 42,
             area: Rect::new(5, 9, 30, 10),
+            total_rows: 10,
+            skip_rows: 0,
             svg: "<svg><rect/></svg>".to_string(),
         };
         place(item2.clone());
         let mut out2 = Vec::new();
         display.sync(&mut out2).unwrap();
         let text2 = String::from_utf8(out2).unwrap();
-        assert!(text2.contains("\x1b_Ga=d,d=i,i=42,q=2\x1b\\"));
-        assert!(text2.contains("\x1b7\x1b[10;6H\x1b_Ga=p,i=42,c=30,r=10,q=2\x1b\\\x1b8"));
-        assert!(!text2.contains("a=T"));
+        assert!(!text2.contains("a=d"));
+        assert!(
+            text2.contains(
+                "\x1b7\x1b[10;6H\x1b_Ga=p,i=42,p=1,c=30,r=10,J=0,K=10,C=1,q=2\x1b\\\x1b8"
+            )
+        );
+        assert!(!text2.contains("f=1001"));
         assert!(display.uploaded.contains(&42));
+
+        // Crop changes at an unchanged screen position are geometry updates,
+        // even after many scroll steps. They must never retransmit SVG content.
+        for step in 0..100 {
+            let skip = step % 9 + 1;
+            begin_frame();
+            place(Placement {
+                image_id: 42,
+                area: Rect::new(5, 9, 30, 10 - skip),
+                total_rows: 10,
+                skip_rows: skip,
+                svg: item1.svg.clone(),
+            });
+            let mut out = Vec::new();
+            display.sync(&mut out).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.contains(&format!("r=10,J={skip},K={},C=1", 10 - skip)));
+            assert!(!text.contains("f=1001"));
+            assert!(!text.contains("a=d"));
+            assert!(text.len() < 160);
+            assert_eq!(display.uploaded.len(), 1);
+        }
 
         // 4. Scrolled off screen: delete placement only
         begin_frame();
@@ -748,14 +772,16 @@ mod tests {
         let item3 = Placement {
             image_id: 42,
             area: Rect::new(5, 12, 30, 10),
+            total_rows: 10,
+            skip_rows: 0,
             svg: "<svg><rect/></svg>".to_string(),
         };
         place(item3);
         let mut out4 = Vec::new();
         display.sync(&mut out4).unwrap();
         let text4 = String::from_utf8(out4).unwrap();
-        assert!(text4.contains("\x1b_Ga=p,i=42,c=30,r=10,q=2\x1b\\"));
-        assert!(!text4.contains("a=T"));
+        assert!(text4.contains("\x1b_Ga=p,i=42,p=1,c=30,r=10,J=0,K=10,C=1,q=2\x1b\\"));
+        assert!(!text4.contains("f=1001"));
 
         // 6. Clear display on exit: purges uploaded image with d=I
         let mut out5 = Vec::new();
