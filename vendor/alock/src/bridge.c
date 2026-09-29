@@ -77,7 +77,7 @@ static int send_frame(int fd, unsigned op, const char *arg, const void *body, si
     dtob_kvset_put(message, "argument", dtob_raw((const uint8_t *)arg, len));
     dtob_kvset_put(message, "content", dtob_raw(body ? body : (const uint8_t *)"", size));
     size_t encoded_size = 0;
-    uint8_t *encoded = dtob_encode(message, &encoded_size);
+    uint8_t *encoded = dtob_encode_wire(message, &encoded_size);
     dtob_free(message);
     if (!encoded || !encoded_size || encoded_size > FRAME_LIMIT) { free(encoded); return -1; }
     uint8_t header[4] = {(uint8_t)encoded_size, (uint8_t)(encoded_size >> 8),
@@ -298,7 +298,7 @@ static int daemon_call(const char *operation, Ticket *ticket, char *error, size_
         dtob_kvset_put(request, "line_end", dtob_uint(2147483647));
     } else dtob_kvset_put(request, "stage", dtob_raw((uint8_t *)ticket->stage, strlen(ticket->stage)));
     size_t len;
-    uint8_t *bytes = dtob_encode(request, &len);
+    uint8_t *bytes = dtob_encode_wire(request, &len);
     dtob_free(request);
     int sent = bytes ? ipc_send(fd, bytes, len) : -1;
     free(bytes);

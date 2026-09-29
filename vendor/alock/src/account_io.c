@@ -118,7 +118,7 @@ DtobValue *account_daemon(DtobValue *request) {
     int fd = ipc_connect(socket);
     if (fd < 0) return NULL;
     size_t size;
-    uint8_t *data = dtob_encode(request, &size);
+    uint8_t *data = dtob_encode_wire(request, &size);
     int failed = !data || ipc_send(fd, data, size);
     free(data);
     data = failed ? NULL : ipc_recv(fd, &size);

@@ -4,7 +4,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 
 extern "C" {
-    fn dtob_encode(value: *const Value, size: *mut usize) -> *mut u8;
+    fn dtob_encode_wire(value: *const Value, size: *mut usize) -> *mut u8;
     fn dtob_decode(data: *const u8, size: usize) -> *mut Value;
     fn account_daemon(value: *mut Value) -> *mut Value;
     fn account_activity_connect() -> c_int;
@@ -26,7 +26,7 @@ fn io<T>(value: std::io::Result<T>) -> Result<T> {
 }
 fn encode(m: &Message) -> Result<Vec<u8>> {
     let mut size = 0;
-    let ptr = unsafe { dtob_encode(m.0, &mut size) };
+    let ptr = unsafe { dtob_encode_wire(m.0, &mut size) };
     if ptr.is_null() {
         return err(500, "Cannot encode DTOB");
     }

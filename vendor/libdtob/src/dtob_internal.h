@@ -23,6 +23,12 @@ size_t trit_encode_padded(const uint8_t *bytes, size_t byte_len,
 size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
                           uint8_t **out_bytes);
 
+/* Decode trit-encoded, byte-padded buffer directly into caller-supplied out buffer.
+ * Stops reading trit pairs when it hits a 11 pair (padding).
+ * Returns number of decoded bytes, or 0 on error. Zero heap allocations. */
+size_t trit_decode_into(const uint8_t *buf, size_t buf_len,
+                        uint8_t *out);
+
 /* ------------------------------------------------------------------ */
 /*  Lexer (byte-aligned)                                              */
 /* ------------------------------------------------------------------ */
@@ -33,11 +39,17 @@ typedef struct {
     size_t     data_len;
 } Token;
 
+/* Sentinel token type meaning "no token": the lexer errored or hit EOF.
+ * Outside the 13-bit code space, so it can never collide with a real code
+ * (0 used to be the sentinel, which is also DTOB_OPEN_TYPES). */
+#define DTOB_TOK_ERR 0xFFFFu
+
 typedef struct {
     const uint8_t *buf;
     size_t         len;
     size_t         pos;       /* byte position */
     int            error;
+    int            pre_erase; /* DTOB_MAGIC_PRE_ERASE document: 8190 is not skipped */
 } Lexer;
 
 void  lexer_init(Lexer *l, const uint8_t *buf, size_t len);

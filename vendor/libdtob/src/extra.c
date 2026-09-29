@@ -11,45 +11,44 @@ const char *dtob_types_get_name(const DtobTypesHeader *th, uint16_t code)
     return NULL;
 }
 
-#define is_struct if(chosen_struct->kind != DTOB_STRUCT) return NULL; \
-                  DtobCustomType *get_struct = dtob_types_get(th,chosen_struct->code); \
-		  if (!get_struct) return NULL; /* you didn't give a valid struct */ \
+/* Locate a struct member by its type code. Returns NULL unless chosen_struct
+ * really is a struct whose schema declares that code. */
+static DtobValue *find_member(const DtobTypesHeader *th,
+                              const DtobValue *chosen_struct, uint16_t code)
+{
+    if (!th || !chosen_struct || chosen_struct->kind != DTOB_STRUCT)
+        return NULL;
 
-#define dgsvfc(search_code) \
-    if (!dtob_types_get(th, search_code)) return NULL; \
-    bool in_schema = false; \
-    for (size_t i = 0; i < get_struct->num_codes; i++) { \
-        if (get_struct->codes[i] == search_code) { in_schema = true; break; } \
-    } \
-    if (!in_schema) return NULL; \
-    for (size_t i = 0; i < chosen_struct->num_elements; i++) { \
-        if (chosen_struct->elements[i].data.val->code == search_code) { \
-            return chosen_struct->elements[i].data.val; \
-        } \
-    } \
+    const DtobCustomType *schema = dtob_types_get(th, chosen_struct->code);
+    if (!schema) return NULL;
+
+    int in_schema = 0;
+    for (size_t i = 0; i < schema->num_codes; i++)
+        if (schema->codes[i] == code) { in_schema = 1; break; }
+    if (!in_schema) return NULL;
+
+    for (size_t i = 0; i < chosen_struct->num_elements; i++) {
+        if (chosen_struct->elements[i].kind == DTOB_KV) continue;
+        DtobValue *el = chosen_struct->elements[i].data.val;
+        if (el && el->code == code) return el;
+    }
     return NULL;
-
-DtobValue * dtob_get_struct_val_from_code(const DtobTypesHeader *th,
-		const DtobValue *chosen_struct, uint16_t code) {
-	is_struct;
-	dgsvfc(code);
 }
 
-DtobValue * dtob_get_struct_val_from_name(const DtobTypesHeader *th,
-		const DtobValue *chosen_struct, const char *name) {
-        is_struct;
-	uint16_t code;
-	bool name_flag = true;
-	for (size_t i=0;i<th->count;i++) {
-	    if (strncmp(th->entries[i].name, name,129) == 0) {
-                code = th->entries[i].code;
-		name_flag=false;
-		break;
-	    }
-	}
-	if (name_flag) return NULL;
-	dgsvfc(code);
-	//return dtob_get_struct_val_from_code(th,chosen_struct,mod_in_place,code);
+DtobValue *dtob_get_struct_val_from_code(const DtobTypesHeader *th,
+        const DtobValue *chosen_struct, uint16_t code)
+{
+    return find_member(th, chosen_struct, code);
+}
+
+DtobValue *dtob_get_struct_val_from_name(const DtobTypesHeader *th,
+        const DtobValue *chosen_struct, const char *name)
+{
+    if (!th || !name) return NULL;
+    for (size_t i = 0; i < th->count; i++)
+        if (strncmp(th->entries[i].name, name, sizeof(th->entries[i].name)) == 0)
+            return find_member(th, chosen_struct, th->entries[i].code);
+    return NULL;
 }
 
 DtobValue *dtob_deep_copy(const DtobValue *v)
@@ -98,7 +97,7 @@ static uint64_t find_opcode_pos(const uint8_t *buf, size_t len, uint16_t opcode)
 
 /* Walks the buffer from start_pos tracking nesting depth via SIMD-accelerated
  * control-word scanning. start_pos must be the high byte of a control-code word
- * (exception: position 8 may be open_types, right after magic).
+ * (exception: open_types right after the magic).
  * depth_offset sets the initial depth. Returns byte position of the CLOSE that
  * brings depth to 0, or 0 on error/not found.
  * 0 is safe as a sentinel because byte 0 is always part of the DTOB magic. */
@@ -160,34 +159,66 @@ static uint64_t track_close(const uint8_t *buf, size_t len, size_t start_pos, in
 
 // file handling
 
+/* Whether buf is a document whose root array is intact and closed by its last
+ * two bytes. A file ending in a close word is not enough: a cut-off append can
+ * end in an element's own close, so every element is parsed. */
+static int array_closed_at_end(const uint8_t *buf, size_t len)
+{
+    DtobTypesHeader types;
+    dtob_types_init(&types);
+    size_t pos = 0;
+    int ok = 0;
+    if (dtob_decode_magic_and_types(buf, len, &types, &pos) == 0 &&
+        pos + 2 <= len && buf[pos] == 0xC0 && buf[pos + 1] == DTOB_OPEN_ARR) {
+        const DtobTypesHeader *t = types.count ? &types : NULL;
+        pos += 2;
+        while (pos + 2 <= len && !(buf[pos] == 0xC0 && buf[pos + 1] == DTOB_CLOSE)) {
+            size_t used = 0;
+            DtobValue *v = dtob_decode_chunk_prefix(buf + pos, len - pos, t, &used);
+            if (!v) break;
+            dtob_free(v);
+            pos += used;
+        }
+        ok = pos + 2 == len && buf[pos] == 0xC0 && buf[pos + 1] == DTOB_CLOSE;
+    }
+    dtob_types_cleanup(&types);
+    return ok;
+}
+
 int dtob_array_append_to_file(const char *path, DtobValue *entry) {
     size_t el_len;
     uint8_t *el_buf = dtob_encode_chunk(entry, NULL, 0, &el_len);
     if (!el_buf) return 1;
+    const uint8_t tail[2] = {0xC0, DTOB_CLOSE};
 
     FILE *f = fopen(path, "rb+");
     if (!f) {
         f = fopen(path, "wb");
         if (!f) { free(el_buf); return 1; }
-        uint8_t head[10] = {0};
-        memcpy(head, DTOB_MAGIC, 8);
-        head[8] = 0xC0; head[9] = DTOB_OPEN_ARR;
-        fwrite(head, 1, 10, f);
-        fwrite(el_buf, 1, el_len, f);
-        uint8_t tail[2] = {0xC0, DTOB_CLOSE};
-        fwrite(tail, 1, 2, f);
-        fclose(f);
+        uint8_t head[DTOB_MAGIC_FILE_LEN + 2];
+        memcpy(head, DTOB_MAGIC_FILE, DTOB_MAGIC_FILE_LEN);
+        head[DTOB_MAGIC_FILE_LEN] = 0xC0; head[DTOB_MAGIC_FILE_LEN + 1] = DTOB_OPEN_ARR;
+        int ok = fwrite(head, 1, sizeof head, f) == sizeof head &&
+                 fwrite(el_buf, 1, el_len, f) == el_len &&
+                 fwrite(tail, 1, 2, f) == 2;
+        ok = (fclose(f) == 0) && ok;
         free(el_buf);
-        return 0;
+        return ok ? 0 : 1;
     }
 
-    fseek(f, -2, SEEK_END);
-    fwrite(el_buf, 1, el_len, f);
-    uint8_t tail[2] = {0xC0, DTOB_CLOSE};
-    fwrite(tail, 1, 2, f);
-    fclose(f);
+    /* Check the whole file before writing over its last two bytes. */
+    long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    uint8_t *buf = size > 0 ? malloc((size_t)size) : NULL;
+    int ok = buf && fseek(f, 0, SEEK_SET) == 0 &&
+             fread(buf, 1, (size_t)size, f) == (size_t)size &&
+             array_closed_at_end(buf, (size_t)size);
+    free(buf);
+    ok = ok && fseek(f, size - 2, SEEK_SET) == 0 &&
+         fwrite(el_buf, 1, el_len, f) == el_len &&
+         fwrite(tail, 1, 2, f) == 2;
+    ok = (fclose(f) == 0) && ok;
     free(el_buf);
-    return 0;
+    return ok ? 0 : 1;
 }
 
 int dtob_write_file(const char *path, DtobValue *root,
@@ -205,10 +236,12 @@ int dtob_write_file(const char *path, DtobValue *root,
 
     FILE *fp = fopen(path, "wb");
     if (!fp) { free(enc); return -1; }
-    fwrite(enc, 1, out_len, fp);
-    fclose(fp);
+    /* A short write or a failed flush on close (full disk, I/O error) is a
+     * failure, not a truncated file reported as success. */
+    int ok = fwrite(enc, 1, out_len, fp) == out_len;
+    ok = (fclose(fp) == 0) && ok;
     free(enc);
-    return 0;
+    return ok ? 0 : -1;
 }
 
 
@@ -247,3 +280,4 @@ DEFINE_DTOB_GETTER(int32_t,  i32, DTOB_INT32,  _dtob_to_i64)
 DEFINE_DTOB_GETTER(int64_t,  i64, DTOB_INT64,  _dtob_to_i64)
 
 #undef DEFINE_DTOB_GETTER
+

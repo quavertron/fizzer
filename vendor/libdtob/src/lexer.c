@@ -6,30 +6,31 @@ void lexer_init(Lexer *l, const uint8_t *buf, size_t len)
     l->len = len;
     l->pos = 0;
     l->error = 0;
+    l->pre_erase = 0;
 }
 
 #if USE_NEON_OPTIMIZATION
 static inline void dtob_advance_gen(Lexer *l, uint8_t applied_mask) {
-    DTOB_SIMD_SCAN(l,
-        vceqq_u8(vandq_u8(data, vdupq_n_u8(applied_mask)), vdupq_n_u8(applied_mask)),
+    DTOB_SIMD_SCAN(l, 
+        vceqq_u8(vandq_u8(data, vdupq_n_u8(applied_mask)), vdupq_n_u8(applied_mask)), 
         ((l->buf[l->pos] & applied_mask) == applied_mask)
     );
 }
 #endif
 
 /*
-// 2. Nibble Prefix Function
+// 2. Nibble Prefix Function 
 static inline void dtob_advance_nibble(Lexer *l, uint8_t prefix) {
-    DTOB_SIMD_SCAN(l,
-        vceqq_u8(vandq_u8(data, vdupq_n_u8(0xF0)), vdupq_n_u8(prefix)),
+    DTOB_SIMD_SCAN(l, 
+        vceqq_u8(vandq_u8(data, vdupq_n_u8(0xF0)), vdupq_n_u8(prefix)), 
         ((l->buf[l->pos] & 0xF0) == prefix)
     );
 }
 
-// 3. Exact 16-bit Match Function
+// 3. Exact 16-bit Match Function 
 static inline void dtob_advance_word(Lexer *l, uint16_t target) {
-    DTOB_SIMD_SCAN(l,
-        vceqq_u16(vreinterpretq_u16_u8(data), vdupq_n_u16(target)),
+    DTOB_SIMD_SCAN(l, 
+        vceqq_u16(vreinterpretq_u16_u8(data), vdupq_n_u16(target)), 
         (*(uint16_t*)&l->buf[l->pos] == target)
     );
 }
@@ -80,7 +81,7 @@ int lexer_done(Lexer *l)
 
 Token lexer_next(Lexer *l)
 {
-    Token tok = { 0, NULL, 0 };
+    Token tok = { DTOB_TOK_ERR, NULL, 0 };
 
 top:
     if (l->pos >= l->len) {
@@ -109,8 +110,8 @@ top:
         }
         uint16_t code = ((uint16_t)(b & 0x1F) << 8) | b2;
 
-        /* blast: silently skip */
-        if (code == DTOB_BLAST) goto top;
+        /* blast and erase: silently skip (8190 is not erase before its magic) */
+        if (code == DTOB_BLAST || (code == DTOB_ERASE && !l->pre_erase)) goto top;
 
         tok.type = code;
 

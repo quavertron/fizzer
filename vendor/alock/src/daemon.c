@@ -680,7 +680,7 @@ static void handle_client(int client_fd) {
 
     if (resp) {
         size_t resp_len;
-        uint8_t *resp_data = dtob_encode(resp, &resp_len);
+        uint8_t *resp_data = dtob_encode_wire(resp, &resp_len);
         dtob_free(resp);
         if (resp_data) {
             ipc_send(client_fd, resp_data, resp_len);
@@ -734,7 +734,7 @@ static int daemon_capable(const char *sock_path, int needs_turns) {
     DtobValue *request = dtob_kvset();
     dtob_kvset_put(request, "cmd", dtob_raw((const uint8_t *)"capabilities", 12));
     size_t len;
-    uint8_t *bytes = dtob_encode(request, &len);
+    uint8_t *bytes = dtob_encode_wire(request, &len);
     dtob_free(request);
     int sent = bytes ? ipc_send(fd, bytes, len) : -1;
     free(bytes);

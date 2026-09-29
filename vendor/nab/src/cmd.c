@@ -194,7 +194,7 @@ static int cmd_patch(const char *nab_filename, const char *submission_filename, 
         size_t preamble_len;
         uint8_t *preamble = dtob_encode_with_types(empty, &th, 0, &preamble_len);
         dtob_free(empty);
-        uint64_t types_end = preamble ? track_close(preamble, preamble_len, 10, 1) : 0;
+        uint64_t types_end = preamble ? track_close(preamble, preamble_len, DTOB_MAGIC_FILE_LEN + 2, 1) : 0;
         if (!types_end) {
             free(preamble); free(raw_patches); free(patch_encoded); free(meta_encoded); free(prev); free(newd);
             dtob_types_cleanup(&th);

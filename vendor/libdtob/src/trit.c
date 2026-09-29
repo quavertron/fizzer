@@ -132,18 +132,9 @@ size_t trit_encode_padded(const uint8_t *bytes, size_t byte_len,
   return out_len;
 }
 
-size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
-                          uint8_t **out_bytes) {
-  if (buf_len == 0) {
-    *out_bytes = NULL;
-    return 0;
-  }
-
-  /* Max output: every 3 input bytes -> 2 output bytes, plus tail. */
-  size_t max_out = (buf_len / 3) * 2 + 3;
-  uint8_t *out = malloc(max_out ? max_out : 1);
-  if (!out) {
-    *out_bytes = NULL;
+size_t trit_decode_into(const uint8_t *buf, size_t buf_len,
+                        uint8_t *out) {
+  if (buf_len == 0 || !out) {
     return 0;
   }
 
@@ -192,13 +183,13 @@ size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
 
       if (b1 < 0) {
           if (hi12 == THREE_NIBBLE_PAD) { hit_pad = 1; i += 3; break; }
-          goto fail;
+          return 0;
       }
       out[o++] = (uint8_t)b1;
 
       if (b2 < 0) {
           if (lo12 == THREE_NIBBLE_PAD) { hit_pad = 1; i += 3; break; }
-          goto fail;
+          return 0;
       }
       out[o++] = (uint8_t)b2;
   }
@@ -210,12 +201,12 @@ size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
     uint32_t code12 = (packed >> 4) & TRIT_MASK;
     uint32_t tail4 = packed & 0xf;
     if (tail4 != ONE_NIBBLE_PAD) {
-      goto fail;
+      return 0;
     }
 
     int16_t b = dec_tbl[code12];
     if (b < 0) {
-      goto fail;
+      return 0;
     }
 
     out[o++] = (uint8_t)b;
@@ -223,27 +214,44 @@ size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
   } else if (!hit_pad && i + 1 == buf_len) {
     /* 1 remaining input byte = 8 pad bits (0xef). */
     if (buf[i] != TWO_NIBBLE_PAD) {
-      goto fail;
+      return 0;
     }
     i += 1;
   } else if (hit_pad) {
     /* Verify all remaining bytes after first pad pair are clean. */
     if (i != buf_len) {
-      goto fail;
+      return 0;
     }
   } else if (i != buf_len) {
     /* Leftover bytes that aren't a clean tail — malformed. */
-    goto fail;
+    return 0;
   }
 
-  goto success;
-
-success:
-  *out_bytes = out;
   return o;
+}
 
-fail:
-  free(out);
-  *out_bytes = NULL;
-  return 0;
+size_t trit_decode_padded(const uint8_t *buf, size_t buf_len,
+                          uint8_t **out_bytes) {
+  if (buf_len == 0) {
+    *out_bytes = NULL;
+    return 0;
+  }
+
+  /* Max output: every 3 input bytes -> 2 output bytes, plus tail. */
+  size_t max_out = (buf_len / 3) * 2 + 3;
+  uint8_t *out = malloc(max_out ? max_out : 1);
+  if (!out) {
+    *out_bytes = NULL;
+    return 0;
+  }
+
+  size_t written = trit_decode_into(buf, buf_len, out);
+  if (written == 0) {
+    free(out);
+    *out_bytes = NULL;
+    return 0;
+  }
+
+  *out_bytes = out;
+  return written;
 }

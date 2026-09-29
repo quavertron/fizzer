@@ -174,34 +174,26 @@ static void encode_value_t(DtobWriter *w, const DtobValue *v,
             }
         }
         dtob_writer_ctrl(w, code);
-        if (ct && ct->kind == DTOB_STRUCT) {
+
+        /* A multi-arm enum names the arm it selected before its payload. */
+        const DtobCustomType *inner = NULL;
+        if (ct && ct->kind != DTOB_STRUCT && ct->num_codes > 1 && v->member_code) {
+            dtob_writer_ctrl(w, v->member_code);
+            inner = types ? dtob_types_get(types, v->member_code) : NULL;
+        }
+
+        /* Members go out as an array, whether the struct was declared
+         * directly or reached through an enum arm. Everything else — a
+         * nullable, a single-payload type, an unknown code — is just its
+         * payload, if it has one. */
+        if ((ct && ct->kind == DTOB_STRUCT) ||
+            (inner && inner->kind == DTOB_STRUCT && v->num_elements > 0)) {
             dtob_writer_ctrl(w, DTOB_OPEN_ARR);
             for (size_t i = 0; i < v->num_elements; i++)
                 encode_value_t(w, v->elements[i].data.val, types);
             dtob_writer_ctrl(w, DTOB_CLOSE);
-        } else if (ct && ct->num_codes == 0) {
-            /* nullable */
-        } else if (ct && ct->num_codes == 1) {
-            if (v->data && v->data_len > 0)
-                dtob_writer_data(w, v->data, v->data_len);
-        } else if (ct && ct->num_codes > 1) {
-            if (v->member_code) {
-                dtob_writer_ctrl(w, v->member_code);
-                DtobCustomType *inner_ct = types ? dtob_types_get(types, v->member_code) : NULL;
-                if (inner_ct && inner_ct->kind == DTOB_STRUCT && v->num_elements > 0) {
-                    dtob_writer_ctrl(w, DTOB_OPEN_ARR);
-                    for (size_t i = 0; i < v->num_elements; i++)
-                        encode_value_t(w, v->elements[i].data.val, types);
-                    dtob_writer_ctrl(w, DTOB_CLOSE);
-                } else if (v->data && v->data_len > 0) {
-                    dtob_writer_data(w, v->data, v->data_len);
-                }
-            } else if (v->data && v->data_len > 0) {
-                dtob_writer_data(w, v->data, v->data_len);
-            }
-        } else {
-            if (v->data && v->data_len > 0)
-                dtob_writer_data(w, v->data, v->data_len);
+        } else if (v->data && v->data_len > 0) {
+            dtob_writer_data(w, v->data, v->data_len);
         }
         return;
     }
@@ -214,20 +206,17 @@ uint8_t *dtob_encode(const DtobValue *root, size_t *out_len)
     return dtob_encode_with_types(root, NULL, 0, out_len);
 }
 
-uint8_t *dtob_encode_with_types(const DtobValue *root,
-                                 const DtobTypesHeader *types,
-                                 int strict_validation,
-                                 size_t *out_len)
+static uint8_t *encode_document(const char *magic, const DtobValue *root,
+                                const DtobTypesHeader *types,
+                                int strict_validation, size_t *out_len)
 {
     DtobWriter w;
     dtob_writer_init(&w, strict_validation);
 
-    /* magic number */
-    for (int i = 0; i < DTOB_MAGIC_LEN; i++)
-        dtob_writer_byte(&w, (uint8_t)DTOB_MAGIC[i]);
+    for (const char *m = magic; *m; m++)
+        dtob_writer_byte(&w, (uint8_t)*m);
 
-    if (types && types->count > 0)
-        encode_types_header(&w, types);
+    encode_types_header(&w, types);
     encode_value_t(&w, root, types);
 
     if (w.error) {
@@ -238,6 +227,27 @@ uint8_t *dtob_encode_with_types(const DtobValue *root,
 
     *out_len = w.pos;
     return w.buf;
+}
+
+uint8_t *dtob_encode_with_types(const DtobValue *root,
+                                 const DtobTypesHeader *types,
+                                 int strict_validation,
+                                 size_t *out_len)
+{
+    return encode_document(DTOB_MAGIC_FILE, root, types, strict_validation, out_len);
+}
+
+uint8_t *dtob_encode_wire(const DtobValue *root, size_t *out_len)
+{
+    return dtob_encode_wire_with_types(root, NULL, 0, out_len);
+}
+
+uint8_t *dtob_encode_wire_with_types(const DtobValue *root,
+                                      const DtobTypesHeader *types,
+                                      int strict_validation,
+                                      size_t *out_len)
+{
+    return encode_document(DTOB_MAGIC_WIRE, root, types, strict_validation, out_len);
 }
 
 uint8_t *dtob_encode_chunk(const DtobValue *v,
@@ -279,6 +289,7 @@ size_t dtob_types_encoded_size(const DtobTypesHeader *th) {
     free(w.buf);
     return sz;
 }
+
 size_t dtob_value_encoded_size(DtobValue *dv, DtobTypesHeader *th) {
     DtobWriter w;
     dtob_writer_init(&w, 0);

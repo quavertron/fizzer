@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
         DtobValue *req=account_input(argc,argv);
         if(!req) return 1;
         if(!strcmp(argv[1],"--encode-account")) {
-            size_t size; uint8_t *data=dtob_encode(req,&size); dtob_free(req);
+            size_t size; uint8_t *data=dtob_encode_wire(req,&size); dtob_free(req);
             if(!data) return 1;
             fwrite(data,1,size,stdout); free(data); return 0;
         }
@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
         DtobValue *request = dtob_kvset();
         dtob_kvset_put(request, "cmd", dtob_raw((uint8_t *)"capabilities", 12));
         size_t size;
-        uint8_t *bytes = dtob_encode(request, &size);
+        uint8_t *bytes = dtob_encode_wire(request, &size);
         dtob_free(request);
         int failed = !bytes || ipc_send(fd, bytes, size);
         free(bytes);

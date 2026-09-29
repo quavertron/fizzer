@@ -18,16 +18,26 @@ extern "C" {
  * Every element starts on a byte boundary.
  *
  * Codes 0-7 (core):
- *   0  open_arr    1  open_kv     2  open_types   3  close
+ *   0  open_types  1  open_arr    2  open_kv      3  close
  *   4  uqt         5  raw         6  float        7  double
  *
  * Integer codes 8-15: bit 2 = unsigned flag, bits 0-1 = width index
  *   (code & 4) => unsigned, (code & 3) => 0=8b 1=16b 2=32b 3=64b
  *
- * Multi-byte integers and floats are stored little-endian.
+ * Multi-byte integers are stored big-endian, padded to their declared width.
+ * Floats/doubles are IEEE 754 binary32/binary64, stored big-endian like integers.
  *
- * Codes 16-8190: custom (defined in types header)
+ * Codes 16-8189: custom (defined in types header)
+ * Code 8190: erase — a word overwritten in place; ignored as a non-token,
+ *   forbidden for type assignment. Every element spans whole words, so an
+ *   element can be erased by overwriting all of its words with erase.
  * Code 8191: blast — ignored as a non-token; forbidden for type assignment
+ *
+ * A document starts with a magic. Files carry "DTOB" + a DDMMYY date
+ * (DTOB_MAGIC_FILE); wire messages carry just the date (DTOB_MAGIC_WIRE).
+ * Both are read. Documents written before erase carry DTOB_MAGIC_PRE_ERASE;
+ * they are still read, 8190 is not erase in them, and declaring it is an
+ * error.
  */
 
 /* logical code constants (passed to bw_write_ctrl / dtob_writer_ctrl) */
@@ -47,11 +57,16 @@ extern "C" {
 #define DTOB_UINT16      13
 #define DTOB_UINT32      14
 #define DTOB_UINT64      15
+#define DTOB_ERASE       8190
 #define DTOB_BLAST       8191
 
 #define DTOB_CUSTOM_MIN       16
-#define DTOB_CUSTOM_MAX       8190
-#define DTOB_CUSTOM_COUNT     (DTOB_CUSTOM_MAX - DTOB_CUSTOM_MIN)
+#define DTOB_CUSTOM_MAX       8189
+#define DTOB_CUSTOM_COUNT     (DTOB_CUSTOM_MAX - DTOB_CUSTOM_MIN + 1)
+
+/* Maximum collection/struct nesting the decoder will follow. Guards against
+ * stack exhaustion from hostile input; deeper documents are rejected. */
+#define DTOB_MAX_DEPTH        256
 
 /* first byte of any ctrl word has top 2 bits = 11 */
 #define DTOB_IS_CTRL(b)       (((b) & 0xC0) == 0xC0)
@@ -59,8 +74,19 @@ extern "C" {
 /* open-type helpers */
 #define DTOB_IS_OPEN(c)       ((c) <= 2)
 
-#define DTOB_MAGIC            "01052026"
-#define DTOB_MAGIC_LEN        8
+#define DTOB_MAGIC_FILE           "DTOB290926"
+#define DTOB_MAGIC_FILE_LEN       10
+#define DTOB_MAGIC_WIRE           "290926"
+#define DTOB_MAGIC_WIRE_LEN       6
+#define DTOB_MAGIC_PRE_ERASE      "01052026"  /* still read; 8190 is not erase */
+#define DTOB_MAGIC_PRE_ERASE_LEN  8
+#define DTOB_MAGIC_MAX_LEN        10
+
+/* magic kinds returned by dtob_magic */
+#define DTOB_MAGIC_KIND_NONE       0
+#define DTOB_MAGIC_KIND_FILE       1
+#define DTOB_MAGIC_KIND_WIRE       2
+#define DTOB_MAGIC_KIND_PRE_ERASE  3
 
 /* integer code helpers: code must be in range 8-15 */
 #define DTOB_IS_INT(c)       ((c) >= 8 && (c) <= 15)
@@ -131,24 +157,54 @@ void dtob_writer_data(DtobWriter *w, const uint8_t *bytes, size_t len);
 
 
 /* decode */
+size_t      trit_decode_into(const uint8_t *buf, size_t buf_len, uint8_t *out);
 DtobValue  *dtob_decode(const uint8_t *buf, size_t len);
-DtobValue  *dtob_decode_raw(const uint8_t *buf, size_t len,
-                            const DtobTypesHeader *types);
+DtobValue  *dtob_decode_chunk(const uint8_t *buf, size_t len,
+                              const DtobTypesHeader *types);
+/* DO NOT USE dtob_decode_raw IN NEW CODE. IT IS FOR LEGACY SUPPORT ONLY; CALL
+ * dtob_decode_chunk INSTEAD. */
+#define dtob_decode_raw dtob_decode_chunk
 DtobValue  *dtob_decode_with_types(const uint8_t *buf, size_t len,
                                     DtobTypesHeader *out_types);
+/* DO NOT USE dtob_decode_types_only IN NEW CODE. IT IS FOR LEGACY SUPPORT ONLY;
+ * CALL dtob_decode_magic_and_types INSTEAD, WHICH ALSO REPORTS WHERE THE
+ * HEADER ENDS AND ACCEPTS DOCUMENTS WITHOUT ONE. */
 int         dtob_decode_types_only(const uint8_t *buf, size_t len,
                                     DtobTypesHeader *out_types);
+/* Decode the value at the start of a headerless buffer and set *consumed to
+ * the bytes it occupies; what follows it is not read. Returns NULL (and
+ * *consumed = 0) if no complete value starts there. */
+DtobValue  *dtob_decode_chunk_prefix(const uint8_t *buf, size_t len,
+                                     const DtobTypesHeader *types,
+                                     size_t *consumed);
+/* Identify the magic at the start of buf: returns a DTOB_MAGIC_KIND_* and
+ * sets *magic_len (may be NULL) to its length, or 0 if there is none. */
+int         dtob_magic(const uint8_t *buf, size_t len, size_t *magic_len);
+/* Read a document's magic and, if present, its types header, and set
+ * *consumed to where the root value begins. out_types may be NULL.
+ * Returns 0, or -1 if the magic or types header is missing or malformed. */
+int         dtob_decode_magic_and_types(const uint8_t *buf, size_t len,
+                                        DtobTypesHeader *out_types,
+                                        size_t *consumed);
 typedef void (*DtobTypesBuilder)(DtobTypesHeader *);
+/* NOTE: consumes (frees) root */
 int         dtob_write_file(const char *path, DtobValue *root,
                             DtobTypesBuilder build_types);
 
 
-/* encode */
+/* encode: dtob_encode* write the file magic, dtob_encode_wire* the wire
+ * magic (for sockets and HTTP bodies) */
 uint8_t    *dtob_encode(const DtobValue *root, size_t *out_len);
 uint8_t    *dtob_encode_with_types(const DtobValue *root,
                                     const DtobTypesHeader *types,
                                     int strict_validation,
                                     size_t *out_len);
+uint8_t    *dtob_encode_wire(const DtobValue *root, size_t *out_len);
+uint8_t    *dtob_encode_wire_with_types(const DtobValue *root,
+                                         const DtobTypesHeader *types,
+                                         int strict_validation,
+                                         size_t *out_len);
+/* NOTE: consumes (frees) root and builds/cleans its own types header */
 uint8_t    *dtob_encode_typed(DtobValue *root, DtobTypesBuilder build_types, size_t *out_len);
 uint8_t    *dtob_encode_chunk(const DtobValue *v,
                               const DtobTypesHeader *types,
@@ -178,9 +234,6 @@ const char       *dtob_types_get_name(const DtobTypesHeader *th, uint16_t code);
 DtobCustomType   *dtob_types_get(const DtobTypesHeader *th, uint16_t code);
 int               dtob_code_data_size(uint16_t code); /* -1 = variable */
 
-/* format parsers */
-typedef struct DtobSchema DtobSchema;
-
 /* memory */
 void        dtob_free(DtobValue *val);
 DtobValue  *dtob_deep_copy(const DtobValue *val);
@@ -200,8 +253,11 @@ size_t      dtob_kvset_str(const DtobValue *kvs, const char *key,
 const uint8_t *dtob_kvset_raw(const DtobValue *kvs, const char *key,
                               size_t *out_len);
 
-/* file-level array append: read dtob file, decode root array, push entry, re-encode, write back.
- * Creates the file with a single-element array if it doesn't exist.
+/* file-level array append: write entry over the root array's closing word, then
+ * close the array again; the rest of the file is not rewritten. The file is
+ * checked first, and nothing is written unless it is an intact document whose
+ * root array is closed by its last two bytes. Creates the file with a
+ * single-element array if it doesn't exist. Does not consume entry.
  * Returns 0 on success, nonzero on failure. */
 int         dtob_array_append_to_file(const char *path, DtobValue *entry);
 

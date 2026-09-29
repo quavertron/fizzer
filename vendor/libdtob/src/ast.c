@@ -9,8 +9,11 @@ DtobValue *ast_make(uint16_t code)
 
 void ast_add_element(DtobValue *arr, DtobValue *element)
 {
-    arr->elements = realloc(arr->elements,
-                            (arr->num_elements + 1) * sizeof(struct DtobDataTagged));
+    struct DtobDataTagged *grown =
+        realloc(arr->elements,
+                (arr->num_elements + 1) * sizeof(struct DtobDataTagged));
+    if (!grown) { dtob_free(element); return; }
+    arr->elements = grown;
     arr->elements[arr->num_elements].data.val = element;
     arr->elements[arr->num_elements].kind = 0;
     arr->num_elements++;
@@ -19,13 +22,19 @@ void ast_add_element(DtobValue *arr, DtobValue *element)
 void ast_add_pair(DtobValue *kvs, uint8_t *key, size_t key_len,
                   DtobValue *val)
 {
-    if (key_len > 128) return;
-    kvs->elements = realloc(kvs->elements,
-                            (kvs->num_elements + 1) * sizeof(struct DtobDataTagged));
+    /* Keys are heap-copied, so there is no structural length limit. The old
+     * 128-byte cap silently dropped the pair and leaked val. */
+    struct DtobDataTagged *grown =
+        realloc(kvs->elements,
+                (kvs->num_elements + 1) * sizeof(struct DtobDataTagged));
+    if (!grown) { dtob_free(val); return; }
+    kvs->elements = grown;
+
     struct DtobDataTagged *t = &kvs->elements[kvs->num_elements];
-    t->kind = DTOB_KV;
     t->data.kv.key = malloc(key_len + 1);
-    memcpy(t->data.kv.key, key, key_len);
+    if (!t->data.kv.key) { dtob_free(val); return; }
+    t->kind = DTOB_KV;
+    if (key_len) memcpy(t->data.kv.key, key, key_len);
     t->data.kv.key[key_len] = '\0';
     t->data.kv.key_len = key_len;
     t->data.kv.value = val;
@@ -48,8 +57,10 @@ DtobValue *dtob_int(int64_t val)
     /* find first significant byte (keep at least 1) */
     int start = 0;
     if (val >= 0) {
-        while (start < 7 && buf[start] == 0x00) start++;
-    } else {
+        /* keep one leading 0x00 when the next byte's top bit is set, or the
+         * encoder's sign-extension would read the value back as negative */
+        while (start < 7 && buf[start] == 0x00 && !(buf[start + 1] & 0x80))
+            start++;
         while (start < 7 && buf[start] == 0xFF
                && (buf[start + 1] & 0x80)) start++;
     }
@@ -64,41 +75,50 @@ DtobValue *dtob_uint(uint64_t val)
 {
     DtobValue *v = ast_make(DTOB_UINT64);
     if (!v) return NULL;
-    /* store as big-endian bytes, trimmed, with leading 0x00 if top bit set */
-    uint8_t buf[9];
-    buf[0] = 0x00;
-    for (int i = 8; i >= 1; i--) {
+    /* Store as big-endian bytes, trimmed to the minimum width. There is no
+     * sign bit to disambiguate, so no leading 0x00 is needed: emitting one
+     * pushed values >= 2^63 to a 9-byte payload that the encoder then
+     * truncated to 8, silently dropping the low byte. */
+    uint8_t buf[8];
+    for (int i = 7; i >= 0; i--) {
         buf[i] = val & 0xFF;
         val >>= 8;
     }
     int start = 0;
-    while (start < 8 && buf[start] == 0x00 && !(buf[start + 1] & 0x80))
-        start++;
-    size_t len = 9 - start;
+    while (start < 7 && buf[start] == 0x00) start++;
+    size_t len = 8 - (size_t)start;
     v->data = malloc(len);
+    if (!v->data) { free(v); return NULL; }
     memcpy(v->data, buf + start, len);
     v->data_len = len;
     return v;
 }
 
+/* Floats and doubles are IEEE 754 and, like integers, big-endian in data. */
+static DtobValue *float_value(uint16_t code, uint64_t bits, size_t width)
+{
+    DtobValue *v = ast_make(code);
+    if (!v) return NULL;
+    v->data = malloc(width);
+    if (!v->data) { free(v); return NULL; }
+    for (size_t i = 0; i < width; i++)
+        v->data[i] = (uint8_t)(bits >> (8 * (width - 1 - i)));
+    v->data_len = width;
+    return v;
+}
+
 DtobValue *dtob_float(float val)
 {
-    DtobValue *v = ast_make(DTOB_FLOAT);
-    if (!v) return NULL;
-    v->data = malloc(4);
-    memcpy(v->data, &val, 4);
-    v->data_len = 4;
-    return v;
+    uint32_t bits;
+    memcpy(&bits, &val, 4);
+    return float_value(DTOB_FLOAT, bits, 4);
 }
 
 DtobValue *dtob_double(double val)
 {
-    DtobValue *v = ast_make(DTOB_DOUBLE);
-    if (!v) return NULL;
-    v->data = malloc(8);
-    memcpy(v->data, &val, 8);
-    v->data_len = 8;
-    return v;
+    uint64_t bits;
+    memcpy(&bits, &val, 8);
+    return float_value(DTOB_DOUBLE, bits, 8);
 }
 
 DtobValue *dtob_raw(const uint8_t *data, size_t len)
@@ -177,24 +197,23 @@ double dtob_kvset_float(const DtobValue *kvs, const char *key)
 {
     DtobValue *v = dtob_kvset_get(kvs, key);
     if (!v || (v->code != DTOB_FLOAT && v->code != DTOB_DOUBLE) || !v->data) return 0.0;
+    if (v->data_len != 4 && v->data_len != 8) return 0.0;
+    uint64_t bits = 0;
+    for (size_t i = 0; i < v->data_len; i++)
+        bits = (bits << 8) | v->data[i];
     if (v->data_len == 4) {
-        float f; memcpy(&f, v->data, 4); return (double)f;
+        uint32_t b = (uint32_t)bits;
+        float f; memcpy(&f, &b, 4); return (double)f;
     }
-    if (v->data_len == 8) {
-        double d; memcpy(&d, v->data, 8); return d;
-    }
-    return 0.0;
+    double d; memcpy(&d, &bits, 8); return d;
 }
 
 size_t dtob_kvset_str(const DtobValue *kvs, const char *key,
                       char *out, size_t outsz)
 {
     DtobValue *v = dtob_kvset_get(kvs, key);
-    if (!v || v->code != DTOB_RAW || !v->data) { if (outsz) out[0] = '\0'; return 0; }
-    size_t copy = v->data_len < outsz - 1 ? v->data_len : outsz - 1;
-    memcpy(out, v->data, copy);
-    out[copy] = '\0';
-    return copy;
+    if (v && v->code != DTOB_RAW) v = NULL;
+    return dtob_val_to_str(v, out, outsz);
 }
 
 const uint8_t *dtob_kvset_raw(const DtobValue *kvs, const char *key,
@@ -240,7 +259,7 @@ DtobValue *dtob_custom(uint16_t code, const uint8_t *data, size_t len)
 
 DtobValue *dtob_custom_nullable(uint16_t code)
 {
-    return dtob_custom(code, NULL, 0);
+    return dtob_custom(code, NULL, 0); 
 }
 
 /* --- Types header --- */
@@ -265,26 +284,39 @@ void dtob_types_cleanup(DtobTypesHeader *th)
 int dtob_types_add(DtobTypesHeader *th, uint16_t code, const char *name,
                     const uint16_t *codes, size_t n_codes)
 {
-    if (n_codes + 1 > DTOB_CUSTOM_COUNT) {
-        fprintf(stderr, "Error: too many member codes (%zu)\n", n_codes);
+    if (!th || !name) return -1;
+    if (code < DTOB_CUSTOM_MIN || code > DTOB_CUSTOM_MAX) {
+        fprintf(stderr, "dtob: custom code %u outside %u-%u\n",
+                code, DTOB_CUSTOM_MIN, DTOB_CUSTOM_MAX);
+        return -1;
+    }
+    if (n_codes > DTOB_CUSTOM_COUNT) {
+        fprintf(stderr, "dtob: too many member codes (%zu)\n", n_codes);
         return -1;
     }
 
     if (th->count >= th->cap) {
-        th->cap = (th->cap * 2 < DTOB_CUSTOM_COUNT) ? th->cap * 2 : DTOB_CUSTOM_COUNT;
-        th->entries = realloc(th->entries, th->cap * sizeof(DtobCustomType));
+        size_t new_cap = (th->cap * 2 < DTOB_CUSTOM_COUNT)
+                       ? th->cap * 2 : DTOB_CUSTOM_COUNT;
+        if (new_cap <= th->count) return -1;
+        DtobCustomType *grown = realloc(th->entries,
+                                        new_cap * sizeof(DtobCustomType));
+        if (!grown) return -1;
+        th->entries = grown;
+        th->cap = new_cap;
     }
+
     DtobCustomType *e = &th->entries[th->count];
     e->code = code;
-    strncpy(e->name, name, 129);
-    e->name[128] = '\0';
+    strncpy(e->name, name, sizeof(e->name) - 1);
+    e->name[sizeof(e->name) - 1] = '\0';
     e->num_codes = n_codes;
     e->kind = DTOB_ENUM;
+    e->codes = NULL;
     if (codes && n_codes > 0) {
         e->codes = malloc(n_codes * sizeof(uint16_t));
+        if (!e->codes) return -1;
         memcpy(e->codes, codes, n_codes * sizeof(uint16_t));
-    } else {
-        e->codes = NULL;
     }
     th->count++;
     return 0;
@@ -309,3 +341,4 @@ int dtob_code_data_size(uint16_t code)
     if (code >= DTOB_CUSTOM_MIN) return -2; /* custom: caller must check types */
     return -1; /* raw, string = variable */
 }
+

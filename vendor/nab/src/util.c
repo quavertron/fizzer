@@ -260,15 +260,18 @@ static types_header_result read_types_header(const char *path) {
     if (!buf) { close(fd); return fail; }
 
     ssize_t nread = pread(fd, buf, window, 0);
-    if (nread < 10) { free(buf); close(fd); return fail; }
+    size_t m;
+    if (nread <= 0 || !dtob_magic(buf, (size_t)nread, &m) || (size_t)nread < m + 2) {
+        free(buf); close(fd); return fail;
+    }
 
-    /* verify byte 8 is open_types */
-    if (!DTOB_IS_CTRL(buf[8]) || (((buf[8] & 0x1F) << 8) | buf[9]) != DTOB_OPEN_TYPES) {
+    /* verify open_types follows the magic */
+    if (!DTOB_IS_CTRL(buf[m]) || (((buf[m] & 0x1F) << 8) | buf[m + 1]) != DTOB_OPEN_TYPES) {
         free(buf); close(fd); return fail;
     }
 
     while (1) {
-        uint64_t pos = track_close(buf, (size_t)nread, 10, 1);
+        uint64_t pos = track_close(buf, (size_t)nread, m + 2, 1);
         if (pos != 0) {
             close(fd);
             return (types_header_result){buf, (size_t)nread, pos};

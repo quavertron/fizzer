@@ -9,6 +9,7 @@ typedef struct {
     int              has_current;
     DtobTypesHeader *types;
     int              has_types;
+    int              depth;      /* current parse_value recursion depth */
 } Parser;
 
 static Token peek(Parser *p) {
@@ -16,7 +17,7 @@ static Token peek(Parser *p) {
         p->current = lexer_next(p->lexer);
         p->has_current = 1;
     }
-    return p->lexer->error ? (Token){0} : p->current;
+    return p->lexer->error ? (Token){ DTOB_TOK_ERR, NULL, 0 } : p->current;
 }
 
 static Token consume(Parser *p) {
@@ -24,6 +25,7 @@ static Token consume(Parser *p) {
 }
 
 static DtobValue *parse_value(Parser *p);
+static DtobValue *parse_value_inner(Parser *p);
 
 /* Convert a token to its code (5-15 primitives, 16+ custom).
  * Returns 0 if not a valid code token. */
@@ -40,7 +42,7 @@ static int parse_types_header(Parser *p)
 {
     p->has_types = 1;
 
-    while (peek(p).type != DTOB_CLOSE) {
+    while (!p->lexer->error && peek(p).type != DTOB_CLOSE) {
         Token open = consume(p);
         int is_struct = (open.type == DTOB_OPEN_ARR);
 
@@ -51,6 +53,10 @@ static int parse_types_header(Parser *p)
 
         /* custom code */
         Token code_tok = consume(p);
+        if (code_tok.type == DTOB_ERASE) {
+            fprintf(stderr, "dtob: code 8190 is erase and cannot be a custom type\n");
+            return -1;
+        }
         if (code_tok.type < DTOB_CUSTOM_MIN || code_tok.type > DTOB_CUSTOM_MAX) {
             fprintf(stderr, "dtob: expected custom code in type def\n");
             return -1;
@@ -67,17 +73,24 @@ static int parse_types_header(Parser *p)
         name[code_tok.data_len] = '\0';
         free(code_tok.data);
 
-        /* codes until CLOSE */
-        uint16_t codes[15];
-        size_t n_codes = 0;
-        while (peek(p).type != DTOB_CLOSE) {
+        /* codes until CLOSE; the grammar sets no limit, so accept as many
+         * as dtob_types_add does */
+        uint16_t *codes = NULL;
+        size_t n_codes = 0, cap = 0;
+        while (!p->lexer->error && peek(p).type != DTOB_CLOSE) {
             Token ot = peek(p);
             uint16_t op = tok_to_code(&ot);
             if (op == 0) break;
-            if (n_codes >= 15) {
+            if (n_codes >= DTOB_CUSTOM_COUNT) {
                 fprintf(stderr, "dtob: too many codes in type def\n");
-                free(name);
+                free(codes); free(name);
                 return -1;
+            }
+            if (n_codes == cap) {
+                cap = cap ? cap * 2 : 16;
+                uint16_t *grown = realloc(codes, cap * sizeof(uint16_t));
+                if (!grown) { free(codes); free(name); return -1; }
+                codes = grown;
             }
             codes[n_codes++] = op;
             consume(p);
@@ -87,18 +100,25 @@ static int parse_types_header(Parser *p)
         /* consume CLOSE */
         if (peek(p).type != DTOB_CLOSE) {
             fprintf(stderr, "dtob: expected CLOSE for type def\n");
-            free(name);
+            free(codes); free(name);
             return -1;
         }
         consume(p);
 
         if (p->types && code >= DTOB_CUSTOM_MIN) {
-            dtob_types_add(p->types, code, name, codes, n_codes);
+            if (dtob_types_add(p->types, code, name, codes, n_codes) != 0) {
+                fprintf(stderr, "dtob: could not register custom type %u\n", code);
+                free(codes); free(name);
+                return -1;
+            }
             if (is_struct)
                 p->types->entries[p->types->count - 1].kind = DTOB_STRUCT;
         }
+        free(codes);
         free(name);
     }
+
+    if (p->lexer->error) return -1;
 
     /* consume outer CLOSE of types header */
     consume(p);
@@ -150,7 +170,23 @@ static DtobValue *parse_collection(Parser *p, uint16_t open_type)
         v->data_len = t.data_len; \
         return v; }
 
+/* Depth-limited wrapper around parse_value_inner. Collections recurse
+ * (parse_value -> parse_collection -> parse_value), so hostile input made of
+ * thousands of nested open words would otherwise exhaust the stack. */
 static DtobValue *parse_value(Parser *p)
+{
+    if (p->depth >= DTOB_MAX_DEPTH) {
+        fprintf(stderr, "dtob: nesting deeper than %d levels\n", DTOB_MAX_DEPTH);
+        p->lexer->error = 1;
+        return NULL;
+    }
+    p->depth++;
+    DtobValue *v = parse_value_inner(p);
+    p->depth--;
+    return v;
+}
+
+static DtobValue *parse_value_inner(Parser *p)
 {
     Token t = peek(p);
     DtobValue *v = NULL;
@@ -196,7 +232,7 @@ static DtobValue *parse_value(Parser *p)
             }
             consume(p);
 
-            while (peek(p).type != DTOB_CLOSE) {
+            while (!p->lexer->error && peek(p).type != DTOB_CLOSE) {
                 DtobValue *member = parse_value(p);
                 if (!member) { dtob_free(v); return NULL; }
                 ast_add_element(v, member);
@@ -239,7 +275,7 @@ static DtobValue *parse_value(Parser *p)
                 }
                 consume(p);
 
-                while (peek(p).type != DTOB_CLOSE) {
+                while (!p->lexer->error && peek(p).type != DTOB_CLOSE) {
                     DtobValue *member = parse_value(p);
                     if (!member) { dtob_free(v); return NULL; }
                     ast_add_element(v, member);
@@ -267,26 +303,15 @@ static DtobValue *parse_value(Parser *p)
 
 int dtob_decode_types_only(const uint8_t *buf, size_t len, DtobTypesHeader *out_types)
 {
-    if (!out_types || len < DTOB_MAGIC_LEN) return -1;
-    if (memcmp(buf, DTOB_MAGIC, DTOB_MAGIC_LEN) != 0) return -1;
-
-    Lexer lexer;
-    lexer_init(&lexer, buf + DTOB_MAGIC_LEN, len - DTOB_MAGIC_LEN);
-
-    Parser p = {
-        .lexer = &lexer,
-        .has_current = 0,
-        .types = out_types,
-        .has_types = 0,
-    };
-
-    if (peek(&p).type != DTOB_OPEN_TYPES) return -1;
-    consume(&p);
-    return parse_types_header(&p);
+    size_t consumed;
+    if (!out_types || dtob_decode_magic_and_types(buf, len, out_types, &consumed) != 0) return -1;
+    size_t magic_len;
+    dtob_magic(buf, len, &magic_len);
+    return consumed > magic_len ? 0 : -1; /* the types header is required */
 }
 
-DtobValue *dtob_decode_raw(const uint8_t *buf, size_t len,
-                           const DtobTypesHeader *types)
+DtobValue *dtob_decode_chunk(const uint8_t *buf, size_t len,
+                             const DtobTypesHeader *types)
 {
     Lexer lexer;
     lexer_init(&lexer, buf, len);
@@ -314,6 +339,96 @@ DtobValue *dtob_decode_raw(const uint8_t *buf, size_t len,
     return root;
 }
 
+DtobValue *dtob_decode_chunk_prefix(const uint8_t *buf, size_t len,
+                                    const DtobTypesHeader *types, size_t *consumed)
+{
+    if (consumed) *consumed = 0;
+    if (!buf || !consumed) return NULL;
+
+    Lexer lexer;
+    lexer_init(&lexer, buf, len);
+
+    DtobTypesHeader local_types;
+    if (!types) dtob_types_init(&local_types);
+
+    Parser p = {
+        .lexer = &lexer,
+        .has_current = 0,
+        .types = types ? (DtobTypesHeader *)types : &local_types,
+        .has_types = types ? 1 : 0,
+    };
+
+    DtobValue *v = parse_value(&p);
+    /* A value ends on a consumed token, so the lexer stops right after it.
+     * A token still held for lookahead would put the position past the
+     * value; that never happens for a complete value, so treat it as an
+     * error rather than report a wrong length. */
+    if (v && (p.lexer->error || p.has_current)) { dtob_free(v); v = NULL; }
+    if (v) *consumed = lexer.pos;
+    if (!types) dtob_types_cleanup(&local_types);
+    return v;
+}
+
+int dtob_magic(const uint8_t *buf, size_t len, size_t *magic_len)
+{
+    static const struct { const char *magic; size_t len; int kind; } kinds[] = {
+        { DTOB_MAGIC_FILE,      DTOB_MAGIC_FILE_LEN,      DTOB_MAGIC_KIND_FILE },
+        { DTOB_MAGIC_PRE_ERASE, DTOB_MAGIC_PRE_ERASE_LEN, DTOB_MAGIC_KIND_PRE_ERASE },
+        { DTOB_MAGIC_WIRE,      DTOB_MAGIC_WIRE_LEN,      DTOB_MAGIC_KIND_WIRE },
+    };
+    if (magic_len) *magic_len = 0;
+    if (!buf) return DTOB_MAGIC_KIND_NONE;
+    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        if (len >= kinds[i].len && memcmp(buf, kinds[i].magic, kinds[i].len) == 0) {
+            if (magic_len) *magic_len = kinds[i].len;
+            return kinds[i].kind;
+        }
+    }
+    return DTOB_MAGIC_KIND_NONE;
+}
+
+int dtob_decode_magic_and_types(const uint8_t *buf, size_t len,
+                                DtobTypesHeader *out_types, size_t *consumed)
+{
+    if (consumed) *consumed = 0;
+    if (!buf || !consumed) return -1;
+    size_t magic_len;
+    int magic = dtob_magic(buf, len, &magic_len);
+    if (!magic) return -1;
+
+    /* No types header: the root starts right after the magic. Checked on
+     * the raw bytes so that nothing past the header is lexed. */
+    const uint8_t *rest = buf + magic_len;
+    size_t rest_len = len - magic_len;
+    if (rest_len < 2 || !DTOB_IS_CTRL(rest[0]) || (rest[0] & 0x20) ||
+        (((uint16_t)(rest[0] & 0x1F) << 8) | rest[1]) != DTOB_OPEN_TYPES) {
+        *consumed = magic_len;
+        return 0;
+    }
+
+    Lexer lexer;
+    lexer_init(&lexer, rest, rest_len);
+    lexer.pre_erase = magic == DTOB_MAGIC_KIND_PRE_ERASE;
+
+    DtobTypesHeader local_types;
+    if (!out_types) dtob_types_init(&local_types);
+
+    Parser p = {
+        .lexer = &lexer,
+        .has_current = 0,
+        .types = out_types ? out_types : &local_types,
+        .has_types = 0,
+    };
+
+    consume(&p); /* OPEN_TYPES */
+    int rc = parse_types_header(&p);
+    /* The header ends on its consumed CLOSE, so the lexer stops right after it. */
+    if (rc == 0 && (p.lexer->error || p.has_current)) rc = -1;
+    if (rc == 0) *consumed = magic_len + lexer.pos;
+    if (!out_types) dtob_types_cleanup(&local_types);
+    return rc;
+}
+
 DtobValue *dtob_decode(const uint8_t *buf, size_t len)
 {
     return dtob_decode_with_types(buf, len, NULL);
@@ -322,20 +437,19 @@ DtobValue *dtob_decode(const uint8_t *buf, size_t len)
 DtobValue *dtob_decode_with_types(const uint8_t *buf, size_t len,
                                    DtobTypesHeader *out_types)
 {
-    if (len < DTOB_MAGIC_LEN) {
-        fprintf(stderr, "dtob: input too short for magic number\n");
-        return NULL;
-    }
-    if (memcmp(buf, DTOB_MAGIC, DTOB_MAGIC_LEN) != 0) {
+    size_t magic_len;
+    int magic = dtob_magic(buf, len, &magic_len);
+    if (!magic) {
         fprintf(stderr, "dtob: invalid magic number\n");
         return NULL;
     }
 
     Lexer lexer;
-    lexer_init(&lexer, buf + DTOB_MAGIC_LEN, len - DTOB_MAGIC_LEN);
+    lexer_init(&lexer, buf + magic_len, len - magic_len);
+    lexer.pre_erase = magic == DTOB_MAGIC_KIND_PRE_ERASE;
 
     DtobTypesHeader local_types;
-    dtob_types_init(&local_types);
+    if (!out_types) dtob_types_init(&local_types);
 
     Parser p = {
         .lexer = &lexer,

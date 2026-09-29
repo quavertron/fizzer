@@ -148,7 +148,7 @@ static DtobValue *daemon_request(const char *sock_path, DtobValue *req) {
     }
 
     size_t enc_len;
-    uint8_t *enc = dtob_encode(req, &enc_len);
+    uint8_t *enc = dtob_encode_wire(req, &enc_len);
     dtob_free(req);
     if (!enc) { close(fd); return NULL; }
 

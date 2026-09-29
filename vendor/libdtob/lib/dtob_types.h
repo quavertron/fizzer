@@ -39,80 +39,55 @@
         __VA_ARGS__                                                       \
     }
 
-/* ---- standard macros (use _th implicitly, only inside DTOB_DEFINE_CUSTOM_TYPES) ---- */
-
-#define DTOB_CUSTOM_TYPE_NULLABLE(code, str) \
-    dtob_types_add(_th, code, str, NULL, 0);
-
-#define DTOB_CUSTOM_TYPE_RAW(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_RAW}, 1);
-
-#define DTOB_CUSTOM_TYPE_INT8(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_INT8}, 1);
-#define DTOB_CUSTOM_TYPE_INT16(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_INT16}, 1);
-#define DTOB_CUSTOM_TYPE_INT32(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_INT32}, 1);
-#define DTOB_CUSTOM_TYPE_INT64(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_INT64}, 1);
-
-#define DTOB_CUSTOM_TYPE_UINT8(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_UINT8}, 1);
-#define DTOB_CUSTOM_TYPE_UINT16(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_UINT16}, 1);
-#define DTOB_CUSTOM_TYPE_UINT32(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_UINT32}, 1);
-#define DTOB_CUSTOM_TYPE_UINT64(code, str) \
-    dtob_types_add(_th, code, str, (uint16_t[]){DTOB_UINT64}, 1);
-
-#define DTOB_CUSTOM_TYPE_ENUM(code, str, ...) \
-    dtob_types_add(_th, code, str,            \
-        (uint16_t[]){__VA_ARGS__},            \
-        sizeof((uint16_t[]){__VA_ARGS__}) / sizeof(uint16_t));
-
-#define DTOB_CUSTOM_TYPE_STRUCT(code, str, ...)                                            \
-    do {                                                                                   \
-        uint16_t _ops[] = {__VA_ARGS__};                                                   \
-        if (dtob_types_add(_th, code, str, _ops, sizeof(_ops) / sizeof(uint16_t)) == 0)   \
-            (_th)->entries[(_th)->count - 1].kind = DTOB_STRUCT;                            \
-    } while (0);
-
-/* ---- _WITH variants (explicit DtobTypesHeader pointer) ---- */
+/* ---- Base forms. Each takes an explicit DtobTypesHeader *. ---- */
 
 #define DTOB_CUSTOM_TYPE_NULLABLE_WITH(th, code, str) \
     dtob_types_add(th, code, str, NULL, 0);
 
-#define DTOB_CUSTOM_TYPE_RAW_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_RAW}, 1);
-
-#define DTOB_CUSTOM_TYPE_INT8_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_INT8}, 1);
-#define DTOB_CUSTOM_TYPE_INT16_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_INT16}, 1);
-#define DTOB_CUSTOM_TYPE_INT32_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_INT32}, 1);
-#define DTOB_CUSTOM_TYPE_INT64_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_INT64}, 1);
-
-#define DTOB_CUSTOM_TYPE_UINT8_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_UINT8}, 1);
-#define DTOB_CUSTOM_TYPE_UINT16_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_UINT16}, 1);
-#define DTOB_CUSTOM_TYPE_UINT32_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_UINT32}, 1);
-#define DTOB_CUSTOM_TYPE_UINT64_WITH(th, code, str) \
-    dtob_types_add(th, code, str, (uint16_t[]){DTOB_UINT64}, 1);
+/* exactly one built-in payload code: DTOB_RAW, DTOB_INT8 ... DTOB_UINT64 */
+#define DTOB_CUSTOM_TYPE_PRIM_WITH(th, code, str, prim) \
+    dtob_types_add(th, code, str, (uint16_t[]){prim}, 1);
 
 #define DTOB_CUSTOM_TYPE_ENUM_WITH(th, code, str, ...) \
     dtob_types_add(th, code, str,                      \
         (uint16_t[]){__VA_ARGS__},                     \
         sizeof((uint16_t[]){__VA_ARGS__}) / sizeof(uint16_t));
 
-#define DTOB_CUSTOM_TYPE_STRUCT_WITH(th, code, str, ...)                                   \
-    do {                                                                                   \
-        uint16_t _ops[] = {__VA_ARGS__};                                                   \
-        if (dtob_types_add(th, code, str, _ops, sizeof(_ops) / sizeof(uint16_t)) == 0)    \
-            (th)->entries[(th)->count - 1].kind = DTOB_STRUCT;                              \
+#define DTOB_CUSTOM_TYPE_STRUCT_WITH(th, code, str, ...)          \
+    do {                                                          \
+        uint16_t _ops[] = {__VA_ARGS__};                          \
+        if (dtob_types_add(th, code, str, _ops,                   \
+                           sizeof(_ops) / sizeof(uint16_t)) == 0) \
+            (th)->entries[(th)->count - 1].kind = DTOB_STRUCT;    \
     } while (0);
+
+/* ---- Named shorthands for the built-in payload types ---- */
+
+#define DTOB_CUSTOM_TYPE_RAW_WITH(th, c, s)    DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_RAW)
+#define DTOB_CUSTOM_TYPE_INT8_WITH(th, c, s)   DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_INT8)
+#define DTOB_CUSTOM_TYPE_INT16_WITH(th, c, s)  DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_INT16)
+#define DTOB_CUSTOM_TYPE_INT32_WITH(th, c, s)  DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_INT32)
+#define DTOB_CUSTOM_TYPE_INT64_WITH(th, c, s)  DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_INT64)
+#define DTOB_CUSTOM_TYPE_UINT8_WITH(th, c, s)  DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_UINT8)
+#define DTOB_CUSTOM_TYPE_UINT16_WITH(th, c, s) DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_UINT16)
+#define DTOB_CUSTOM_TYPE_UINT32_WITH(th, c, s) DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_UINT32)
+#define DTOB_CUSTOM_TYPE_UINT64_WITH(th, c, s) DTOB_CUSTOM_TYPE_PRIM_WITH(th, c, s, DTOB_UINT64)
+
+/* ---- Bare forms, valid only inside DTOB_DEFINE_CUSTOM_TYPES, where they
+ *      target the _th it declares ---- */
+
+#define DTOB_CUSTOM_TYPE_NULLABLE(c, s)    DTOB_CUSTOM_TYPE_NULLABLE_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_PRIM(c, s, prim)  DTOB_CUSTOM_TYPE_PRIM_WITH(_th, c, s, prim)
+#define DTOB_CUSTOM_TYPE_ENUM(c, s, ...)   DTOB_CUSTOM_TYPE_ENUM_WITH(_th, c, s, __VA_ARGS__)
+#define DTOB_CUSTOM_TYPE_STRUCT(c, s, ...) DTOB_CUSTOM_TYPE_STRUCT_WITH(_th, c, s, __VA_ARGS__)
+#define DTOB_CUSTOM_TYPE_RAW(c, s)         DTOB_CUSTOM_TYPE_RAW_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_INT8(c, s)        DTOB_CUSTOM_TYPE_INT8_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_INT16(c, s)       DTOB_CUSTOM_TYPE_INT16_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_INT32(c, s)       DTOB_CUSTOM_TYPE_INT32_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_INT64(c, s)       DTOB_CUSTOM_TYPE_INT64_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_UINT8(c, s)       DTOB_CUSTOM_TYPE_UINT8_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_UINT16(c, s)      DTOB_CUSTOM_TYPE_UINT16_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_UINT32(c, s)      DTOB_CUSTOM_TYPE_UINT32_WITH(_th, c, s)
+#define DTOB_CUSTOM_TYPE_UINT64(c, s)      DTOB_CUSTOM_TYPE_UINT64_WITH(_th, c, s)
 
 #endif /* DTOB_TYPES_H */
