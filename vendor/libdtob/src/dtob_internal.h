@@ -49,7 +49,7 @@ typedef struct {
     size_t         len;
     size_t         pos;       /* byte position */
     int            error;
-    int            pre_erase; /* DTOB_MAGIC_PRE_ERASE document: 8190 is not skipped */
+    int            pre_rubout; /* DTOB_MAGIC_PRE_RUBOUT document: 8190 is not skipped */
 } Lexer;
 
 void  lexer_init(Lexer *l, const uint8_t *buf, size_t len);

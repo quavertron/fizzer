@@ -53,8 +53,8 @@ static int parse_types_header(Parser *p)
 
         /* custom code */
         Token code_tok = consume(p);
-        if (code_tok.type == DTOB_ERASE) {
-            fprintf(stderr, "dtob: code 8190 is erase and cannot be a custom type\n");
+        if (code_tok.type == DTOB_RUBOUT) {
+            fprintf(stderr, "dtob: code 8190 is rubout and cannot be a custom type\n");
             return -1;
         }
         if (code_tok.type < DTOB_CUSTOM_MIN || code_tok.type > DTOB_CUSTOM_MAX) {
@@ -373,7 +373,7 @@ int dtob_magic(const uint8_t *buf, size_t len, size_t *magic_len)
 {
     static const struct { const char *magic; size_t len; int kind; } kinds[] = {
         { DTOB_MAGIC_FILE,      DTOB_MAGIC_FILE_LEN,      DTOB_MAGIC_KIND_FILE },
-        { DTOB_MAGIC_PRE_ERASE, DTOB_MAGIC_PRE_ERASE_LEN, DTOB_MAGIC_KIND_PRE_ERASE },
+        { DTOB_MAGIC_PRE_RUBOUT, DTOB_MAGIC_PRE_RUBOUT_LEN, DTOB_MAGIC_KIND_PRE_RUBOUT },
         { DTOB_MAGIC_WIRE,      DTOB_MAGIC_WIRE_LEN,      DTOB_MAGIC_KIND_WIRE },
     };
     if (magic_len) *magic_len = 0;
@@ -408,7 +408,7 @@ int dtob_decode_magic_and_types(const uint8_t *buf, size_t len,
 
     Lexer lexer;
     lexer_init(&lexer, rest, rest_len);
-    lexer.pre_erase = magic == DTOB_MAGIC_KIND_PRE_ERASE;
+    lexer.pre_rubout = magic == DTOB_MAGIC_KIND_PRE_RUBOUT;
 
     DtobTypesHeader local_types;
     if (!out_types) dtob_types_init(&local_types);
@@ -446,7 +446,7 @@ DtobValue *dtob_decode_with_types(const uint8_t *buf, size_t len,
 
     Lexer lexer;
     lexer_init(&lexer, buf + magic_len, len - magic_len);
-    lexer.pre_erase = magic == DTOB_MAGIC_KIND_PRE_ERASE;
+    lexer.pre_rubout = magic == DTOB_MAGIC_KIND_PRE_RUBOUT;
 
     DtobTypesHeader local_types;
     if (!out_types) dtob_types_init(&local_types);

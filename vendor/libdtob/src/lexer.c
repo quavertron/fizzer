@@ -6,7 +6,7 @@ void lexer_init(Lexer *l, const uint8_t *buf, size_t len)
     l->len = len;
     l->pos = 0;
     l->error = 0;
-    l->pre_erase = 0;
+    l->pre_rubout = 0;
 }
 
 #if USE_NEON_OPTIMIZATION
@@ -110,8 +110,8 @@ top:
         }
         uint16_t code = ((uint16_t)(b & 0x1F) << 8) | b2;
 
-        /* blast and erase: silently skip (8190 is not erase before its magic) */
-        if (code == DTOB_BLAST || (code == DTOB_ERASE && !l->pre_erase)) goto top;
+        /* blast and rubout: silently skip (8190 is not rubout before its magic) */
+        if (code == DTOB_BLAST || (code == DTOB_RUBOUT && !l->pre_rubout)) goto top;
 
         tok.type = code;
 

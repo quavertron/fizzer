@@ -28,15 +28,15 @@ extern "C" {
  * Floats/doubles are IEEE 754 binary32/binary64, stored big-endian like integers.
  *
  * Codes 16-8189: custom (defined in types header)
- * Code 8190: erase — a word overwritten in place; ignored as a non-token,
+ * Code 8190: rubout — a word overwritten in place; ignored as a non-token,
  *   forbidden for type assignment. Every element spans whole words, so an
- *   element can be erased by overwriting all of its words with erase.
+ *   element can be rubbed out by overwriting all of its words with rubout.
  * Code 8191: blast — ignored as a non-token; forbidden for type assignment
  *
  * A document starts with a magic. Files carry "DTOB" + a DDMMYY date
  * (DTOB_MAGIC_FILE); wire messages carry just the date (DTOB_MAGIC_WIRE).
- * Both are read. Documents written before erase carry DTOB_MAGIC_PRE_ERASE;
- * they are still read, 8190 is not erase in them, and declaring it is an
+ * Both are read. Documents written before rubout carry DTOB_MAGIC_PRE_RUBOUT;
+ * they are still read, 8190 is not rubout in them, and declaring it is an
  * error.
  */
 
@@ -57,7 +57,7 @@ extern "C" {
 #define DTOB_UINT16      13
 #define DTOB_UINT32      14
 #define DTOB_UINT64      15
-#define DTOB_ERASE       8190
+#define DTOB_RUBOUT       8190
 #define DTOB_BLAST       8191
 
 #define DTOB_CUSTOM_MIN       16
@@ -78,15 +78,15 @@ extern "C" {
 #define DTOB_MAGIC_FILE_LEN       10
 #define DTOB_MAGIC_WIRE           "290926"
 #define DTOB_MAGIC_WIRE_LEN       6
-#define DTOB_MAGIC_PRE_ERASE      "01052026"  /* still read; 8190 is not erase */
-#define DTOB_MAGIC_PRE_ERASE_LEN  8
+#define DTOB_MAGIC_PRE_RUBOUT      "01052026"  /* still read; 8190 is not rubout */
+#define DTOB_MAGIC_PRE_RUBOUT_LEN  8
 #define DTOB_MAGIC_MAX_LEN        10
 
 /* magic kinds returned by dtob_magic */
 #define DTOB_MAGIC_KIND_NONE       0
 #define DTOB_MAGIC_KIND_FILE       1
 #define DTOB_MAGIC_KIND_WIRE       2
-#define DTOB_MAGIC_KIND_PRE_ERASE  3
+#define DTOB_MAGIC_KIND_PRE_RUBOUT  3
 
 /* integer code helpers: code must be in range 8-15 */
 #define DTOB_IS_INT(c)       ((c) >= 8 && (c) <= 15)
