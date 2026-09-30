@@ -3032,6 +3032,9 @@ button:focus-visible,
 .kanban-card-delete { padding: 2px; opacity: 0; }
 .kanban-card:hover .kanban-card-delete,
 .kanban-card-delete:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .kanban-card-delete { opacity: 1; min-width: 28px; min-height: 28px; }
+}
 .kanban-no-matches {
   padding: 14px 4px;
   color: var(--text-tertiary);

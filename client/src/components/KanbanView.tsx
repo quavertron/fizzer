@@ -762,6 +762,15 @@ function KanbanViewInner({ content, onContentChange, showSuperkanbanToggle = fal
                         >
                           <Archive size={12} />
                         </button>
+                        <button
+                          type="button"
+                          className="kanban-card-delete"
+                          onClick={() => onContentChange(deleteKanbanCard(content, card.id))}
+                          aria-label={`Delete ${card.text}`}
+                          title="Delete card"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </article>
                     ))}
                     {normalizedSearch && visibleCards.length === 0 && (

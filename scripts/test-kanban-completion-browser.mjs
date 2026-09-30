@@ -122,6 +122,17 @@ try {
   await page.reload();
   await card('Second').waitFor();
   assert.equal(await lane('Accepted').locator('.kanban-card.is-complete').count(), 2);
+  // Delete the selected card, preserve its neighbors and persist through reload.
+  await card('Second').hover();
+  await card('Second').getByRole('button', { name: 'Delete Second', exact: true }).click({ timeout: 3000 });
+  assert.equal(await card('Second').count(), 0);
+  assert.equal(await card('Existing').count(), 1);
+  await page.getByRole('button', {name:'Save fixture'}).click();
+  await page.waitForFunction(() => document.querySelector('output').textContent === 'Saved');
+  assert.ok(!saved.includes('Second'));
+  await page.reload();
+  await card('Existing').waitFor();
+  assert.equal(await card('Second').count(), 0);
   assert.deepEqual(errors, []);
   console.log('PASS: category opt-in/reload, native background/card drops, no reopen/retroactive/reorder completion, stale/foreign drag rejection, 403/409 draft retention, refresh/retry/reload. Fixture save contract only; App/backend remain separate integration checks.');
 } finally {
