@@ -195,9 +195,9 @@ int dtob_array_append_to_file(const char *path, DtobValue *entry) {
     if (!f) {
         f = fopen(path, "wb");
         if (!f) { free(el_buf); return 1; }
-        uint8_t head[DTOB_MAGIC_FILE_LEN + 2];
-        memcpy(head, DTOB_MAGIC_FILE, DTOB_MAGIC_FILE_LEN);
-        head[DTOB_MAGIC_FILE_LEN] = 0xC0; head[DTOB_MAGIC_FILE_LEN + 1] = DTOB_OPEN_ARR;
+        uint8_t head[DTOB_HEADER_LEN + 2] = {0};
+        memcpy(head, DTOB_HEADER_MAGIC, DTOB_HEADER_MAGIC_LEN);
+        head[DTOB_HEADER_LEN] = 0xC0; head[DTOB_HEADER_LEN + 1] = DTOB_OPEN_ARR;
         int ok = fwrite(head, 1, sizeof head, f) == sizeof head &&
                  fwrite(el_buf, 1, el_len, f) == el_len &&
                  fwrite(tail, 1, 2, f) == 2;

@@ -33,11 +33,14 @@ extern "C" {
  *   element can be rubbed out by overwriting all of its words with rubout.
  * Code 8191: blast — ignored as a non-token; forbidden for type assignment
  *
- * A document starts with a magic. Files carry "DTOB" + a DDMMYY date
- * (DTOB_MAGIC_FILE); wire messages carry just the date (DTOB_MAGIC_WIRE).
- * Both are read. Documents written before rubout carry DTOB_MAGIC_PRE_RUBOUT;
- * they are still read, 8190 is not rubout in them, and declaring it is an
- * error.
+ * Files and wire messages alike start with a 16-byte header: DTOB_HEADER_MAGIC
+ * ("DTOB" + the format's date as days since 1970-01-01 in uppercase hex), then
+ * DTOB_STAMP_LEN bytes that belong to the consumer (a version or date stamp,
+ * say). Encoders write zero bytes there; dtob_set_stamp replaces them.
+ *
+ * Older magics are still read and carry no stamp: DTOB_MAGIC_LEGACY_FILE and
+ * DTOB_MAGIC_LEGACY_WIRE, and DTOB_MAGIC_PRE_RUBOUT, in which 8190 is not
+ * rubout and declaring it is an error.
  */
 
 /* logical code constants (passed to bw_write_ctrl / dtob_writer_ctrl) */
@@ -74,19 +77,25 @@ extern "C" {
 /* open-type helpers */
 #define DTOB_IS_OPEN(c)       ((c) <= 2)
 
-#define DTOB_MAGIC_FILE           "DTOB290926"
-#define DTOB_MAGIC_FILE_LEN       10
-#define DTOB_MAGIC_WIRE           "290926"
-#define DTOB_MAGIC_WIRE_LEN       6
-#define DTOB_MAGIC_PRE_RUBOUT      "01052026"  /* still read; 8190 is not rubout */
+#define DTOB_HEADER_MAGIC          "DTOB50F6"  /* day 0x50F6 = 2026-09-30 */
+#define DTOB_HEADER_MAGIC_LEN      8
+#define DTOB_STAMP_LEN             8
+#define DTOB_HEADER_LEN            16
+/* still read, never written */
+#define DTOB_MAGIC_LEGACY_FILE     "DTOB290926"
+#define DTOB_MAGIC_LEGACY_FILE_LEN 10
+#define DTOB_MAGIC_LEGACY_WIRE     "290926"
+#define DTOB_MAGIC_LEGACY_WIRE_LEN 6
+#define DTOB_MAGIC_PRE_RUBOUT      "01052026"  /* 8190 is not rubout */
 #define DTOB_MAGIC_PRE_RUBOUT_LEN  8
-#define DTOB_MAGIC_MAX_LEN        10
+#define DTOB_MAGIC_MAX_LEN         16
 
 /* magic kinds returned by dtob_magic */
-#define DTOB_MAGIC_KIND_NONE       0
-#define DTOB_MAGIC_KIND_FILE       1
-#define DTOB_MAGIC_KIND_WIRE       2
-#define DTOB_MAGIC_KIND_PRE_RUBOUT  3
+#define DTOB_MAGIC_KIND_NONE        0
+#define DTOB_MAGIC_KIND_HEADER      1
+#define DTOB_MAGIC_KIND_LEGACY_FILE 2
+#define DTOB_MAGIC_KIND_LEGACY_WIRE 3
+#define DTOB_MAGIC_KIND_PRE_RUBOUT  4
 
 /* integer code helpers: code must be in range 8-15 */
 #define DTOB_IS_INT(c)       ((c) >= 8 && (c) <= 15)
@@ -178,8 +187,16 @@ DtobValue  *dtob_decode_chunk_prefix(const uint8_t *buf, size_t len,
                                      const DtobTypesHeader *types,
                                      size_t *consumed);
 /* Identify the magic at the start of buf: returns a DTOB_MAGIC_KIND_* and
- * sets *magic_len (may be NULL) to its length, or 0 if there is none. */
+ * sets *magic_len (may be NULL) to where the document's content begins
+ * (DTOB_HEADER_LEN for a current header, stamp included), or 0 if there is
+ * none. A current header cut short of its stamp is no magic. */
 int         dtob_magic(const uint8_t *buf, size_t len, size_t *magic_len);
+/* The consumer's DTOB_STAMP_LEN bytes in buf's header, or NULL if buf does
+ * not start with a current header (older magics carry no stamp). */
+const uint8_t *dtob_stamp(const uint8_t *buf, size_t len);
+/* Replace the stamp in buf's header with stamp (DTOB_STAMP_LEN bytes).
+ * Returns 0, or -1 if buf does not start with a current header. */
+int         dtob_set_stamp(uint8_t *buf, size_t len, const uint8_t *stamp);
 /* Read a document's magic and, if present, its types header, and set
  * *consumed to where the root value begins. out_types may be NULL.
  * Returns 0, or -1 if the magic or types header is missing or malformed. */
@@ -192,8 +209,9 @@ int         dtob_write_file(const char *path, DtobValue *root,
                             DtobTypesBuilder build_types);
 
 
-/* encode: dtob_encode* write the file magic, dtob_encode_wire* the wire
- * magic (for sockets and HTTP bodies) */
+/* encode: every document starts with the header, its stamp zeroed.
+ * dtob_encode_wire* are the same functions, kept for callers written when
+ * wire messages had their own magic. */
 uint8_t    *dtob_encode(const DtobValue *root, size_t *out_len);
 uint8_t    *dtob_encode_with_types(const DtobValue *root,
                                     const DtobTypesHeader *types,

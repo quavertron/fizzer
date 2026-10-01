@@ -371,20 +371,33 @@ DtobValue *dtob_decode_chunk_prefix(const uint8_t *buf, size_t len,
 
 int dtob_magic(const uint8_t *buf, size_t len, size_t *magic_len)
 {
-    static const struct { const char *magic; size_t len; int kind; } kinds[] = {
-        { DTOB_MAGIC_FILE,      DTOB_MAGIC_FILE_LEN,      DTOB_MAGIC_KIND_FILE },
-        { DTOB_MAGIC_PRE_RUBOUT, DTOB_MAGIC_PRE_RUBOUT_LEN, DTOB_MAGIC_KIND_PRE_RUBOUT },
-        { DTOB_MAGIC_WIRE,      DTOB_MAGIC_WIRE_LEN,      DTOB_MAGIC_KIND_WIRE },
+    static const struct { const char *magic; size_t len, content; int kind; } kinds[] = {
+        { DTOB_HEADER_MAGIC,      DTOB_HEADER_MAGIC_LEN,      DTOB_HEADER_LEN,            DTOB_MAGIC_KIND_HEADER },
+        { DTOB_MAGIC_LEGACY_FILE, DTOB_MAGIC_LEGACY_FILE_LEN, DTOB_MAGIC_LEGACY_FILE_LEN, DTOB_MAGIC_KIND_LEGACY_FILE },
+        { DTOB_MAGIC_PRE_RUBOUT,  DTOB_MAGIC_PRE_RUBOUT_LEN,  DTOB_MAGIC_PRE_RUBOUT_LEN,  DTOB_MAGIC_KIND_PRE_RUBOUT },
+        { DTOB_MAGIC_LEGACY_WIRE, DTOB_MAGIC_LEGACY_WIRE_LEN, DTOB_MAGIC_LEGACY_WIRE_LEN, DTOB_MAGIC_KIND_LEGACY_WIRE },
     };
     if (magic_len) *magic_len = 0;
     if (!buf) return DTOB_MAGIC_KIND_NONE;
     for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
-        if (len >= kinds[i].len && memcmp(buf, kinds[i].magic, kinds[i].len) == 0) {
-            if (magic_len) *magic_len = kinds[i].len;
+        if (len >= kinds[i].content && memcmp(buf, kinds[i].magic, kinds[i].len) == 0) {
+            if (magic_len) *magic_len = kinds[i].content;
             return kinds[i].kind;
         }
     }
     return DTOB_MAGIC_KIND_NONE;
+}
+
+const uint8_t *dtob_stamp(const uint8_t *buf, size_t len)
+{
+    return dtob_magic(buf, len, NULL) == DTOB_MAGIC_KIND_HEADER ? buf + DTOB_HEADER_MAGIC_LEN : NULL;
+}
+
+int dtob_set_stamp(uint8_t *buf, size_t len, const uint8_t *stamp)
+{
+    if (!stamp || dtob_magic(buf, len, NULL) != DTOB_MAGIC_KIND_HEADER) return -1;
+    memcpy(buf + DTOB_HEADER_MAGIC_LEN, stamp, DTOB_STAMP_LEN);
+    return 0;
 }
 
 int dtob_decode_magic_and_types(const uint8_t *buf, size_t len,

@@ -206,15 +206,18 @@ uint8_t *dtob_encode(const DtobValue *root, size_t *out_len)
     return dtob_encode_with_types(root, NULL, 0, out_len);
 }
 
-static uint8_t *encode_document(const char *magic, const DtobValue *root,
-                                const DtobTypesHeader *types,
-                                int strict_validation, size_t *out_len)
+uint8_t *dtob_encode_with_types(const DtobValue *root,
+                                 const DtobTypesHeader *types,
+                                 int strict_validation,
+                                 size_t *out_len)
 {
     DtobWriter w;
     dtob_writer_init(&w, strict_validation);
 
-    for (const char *m = magic; *m; m++)
+    for (const char *m = DTOB_HEADER_MAGIC; *m; m++)
         dtob_writer_byte(&w, (uint8_t)*m);
+    for (int i = 0; i < DTOB_STAMP_LEN; i++)
+        dtob_writer_byte(&w, 0);
 
     encode_types_header(&w, types);
     encode_value_t(&w, root, types);
@@ -229,17 +232,9 @@ static uint8_t *encode_document(const char *magic, const DtobValue *root,
     return w.buf;
 }
 
-uint8_t *dtob_encode_with_types(const DtobValue *root,
-                                 const DtobTypesHeader *types,
-                                 int strict_validation,
-                                 size_t *out_len)
-{
-    return encode_document(DTOB_MAGIC_FILE, root, types, strict_validation, out_len);
-}
-
 uint8_t *dtob_encode_wire(const DtobValue *root, size_t *out_len)
 {
-    return dtob_encode_wire_with_types(root, NULL, 0, out_len);
+    return dtob_encode_with_types(root, NULL, 0, out_len);
 }
 
 uint8_t *dtob_encode_wire_with_types(const DtobValue *root,
@@ -247,7 +242,7 @@ uint8_t *dtob_encode_wire_with_types(const DtobValue *root,
                                       int strict_validation,
                                       size_t *out_len)
 {
-    return encode_document(DTOB_MAGIC_WIRE, root, types, strict_validation, out_len);
+    return dtob_encode_with_types(root, types, strict_validation, out_len);
 }
 
 uint8_t *dtob_encode_chunk(const DtobValue *v,
